@@ -177,24 +177,22 @@ create_kuadrant_instance() {
     # Check if Kuadrant instance already exists
     if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
         print_success "Kuadrant instance already exists"
-        return 0
-    fi
-    
-    print_step "Creating Kuadrant instance..."
-    
-    cat <<EOF | oc apply -f -
+    else
+        print_step "Creating Kuadrant instance..."
+        
+        cat <<EOF | oc apply -f -
 apiVersion: kuadrant.io/v1beta1
 kind: Kuadrant
 metadata:
   name: kuadrant
   namespace: kuadrant-system
 EOF
+        
+        print_success "Kuadrant instance created"
+    fi
     
-    print_success "Kuadrant instance created"
-    
-    # Wait for Kuadrant to be ready
+    # Wait for Kuadrant components to be ready (always check, even if already exists)
     print_step "Waiting for Kuadrant components to be ready..."
-    sleep 30
     
     # Wait for Authorino service to be created
     local auth_timeout=120

@@ -647,7 +647,9 @@ EOF
     fi
     
     # Create Kuadrant instance if it doesn't exist
-    if ! oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+    if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+        print_success "Kuadrant instance already exists"
+    else
         print_step "Creating Kuadrant instance..."
         
         cat <<EOF | oc apply -f -
@@ -659,37 +661,37 @@ metadata:
 EOF
         
         print_success "Kuadrant instance created"
+    fi
+    
+    # Wait for Kuadrant components to be ready (always check, even if already exists)
+    print_step "Waiting for Kuadrant components to be ready..."
+    
+    # Wait for Authorino service to be created
+    local auth_timeout=120
+    local auth_elapsed=0
+    until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
+        if [ $auth_elapsed -ge $auth_timeout ]; then
+            print_warning "Authorino service not ready yet (continuing anyway)"
+            break
+        fi
+        echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
+        sleep 10
+        auth_elapsed=$((auth_elapsed + 10))
+    done
+    
+    # Configure Authorino with TLS if service exists
+    if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
+        print_step "Configuring Authorino with TLS..."
         
-        # Wait for Kuadrant to be ready
-        print_step "Waiting for Kuadrant components to be ready..."
-        sleep 30
+        # Annotate service for TLS certificate
+        oc annotate svc/authorino-authorino-authorization \
+            service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+            -n kuadrant-system --overwrite
         
-        # Wait for Authorino service to be created
-        local auth_timeout=120
-        local auth_elapsed=0
-        until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
-            if [ $auth_elapsed -ge $auth_timeout ]; then
-                print_warning "Authorino service not ready yet (continuing anyway)"
-                break
-            fi
-            echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
-            sleep 10
-            auth_elapsed=$((auth_elapsed + 10))
-        done
+        sleep 10
         
-        # Configure Authorino with TLS if service exists
-        if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
-            print_step "Configuring Authorino with TLS..."
-            
-            # Annotate service for TLS certificate
-            oc annotate svc/authorino-authorino-authorization \
-                service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-                -n kuadrant-system --overwrite
-            
-            sleep 10
-            
-            # Enable TLS in Authorino
-            cat <<EOF | oc apply -f -
+        # Enable TLS in Authorino
+        cat <<EOF | oc apply -f -
 apiVersion: operator.authorino.kuadrant.io/v1beta1
 kind: Authorino
 metadata:
@@ -707,9 +709,8 @@ spec:
     tls:
       enabled: false
 EOF
-            
-            print_success "Authorino configured with TLS"
-        fi
+        
+        print_success "Authorino configured with TLS"
     fi
     
     print_success "RHCL operator installation complete (enables llm-d serving runtime)"
