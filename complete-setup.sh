@@ -33,7 +33,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false
-USE_MODULAR=false
+USE_MODULAR=true  # Modular is now the default!
+USE_LEGACY=false
 SKIP_OPENSHIFT=false
 SKIP_GPU=false
 SKIP_RHOAI=false
@@ -102,6 +103,12 @@ parse_arguments() {
                 ;;
             --modular)
                 USE_MODULAR=true
+                USE_LEGACY=false
+                shift
+                ;;
+            --legacy)
+                USE_MODULAR=false
+                USE_LEGACY=true
                 shift
                 ;;
             --skip-openshift)
@@ -139,27 +146,32 @@ OPTIONS:
     --with-maas         Automatically set up MaaS (no prompt)
     --skip-maas         Skip MaaS setup (no prompt)
     --maas-only         Only set up MaaS (assumes RHOAI already installed)
-    --modular           Use modular version (integrated-workflow-v2.sh)
+    --legacy            Use legacy version (scripts/integrated-workflow.sh)
+    --modular           Use modular version (default, integrated-workflow-v2.sh)
     --skip-openshift    Skip OpenShift installation (use existing cluster)
     --skip-gpu          Skip GPU worker node creation
     --skip-rhoai        Skip RHOAI installation
     -h, --help          Show this help message
 
 EXAMPLES:
-    $0                              # Interactive mode (will prompt for MaaS)
+    $0                              # Interactive mode (uses modular by default)
     $0 --with-maas                  # Full setup including MaaS
     $0 --skip-maas                  # Setup without MaaS
     $0 --skip-openshift             # Install RHOAI on existing cluster
     $0 --skip-openshift --skip-gpu  # Install only RHOAI (no OpenShift, no GPU)
-    $0 --modular                    # Use modular version
+    $0 --legacy                     # Use legacy/original version
     $0 --maas-only                  # Only set up MaaS infrastructure
+
+NOTE:
+    Modular version is now the default. Use --legacy for the original version.
     $0 --maas-only          # Only add MaaS to existing RHOAI
 
 WHAT THIS SCRIPT DOES:
-    1. Runs scripts/integrated-workflow.sh or integrated-workflow-v2.sh (OpenShift + RHOAI + GenAI)
+    1. Runs integrated-workflow-v2.sh by default (modular version)
+       Or scripts/integrated-workflow.sh with --legacy flag
     2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
     
-    Note: Use --modular flag to use the modular version (integrated-workflow-v2.sh)
+    Note: Modular version is now the default! Use --legacy for the original version.
     3. Provides final summary and next steps
 
 EOF

@@ -8,7 +8,7 @@ Automated scripts for installing OpenShift on AWS with Red Hat OpenShift AI (RHO
 ```bash
 ./complete-setup.sh
 ```
-This master wrapper orchestrates the entire installation process:
+This master wrapper orchestrates the entire installation process using the **modular version by default**:
 1. OpenShift cluster installation
 2. RHOAI deployment
 3. GPU worker node creation
@@ -19,34 +19,34 @@ This master wrapper orchestrates the entire installation process:
 - `--with-maas` - Automatically set up MaaS API (no prompt)
 - `--skip-maas` - Skip MaaS API setup (no prompt)
 - `--maas-only` - Only set up MaaS (skip OpenShift/RHOAI)
-- `--modular` - Use modular version (integrated-workflow-v2.sh) ⭐ NEW!
+- `--skip-openshift` - Skip OpenShift installation (use existing cluster)
+- `--skip-gpu` - Skip GPU worker node creation
+- `--skip-rhoai` - Skip RHOAI installation
+- `--legacy` - Use legacy/original version (scripts/integrated-workflow.sh)
 
-### Modular Version (New!)
+### Direct Usage
 ```bash
+# Modular version (default, recommended)
 ./integrated-workflow-v2.sh
+
+# Legacy version (backup)
+./scripts/integrated-workflow.sh
 ```
-A refactored version using modular functions from `lib/`:
-- Cleaner code organization
-- Reusable function modules
-- Separated YAML manifests
-- Same functionality as the original
+
+**Why Modular?**
+- ✅ Cleaner code organization
+- ✅ Reusable function modules in `lib/`
+- ✅ Better maintainability
+- ✅ Same functionality as the original
 
 ## 📁 Project Structure
 
 ```
 .
-├── complete-setup.sh                    # 🎯 Main entry point - Master wrapper
-├── integrated-workflow-v2.sh            # ⭐ Modular RHOAI workflow (new!)
+├── complete-setup.sh                    # 🎯 Main entry point (uses modular by default)
+├── integrated-workflow-v2.sh            # ⭐ Modular RHOAI workflow (DEFAULT)
 │
-├── scripts/                             # All installation & utility scripts
-│   ├── openshift-installer-master.sh    # OpenShift cluster installation
-│   ├── integrated-workflow.sh           # Complete RHOAI + GPU setup
-│   ├── cleanup-all.sh                   # Clean up AWS resources
-│   ├── create-gpu-machineset.sh         # Create GPU worker nodes
-│   ├── enable-genai-maas.sh             # Enable GenAI Playground & MaaS UI
-│   └── setup-maas.sh                    # MaaS API infrastructure
-│
-├── lib/                                 # Modular functions and manifests
+├── lib/                                 # 📦 Modular functions and manifests
 │   ├── functions/                       # Reusable function modules
 │   │   ├── operators.sh                 # Operator installation functions
 │   │   └── rhoai.sh                     # RHOAI-specific functions
@@ -57,6 +57,14 @@ A refactored version using modular functions from `lib/`:
 │   └── utils/                           # Utility functions
 │       ├── colors.sh                    # Color definitions
 │       └── common.sh                    # Common helper functions
+│
+├── scripts/                             # Utility & legacy scripts
+│   ├── openshift-installer-master.sh    # OpenShift cluster installation
+│   ├── integrated-workflow.sh           # Legacy RHOAI workflow (use --legacy)
+│   ├── cleanup-all.sh                   # Clean up AWS resources
+│   ├── create-gpu-machineset.sh         # Create GPU worker nodes
+│   ├── enable-genai-maas.sh             # Enable GenAI Playground & MaaS UI
+│   └── setup-maas.sh                    # MaaS API infrastructure
 │
 ├── tests/                               # Test scripts
 │   ├── test-audience-extraction.sh
@@ -78,34 +86,35 @@ A refactored version using modular functions from `lib/`:
 
 ## 🔧 Individual Scripts
 
-If you prefer more control, you can run scripts individually:
+### Main Workflow Scripts
 
-### 1. OpenShift Installation Only
+**Modular Version (Recommended - Default)**
 ```bash
-./scripts/openshift-installer-master.sh
-```
-Interactive script to install OpenShift on AWS with GPU-capable regions.
-
-### 2. RHOAI + GPU Workflow
-```bash
-./scripts/integrated-workflow.sh [OPTIONS]
+./integrated-workflow-v2.sh [OPTIONS]
 
 Options:
   --skip-openshift    Skip OpenShift installation
   --skip-gpu          Skip GPU worker node creation
   --skip-rhoai        Skip RHOAI installation
 ```
-Installs complete RHOAI stack with GenAI Playground and MaaS UI.
+Uses modular functions from `lib/` - cleaner and more maintainable.
 
-### 3. Utility Scripts
+**Legacy Version (Backup)**
 ```bash
-./scripts/create-gpu-machineset.sh    # Create GPU worker nodes
-./scripts/enable-genai-maas.sh        # Enable GenAI & MaaS UI (existing RHOAI)
-./scripts/setup-maas.sh               # Set up MaaS API infrastructure
-./scripts/cleanup-all.sh              # Clean up AWS resources
+./scripts/integrated-workflow.sh [OPTIONS]
+```
+Original monolithic version - still works, kept for compatibility.
+
+### Utility Scripts
+```bash
+./scripts/openshift-installer-master.sh  # OpenShift cluster installation
+./scripts/create-gpu-machineset.sh       # Create GPU worker nodes
+./scripts/enable-genai-maas.sh           # Enable GenAI & MaaS UI
+./scripts/setup-maas.sh                  # Set up MaaS API infrastructure
+./scripts/cleanup-all.sh                 # Clean up AWS resources
 ```
 
-See `scripts/README.md` for detailed documentation on each utility script.
+See `scripts/README.md` and `lib/README.md` for detailed documentation.
 
 ## 📋 Prerequisites
 
