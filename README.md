@@ -1,307 +1,228 @@
-# OpenShift Installation with RHOAI
+# OpenShift + RHOAI Installation Scripts
 
-Automated scripts for installing OpenShift on AWS with Red Hat OpenShift AI (RHOAI) and GPU support.
+Automated installation scripts for OpenShift clusters with Red Hat OpenShift AI (RHOAI), GPU support, and Model as a Service (MaaS).
 
 ## 🚀 Quick Start
 
-### Full Installation (New Cluster)
+### For New Installations
+
 ```bash
+# Full installation (OpenShift + GPU + RHOAI + MaaS)
 ./integrated-workflow.sh
+
+# Or use the complete setup wrapper
+./complete-setup.sh
 ```
 
-This will:
-1. Install OpenShift cluster on AWS
-2. Create GPU worker nodes
-3. Install RHOAI (you select version 2.17-3.0)
+### For Existing Clusters
 
-**Time**: 60-90 minutes
-
-### Add RHOAI to Existing Cluster
 ```bash
-export KUBECONFIG=/path/to/your/kubeconfig
-./integrated-workflow.sh --skip-openshift
-```
-
-**Time**: 30-45 minutes
-
-### Only Install RHOAI
-```bash
-export KUBECONFIG=/path/to/your/kubeconfig
+# Install RHOAI on existing cluster
 ./integrated-workflow.sh --skip-openshift --skip-gpu
+
+# Enable GenAI and MaaS features
+./enable-genai-maas.sh
+
+# Set up MaaS API infrastructure
+./setup-maas.sh
 ```
 
-**Time**: 20-30 minutes
+## 📁 Project Structure
 
-## 📋 What Gets Installed
+```
+.
+├── Main Installation Scripts
+│   ├── openshift-installer-master.sh    # OpenShift cluster installation
+│   ├── integrated-workflow.sh           # Complete RHOAI + GPU setup
+│   ├── complete-setup.sh                # Master wrapper script
+│   ├── enable-genai-maas.sh             # Enable GenAI Playground & MaaS UI
+│   └── setup-maas.sh                    # MaaS API infrastructure
+│
+├── Utility Scripts
+│   ├── create-gpu-machineset.sh         # Create GPU worker nodes
+│   ├── cleanup-all.sh                   # Clean up AWS resources
+│   └── fix-rhcl-operator.sh             # Fix RHCL operator issues
+│
+├── tests/                               # Test scripts
+│   ├── test-audience-extraction.sh
+│   └── test-audience-extraction-v2.sh
+│
+├── diagnostics/                         # Diagnostic tools
+│   ├── diagnose-authorino.sh
+│   └── check-operator-pod.sh
+│
+└── docs/                                # Documentation
+    ├── README.md                        # Detailed documentation
+    └── TROUBLESHOOTING.md               # Troubleshooting guide
+```
 
-### OpenShift Cluster (Phase 1)
-- VPC with public and private subnets
-- NAT Gateways and Internet Gateway
-- OpenShift 4.19+ cluster on AWS
-- Cluster credentials saved to `cluster-info.txt`
+## 🎯 Main Scripts
 
-### GPU Workers (Phase 2)
-- GPU MachineSets with proper labels and taints
-- Support for L40S (g6e) and H100 (p5) instances
-- Customizable storage and replica count
+### 1. OpenShift Installation
+```bash
+./openshift-installer-master.sh
+```
+Interactive script to install OpenShift on AWS with GPU-capable regions.
 
-### RHOAI (Phase 3)
-- Node Feature Discovery (NFD)
-- Nvidia GPU Operator
-- Red Hat OpenShift AI (2.17 - 3.0)
-- KServe for model serving
-- Data Science Pipelines
-- Workbenches with GPU support
-- RHOAI Dashboard
-
-## 📦 Scripts Overview
-
-| Script | Purpose |
-|--------|---------|
-| `integrated-workflow.sh` | **Main script** - Full OpenShift + RHOAI installation |
-| `openshift-installer-master.sh` | OpenShift cluster installation on AWS |
-| `create-gpu-machineset.sh` | Create GPU worker nodes dynamically |
-| `cleanup-all.sh` | Clean up all AWS resources |
-| `fix-macos-security.sh` | Fix macOS security warnings |
-
-## 🎯 RHOAI Version Selection
-
-During installation, select from:
-
-| Version | OpenShift | Channel | Notes |
-|---------|-----------|---------|-------|
-| 2.17-2.18 | 4.16+ | fast | Older |
-| 2.19-2.21 | 4.17+ | stable | Stable |
-| 2.22-2.23 | 4.18-4.19+ | stable-2.23 | Stable |
-| 2.24-2.25 | 4.20+ | stable | Latest 2.x |
-| **3.0** | **4.20+** | **fast-3.x** | **Latest** |
-
-**Recommendations**:
-- OpenShift 4.19 → Use RHOAI 2.23
-- OpenShift 4.20+ → Use RHOAI 3.0
-
-## 🔧 Prerequisites
-
-### Required Tools
-- `oc` - OpenShift CLI
-- `aws` - AWS CLI (configured)
-- `jq`, `yq` - JSON/YAML processors
-- `make`, `git` - Build tools
-
-### Required Credentials
-- AWS account with admin permissions
-- Red Hat pull secret
-- SSH key (or script will generate one)
-
-### AWS Permissions
-- EC2, VPC, Route53, IAM
-- Service quotas for GPU instances
-- Elastic IP quota (at least 3)
-
-## 📖 Detailed Usage
-
-### Integrated Workflow Options
-
+### 2. Integrated Workflow (RHOAI + GPU)
 ```bash
 ./integrated-workflow.sh [OPTIONS]
 
 Options:
-  --skip-openshift    Skip OpenShift cluster installation
+  --skip-openshift    Skip OpenShift installation
   --skip-gpu          Skip GPU worker node creation
   --skip-rhoai        Skip RHOAI installation
-  --help, -h          Show help message
 ```
+Installs complete RHOAI stack with:
+- Node Feature Discovery (NFD)
+- NVIDIA GPU Operator
+- Red Hat Connectivity Link (RHCL/Kuadrant)
+- Red Hat OpenShift AI
+- GenAI Playground
+- Model as a Service (MaaS) UI
 
-### GPU Instance Types
+### 3. Complete Setup (Master Wrapper)
+```bash
+./complete-setup.sh [OPTIONS]
 
-| Instance | GPUs | Model | vCPUs | Memory | Use Case |
-|----------|------|-------|-------|--------|----------|
-| g6e.xlarge | 1 | L40S | 4 | 16 GB | Development |
-| g6e.2xlarge | 1 | L40S | 8 | 32 GB | Small models |
-| g6e.4xlarge | 1 | L40S | 16 | 64 GB | Medium models |
-| g6e.12xlarge | 4 | L40S | 48 | 192 GB | Large models |
-| p5.48xlarge | 8 | H100 | 192 | 2 TB | Largest models |
+Options:
+  --with-maas         Automatically set up MaaS API
+  --skip-maas         Skip MaaS API setup prompt
+  --maas-only         Only set up MaaS (skip OpenShift/RHOAI)
+```
+Orchestrates the entire installation process.
 
-### Create Additional GPU Workers
+### 4. Enable GenAI & MaaS Features
+```bash
+./enable-genai-maas.sh
+```
+For existing RHOAI installations - enables:
+- GenAI Playground
+- Model as a Service UI
+- Required operators (LWS, Kueue)
 
+### 5. MaaS API Setup
+```bash
+./setup-maas.sh
+```
+Sets up MaaS API infrastructure:
+- RHCL/Kuadrant operators
+- Gateway and routes
+- Authentication policies
+- MaaS API deployment
+
+## 🔧 Utility Scripts
+
+### Create GPU MachineSet
 ```bash
 ./create-gpu-machineset.sh
 ```
+Interactive script to create GPU worker nodes with dynamic cluster detection.
 
-The script will:
-1. Extract cluster configuration automatically
-2. Prompt for GPU instance type
-3. Show available subnets from existing MachineSets
-4. Configure storage (default or custom)
-5. Set replica count
-6. Generate and apply the MachineSet
-
-## 🎓 Common Workflows
-
-### 1. Fresh Installation
-```bash
-# Start installation
-./integrated-workflow.sh
-
-# Follow prompts:
-# - Configure AWS credentials
-# - Select RHOAI version
-# - Configure GPU workers
-
-# Access RHOAI Dashboard
-oc get route rhods-dashboard -n redhat-ods-applications
-```
-
-### 2. Scale GPU Workers
-```bash
-# Scale existing MachineSet
-oc scale machineset <gpu-machineset-name> --replicas=3 -n openshift-machine-api
-
-# Or create new GPU MachineSet
-./create-gpu-machineset.sh
-```
-
-### 3. Verify GPU Detection
-```bash
-# Check GPU nodes
-oc get nodes -l node-role.kubernetes.io/gpu-worker
-
-# Verify GPU capacity
-oc get nodes -l node-role.kubernetes.io/gpu-worker \
-  -o json | jq '.items[].status.capacity."nvidia.com/gpu"'
-```
-
-### 4. Access RHOAI Dashboard
-```bash
-# Get dashboard URL
-echo "https://$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}')"
-
-# Login with cluster credentials (from cluster-info.txt)
-```
-
-## 🧹 Cleanup
-
-### Remove Entire Cluster
+### Cleanup Resources
 ```bash
 ./cleanup-all.sh
 ```
+Comprehensive cleanup of AWS resources (VPCs, subnets, NAT gateways, etc.).
 
-This will:
-- Run `openshift-install destroy cluster`
-- Release Elastic IPs
-- Delete VPCs and subnets
-- Clean up NAT Gateways
-- Remove orphaned route tables
-
-### Remove RHOAI Only
+### Fix RHCL Operator
 ```bash
-oc delete DataScienceCluster default-dsc
-oc delete DSCInitialization default-dsci
-oc delete subscription rhods-operator -n redhat-ods-operator
+./fix-rhcl-operator.sh
 ```
+Fixes RHCL operator installation issues (OperatorGroup configuration).
 
-## 🛠️ Troubleshooting
+## 📚 Documentation
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed troubleshooting guide.
+- **[Detailed Documentation](docs/README.md)** - Complete setup guide
+- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 
-### Quick Fixes
+## 🧪 Testing & Diagnostics
 
-**GPU Operator Not Ready**
-```bash
-oc get pods -n nvidia-gpu-operator
-oc logs -n nvidia-gpu-operator -l app=nvidia-device-plugin-daemonset
-```
+### Test Scripts (`tests/`)
+- `test-audience-extraction.sh` - Test JWT token audience extraction
+- `test-audience-extraction-v2.sh` - Test with base64 padding fix
 
-**RHOAI Dashboard Not Accessible**
-```bash
-oc get pods -n redhat-ods-applications -l app=rhods-dashboard
-oc logs -n redhat-ods-applications -l app=rhods-dashboard
-```
+### Diagnostic Scripts (`diagnostics/`)
+- `diagnose-authorino.sh` - Diagnose Authorino/RHCL issues
+- `check-operator-pod.sh` - Check operator pod status
 
-**GPU Not Detected**
-```bash
-oc get nodes -l nvidia.com/gpu.present=true
-oc describe node <gpu-node-name> | grep nvidia.com/gpu
-```
+## ⚙️ Prerequisites
 
-## 📁 File Structure
+- **macOS or Linux** with bash
+- **AWS Account** with appropriate permissions
+- **OpenShift CLI** (`oc`)
+- **AWS CLI** configured
+- **jq** for JSON parsing (`brew install jq`)
+- **Red Hat Pull Secret** from console.redhat.com
 
-```
-openshift-installation/
-├── integrated-workflow.sh          # Main automation script
-├── openshift-installer-master.sh   # OpenShift installation
-├── create-gpu-machineset.sh        # GPU MachineSet creation
-├── cleanup-all.sh                  # Cleanup script
-├── fix-macos-security.sh           # macOS security fix
-├── cluster-info.txt                # Cluster credentials (generated)
-├── README.md                       # This file
-└── TROUBLESHOOTING.md              # Troubleshooting guide
-```
+## 🎓 Supported Versions
 
-## 🔒 Security Notes
+- **OpenShift**: 4.19+
+- **RHOAI**: 2.17 - 3.0
+- **GPU Instances**: H100 (p5.48xlarge), L40S (g6e.*)
 
-- `pull-secret.txt` is gitignored (contains sensitive data)
-- `cluster-info.txt` contains cluster credentials (gitignored)
-- SSH keys are gitignored
-- Never commit AWS credentials
+## 🔗 Quick Links
 
-## 💡 Best Practices
-
-1. **Use tmux for long installations**
-   ```bash
-   tmux new -s openshift-install
-   ./integrated-workflow.sh
-   # Detach: Ctrl+B, then D
-   ```
-
-2. **Keep Mac awake during installation**
-   ```bash
-   caffeinate -d -i -m -u &
-   ```
-
-3. **Monitor installation progress**
-   ```bash
-   # Watch cluster operators
-   watch oc get co
-   
-   # Watch RHOAI installation
-   watch oc get pods -n redhat-ods-operator
-   ```
-
-4. **Save cluster credentials**
-   - Credentials are saved to `cluster-info.txt`
-   - Back up this file securely
-
-## 📚 Resources
-
-- [Red Hat OpenShift AI Documentation](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai)
 - [OpenShift Documentation](https://docs.openshift.com/)
-- [Nvidia GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/)
-- [KServe Documentation](https://kserve.github.io/website/)
+- [RHOAI Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/)
+- [GitHub Repository](https://github.com/gymnatics/openshift-installation)
+
+## 📝 Example Workflows
+
+### Fresh Installation
+```bash
+# 1. Install OpenShift + RHOAI + GPU + MaaS
+./complete-setup.sh --with-maas
+
+# 2. Create additional GPU nodes
+./create-gpu-machineset.sh
+
+# 3. Deploy a model with MaaS enabled
+# (Use RHOAI Dashboard)
+```
+
+### Existing Cluster
+```bash
+# 1. Install RHOAI
+./integrated-workflow.sh --skip-openshift
+
+# 2. Set up MaaS
+./setup-maas.sh
+
+# 3. Deploy models
+# (Use RHOAI Dashboard)
+```
+
+### Troubleshooting
+```bash
+# Diagnose RHCL/Authorino issues
+./diagnostics/diagnose-authorino.sh
+
+# Fix RHCL operator
+./fix-rhcl-operator.sh
+
+# Check operator status
+./diagnostics/check-operator-pod.sh
+```
 
 ## 🤝 Contributing
 
-When adding features:
-1. Test on a fresh cluster
-2. Update documentation
-3. Add error handling
-4. Follow existing code style
+This is a personal project for automating OpenShift + RHOAI installations. Feel free to fork and adapt for your needs!
 
-## 📝 Version History
+## 📄 License
 
-- **v3.0** - Added RHOAI 3.0 support (fast-3.x channel)
-- **v2.0** - Integrated workflow script combining all phases
-- **v1.0** - Initial OpenShift + GPU installation scripts
+MIT License - See repository for details.
 
-## 🎉 What's Next?
+## 🆘 Support
 
-After successful installation:
-1. ✅ Access RHOAI Dashboard
-2. ✅ Create a Data Science Project
-3. ✅ Launch GPU-enabled Workbench
-4. ✅ Deploy models with KServe
-5. ✅ Build AI/ML applications
+For issues and questions:
+1. Check [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+2. Review script output and logs
+3. Use diagnostic scripts in `diagnostics/`
+4. Open an issue on GitHub
 
 ---
 
-**Happy AI/ML Development!** 🚀
+**Last Updated**: November 2025
+**Maintained By**: gymnatics
+
