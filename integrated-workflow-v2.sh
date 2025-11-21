@@ -134,11 +134,46 @@ select_rhoai_version() {
 install_openshift() {
     print_header "PHASE 1: OpenShift Installation"
     
-    if [ "$SKIP_OPENSHIFT" = true ]; then
-        print_warning "Skipping OpenShift installation (--skip-openshift flag)"
-        return
+    # Check if already connected to a cluster
+    if oc whoami &>/dev/null; then
+        local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+        local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
+        
+        print_success "Already connected to an OpenShift cluster!"
+        echo "  Cluster: $cluster_url"
+        echo "  User: $cluster_user"
+        echo ""
+        
+        if [ "$SKIP_OPENSHIFT" = true ]; then
+            print_info "Using existing cluster (--skip-openshift flag)"
+            return
+        fi
+        
+        echo -e "${YELLOW}Do you want to:${NC}"
+        echo "  1) Use this existing cluster"
+        echo "  2) Install a new OpenShift cluster (will require logout)"
+        echo ""
+        read -p "Enter choice [1-2] (default: 1): " cluster_choice
+        cluster_choice=${cluster_choice:-1}
+        
+        if [ "$cluster_choice" = "1" ]; then
+            print_success "Using existing cluster"
+            return
+        else
+            print_warning "You'll need to logout and install a new cluster"
+            read -p "Press Enter to continue..."
+        fi
+    else
+        if [ "$SKIP_OPENSHIFT" = true ]; then
+            print_error "No cluster connection found, but --skip-openshift was specified"
+            print_info "Please login to your OpenShift cluster first: oc login <cluster-url>"
+            exit 1
+        fi
+        
+        print_info "No existing OpenShift cluster connection detected"
     fi
     
+    # Proceed with installation
     if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
         print_step "Calling OpenShift installer script..."
         "$SCRIPT_DIR/scripts/openshift-installer-master.sh"
@@ -155,6 +190,30 @@ install_gpu_nodes() {
     if [ "$SKIP_GPU" = true ]; then
         print_warning "Skipping GPU node creation (--skip-gpu flag)"
         return
+    fi
+    
+    # Check if GPU nodes already exist
+    local gpu_nodes=$(oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local gpu_machinesets=$(oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | .metadata.name' 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$gpu_nodes" -gt 0 ] || [ "$gpu_machinesets" -gt 0 ]; then
+        print_success "GPU resources already exist in the cluster!"
+        if [ "$gpu_nodes" -gt 0 ]; then
+            echo "  GPU Nodes: $gpu_nodes"
+            oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | awk '{print "    - " $1}'
+        fi
+        if [ "$gpu_machinesets" -gt 0 ]; then
+            echo "  GPU MachineSets: $gpu_machinesets"
+            oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | "    - " + .metadata.name' 2>/dev/null
+        fi
+        echo ""
+        read -p "Do you want to create additional GPU nodes? (y/n, default: n): " create_more
+        create_more=${create_more:-n}
+        
+        if [[ ! "$create_more" =~ ^[Yy]$ ]]; then
+            print_info "Using existing GPU resources"
+            return
+        fi
     fi
     
     echo -e "${YELLOW}GPU nodes can be created now or later.${NC}"
@@ -179,6 +238,45 @@ install_rhoai() {
     if [ "$SKIP_RHOAI" = true ]; then
         print_warning "Skipping RHOAI installation (--skip-rhoai flag)"
         return
+    fi
+    
+    # Check if RHOAI is already installed
+    if oc get datascienceclusters.datasciencecluster.opendatahub.io default-dsc &>/dev/null; then
+        print_success "RHOAI is already installed in this cluster!"
+        
+        # Try to detect version
+        local rhoai_channel=$(oc get subscription rhods-operator -n redhat-ods-operator -o jsonpath='{.spec.channel}' 2>/dev/null || echo "unknown")
+        echo "  Channel: $rhoai_channel"
+        
+        # Check dashboard
+        if oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
+            local dashboard_url=$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null)
+            echo "  Dashboard: https://$dashboard_url"
+        fi
+        echo ""
+        
+        echo -e "${YELLOW}Do you want to:${NC}"
+        echo "  1) Use existing RHOAI installation"
+        echo "  2) Reinstall RHOAI (will delete existing installation)"
+        echo ""
+        read -p "Enter choice [1-2] (default: 1): " rhoai_choice
+        rhoai_choice=${rhoai_choice:-1}
+        
+        if [ "$rhoai_choice" = "1" ]; then
+            print_success "Using existing RHOAI installation"
+            return
+        else
+            print_warning "Reinstalling RHOAI will delete all existing data science projects!"
+            read -p "Are you sure? (yes/no): " confirm
+            if [ "$confirm" != "yes" ]; then
+                print_info "Keeping existing RHOAI installation"
+                return
+            fi
+            print_step "Uninstalling existing RHOAI..."
+            oc delete datasciencecluster default-dsc 2>/dev/null || true
+            oc delete dscinitializations default-dsci 2>/dev/null || true
+            sleep 10
+        fi
     fi
     
     # Select RHOAI version

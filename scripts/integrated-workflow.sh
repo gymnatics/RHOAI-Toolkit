@@ -131,11 +131,46 @@ check_scripts() {
 install_openshift() {
     print_header "PHASE 1: OpenShift Cluster Installation"
     
-    if [ "$SKIP_OPENSHIFT" = true ]; then
-        print_warning "Skipping OpenShift installation (--skip-openshift flag)"
-        return
+    # Check if already connected to a cluster
+    if oc whoami &>/dev/null; then
+        local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+        local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
+        
+        print_success "Already connected to an OpenShift cluster!"
+        echo "  Cluster: $cluster_url"
+        echo "  User: $cluster_user"
+        echo ""
+        
+        if [ "$SKIP_OPENSHIFT" = true ]; then
+            print_info "Using existing cluster (--skip-openshift flag)"
+            return
+        fi
+        
+        echo -e "${YELLOW}Do you want to:${NC}"
+        echo "  1) Use this existing cluster"
+        echo "  2) Install a new OpenShift cluster (will require logout)"
+        echo ""
+        read -p "Enter choice [1-2] (default: 1): " cluster_choice
+        cluster_choice=${cluster_choice:-1}
+        
+        if [ "$cluster_choice" = "1" ]; then
+            print_success "Using existing cluster"
+            return
+        else
+            print_warning "You'll need to logout and install a new cluster"
+            read -p "Press Enter to continue..."
+        fi
+    else
+        if [ "$SKIP_OPENSHIFT" = true ]; then
+            print_error "No cluster connection found, but --skip-openshift was specified"
+            print_info "Please login to your OpenShift cluster first: oc login <cluster-url>"
+            exit 1
+        fi
+        
+        print_info "No existing OpenShift cluster connection detected"
     fi
     
+    # Proceed with installation
     print_step "Starting OpenShift installation..."
     echo ""
     echo -e "${YELLOW}You will be prompted to configure AWS credentials, pull secret, and other options.${NC}"
