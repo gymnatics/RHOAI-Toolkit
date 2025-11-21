@@ -14,6 +14,10 @@ id_rsa*
 *.kubeconfig
 kubeadmin-password
 
+# Generated MachineSet YAMLs (contain cluster-specific sensitive data)
+gpu-machineset-*.yaml
+*-machineset-*.yaml
+
 # OpenShift Installer Binaries
 openshift-install
 *.tar.gz
