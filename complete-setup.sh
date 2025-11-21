@@ -127,8 +127,8 @@ EXAMPLES:
     $0 --maas-only          # Only add MaaS to existing RHOAI
 
 WHAT THIS SCRIPT DOES:
-    1. Runs integrated-workflow.sh (OpenShift + RHOAI + GenAI)
-    2. Optionally runs setup-maas.sh (MaaS API infrastructure)
+    1. Runs scripts/integrated-workflow.sh (OpenShift + RHOAI + GenAI)
+    2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
     3. Provides final summary and next steps
 
 EOF
@@ -144,29 +144,29 @@ check_prerequisites() {
     local all_good=true
     
     # Check for required scripts
-    if [ ! -f "$SCRIPT_DIR/integrated-workflow.sh" ]; then
-        print_error "integrated-workflow.sh not found"
+    if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
+        print_error "scripts/integrated-workflow.sh not found"
         all_good=false
     else
-        print_success "integrated-workflow.sh found"
+        print_success "scripts/integrated-workflow.sh found"
     fi
     
-    if [ ! -f "$SCRIPT_DIR/setup-maas.sh" ]; then
-        print_error "setup-maas.sh not found"
+    if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+        print_error "scripts/setup-maas.sh not found"
         all_good=false
     else
-        print_success "setup-maas.sh found"
+        print_success "scripts/setup-maas.sh found"
     fi
     
     # Check if scripts are executable
-    if [ ! -x "$SCRIPT_DIR/integrated-workflow.sh" ]; then
-        print_warning "Making integrated-workflow.sh executable..."
-        chmod +x "$SCRIPT_DIR/integrated-workflow.sh"
+    if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
+        print_warning "Making scripts/integrated-workflow.sh executable..."
+        chmod +x "$SCRIPT_DIR/scripts/integrated-workflow.sh"
     fi
     
-    if [ ! -x "$SCRIPT_DIR/setup-maas.sh" ]; then
-        print_warning "Making setup-maas.sh executable..."
-        chmod +x "$SCRIPT_DIR/setup-maas.sh"
+    if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+        print_warning "Making scripts/setup-maas.sh executable..."
+        chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
     fi
     
     if [ "$all_good" = false ]; then
@@ -227,10 +227,10 @@ display_setup_plan() {
 run_integrated_workflow() {
     print_header "Phase 1: OpenShift + RHOAI + GenAI Playground"
     
-    print_step "Running integrated-workflow.sh..."
+    print_step "Running scripts/integrated-workflow.sh..."
     echo ""
     
-    if "$SCRIPT_DIR/integrated-workflow.sh"; then
+    if "$SCRIPT_DIR/scripts/integrated-workflow.sh"; then
         print_success "Integrated workflow completed successfully!"
         return 0
     else
@@ -310,10 +310,10 @@ run_maas_setup() {
         return 1
     fi
     
-    print_step "Running setup-maas.sh..."
+    print_step "Running scripts/setup-maas.sh..."
     echo ""
     
-    if "$SCRIPT_DIR/setup-maas.sh"; then
+    if "$SCRIPT_DIR/scripts/setup-maas.sh"; then
         print_success "MaaS setup completed successfully!"
         return 0
     else
@@ -391,7 +391,7 @@ display_final_summary() {
         echo ""
     elif [ "$maas_status" = "skipped" ]; then
         echo "5. To add MaaS later:"
-        echo "   ${YELLOW}./setup-maas.sh${NC}"
+        echo "   ${YELLOW}./scripts/setup-maas.sh${NC}"
         echo ""
     fi
     

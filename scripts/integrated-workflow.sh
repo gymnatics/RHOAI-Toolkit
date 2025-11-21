@@ -992,7 +992,7 @@ print_summary() {
         oc get nodes -l node-role.kubernetes.io/gpu-worker -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type,GPU:.status.capacity.nvidia\\.com/gpu
     else
         echo "No GPU worker nodes found."
-        echo "You can create GPU workers using: ./create-gpu-machineset.sh"
+        echo "You can create GPU workers using: ./scripts/create-gpu-machineset.sh"
     fi
     
     echo ""
