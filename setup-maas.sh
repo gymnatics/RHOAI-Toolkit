@@ -345,13 +345,34 @@ configure_audience_policy() {
     
     print_step "Extracting audience from service account token..."
     
-    AUD="$(oc create token default --duration=10m 2>/dev/null | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.aud[0]' 2>/dev/null)"
+    # Create token and extract payload
+    TOKEN=$(oc create token default --duration=10m 2>/dev/null)
+    PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+    
+    # Add base64 padding if needed (JWT payloads may not be padded)
+    while [ $((${#PAYLOAD} % 4)) -ne 0 ]; do
+        PAYLOAD="${PAYLOAD}="
+    done
+    
+    # Decode base64
+    DECODED=$(echo "$PAYLOAD" | base64 -d 2>/dev/null)
+    
+    # Extract audience using jq
+    AUD=$(echo "$DECODED" | jq -r '.aud[0]' 2>/dev/null)
+    
+    # If jq fails, try manual extraction
+    if [ -z "$AUD" ]; then
+        print_warning "jq extraction failed, trying manual extraction..."
+        AUD=$(echo "$DECODED" | grep -o '"aud":\["[^"]*"' | sed 's/"aud":\["\([^"]*\)"/\1/')
+    fi
     
     if [ -z "$AUD" ]; then
-        print_error "Failed to extract audience. Is jq installed?"
+        print_error "Failed to extract audience from token"
         echo ""
-        echo "Install jq with:"
-        echo "  brew install jq"
+        echo "Decoded token payload:"
+        echo "$DECODED"
+        echo ""
+        echo "Is jq installed? Check with: jq --version"
         exit 1
     fi
     
@@ -444,11 +465,14 @@ test_maas_configuration() {
 ################################################################################
 
 display_usage_instructions() {
-    print_header "MaaS Setup Complete!"
-    
     CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
     
-    echo -e "${GREEN}✓ Model as a Service (MaaS) infrastructure is now set up!${NC}"
+    print_header "MaaS Setup Complete!"
+    
+    echo -e "${GREEN}✓ Model as a Service (MaaS) infrastructure has been deployed!${NC}"
+    echo ""
+    echo -e "${YELLOW}Note: The MaaS API may take 2-3 minutes to be fully ready after deployment.${NC}"
+    echo -e "${YELLOW}      If the automatic test above failed, wait a few minutes and try the manual test below.${NC}"
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}How to Use MaaS:${NC}"
@@ -507,7 +531,14 @@ display_usage_instructions() {
     echo "   - All tokens you create are active"
     echo "   - No revocation mechanism currently available"
     echo ""
-    echo -e "${GREEN}✓ MaaS is ready to use!${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}✓ MaaS infrastructure deployment complete!${NC}"
+    echo ""
+    echo -e "${CYAN}Next steps:${NC}"
+    echo "  1. Wait 2-3 minutes for all MaaS components to be ready"
+    echo "  2. Deploy a model with 'llm-d' serving runtime"
+    echo "  3. Enable 'Model as a Service' checkbox when deploying"
+    echo "  4. Access your model via the MaaS API"
     echo ""
 }
 
