@@ -219,9 +219,7 @@ kind: OperatorGroup
 metadata:
   name: kuadrant-system
   namespace: kuadrant-system
-spec:
-  targetNamespaces:
-  - kuadrant-system
+spec: {}
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
