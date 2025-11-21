@@ -186,14 +186,36 @@ check_prerequisites() {
     
     local all_good=true
     
-    # Check for required scripts
-    if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
-        print_error "scripts/integrated-workflow.sh not found"
-        all_good=false
+    # Check for required scripts based on USE_MODULAR flag
+    if [ "$USE_MODULAR" = true ]; then
+        if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
+            print_error "integrated-workflow-v2.sh not found"
+            all_good=false
+        else
+            print_success "integrated-workflow-v2.sh found"
+        fi
+        
+        # Make executable if needed
+        if [ ! -x "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
+            print_warning "Making integrated-workflow-v2.sh executable..."
+            chmod +x "$SCRIPT_DIR/integrated-workflow-v2.sh"
+        fi
     else
-        print_success "scripts/integrated-workflow.sh found"
+        if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
+            print_error "scripts/integrated-workflow.sh not found"
+            all_good=false
+        else
+            print_success "scripts/integrated-workflow.sh found"
+        fi
+        
+        # Make executable if needed
+        if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
+            print_warning "Making scripts/integrated-workflow.sh executable..."
+            chmod +x "$SCRIPT_DIR/scripts/integrated-workflow.sh"
+        fi
     fi
     
+    # Check for setup-maas.sh
     if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
         print_error "scripts/setup-maas.sh not found"
         all_good=false
@@ -201,12 +223,7 @@ check_prerequisites() {
         print_success "scripts/setup-maas.sh found"
     fi
     
-    # Check if scripts are executable
-    if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
-        print_warning "Making scripts/integrated-workflow.sh executable..."
-        chmod +x "$SCRIPT_DIR/scripts/integrated-workflow.sh"
-    fi
-    
+    # Make setup-maas.sh executable if needed
     if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
         print_warning "Making scripts/setup-maas.sh executable..."
         chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
