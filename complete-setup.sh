@@ -14,6 +14,7 @@
 #   ./complete-setup.sh --with-maas        # Auto-enable MaaS
 #   ./complete-setup.sh --skip-maas        # Skip MaaS setup
 #   ./complete-setup.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
+#   ./complete-setup.sh --modular          # Use modular version (integrated-workflow-v2.sh)
 
 set -e
 
@@ -32,6 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false
+USE_MODULAR=false
 
 ################################################################################
 # Helper Functions
@@ -95,6 +97,10 @@ parse_arguments() {
                 SETUP_MAAS="yes"
                 shift
                 ;;
+            --modular)
+                USE_MODULAR=true
+                shift
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -118,6 +124,7 @@ OPTIONS:
     --with-maas     Automatically set up MaaS (no prompt)
     --skip-maas     Skip MaaS setup (no prompt)
     --maas-only     Only set up MaaS (assumes RHOAI already installed)
+    --modular       Use modular version (integrated-workflow-v2.sh)
     -h, --help      Show this help message
 
 EXAMPLES:
@@ -127,8 +134,10 @@ EXAMPLES:
     $0 --maas-only          # Only add MaaS to existing RHOAI
 
 WHAT THIS SCRIPT DOES:
-    1. Runs scripts/integrated-workflow.sh (OpenShift + RHOAI + GenAI)
+    1. Runs scripts/integrated-workflow.sh or integrated-workflow-v2.sh (OpenShift + RHOAI + GenAI)
     2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
+    
+    Note: Use --modular flag to use the modular version (integrated-workflow-v2.sh)
     3. Provides final summary and next steps
 
 EOF
@@ -227,10 +236,18 @@ display_setup_plan() {
 run_integrated_workflow() {
     print_header "Phase 1: OpenShift + RHOAI + GenAI Playground"
     
-    print_step "Running scripts/integrated-workflow.sh..."
+    # Choose which workflow to run
+    local workflow_script
+    if [ "$USE_MODULAR" = true ]; then
+        workflow_script="$SCRIPT_DIR/integrated-workflow-v2.sh"
+        print_step "Running integrated-workflow-v2.sh (modular version)..."
+    else
+        workflow_script="$SCRIPT_DIR/scripts/integrated-workflow.sh"
+        print_step "Running scripts/integrated-workflow.sh..."
+    fi
     echo ""
     
-    if "$SCRIPT_DIR/scripts/integrated-workflow.sh"; then
+    if "$workflow_script"; then
         print_success "Integrated workflow completed successfully!"
         return 0
     else

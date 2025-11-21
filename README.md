@@ -19,12 +19,24 @@ This master wrapper orchestrates the entire installation process:
 - `--with-maas` - Automatically set up MaaS API (no prompt)
 - `--skip-maas` - Skip MaaS API setup (no prompt)
 - `--maas-only` - Only set up MaaS (skip OpenShift/RHOAI)
+- `--modular` - Use modular version (integrated-workflow-v2.sh) ⭐ NEW!
+
+### Modular Version (New!)
+```bash
+./integrated-workflow-v2.sh
+```
+A refactored version using modular functions from `lib/`:
+- Cleaner code organization
+- Reusable function modules
+- Separated YAML manifests
+- Same functionality as the original
 
 ## 📁 Project Structure
 
 ```
 .
 ├── complete-setup.sh                    # 🎯 Main entry point - Master wrapper
+├── integrated-workflow-v2.sh            # ⭐ Modular RHOAI workflow (new!)
 │
 ├── scripts/                             # All installation & utility scripts
 │   ├── openshift-installer-master.sh    # OpenShift cluster installation
@@ -33,6 +45,18 @@ This master wrapper orchestrates the entire installation process:
 │   ├── create-gpu-machineset.sh         # Create GPU worker nodes
 │   ├── enable-genai-maas.sh             # Enable GenAI Playground & MaaS UI
 │   └── setup-maas.sh                    # MaaS API infrastructure
+│
+├── lib/                                 # Modular functions and manifests
+│   ├── functions/                       # Reusable function modules
+│   │   ├── operators.sh                 # Operator installation functions
+│   │   └── rhoai.sh                     # RHOAI-specific functions
+│   ├── manifests/                       # YAML manifest files
+│   │   ├── operators/                   # NFD, GPU operator manifests
+│   │   ├── rhcl/                        # RHCL/Kuadrant manifests
+│   │   └── rhoai/                       # RHOAI manifests
+│   └── utils/                           # Utility functions
+│       ├── colors.sh                    # Color definitions
+│       └── common.sh                    # Common helper functions
 │
 ├── tests/                               # Test scripts
 │   ├── test-audience-extraction.sh

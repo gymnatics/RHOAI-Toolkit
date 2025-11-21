@@ -130,6 +130,70 @@ install_rhcl_operator() {
     print_success "RHCL operator installation complete (enables llm-d serving runtime)"
 }
 
+# Install Leader Worker Set (LWS) Operator
+install_lws_operator() {
+    print_header "Installing Leader Worker Set (LWS) Operator"
+    
+    # Check if already installed
+    if check_operator_installed "lws-operator" "openshift-operators"; then
+        print_success "LWS Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing LWS Operator..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: lws-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: lws-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator to be ready
+    wait_for_operator_ready "lws" "openshift-operators"
+    
+    print_success "LWS operator installation complete"
+}
+
+# Install Kueue Operator
+install_kueue_operator() {
+    print_header "Installing Kueue Operator"
+    
+    # Check if already installed
+    if check_operator_installed "kueue-operator" "openshift-operators"; then
+        print_success "Kueue Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing Kueue Operator..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kueue-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: kueue-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator to be ready
+    wait_for_operator_ready "kueue" "openshift-operators"
+    
+    print_success "Kueue operator installation complete"
+}
+
 # Wait for Authorino service to be created
 wait_for_authorino_service() {
     print_step "Waiting for Kuadrant components to be ready..."
