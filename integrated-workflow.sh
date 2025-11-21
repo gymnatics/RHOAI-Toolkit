@@ -242,6 +242,49 @@ create_gpu_workers() {
 }
 
 ################################################################################
+# Helper Functions for Operator Checks
+################################################################################
+
+check_operator_installed() {
+    local operator_name=$1
+    local namespace=$2
+    
+    # Check if subscription exists
+    if oc get subscription "$operator_name" -n "$namespace" &>/dev/null; then
+        return 0  # Operator is installed
+    else
+        return 1  # Operator is not installed
+    fi
+}
+
+wait_for_operator_ready() {
+    local operator_name=$1
+    local namespace=$2
+    local timeout=${3:-300}  # Default 5 minutes
+    
+    print_step "Waiting for $operator_name to be ready..."
+    
+    local elapsed=0
+    local interval=10
+    
+    while [ $elapsed -lt $timeout ]; do
+        # Check if CSV (ClusterServiceVersion) is in Succeeded phase
+        local csv_phase=$(oc get csv -n "$namespace" -o jsonpath='{.items[?(@.spec.displayName=="'"$operator_name"'")].status.phase}' 2>/dev/null)
+        
+        if [ "$csv_phase" = "Succeeded" ]; then
+            return 0
+        fi
+        
+        echo "Waiting for $operator_name operator... (${elapsed}s elapsed)"
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    print_warning "$operator_name operator did not become ready within ${timeout}s"
+    return 1
+}
+
+################################################################################
 # Phase 3: RHOAI Installation
 ################################################################################
 
@@ -259,7 +302,7 @@ select_rhoai_version() {
     echo "  7) RHOAI 2.23 (OpenShift 4.19+)"
     echo "  8) RHOAI 2.24 (OpenShift 4.20+)"
     echo "  9) RHOAI 2.25 (OpenShift 4.20+)"
-    echo " 10) RHOAI 3.0 (OpenShift 4.20+) - Latest"
+    echo " 10) RHOAI 3.0 (OpenShift 4.19+) - Latest"
     echo ""
     
     while true; do
@@ -284,9 +327,23 @@ select_rhoai_version() {
 }
 
 install_nfd_operator() {
-    print_step "Installing Node Feature Discovery (NFD) Operator..."
+    print_step "Checking Node Feature Discovery (NFD) Operator..."
     
-    cat <<EOF | oc apply -f -
+    # Check if NFD operator is already installed
+    if check_operator_installed "nfd" "openshift-nfd"; then
+        print_success "NFD operator is already installed, skipping installation"
+        
+        # Check if NFD instance exists
+        if oc get nodefeaturediscovery nfd-instance -n openshift-nfd &>/dev/null; then
+            print_success "NFD instance already exists, skipping creation"
+            return 0
+        else
+            print_step "NFD operator exists but no instance found, creating instance..."
+        fi
+    else
+        print_step "Installing Node Feature Discovery (NFD) Operator..."
+        
+        cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -314,16 +371,19 @@ spec:
   sourceNamespace: openshift-marketplace
 EOF
 
-    # Wait for NFD operator to be ready
-    print_step "Waiting for NFD operator to be ready..."
-    sleep 10
+        # Wait for NFD operator to be ready
+        print_step "Waiting for NFD operator to be ready..."
+        sleep 10
+        
+        until oc get crd nodefeaturediscoveries.nfd.openshift.io &>/dev/null; do
+            echo "Waiting for NFD CRD to be available..."
+            sleep 5
+        done
+    fi
     
-    until oc get crd nodefeaturediscoveries.nfd.openshift.io &>/dev/null; do
-        echo "Waiting for NFD CRD to be available..."
-        sleep 5
-    done
-    
-    # Create NFD instance
+    # Create NFD instance (if not already exists)
+    if ! oc get nodefeaturediscovery nfd-instance -n openshift-nfd &>/dev/null; then
+        print_step "Creating NFD instance..."
     cat <<EOF | oc apply -f -
 apiVersion: nfd.openshift.io/v1
 kind: NodeFeatureDiscovery
@@ -347,14 +407,30 @@ spec:
           deviceLabelFields:
             - "vendor"
 EOF
-
-    print_success "NFD operator installed"
+        print_success "NFD instance created"
+    fi
+    
+    print_success "NFD operator installation complete"
 }
 
 install_gpu_operator() {
-    print_step "Installing Nvidia GPU Operator..."
+    print_step "Checking Nvidia GPU Operator..."
     
-    cat <<EOF | oc apply -f -
+    # Check if GPU operator is already installed
+    if check_operator_installed "gpu-operator-certified" "nvidia-gpu-operator"; then
+        print_success "GPU operator is already installed, skipping installation"
+        
+        # Check if ClusterPolicy exists
+        if oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+            print_success "GPU ClusterPolicy already exists, skipping creation"
+            return 0
+        else
+            print_step "GPU operator exists but no ClusterPolicy found, creating ClusterPolicy..."
+        fi
+    else
+        print_step "Installing Nvidia GPU Operator..."
+        
+        cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -382,43 +458,135 @@ spec:
   sourceNamespace: openshift-marketplace
 EOF
 
-    # Wait for GPU operator to be ready
-    print_step "Waiting for GPU operator to be ready..."
-    sleep 10
+        # Wait for GPU operator to be ready
+        print_step "Waiting for GPU operator to be ready..."
+        sleep 10
+        
+        until oc get crd clusterpolicies.nvidia.com &>/dev/null; do
+            echo "Waiting for GPU operator CRD to be available..."
+            sleep 5
+        done
+    fi
     
-    until oc get crd clusterpolicies.nvidia.com &>/dev/null; do
-        echo "Waiting for GPU operator CRD to be available..."
-        sleep 5
-    done
-    
-    # Create ClusterPolicy
+    # Create ClusterPolicy (if not already exists)
+    if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+        print_step "Creating GPU ClusterPolicy..."
     cat <<EOF | oc apply -f -
 apiVersion: nvidia.com/v1
 kind: ClusterPolicy
 metadata:
   name: gpu-cluster-policy
 spec:
+  vgpuDeviceManager:
+    config:
+      default: default
+    enabled: true
+  migManager:
+    config:
+      default: all-disabled
+      name: default-mig-parted-config
+    enabled: true
   operator:
     defaultRuntime: crio
+    initContainer: {}
+    runtimeClass: nvidia
     use_ocp_driver_toolkit: true
-  driver:
-    enabled: true
-  toolkit:
-    enabled: true
-  devicePlugin:
-    enabled: true
-  dcgmExporter:
+  dcgm:
     enabled: true
   gfd:
     enabled: true
+  dcgmExporter:
+    config:
+      name: ''
+    serviceMonitor:
+      enabled: true
+    enabled: true
+  cdi:
+    default: false
+    enabled: true
+  driver:
+    licensingConfig:
+      nlsEnabled: true
+      secretName: ''
+    kernelModuleType: auto
+    certConfig:
+      name: ''
+    kernelModuleConfig:
+      name: ''
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: false
+        enable: false
+        force: false
+        timeoutSeconds: 300
+      maxParallelUpgrades: 1
+      maxUnavailable: 25%
+      podDeletion:
+        deleteEmptyDir: false
+        force: false
+        timeoutSeconds: 300
+      waitForCompletion:
+        timeoutSeconds: 0
+    repoConfig:
+      configMapName: ''
+    virtualTopology:
+      config: ''
+    enabled: true
+    useNvidiaDriverCRD: false
+  devicePlugin:
+    config:
+      name: ''
+      default: ''
+    mps:
+      root: /run/nvidia/mps
+    enabled: true
+  gdrcopy:
+    enabled: false
+  kataManager:
+    config:
+      artifactsDir: /opt/nvidia-gpu-operator/artifacts/runtimeclasses
+  mig:
+    strategy: single
+  sandboxDevicePlugin:
+    enabled: true
+  validator:
+    plugin:
+      env: []
   nodeStatusExporter:
     enabled: true
+  daemonsets:
+    rollingUpdate:
+      maxUnavailable: '1'
+    updateStrategy: RollingUpdate
+  sandboxWorkloads:
+    defaultWorkload: container
+    enabled: false
+  gds:
+    enabled: false
+  vgpuManager:
+    enabled: false
+  vfioManager:
+    enabled: true
+  toolkit:
+    installDir: /usr/local/nvidia
+    enabled: true
 EOF
-
-    print_success "GPU operator installed"
+        print_success "GPU ClusterPolicy created"
+    fi
+    
+    print_success "GPU operator installation complete"
 }
 
 install_rhoai_operator() {
+    print_step "Checking Red Hat OpenShift AI Operator (version $RHOAI_VERSION)..."
+    
+    # Check if RHOAI operator is already installed
+    if check_operator_installed "rhods-operator" "redhat-ods-operator"; then
+        print_success "RHOAI operator is already installed, skipping installation"
+        return 0
+    fi
+    
     print_step "Installing Red Hat OpenShift AI Operator (version $RHOAI_VERSION)..."
     
     # Determine the channel based on version
@@ -471,9 +639,15 @@ EOF
 }
 
 create_rhoai_instance() {
-    print_step "Creating RHOAI instance..."
+    print_step "Checking RHOAI instance..."
     
-    # Create DSCInitialization
+    # Check if DSCInitialization already exists
+    if oc get dscinitialization default-dsci &>/dev/null; then
+        print_success "DSCInitialization already exists, skipping creation"
+    else
+        print_step "Creating DSCInitialization..."
+        
+        # Create DSCInitialization
     cat <<EOF | oc apply -f -
 apiVersion: dscinitialization.opendatahub.io/v1
 kind: DSCInitialization
@@ -494,44 +668,64 @@ spec:
     customCABundle: ""
     managementState: Managed
 EOF
-
-    # Wait for DSCInitialization to be ready
-    print_step "Waiting for DSCInitialization to be ready..."
-    sleep 10
-    
-    until oc get DSCInitialization/default-dsci -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; do
-        echo "Waiting for DSCInitialization to be available..."
+        
+        # Wait for DSCInitialization to be ready
+        print_step "Waiting for DSCInitialization to be ready..."
         sleep 10
-    done
+        
+        until oc get DSCInitialization/default-dsci -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; do
+            echo "Waiting for DSCInitialization to be available..."
+            sleep 10
+        done
+        
+        print_success "DSCInitialization created"
+    fi
+    
+    # Check if DataScienceCluster already exists
+    if oc get datasciencecluster default-dsc &>/dev/null; then
+        print_success "DataScienceCluster already exists, skipping creation"
+        return 0
+    fi
+    
+    print_step "Creating DataScienceCluster..."
     
     # Create DataScienceCluster
     cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v1
+apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
   name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
 spec:
   components:
-    codeflare:
-      managementState: Removed
     dashboard:
       managementState: Managed
-    datasciencepipelines:
+    aipipelines:
+      managementState: Managed
+    feastoperator:
       managementState: Managed
     kserve:
       managementState: Managed
-      serving:
-        ingressGateway:
-          certificate:
-            type: SelfSigned
-        managementState: Managed
-        name: knative-serving
-    modelmeshserving:
+    llamastackoperator:
       managementState: Managed
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
     ray:
-      managementState: Removed
+      managementState: Managed
     workbenches:
       managementState: Managed
+    trainingoperator:
+      managementState: Managed
+    trustyai:
+      managementState: Managed
+    codeflare:
+      managementState: Removed
 EOF
 
     # Wait for DataScienceCluster to be ready
@@ -543,6 +737,32 @@ EOF
     done
     
     print_success "RHOAI instance created"
+    
+    # Configure dashboard for GenAI and MaaS
+    configure_dashboard
+}
+
+configure_dashboard() {
+    print_step "Configuring dashboard for GenAI Playground and Model as a Service..."
+    
+    # Wait for dashboard config to exist
+    sleep 10
+    
+    # Use patch instead of apply to avoid overwriting existing config and deprecated fields
+    oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type=merge --patch='
+spec:
+  dashboardConfig:
+    disableTracking: false
+    disableModelRegistry: false
+    disableModelCatalog: false
+    disableKServeMetrics: false
+    genAiStudio: true
+    modelAsService: true
+    disableLMEval: false
+    disableKueue: false
+'
+    
+    print_success "Dashboard configured with GenAI and MaaS features enabled"
 }
 
 install_rhoai() {
