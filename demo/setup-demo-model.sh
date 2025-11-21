@@ -62,12 +62,44 @@ else
 fi
 echo ""
 
+# Check if S3 data connection exists
+echo -e "${BLUE}Checking for S3 data connection...${NC}"
+if ! oc get secret aws-connection-models -n "$PROJECT_NAME" &>/dev/null; then
+    echo -e "${YELLOW}⚠ No S3 data connection found${NC}"
+    echo ""
+    echo "You need to create a data connection in RHOAI dashboard:"
+    echo "1. Go to Data Science Projects → $PROJECT_NAME"
+    echo "2. Click 'Add data connection'"
+    echo "3. Name: aws-connection-models"
+    echo "4. Add your S3 credentials"
+    echo ""
+    echo "Or create via CLI:"
+    echo -e "${YELLOW}oc create secret generic aws-connection-models -n $PROJECT_NAME \\
+  --from-literal=AWS_ACCESS_KEY_ID=your-key \\
+  --from-literal=AWS_SECRET_ACCESS_KEY=your-secret \\
+  --from-literal=AWS_DEFAULT_REGION=us-east-1 \\
+  --from-literal=AWS_S3_BUCKET=your-bucket \\
+  --from-literal=AWS_S3_ENDPOINT=https://s3.amazonaws.com${NC}"
+    echo ""
+    read -p "Continue anyway? (y/n): " continue_anyway
+    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+        exit 0
+    fi
+fi
+
 # Deploy model via YAML
-echo -e "${BLUE}Deploying Llama 3.2-3B model with MaaS...${NC}"
+echo -e "${BLUE}Deploying model with MaaS using RHOAI 3 best practices...${NC}"
 echo ""
 echo -e "${YELLOW}Note: This creates a ServingRuntime and InferenceService${NC}"
 echo -e "${YELLOW}The model will take 5-10 minutes to download and start${NC}"
 echo ""
+
+# Prompt for model details
+read -p "Enter model path in S3 (default: models/instructlab/granite-7b-lab): " MODEL_PATH
+MODEL_PATH=${MODEL_PATH:-models/instructlab/granite-7b-lab}
+
+read -p "Enter display name (default: Demo Model): " DISPLAY_NAME
+DISPLAY_NAME=${DISPLAY_NAME:-Demo Model}
 
 cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1alpha1
@@ -88,12 +120,17 @@ spec:
         - --port
         - "8080"
         - --max-model-len
-        - "4096"
+        - "6144"
+        - --max-num-seqs
+        - "256"
       image: quay.io/modh/vllm:rhoai-2.15-20241107
       name: kserve-container
       ports:
         - containerPort: 8080
           protocol: TCP
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
   multiModel: false
   supportedModelFormats:
     - autoSelect: true
@@ -102,13 +139,13 @@ spec:
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
-  name: llama-3-2-3b-demo
+  name: demo-model
   namespace: $PROJECT_NAME
   labels:
     opendatahub.io/dashboard: "true"
   annotations:
     serving.kserve.io/deploymentMode: RawDeployment
-    openshift.io/display-name: "Llama 3.2-3B Demo"
+    openshift.io/display-name: "$DISPLAY_NAME"
     maas.opendatahub.io/enabled: "true"
 spec:
   predictor:
@@ -118,7 +155,7 @@ spec:
       runtime: vllm-runtime
       storage:
         key: aws-connection-models
-        path: models/instructlab/granite-7b-lab
+        path: $MODEL_PATH
     tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu

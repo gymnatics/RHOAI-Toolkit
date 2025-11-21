@@ -13,7 +13,10 @@ Before running these demos, ensure:
    ./scripts/setup-maas.sh
    ```
 3. **GPU nodes are available** in your cluster
-4. **At least one model is deployed** via the RHOAI dashboard
+4. **S3 Data Connection configured** with model storage
+   - Create via RHOAI Dashboard: Data Science Projects → Add data connection
+   - Or via CLI (see setup script for details)
+5. **Models available in S3** bucket (e.g., from Hugging Face)
 
 ## What is MaaS?
 
