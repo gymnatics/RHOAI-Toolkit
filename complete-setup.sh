@@ -32,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false
+SKIP_OPENSHIFT=false
+SKIP_GPU=false
+SKIP_RHOAI=false
 
 ################################################################################
 # Helper Functions
@@ -95,6 +98,18 @@ parse_arguments() {
                 SETUP_MAAS="yes"
                 shift
                 ;;
+            --skip-openshift)
+                SKIP_OPENSHIFT=true
+                shift
+                ;;
+            --skip-gpu)
+                SKIP_GPU=true
+                shift
+                ;;
+            --skip-rhoai)
+                SKIP_RHOAI=true
+                shift
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -115,16 +130,21 @@ Usage: $0 [OPTIONS]
 Complete setup script for OpenShift + RHOAI + MaaS
 
 OPTIONS:
-    --with-maas     Automatically set up MaaS (no prompt)
-    --skip-maas     Skip MaaS setup (no prompt)
-    --maas-only     Only set up MaaS (assumes RHOAI already installed)
-    -h, --help      Show this help message
+    --with-maas         Automatically set up MaaS (no prompt)
+    --skip-maas         Skip MaaS setup (no prompt)
+    --maas-only         Only set up MaaS (assumes RHOAI already installed)
+    --skip-openshift    Skip OpenShift installation (use existing cluster)
+    --skip-gpu          Skip GPU worker node creation
+    --skip-rhoai        Skip RHOAI installation
+    -h, --help          Show this help message
 
 EXAMPLES:
-    $0                      # Interactive mode (will prompt for MaaS)
-    $0 --with-maas          # Full setup including MaaS
-    $0 --skip-maas          # Setup without MaaS
-    $0 --maas-only          # Only add MaaS to existing RHOAI
+    $0                              # Interactive mode (will prompt for MaaS)
+    $0 --with-maas                  # Full setup including MaaS
+    $0 --skip-maas                  # Setup without MaaS
+    $0 --skip-openshift             # Install RHOAI on existing cluster
+    $0 --skip-openshift --skip-gpu  # Install only RHOAI (no OpenShift, no GPU)
+    $0 --maas-only                  # Only add MaaS to existing RHOAI
 
 WHAT THIS SCRIPT DOES:
     1. Runs scripts/integrated-workflow.sh (OpenShift + RHOAI + GenAI)
@@ -227,10 +247,25 @@ display_setup_plan() {
 run_integrated_workflow() {
     print_header "Phase 1: OpenShift + RHOAI + GenAI Playground"
     
+    # Build arguments to pass to workflow script
+    local workflow_args=""
+    if [ "$SKIP_OPENSHIFT" = true ]; then
+        workflow_args="$workflow_args --skip-openshift"
+    fi
+    if [ "$SKIP_GPU" = true ]; then
+        workflow_args="$workflow_args --skip-gpu"
+    fi
+    if [ "$SKIP_RHOAI" = true ]; then
+        workflow_args="$workflow_args --skip-rhoai"
+    fi
+    
     print_step "Running scripts/integrated-workflow.sh..."
+    if [ -n "$workflow_args" ]; then
+        print_info "Flags: $workflow_args"
+    fi
     echo ""
     
-    if "$SCRIPT_DIR/scripts/integrated-workflow.sh"; then
+    if $SCRIPT_DIR/scripts/integrated-workflow.sh $workflow_args; then
         print_success "Integrated workflow completed successfully!"
         return 0
     else
