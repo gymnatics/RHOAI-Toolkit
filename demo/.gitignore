@@ -1,0 +1,10 @@
+# MaaS Demo - Ignore sensitive files
+
+# API tokens
+maas-token.txt
+*.token
+
+# Test outputs
+test-output.json
+response.json
+
