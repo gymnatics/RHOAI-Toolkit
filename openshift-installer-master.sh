@@ -1038,12 +1038,97 @@ run_installation() {
     if [ $? -eq 0 ]; then
         print_success "OpenShift cluster installation completed successfully!"
         echo ""
-        print_info "Cluster credentials and kubeconfig are in: $INSTALL_DIR/auth/"
-        print_info "To access the cluster, run:"
-        echo "  export KUBECONFIG=$PWD/$INSTALL_DIR/auth/kubeconfig"
+        
+        # Extract cluster information
+        CONSOLE_URL=$(grep "Access the OpenShift web-console here:" "$INSTALL_DIR/.openshift_install.log" | tail -1 | awk '{print $NF}')
+        KUBEADMIN_PASSWORD=$(cat "$INSTALL_DIR/auth/kubeadmin-password" 2>/dev/null || echo "Not found")
+        KUBECONFIG_PATH="$PWD/$INSTALL_DIR/auth/kubeconfig"
+        
+        # Save cluster details to a file
+        CLUSTER_INFO_FILE="$PWD/cluster-info.txt"
+        cat > "$CLUSTER_INFO_FILE" << EOF
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    OpenShift Cluster Information                           ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+Installation completed: $(date)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🌐 WEB CONSOLE ACCESS:
+──────────────────────
+
+URL:      $CONSOLE_URL
+Username: kubeadmin
+Password: $KUBEADMIN_PASSWORD
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 COMMAND LINE ACCESS:
+───────────────────────
+
+1. Set the KUBECONFIG environment variable:
+   export KUBECONFIG=$KUBECONFIG_PATH
+
+2. Verify cluster access:
+   oc get nodes
+   oc get co
+
+3. View cluster version:
+   oc version
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📁 FILES LOCATION:
+──────────────────
+
+Kubeconfig:        $INSTALL_DIR/auth/kubeconfig
+Admin Password:    $INSTALL_DIR/auth/kubeadmin-password
+Installation Log:  $INSTALL_DIR/.openshift_install.log
+Cluster Metadata:  $INSTALL_DIR/metadata.json
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 QUICK START COMMANDS:
+────────────────────────
+
+# Set up environment
+export KUBECONFIG=$KUBECONFIG_PATH
+
+# Check cluster status
+oc get nodes
+oc get clusterversion
+oc get co
+
+# Access web console
+open $CONSOLE_URL
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 NOTES:
+─────────
+
+- This file contains sensitive information. Keep it secure!
+- The kubeadmin user is for initial access only
+- Create additional users and remove kubeadmin for production use
+- Backup the auth/ directory for disaster recovery
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+        
+        # Display cluster information
         echo ""
-        print_info "Console URL and credentials:"
-        cat "$INSTALL_DIR/auth/kubeadmin-password"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo -e "${GREEN}🎉 CLUSTER DETAILS SAVED TO: $CLUSTER_INFO_FILE${NC}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        cat "$CLUSTER_INFO_FILE"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo -e "${YELLOW}💾 Cluster information has been saved to: $CLUSTER_INFO_FILE${NC}"
+        echo -e "${YELLOW}📋 You can view it anytime with: cat $CLUSTER_INFO_FILE${NC}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
     else
         print_error "Installation failed. Check logs in $INSTALL_DIR/.openshift_install.log"
         return 1

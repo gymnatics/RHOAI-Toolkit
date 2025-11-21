@@ -1,225 +1,307 @@
-# OpenShift 4.19 Installation on AWS
+# OpenShift Installation with RHOAI
 
-Complete automation for installing OpenShift on AWS with GPU support (H100, A100, L40S).
-
----
+Automated scripts for installing OpenShift on AWS with Red Hat OpenShift AI (RHOAI) and GPU support.
 
 ## 🚀 Quick Start
 
-### Your Environment
-- **AWS Account:** REDACTED_AWS_ACCOUNT_ID
-- **Route53 Domain:** `example.opentlc.com`
-- **OpenShift Version:** 4.19.19
-- **Pull Secret:** `pull-secret.txt`
+### Full Installation (New Cluster)
+```bash
+./integrated-workflow.sh
+```
 
-### Three Simple Steps
+This will:
+1. Install OpenShift cluster on AWS
+2. Create GPU worker nodes
+3. Install RHOAI (you select version 2.17-3.0)
+
+**Time**: 60-90 minutes
+
+### Add RHOAI to Existing Cluster
+```bash
+export KUBECONFIG=/path/to/your/kubeconfig
+./integrated-workflow.sh --skip-openshift
+```
+
+**Time**: 30-45 minutes
+
+### Only Install RHOAI
+```bash
+export KUBECONFIG=/path/to/your/kubeconfig
+./integrated-workflow.sh --skip-openshift --skip-gpu
+```
+
+**Time**: 20-30 minutes
+
+## 📋 What Gets Installed
+
+### OpenShift Cluster (Phase 1)
+- VPC with public and private subnets
+- NAT Gateways and Internet Gateway
+- OpenShift 4.19+ cluster on AWS
+- Cluster credentials saved to `cluster-info.txt`
+
+### GPU Workers (Phase 2)
+- GPU MachineSets with proper labels and taints
+- Support for L40S (g6e) and H100 (p5) instances
+- Customizable storage and replica count
+
+### RHOAI (Phase 3)
+- Node Feature Discovery (NFD)
+- Nvidia GPU Operator
+- Red Hat OpenShift AI (2.17 - 3.0)
+- KServe for model serving
+- Data Science Pipelines
+- Workbenches with GPU support
+- RHOAI Dashboard
+
+## 📦 Scripts Overview
+
+| Script | Purpose |
+|--------|---------|
+| `integrated-workflow.sh` | **Main script** - Full OpenShift + RHOAI installation |
+| `openshift-installer-master.sh` | OpenShift cluster installation on AWS |
+| `create-gpu-machineset.sh` | Create GPU worker nodes dynamically |
+| `cleanup-all.sh` | Clean up all AWS resources |
+| `fix-macos-security.sh` | Fix macOS security warnings |
+
+## 🎯 RHOAI Version Selection
+
+During installation, select from:
+
+| Version | OpenShift | Channel | Notes |
+|---------|-----------|---------|-------|
+| 2.17-2.18 | 4.16+ | fast | Older |
+| 2.19-2.21 | 4.17+ | stable | Stable |
+| 2.22-2.23 | 4.18-4.19+ | stable-2.23 | Stable |
+| 2.24-2.25 | 4.20+ | stable | Latest 2.x |
+| **3.0** | **4.20+** | **fast-3.x** | **Latest** |
+
+**Recommendations**:
+- OpenShift 4.19 → Use RHOAI 2.23
+- OpenShift 4.20+ → Use RHOAI 3.0
+
+## 🔧 Prerequisites
+
+### Required Tools
+- `oc` - OpenShift CLI
+- `aws` - AWS CLI (configured)
+- `jq`, `yq` - JSON/YAML processors
+- `make`, `git` - Build tools
+
+### Required Credentials
+- AWS account with admin permissions
+- Red Hat pull secret
+- SSH key (or script will generate one)
+
+### AWS Permissions
+- EC2, VPC, Route53, IAM
+- Service quotas for GPU instances
+- Elastic IP quota (at least 3)
+
+## 📖 Detailed Usage
+
+### Integrated Workflow Options
 
 ```bash
-# 1. Configure AWS credentials
-./openshift-installer-master.sh
-# Select: 1 (Configure AWS Credentials)
+./integrated-workflow.sh [OPTIONS]
 
-# 2. Clean up any previous attempts
-./cleanup-failed-install.sh
-
-# 3. Install OpenShift
-./openshift-installer-master.sh
-# Select: 6 (Run Installation Only)
-# Base domain: example.opentlc.com
+Options:
+  --skip-openshift    Skip OpenShift cluster installation
+  --skip-gpu          Skip GPU worker node creation
+  --skip-rhoai        Skip RHOAI installation
+  --help, -h          Show help message
 ```
 
-**Installation time:** 45-50 minutes
+### GPU Instance Types
 
----
+| Instance | GPUs | Model | vCPUs | Memory | Use Case |
+|----------|------|-------|-------|--------|----------|
+| g6e.xlarge | 1 | L40S | 4 | 16 GB | Development |
+| g6e.2xlarge | 1 | L40S | 8 | 32 GB | Small models |
+| g6e.4xlarge | 1 | L40S | 16 | 64 GB | Medium models |
+| g6e.12xlarge | 4 | L40S | 48 | 192 GB | Large models |
+| p5.48xlarge | 8 | H100 | 192 | 2 TB | Largest models |
 
-## 📋 What's Included
-
-### Scripts
-- **`openshift-installer-master.sh`** - All-in-one installation script with menu
-- **`cleanup-failed-install.sh`** - Clean up failed installations
-- **`setup-route53-domain.sh`** - Route53 domain helper
-- **`openshift-install`** - OpenShift 4.19.19 installer binary
-
-### Features
-✅ Interactive menu-driven installation  
-✅ AWS credential configuration  
-✅ Automatic VPC, subnet, and NAT gateway creation  
-✅ Multi-AZ support (us-east-2a, b, c)  
-✅ GPU instance support (H100, A100, L40S, A10G)  
-✅ Pull secret: paste or file path  
-✅ SSH key: auto-generate or use existing  
-
----
-
-## 🎯 Master Script Menu
-
-```
-1) Configure AWS Credentials
-2) Check Prerequisites & System Status
-3) Check AWS Service Quotas & GPU Availability
-4) Download/Update OpenShift Installer
-5) Run Full Installation (Download + Install)
-6) Run Installation Only (Skip Download)
-7) View Documentation
-8) Exit
-```
-
----
-
-## 📝 Installation Configuration
-
-### AWS Credentials
-```
-Access Key ID: ***REDACTED_ACCESS_KEY***
-Secret Access Key: ***REDACTED_SECRET_KEY***
-Region: us-east-2
-Output format: json
-```
-
-### Recommended Settings
-
-**Standard Cluster:**
-- Cluster name: `my-openshift`
-- Base domain: `example.opentlc.com`
-- Master: `m6i.xlarge` × 3
-- Worker: `m6i.2xlarge` × 3
-- Cost: ~$50/day
-
-**GPU Cluster (H100):**
-- Worker: `p5.48xlarge` × 1
-- Cost: ~$2,400/day
-- Check availability first (menu option 3)
-
----
-
-## 🎮 GPU Instance Types
-
-| Instance | GPUs | Type | vCPUs | RAM | Use Case |
-|----------|------|------|-------|-----|----------|
-| p5.48xlarge | 8 | H100 80GB | 192 | 2TB | ML Training |
-| p4d.24xlarge | 8 | A100 40GB | 96 | 1.1TB | ML Training |
-| g6e.xlarge | 1 | L40S 48GB | 4 | 16GB | AI Inference |
-| g5.xlarge | 1 | A10G 24GB | 4 | 16GB | Graphics |
-
----
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**1. Pull secret paste hangs**
-- Use Option 2 (file path) instead
-- Path: `~/Openshift-installation/pull-secret.txt`
-
-**2. SSH key generation fails**
-- Script auto-generates if missing
-- Or provide existing key path
-
-**3. Domain not found error**
-- Use: `example.opentlc.com`
-- Not: `example.com`
-
-**4. No private subnets error**
-- Fixed in current script
-- Script creates both public and private subnets
-
-**5. Installation fails**
-```bash
-# Check logs
-tail -f openshift-cluster-install/.openshift_install.log
-
-# Clean up and retry
-./cleanup-failed-install.sh
-./openshift-installer-master.sh
-```
-
----
-
-## 📊 What Gets Created
-
-### AWS Resources
-- VPC with custom CIDR (10.0.0.0/16)
-- 3 public subnets (one per AZ)
-- 3 private subnets (one per AZ)
-- 3 NAT Gateways
-- 1 Internet Gateway
-- Route tables
-- Security groups
-- Load balancers
-- EC2 instances (masters + workers)
-- Route53 DNS records
-
-### Cluster Access
-After installation:
-- **Console:** `https://console-openshift-console.apps.my-openshift.example.opentlc.com`
-- **API:** `https://api.my-openshift.example.opentlc.com:6443`
-- **Credentials:** In `openshift-cluster-install/auth/`
+### Create Additional GPU Workers
 
 ```bash
-export KUBECONFIG=$PWD/openshift-cluster-install/auth/kubeconfig
-oc get nodes
-cat openshift-cluster-install/auth/kubeadmin-password
+./create-gpu-machineset.sh
 ```
 
----
+The script will:
+1. Extract cluster configuration automatically
+2. Prompt for GPU instance type
+3. Show available subnets from existing MachineSets
+4. Configure storage (default or custom)
+5. Set replica count
+6. Generate and apply the MachineSet
 
-## 💰 Cost Estimates
+## 🎓 Common Workflows
 
-### Standard Cluster
-- 3× m6i.xlarge masters: ~$18/day
-- 3× m6i.2xlarge workers: ~$29/day
-- NAT Gateways: ~$3/day
-- **Total: ~$50/day**
+### 1. Fresh Installation
+```bash
+# Start installation
+./integrated-workflow.sh
 
-### With GPU
-- 1× p5.48xlarge: ~$2,352/day
-- **Total: ~$2,400/day**
+# Follow prompts:
+# - Configure AWS credentials
+# - Select RHOAI version
+# - Configure GPU workers
 
-💡 **Tip:** Use Spot instances to save up to 90%
+# Access RHOAI Dashboard
+oc get route rhods-dashboard -n redhat-ods-applications
+```
 
----
+### 2. Scale GPU Workers
+```bash
+# Scale existing MachineSet
+oc scale machineset <gpu-machineset-name> --replicas=3 -n openshift-machine-api
+
+# Or create new GPU MachineSet
+./create-gpu-machineset.sh
+```
+
+### 3. Verify GPU Detection
+```bash
+# Check GPU nodes
+oc get nodes -l node-role.kubernetes.io/gpu-worker
+
+# Verify GPU capacity
+oc get nodes -l node-role.kubernetes.io/gpu-worker \
+  -o json | jq '.items[].status.capacity."nvidia.com/gpu"'
+```
+
+### 4. Access RHOAI Dashboard
+```bash
+# Get dashboard URL
+echo "https://$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}')"
+
+# Login with cluster credentials (from cluster-info.txt)
+```
 
 ## 🧹 Cleanup
 
-To destroy the cluster and all AWS resources:
-
+### Remove Entire Cluster
 ```bash
-./openshift-install destroy cluster --dir=openshift-cluster-install
+./cleanup-all.sh
 ```
 
-Or use the cleanup script:
+This will:
+- Run `openshift-install destroy cluster`
+- Release Elastic IPs
+- Delete VPCs and subnets
+- Clean up NAT Gateways
+- Remove orphaned route tables
+
+### Remove RHOAI Only
 ```bash
-./cleanup-failed-install.sh
+oc delete DataScienceCluster default-dsc
+oc delete DSCInitialization default-dsci
+oc delete subscription rhods-operator -n redhat-ods-operator
 ```
 
+## 🛠️ Troubleshooting
+
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed troubleshooting guide.
+
+### Quick Fixes
+
+**GPU Operator Not Ready**
+```bash
+oc get pods -n nvidia-gpu-operator
+oc logs -n nvidia-gpu-operator -l app=nvidia-device-plugin-daemonset
+```
+
+**RHOAI Dashboard Not Accessible**
+```bash
+oc get pods -n redhat-ods-applications -l app=rhods-dashboard
+oc logs -n redhat-ods-applications -l app=rhods-dashboard
+```
+
+**GPU Not Detected**
+```bash
+oc get nodes -l nvidia.com/gpu.present=true
+oc describe node <gpu-node-name> | grep nvidia.com/gpu
+```
+
+## 📁 File Structure
+
+```
+openshift-installation/
+├── integrated-workflow.sh          # Main automation script
+├── openshift-installer-master.sh   # OpenShift installation
+├── create-gpu-machineset.sh        # GPU MachineSet creation
+├── cleanup-all.sh                  # Cleanup script
+├── fix-macos-security.sh           # macOS security fix
+├── cluster-info.txt                # Cluster credentials (generated)
+├── README.md                       # This file
+└── TROUBLESHOOTING.md              # Troubleshooting guide
+```
+
+## 🔒 Security Notes
+
+- `pull-secret.txt` is gitignored (contains sensitive data)
+- `cluster-info.txt` contains cluster credentials (gitignored)
+- SSH keys are gitignored
+- Never commit AWS credentials
+
+## 💡 Best Practices
+
+1. **Use tmux for long installations**
+   ```bash
+   tmux new -s openshift-install
+   ./integrated-workflow.sh
+   # Detach: Ctrl+B, then D
+   ```
+
+2. **Keep Mac awake during installation**
+   ```bash
+   caffeinate -d -i -m -u &
+   ```
+
+3. **Monitor installation progress**
+   ```bash
+   # Watch cluster operators
+   watch oc get co
+   
+   # Watch RHOAI installation
+   watch oc get pods -n redhat-ods-operator
+   ```
+
+4. **Save cluster credentials**
+   - Credentials are saved to `cluster-info.txt`
+   - Back up this file securely
+
+## 📚 Resources
+
+- [Red Hat OpenShift AI Documentation](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai)
+- [OpenShift Documentation](https://docs.openshift.com/)
+- [Nvidia GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/)
+- [KServe Documentation](https://kserve.github.io/website/)
+
+## 🤝 Contributing
+
+When adding features:
+1. Test on a fresh cluster
+2. Update documentation
+3. Add error handling
+4. Follow existing code style
+
+## 📝 Version History
+
+- **v3.0** - Added RHOAI 3.0 support (fast-3.x channel)
+- **v2.0** - Integrated workflow script combining all phases
+- **v1.0** - Initial OpenShift + GPU installation scripts
+
+## 🎉 What's Next?
+
+After successful installation:
+1. ✅ Access RHOAI Dashboard
+2. ✅ Create a Data Science Project
+3. ✅ Launch GPU-enabled Workbench
+4. ✅ Deploy models with KServe
+5. ✅ Build AI/ML applications
+
 ---
 
-## 📚 Additional Resources
-
-- **OpenShift Docs:** https://docs.openshift.com/container-platform/4.19/
-- **AWS CLI:** https://docs.aws.amazon.com/cli/
-- **Troubleshooting:** See TROUBLESHOOTING.md
-
----
-
-## ⚠️ Important Notes
-
-1. **AWS Credentials are temporary** - Lab environment only
-2. **Don't commit credentials to git** - Will be deleted automatically
-3. **Domain is pre-configured** - Use `example.opentlc.com`
-4. **Monitor costs** - Destroy cluster when done
-5. **Installation takes 45-50 minutes** - Don't interrupt
-
----
-
-## 🎯 Next Steps After Installation
-
-1. Access web console with kubeadmin credentials
-2. Configure identity provider
-3. Deploy applications
-4. Set up monitoring
-5. Configure autoscaling
-
----
-
-**Ready to install?** Run: `./openshift-installer-master.sh`
+**Happy AI/ML Development!** 🚀

@@ -6,6 +6,7 @@ openshift-cluster-install/
 
 # Sensitive Files
 pull-secret.txt
+cluster-info.txt
 *.pem
 *.key
 id_rsa*
