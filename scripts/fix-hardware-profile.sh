@@ -62,20 +62,45 @@ if [ -n "$OLD_API_PROFILES" ]; then
     fi
 fi
 
+# Get current namespace
+CURRENT_NS=$(oc project -q 2>/dev/null || echo "default")
+
+echo -e "${YELLOW}Hardware profiles in RHOAI 3.0 are namespace-scoped for model deployment.${NC}"
+echo "Current namespace: $CURRENT_NS"
+echo ""
+read -p "Create GPU profile in this namespace? (y/n): " create_in_current
+
+if [[ "$create_in_current" =~ ^[Yy]$ ]]; then
+    TARGET_NS="$CURRENT_NS"
+else
+    read -p "Enter namespace for GPU profile: " TARGET_NS
+fi
+
+# Verify namespace exists
+if ! oc get namespace "$TARGET_NS" &>/dev/null; then
+    echo -e "${RED}✗ Namespace '$TARGET_NS' does not exist${NC}"
+    exit 1
+fi
+
 # Create correct hardware profile
-echo -e "${BLUE}Creating GPU hardware profile with correct API version...${NC}"
+echo -e "${BLUE}Creating GPU hardware profile in $TARGET_NS with correct API version...${NC}"
 echo ""
 
 cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1alpha1
+apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
 metadata:
   name: gpu-profile
-  namespace: redhat-ods-applications
+  namespace: $TARGET_NS
   annotations:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: GPU Profile
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
 spec:
   identifiers:
     - defaultCount: '2'
@@ -96,10 +121,6 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
-  tolerations:
-    - effect: NoSchedule
-      key: nvidia.com/gpu
-      operator: Exists
 EOF
 
 echo ""
@@ -110,25 +131,30 @@ echo ""
 echo -e "${BLUE}Verifying hardware profile...${NC}"
 echo ""
 
-oc get hardwareprofile gpu-profile -n redhat-ods-applications -o yaml | grep -A 5 "apiVersion\|annotations\|spec:" || true
+oc get hardwareprofile gpu-profile -n "$TARGET_NS" -o yaml | grep -A 5 "apiVersion\|annotations\|spec:" || true
 
 echo ""
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}✓ Hardware Profile Fix Complete!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "The hardware profile should now be visible in the RHOAI dashboard!"
+echo "The hardware profile should now be visible in the RHOAI dashboard"
+echo "when deploying models in the '$TARGET_NS' namespace!"
 echo ""
 echo "To verify:"
-echo "1. Go to RHOAI Dashboard → Settings → Hardware Profiles"
-echo "2. You should see 'GPU Profile'"
-echo "3. When deploying a model, select 'GPU Profile' from the dropdown"
+echo "1. Go to RHOAI Dashboard → Your project ($TARGET_NS)"
+echo "2. Deploy a model → Hardware profile dropdown"
+echo "3. You should see 'GPU Profile'"
 echo ""
-echo -e "${YELLOW}Key Requirements for UI Visibility:${NC}"
-echo "  ✓ API Version: infrastructure.opendatahub.io/v1alpha1"
-echo "  ✓ Namespace: redhat-ods-applications"
-echo "  ✓ Annotations: opendatahub.io/display-name"
+echo -e "${YELLOW}Key Requirements for UI Visibility (RHOAI 3.0):${NC}"
+echo "  ✓ API Version: infrastructure.opendatahub.io/v1"
+echo "  ✓ Namespace: Same as your project (namespace-scoped)"
+echo "  ✓ Annotations: opendatahub.io/display-name, opendatahub.io/managed"
+echo "  ✓ Labels: app.opendatahub.io/hardwareprofile=true"
 echo "  ✓ Spec: identifiers array with CPU, Memory, GPU"
+echo ""
+echo -e "${BLUE}To create in other namespaces:${NC}"
+echo "  ./scripts/create-hardware-profile-in-namespace.sh <namespace>"
 echo ""
 
 

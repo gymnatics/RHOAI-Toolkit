@@ -248,15 +248,17 @@ EOF
 create_gpu_hardware_profile() {
     print_header "Creating GPU Hardware Profile"
     
+    # Get current namespace or use default
+    local current_ns=$(oc project -q 2>/dev/null || echo "default")
+    
+    # Check if profile exists in redhat-ods-applications (global)
     if oc get hardwareprofile gpu-profile -n redhat-ods-applications &>/dev/null; then
-        print_success "GPU hardware profile already exists"
-        return 0
-    fi
-    
-    print_step "Creating GPU hardware profile for model deployment..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1alpha1
+        print_success "GPU hardware profile already exists in redhat-ods-applications"
+    else
+        print_step "Creating global GPU hardware profile in redhat-ods-applications..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
 metadata:
   name: gpu-profile
@@ -265,6 +267,11 @@ metadata:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: GPU Profile
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
 spec:
   identifiers:
     - defaultCount: '2'
@@ -285,13 +292,13 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
-  tolerations:
-    - effect: NoSchedule
-      key: nvidia.com/gpu
-      operator: Exists
 EOF
+        print_success "Global GPU hardware profile created"
+    fi
     
-    print_success "GPU hardware profile created (visible in UI)"
+    print_success "GPU hardware profile setup complete"
+    print_info "Note: Hardware profiles in RHOAI 3.0 are namespace-scoped for model deployment"
+    print_info "To use this profile, create it in your project namespace or use the helper script"
 }
 
 # Enable User Workload Monitoring

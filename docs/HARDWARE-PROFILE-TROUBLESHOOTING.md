@@ -7,9 +7,26 @@
 - Profile appears in Settings → Hardware Profiles tab
 - **BUT** profile is NOT available in the dropdown when deploying a model
 
-### Root Cause
+### Root Causes
 
-The hardware profile was created with the **wrong API version** or missing required annotations.
+1. **Wrong Namespace**: Hardware profiles in RHOAI 3.0 are **namespace-scoped** for model deployment
+2. **Wrong API version**: Using old API version or missing required annotations
+3. **Missing Labels**: Required labels for UI discovery not present
+4. **NFD Not Working**: Node Feature Discovery pods failing to pull images
+
+#### Wrong Namespace ❌
+```yaml
+metadata:
+  name: gpu-profile
+  namespace: redhat-ods-applications  # Global namespace - not visible in project
+```
+
+#### Correct Namespace ✅
+```yaml
+metadata:
+  name: gpu-profile
+  namespace: my-project  # Same namespace as your project
+```
 
 #### Wrong API Version ❌
 ```yaml
@@ -19,21 +36,33 @@ kind: HardwareProfile
 
 #### Correct API Version ✅
 ```yaml
-apiVersion: infrastructure.opendatahub.io/v1alpha1  # NEW - works for model deployment
+apiVersion: infrastructure.opendatahub.io/v1  # CURRENT - works for model deployment
 kind: HardwareProfile
 ```
 
 ### Why This Happens
 
-RHOAI 3.0 introduced a new API version for hardware profiles:
-- `dashboard.opendatahub.io/v1` - Used for **workbench** deployment (notebooks)
-- `infrastructure.opendatahub.io/v1alpha1` - Used for **model** deployment (InferenceService)
+RHOAI 3.0 made hardware profiles **namespace-scoped** for model deployment:
+- Profiles in `redhat-ods-applications` are global but may not appear in project dropdowns
+- Profiles must be created in the **same namespace** where you deploy models
+- The UI only shows profiles from the current project namespace
 
-The UI shows profiles from the settings page, but the model deployment form only discovers profiles with the `infrastructure.opendatahub.io/v1alpha1` API version.
+Additionally, profiles need:
+- Correct API version: `infrastructure.opendatahub.io/v1` (not `v1alpha1` or `dashboard.opendatahub.io/v1`)
+- Required labels: `app.opendatahub.io/hardwareprofile: "true"`
+- Required annotations for UI discovery
 
-## Quick Fix
+## Quick Fixes
 
-Run the fix script:
+### Fix 1: Create Hardware Profile in Your Namespace
+
+```bash
+./scripts/create-hardware-profile-in-namespace.sh <your-namespace>
+```
+
+This will create the GPU hardware profile in your project namespace where it will be visible in the UI.
+
+### Fix 2: Fix Existing Profiles
 
 ```bash
 ./scripts/fix-hardware-profile.sh
@@ -42,8 +71,43 @@ Run the fix script:
 This will:
 1. Detect old API version profiles
 2. Delete them (with confirmation)
-3. Create a new profile with the correct API version
+3. Create a new profile with the correct configuration
 4. Verify the fix
+
+### Fix 3: Fix NFD Image Pull Issues
+
+If Node Feature Discovery (NFD) pods are in `ImagePullBackOff`:
+
+```bash
+# Check NFD status
+oc get pods -n openshift-nfd
+
+# If pods show ImagePullBackOff, fix the NFD instance
+oc apply -f - <<EOF
+apiVersion: nfd.openshift.io/v1
+kind: NodeFeatureDiscovery
+metadata:
+  name: nfd-instance
+  namespace: openshift-nfd
+spec:
+  operand:
+    servicePort: 12000
+  workerConfig:
+    configData: |
+      core:
+        sleepInterval: 60s
+      sources:
+        pci:
+          deviceClassWhitelist:
+            - "0200"
+            - "03"
+            - "12"
+          deviceLabelFields:
+            - "vendor"
+EOF
+```
+
+This removes the hardcoded image version that may not exist for your OpenShift version.
 
 ## Manual Fix
 
