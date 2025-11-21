@@ -490,14 +490,14 @@ display_final_summary() {
     
     if [ "$MAAS_ONLY" = false ]; then
         echo "1. Access your OpenShift cluster:"
-        echo "   ${YELLOW}cat cluster-info.txt${NC}"
+        echo -e "   ${YELLOW}cat cluster-info.txt${NC}"
         echo ""
         echo "2. Log in to the RHOAI dashboard:"
         echo "   - URL will be shown in cluster-info.txt"
         echo "   - Use kubeadmin credentials"
         echo ""
         echo "3. Create GPU MachineSets (if needed):"
-        echo "   ${YELLOW}./scripts/create-gpu-machineset.sh${NC}"
+        echo -e "   ${YELLOW}./scripts/create-gpu-machineset.sh${NC}"
         echo ""
     fi
     
@@ -520,7 +520,7 @@ display_final_summary() {
         echo ""
     elif [ "$maas_status" = "skipped" ]; then
         echo "5. To add MaaS later:"
-        echo "   ${YELLOW}./scripts/setup-maas.sh${NC}"
+        echo -e "   ${YELLOW}./scripts/setup-maas.sh${NC}"
         echo ""
     fi
     
