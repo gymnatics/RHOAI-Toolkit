@@ -223,6 +223,12 @@ See `scripts/README.md` and `lib/README.md` for detailed documentation.
 
 ### Common Issues
 
+**GPU Hardware Profile Not Visible in Model Deployment UI** ⚠️
+```bash
+./scripts/fix-hardware-profile.sh
+```
+See `docs/HARDWARE-PROFILE-TROUBLESHOOTING.md` for details.
+
 **macOS Security Warning**
 ```bash
 xattr -d com.apple.quarantine openshift-install

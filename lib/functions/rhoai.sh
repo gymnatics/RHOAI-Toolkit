@@ -248,33 +248,50 @@ EOF
 create_gpu_hardware_profile() {
     print_header "Creating GPU Hardware Profile"
     
-    if oc get hardwareprofile gpu-generic -n redhat-ods-applications &>/dev/null; then
+    if oc get hardwareprofile gpu-profile -n redhat-ods-applications &>/dev/null; then
         print_success "GPU hardware profile already exists"
         return 0
     fi
     
-    print_step "Creating generic GPU hardware profile..."
+    print_step "Creating GPU hardware profile for model deployment..."
     
     cat <<EOF | oc apply -f -
-apiVersion: dashboard.opendatahub.io/v1
+apiVersion: infrastructure.opendatahub.io/v1alpha1
 kind: HardwareProfile
 metadata:
-  name: gpu-generic
+  name: gpu-profile
   namespace: redhat-ods-applications
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: GPU Profile
 spec:
-  description: Generic GPU profile for NVIDIA GPUs
-  displayName: GPU (Generic)
-  enabled: true
   identifiers:
-    - nvidia.com/gpu
-  resources:
-    limits:
-      nvidia.com/gpu: '1'
-    requests:
-      nvidia.com/gpu: '1'
+    - defaultCount: '2'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '16'
+      minCount: 1
+      resourceType: CPU
+    - defaultCount: 16Gi
+      displayName: Memory
+      identifier: memory
+      maxCount: 64Gi
+      minCount: 1Gi
+      resourceType: Memory
+    - defaultCount: 1
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: 8
+      minCount: 1
+      resourceType: Accelerator
+  tolerations:
+    - effect: NoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
 EOF
     
-    print_success "GPU hardware profile created"
+    print_success "GPU hardware profile created (visible in UI)"
 }
 
 # Enable User Workload Monitoring
