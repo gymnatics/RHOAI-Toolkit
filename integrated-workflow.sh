@@ -578,6 +578,143 @@ EOF
     print_success "GPU operator installation complete"
 }
 
+install_rhcl_operator() {
+    print_step "Checking RHCL (Red Hat Connectivity Link) Operator..."
+    
+    # Check if kuadrant-system namespace exists
+    if ! oc get namespace kuadrant-system &>/dev/null; then
+        print_step "Creating kuadrant-system namespace..."
+        oc create namespace kuadrant-system
+        print_success "kuadrant-system namespace created"
+    else
+        print_success "kuadrant-system namespace already exists"
+    fi
+    
+    # Check if RHCL operator is already installed
+    if oc get subscription rhcl-operator -n kuadrant-system &>/dev/null; then
+        print_success "RHCL Operator already installed"
+        
+        # Check if Kuadrant instance exists
+        if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+            print_success "Kuadrant instance already exists"
+            return 0
+        fi
+    else
+        print_step "Installing RHCL Operator (provides Kuadrant for llm-d)..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kuadrant-system
+  namespace: kuadrant-system
+spec:
+  targetNamespaces:
+  - kuadrant-system
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: kuadrant-system
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        print_success "RHCL Operator subscription created"
+        
+        # Wait for RHCL operator to be ready
+        print_step "Waiting for RHCL operator to be ready (this may take 2-3 minutes)..."
+        sleep 30
+        
+        local timeout=300
+        local elapsed=0
+        until oc get crd kuadrants.kuadrant.io &>/dev/null; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Timeout waiting for RHCL operator CRDs (continuing anyway)"
+                break
+            fi
+            echo "Waiting for Kuadrant CRD... (${elapsed}s elapsed)"
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+        
+        print_success "RHCL Operator is ready"
+    fi
+    
+    # Create Kuadrant instance if it doesn't exist
+    if ! oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+        print_step "Creating Kuadrant instance..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+EOF
+        
+        print_success "Kuadrant instance created"
+        
+        # Wait for Kuadrant to be ready
+        print_step "Waiting for Kuadrant components to be ready..."
+        sleep 30
+        
+        # Wait for Authorino service to be created
+        local auth_timeout=120
+        local auth_elapsed=0
+        until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
+            if [ $auth_elapsed -ge $auth_timeout ]; then
+                print_warning "Authorino service not ready yet (continuing anyway)"
+                break
+            fi
+            echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
+            sleep 10
+            auth_elapsed=$((auth_elapsed + 10))
+        done
+        
+        # Configure Authorino with TLS if service exists
+        if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
+            print_step "Configuring Authorino with TLS..."
+            
+            # Annotate service for TLS certificate
+            oc annotate svc/authorino-authorino-authorization \
+                service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+                -n kuadrant-system --overwrite
+            
+            sleep 10
+            
+            # Enable TLS in Authorino
+            cat <<EOF | oc apply -f -
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: kuadrant-system
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
+EOF
+            
+            print_success "Authorino configured with TLS"
+        fi
+    fi
+    
+    print_success "RHCL operator installation complete (enables llm-d serving runtime)"
+}
+
 install_rhoai_operator() {
     print_step "Checking Red Hat OpenShift AI Operator (version $RHOAI_VERSION)..."
     
@@ -790,6 +927,7 @@ install_rhoai() {
     # Install components
     install_nfd_operator
     install_gpu_operator
+    install_rhcl_operator
     install_rhoai_operator
     create_rhoai_instance
     

@@ -101,11 +101,172 @@ check_prerequisites() {
 }
 
 ################################################################################
-# Step 1: Create GatewayClass
+# Step 1: Install RHCL (Red Hat Connectivity Link) Operator
+################################################################################
+
+install_rhcl_operator() {
+    print_header "Step 1: Installing RHCL (Kuadrant) Operator"
+    
+    # Check if kuadrant-system namespace exists
+    if oc get namespace kuadrant-system &>/dev/null; then
+        print_success "kuadrant-system namespace already exists"
+    else
+        print_step "Creating kuadrant-system namespace..."
+        oc create namespace kuadrant-system
+        print_success "kuadrant-system namespace created"
+    fi
+    
+    # Check if RHCL operator is already installed
+    if oc get subscription rhcl-operator -n kuadrant-system &>/dev/null; then
+        print_success "RHCL Operator already installed"
+    else
+        print_step "Installing RHCL Operator..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kuadrant-system
+  namespace: kuadrant-system
+spec:
+  targetNamespaces:
+  - kuadrant-system
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: kuadrant-system
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        print_success "RHCL Operator subscription created"
+    fi
+    
+    # Wait for RHCL operator to be ready
+    print_step "Waiting for RHCL operator to be ready (this may take 2-3 minutes)..."
+    sleep 30
+    
+    local timeout=300
+    local elapsed=0
+    until oc get crd kuadrants.kuadrant.io &>/dev/null; do
+        if [ $elapsed -ge $timeout ]; then
+            print_error "Timeout waiting for RHCL operator CRDs"
+            return 1
+        fi
+        echo "Waiting for Kuadrant CRD... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "RHCL Operator is ready"
+}
+
+################################################################################
+# Step 2: Create Kuadrant Instance
+################################################################################
+
+create_kuadrant_instance() {
+    print_header "Step 2: Creating Kuadrant Instance"
+    
+    # Check if Kuadrant instance already exists
+    if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+        print_success "Kuadrant instance already exists"
+        return 0
+    fi
+    
+    print_step "Creating Kuadrant instance..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+EOF
+    
+    print_success "Kuadrant instance created"
+    
+    # Wait for Kuadrant to be ready
+    print_step "Waiting for Kuadrant components to be ready..."
+    sleep 30
+    
+    # Wait for Authorino service to be created
+    local auth_timeout=120
+    local auth_elapsed=0
+    until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
+        if [ $auth_elapsed -ge $auth_timeout ]; then
+            print_error "Timeout waiting for Authorino service"
+            return 1
+        fi
+        echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
+        sleep 10
+        auth_elapsed=$((auth_elapsed + 10))
+    done
+    
+    print_success "Kuadrant is ready"
+}
+
+################################################################################
+# Step 3: Configure Authorino
+################################################################################
+
+configure_authorino() {
+    print_header "Step 3: Configuring Authorino"
+    
+    # Annotate Authorino service for TLS
+    print_step "Annotating Authorino service for TLS certificate..."
+    
+    oc annotate svc/authorino-authorino-authorization \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        -n kuadrant-system --overwrite
+    
+    print_success "Authorino service annotated"
+    
+    # Wait for certificate to be created
+    print_step "Waiting for TLS certificate..."
+    sleep 10
+    
+    # Update Authorino to enable TLS
+    print_step "Enabling TLS in Authorino..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: kuadrant-system
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
+EOF
+    
+    print_success "Authorino configured with TLS"
+    
+    # Wait for Authorino to restart
+    print_step "Waiting for Authorino to restart..."
+    sleep 15
+}
+
+################################################################################
+# Step 4: Create GatewayClass
 ################################################################################
 
 create_gateway_class() {
-    print_header "Step 1: Creating GatewayClass 'openshift-default'"
+    print_header "Step 4: Creating GatewayClass 'openshift-default'"
     
     if oc get gatewayclass openshift-default &>/dev/null; then
         print_success "GatewayClass 'openshift-default' already exists"
@@ -127,11 +288,11 @@ EOF
 }
 
 ################################################################################
-# Step 2: Create maas-api namespace
+# Step 5: Create maas-api namespace
 ################################################################################
 
 create_maas_namespace() {
-    print_header "Step 2: Creating 'maas-api' namespace"
+    print_header "Step 5: Creating 'maas-api' namespace"
     
     if oc get namespace maas-api &>/dev/null; then
         print_success "Namespace 'maas-api' already exists"
@@ -145,11 +306,11 @@ create_maas_namespace() {
 }
 
 ################################################################################
-# Step 3: Deploy MaaS API objects
+# Step 6: Deploy MaaS API objects
 ################################################################################
 
 deploy_maas_api() {
-    print_header "Step 3: Deploying MaaS API Objects"
+    print_header "Step 6: Deploying MaaS API Objects"
     
     print_step "Getting cluster domain..."
     CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
@@ -180,11 +341,11 @@ deploy_maas_api() {
 }
 
 ################################################################################
-# Step 4: Configure Audience Policy
+# Step 7: Configure Audience Policy
 ################################################################################
 
 configure_audience_policy() {
-    print_header "Step 4: Configuring Audience Policy"
+    print_header "Step 7: Configuring Audience Policy"
     
     print_step "Extracting audience from service account token..."
     
@@ -218,11 +379,11 @@ EOF
 }
 
 ################################################################################
-# Step 5: Restart Controllers
+# Step 8: Restart Controllers
 ################################################################################
 
 restart_controllers() {
-    print_header "Step 5: Restarting Controllers"
+    print_header "Step 8: Restarting Controllers"
     
     print_step "Restarting odh-model-controller..."
     oc delete pod -n redhat-ods-applications -l app=odh-model-controller --ignore-not-found=true
@@ -236,11 +397,11 @@ restart_controllers() {
 }
 
 ################################################################################
-# Step 6: Test MaaS Configuration
+# Step 9: Test MaaS Configuration
 ################################################################################
 
 test_maas_configuration() {
-    print_header "Step 6: Testing MaaS Configuration"
+    print_header "Step 9: Testing MaaS Configuration"
     
     print_step "Waiting for MaaS API to be fully ready..."
     sleep 20
@@ -377,6 +538,9 @@ main() {
     
     # Execute steps
     check_prerequisites
+    install_rhcl_operator
+    create_kuadrant_instance
+    configure_authorino
     create_gateway_class
     create_maas_namespace
     deploy_maas_api
