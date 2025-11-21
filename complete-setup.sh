@@ -253,30 +253,74 @@ display_setup_plan() {
     else
         echo -e "${CYAN}This script will:${NC}"
         echo ""
-        echo "  1. ✅ Install OpenShift cluster on AWS"
-        echo "  2. ✅ Create GPU worker nodes"
-        echo "  3. ✅ Install RHOAI 3.0 with all features:"
-        echo "      - GenAI Playground"
-        echo "      - Model Catalog"
-        echo "      - Feature Store"
-        echo "      - AI Pipelines"
-        echo "      - Model Registry"
-        echo "      - Distributed Training"
-        echo "      - TrustyAI"
-        echo "  4. ✅ Install required operators (NFD, GPU, LWS)"
-        echo "  5. ✅ Create GPU hardware profile"
         
-        if [ "$SETUP_MAAS" = "yes" ]; then
-            echo "  6. ✅ Set up MaaS API infrastructure"
-        elif [ "$SETUP_MAAS" = "no" ]; then
-            echo "  6. ⏭️  Skip MaaS setup"
+        # Show version being used
+        if [ "$USE_MODULAR" = true ]; then
+            echo -e "${GREEN}Using: Modular version (integrated-workflow-v2.sh)${NC}"
         else
-            echo "  6. ❓ Prompt for MaaS setup"
+            echo -e "${YELLOW}Using: Legacy version (scripts/integrated-workflow.sh)${NC}"
+        fi
+        echo ""
+        
+        local step=1
+        
+        # OpenShift installation
+        if [ "$SKIP_OPENSHIFT" = true ]; then
+            echo "  $step. ⏭️  Skip OpenShift installation (use existing cluster)"
+        else
+            echo "  $step. ✅ Install OpenShift cluster on AWS (or use existing)"
+        fi
+        step=$((step + 1))
+        
+        # GPU nodes
+        if [ "$SKIP_GPU" = true ]; then
+            echo "  $step. ⏭️  Skip GPU worker node creation"
+        else
+            echo "  $step. ✅ Create GPU worker nodes (or use existing)"
+        fi
+        step=$((step + 1))
+        
+        # RHOAI installation
+        if [ "$SKIP_RHOAI" = true ]; then
+            echo "  $step. ⏭️  Skip RHOAI installation"
+        else
+            echo "  $step. ✅ Install RHOAI with all features:"
+            echo "      - GenAI Playground"
+            echo "      - Model Catalog"
+            echo "      - Feature Store"
+            echo "      - AI Pipelines"
+            echo "      - Model Registry"
+            echo "      - Distributed Training"
+            echo "      - TrustyAI"
+            echo "      - Required operators (NFD, GPU, RHCL, LWS, Kueue)"
+        fi
+        step=$((step + 1))
+        
+        # MaaS setup
+        if [ "$SETUP_MAAS" = "yes" ]; then
+            echo "  $step. ✅ Set up MaaS API infrastructure"
+        elif [ "$SETUP_MAAS" = "no" ]; then
+            echo "  $step. ⏭️  Skip MaaS setup"
+        else
+            echo "  $step. ❓ Prompt for MaaS setup"
         fi
     fi
     
     echo ""
-    echo -e "${YELLOW}Estimated time: 45-60 minutes${NC}"
+    
+    # Estimate time based on what's being done
+    local estimated_time="5-10 minutes"
+    if [ "$MAAS_ONLY" = false ]; then
+        if [ "$SKIP_OPENSHIFT" = false ] && [ "$SKIP_RHOAI" = false ]; then
+            estimated_time="45-60 minutes"
+        elif [ "$SKIP_OPENSHIFT" = true ] && [ "$SKIP_RHOAI" = false ]; then
+            estimated_time="20-30 minutes"
+        elif [ "$SKIP_RHOAI" = true ]; then
+            estimated_time="30-40 minutes"
+        fi
+    fi
+    
+    echo -e "${BLUE}Estimated time: $estimated_time${NC}"
     echo ""
 }
 
