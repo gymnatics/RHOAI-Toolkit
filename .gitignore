@@ -1,0 +1,36 @@
+# OpenShift Installation Files
+openshift-cluster-install/
+*.log
+.openshift_install.log
+.openshift_install_state.json
+
+# Sensitive Files
+pull-secret.txt
+*.pem
+*.key
+id_rsa*
+*.kubeconfig
+kubeadmin-password
+
+# OpenShift Installer Binaries
+openshift-install
+*.tar.gz
+*.zip
+
+# Terraform Files
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary Files
+*.tmp
+*.bak
+*.swp
+*~
+
