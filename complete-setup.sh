@@ -497,7 +497,7 @@ display_final_summary() {
         echo "   - Use kubeadmin credentials"
         echo ""
         echo "3. Create GPU MachineSets (if needed):"
-        echo "   ${YELLOW}./create-gpu-machineset.sh${NC}"
+        echo "   ${YELLOW}./scripts/create-gpu-machineset.sh${NC}"
         echo ""
     fi
     
@@ -529,8 +529,9 @@ display_final_summary() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "  • README.md - Complete documentation"
-    echo "  • TROUBLESHOOTING.md - Common issues and solutions"
-    echo "  • CAI's guide to RHOAI 3.0.txt - Detailed RHOAI guide"
+    echo "  • docs/TROUBLESHOOTING.md - Common issues and solutions"
+    echo "  • lib/README.md - Modular functions documentation"
+    echo "  • scripts/README.md - Utility scripts documentation"
     echo ""
     
     if [ "$MAAS_ONLY" = false ]; then
