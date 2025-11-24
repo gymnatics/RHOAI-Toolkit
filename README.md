@@ -8,14 +8,14 @@ Automated scripts for installing OpenShift on AWS with Red Hat OpenShift AI (RHO
 ```bash
 ./complete-setup.sh
 ```
-This master wrapper orchestrates the entire installation process using the **modular version by default**:
-1. OpenShift cluster installation
-2. RHOAI deployment
-3. GPU worker node creation
-4. GenAI Playground & MaaS UI enablement
-5. Optional MaaS API infrastructure setup
 
-**Options:**
+**Interactive Menu Mode** (default when run without arguments):
+1. **Complete Setup** - Full OpenShift + RHOAI + GPU + MaaS installation
+2. **Create GPU Hardware Profile** - Interactive profile creation with custom resources
+3. **Setup MaaS Only** - MaaS API infrastructure (assumes RHOAI exists)
+4. **Exit**
+
+**Non-Interactive Mode** (with command-line arguments):
 - `--with-maas` - Automatically set up MaaS API (no prompt)
 - `--skip-maas` - Skip MaaS API setup (no prompt)
 - `--maas-only` - Only set up MaaS (skip OpenShift/RHOAI)
@@ -220,6 +220,32 @@ See `scripts/README.md` and `lib/README.md` for detailed documentation.
 - **Script Documentation**: See `scripts/README.md` for utility script details
 
 ## 🛠️ Troubleshooting
+
+### GPU Hardware Profiles
+
+**Create Hardware Profile Interactively** 🆕
+```bash
+./complete-setup.sh
+# Select option 2: Create GPU Hardware Profile
+```
+This interactive wizard will prompt you for:
+- Target namespace
+- CPU resources (default, min, max)
+- Memory resources (default, min, max)
+- GPU resources (default, min, max)
+- Profile name and display name
+
+**Or use the standalone script:**
+```bash
+./scripts/create-hardware-profile.sh [namespace]
+```
+
+**Fix Existing Profile:**
+```bash
+./scripts/fix-hardware-profile.sh
+```
+
+See `docs/HARDWARE-PROFILE-FIX.md` for complete troubleshooting guide.
 
 ### Common Issues
 

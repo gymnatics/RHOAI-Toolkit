@@ -8,13 +8,20 @@
 # 2. GPU worker nodes
 # 3. RHOAI 3.0 with all features (GenAI Playground, etc.)
 # 4. Model as a Service (MaaS) API infrastructure (optional)
+# 5. GPU Hardware Profile creation (interactive)
 #
 # Usage:
-#   ./complete-setup.sh                    # Interactive mode
-#   ./complete-setup.sh --with-maas        # Auto-enable MaaS
-#   ./complete-setup.sh --skip-maas        # Skip MaaS setup
+#   ./complete-setup.sh                    # Interactive menu mode
+#   ./complete-setup.sh --with-maas        # Auto-enable MaaS (non-interactive)
+#   ./complete-setup.sh --skip-maas        # Skip MaaS setup (non-interactive)
 #   ./complete-setup.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
-#   ./complete-setup.sh --modular          # Use modular version (integrated-workflow-v2.sh)
+#   ./complete-setup.sh --legacy           # Use legacy version (scripts/integrated-workflow.sh)
+#
+# Interactive Menu Options:
+#   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
+#   2. Create GPU Hardware Profile - Interactive hardware profile creation
+#   3. Setup MaaS Only - MaaS API infrastructure only
+#   4. Exit
 
 set -e
 
@@ -53,6 +60,19 @@ print_banner() {
     echo ""
 }
 
+show_main_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                    Main Menu                                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
+    echo -e "${YELLOW}2)${NC} Create GPU Hardware Profile (for existing cluster)"
+    echo -e "${YELLOW}3)${NC} Setup MaaS Only (assumes RHOAI exists)"
+    echo -e "${YELLOW}4)${NC} Exit"
+    echo ""
+}
+
 print_header() {
     echo ""
     echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -79,6 +99,158 @@ print_warning() {
 
 print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
+}
+
+################################################################################
+# Hardware Profile Creation
+################################################################################
+
+create_hardware_profile_interactive() {
+    print_header "Create GPU Hardware Profile"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift"
+        echo "Please login first: oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to OpenShift cluster"
+    echo ""
+    
+    # Get current namespace
+    local current_ns=$(oc project -q 2>/dev/null || echo "")
+    
+    # Prompt for namespace
+    echo -e "${CYAN}Enter the namespace where you want to create the hardware profile${NC}"
+    echo -e "${YELLOW}(This should be the namespace where you deploy models)${NC}"
+    if [ -n "$current_ns" ]; then
+        echo -e "Current namespace: ${GREEN}$current_ns${NC}"
+        read -p "Press Enter to use current namespace, or type a different one: " input_ns
+        local target_ns="${input_ns:-$current_ns}"
+    else
+        read -p "Namespace: " target_ns
+    fi
+    
+    # Validate namespace exists
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_error "Namespace '$target_ns' does not exist"
+        read -p "Do you want to create it? (y/n): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            return 1
+        fi
+    fi
+    
+    echo ""
+    print_step "Configuring hardware profile resources..."
+    echo ""
+    
+    # Prompt for CPU
+    echo -e "${CYAN}CPU Configuration:${NC}"
+    read -p "Default CPU count [2]: " cpu_default
+    cpu_default="${cpu_default:-2}"
+    read -p "Minimum CPU count [1]: " cpu_min
+    cpu_min="${cpu_min:-1}"
+    read -p "Maximum CPU count [16]: " cpu_max
+    cpu_max="${cpu_max:-16}"
+    
+    echo ""
+    
+    # Prompt for Memory
+    echo -e "${CYAN}Memory Configuration:${NC}"
+    read -p "Default Memory (e.g., 16Gi) [16Gi]: " mem_default
+    mem_default="${mem_default:-16Gi}"
+    read -p "Minimum Memory (e.g., 1Gi) [1Gi]: " mem_min
+    mem_min="${mem_min:-1Gi}"
+    read -p "Maximum Memory (e.g., 64Gi) [64Gi]: " mem_max
+    mem_max="${mem_max:-64Gi}"
+    
+    echo ""
+    
+    # Prompt for GPU
+    echo -e "${CYAN}GPU Configuration:${NC}"
+    read -p "Default GPU count [1]: " gpu_default
+    gpu_default="${gpu_default:-1}"
+    read -p "Minimum GPU count [1]: " gpu_min
+    gpu_min="${gpu_min:-1}"
+    read -p "Maximum GPU count [8]: " gpu_max
+    gpu_max="${gpu_max:-8}"
+    
+    echo ""
+    
+    # Prompt for profile name and display name
+    read -p "Hardware profile name [gpu-profile]: " profile_name
+    profile_name="${profile_name:-gpu-profile}"
+    read -p "Display name [GPU Profile]: " display_name
+    display_name="${display_name:-GPU Profile}"
+    
+    echo ""
+    print_step "Creating hardware profile '$profile_name' in namespace '$target_ns'..."
+    echo ""
+    
+    # Create the hardware profile
+    cat <<EOF | oc apply -f -
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: $profile_name
+  namespace: $target_ns
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: '$display_name'
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
+spec:
+  identifiers:
+    - defaultCount: '$cpu_default'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '$cpu_max'
+      minCount: $cpu_min
+      resourceType: CPU
+    - defaultCount: $mem_default
+      displayName: Memory
+      identifier: memory
+      maxCount: $mem_max
+      minCount: $mem_min
+      resourceType: Memory
+    - defaultCount: $gpu_default
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: $gpu_max
+      minCount: $gpu_min
+      resourceType: Accelerator
+EOF
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        print_success "Hardware profile '$profile_name' created successfully in namespace '$target_ns'"
+        echo ""
+        
+        # Verify
+        print_step "Verifying..."
+        oc get hardwareprofile "$profile_name" -n "$target_ns" -o custom-columns=NAME:.metadata.name,DISPLAY:.metadata.annotations.'opendatahub\.io/display-name',DISABLED:.metadata.annotations.'opendatahub\.io/disabled'
+        
+        echo ""
+        print_info "The hardware profile should now be visible in the RHOAI dashboard"
+        print_info "when deploying models in the '$target_ns' namespace."
+        echo ""
+        print_warning "Remember: Hardware profiles are namespace-scoped in RHOAI 3.0"
+        print_warning "Create this profile in each namespace where you want to deploy GPU models"
+        echo ""
+        
+        return 0
+    else
+        print_error "Failed to create hardware profile"
+        return 1
+    fi
 }
 
 ################################################################################
@@ -552,6 +724,45 @@ main() {
     # Parse command line arguments
     parse_arguments "$@"
     
+    # If command line arguments were provided, run in non-interactive mode
+    if [ "$#" -gt 0 ]; then
+        run_non_interactive_mode
+        return $?
+    fi
+    
+    # Interactive menu mode
+    while true; do
+        show_main_menu
+        read -p "Select an option (1-4): " choice
+        
+        case $choice in
+            1)
+                run_complete_setup
+                ;;
+            2)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            3)
+                MAAS_ONLY=true
+                run_maas_only_setup
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            4)
+                print_info "Exiting..."
+                exit 0
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-4."
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+run_non_interactive_mode() {
     # Check prerequisites
     check_prerequisites
     
@@ -612,6 +823,85 @@ main() {
     else
         exit 1
     fi
+}
+
+run_complete_setup() {
+    print_header "Complete Setup"
+    
+    # Check prerequisites
+    check_prerequisites
+    
+    # Display setup plan
+    display_setup_plan
+    
+    # Confirm before proceeding
+    echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
+    echo ""
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "Setup cancelled by user"
+        return 0
+    fi
+    
+    echo ""
+    
+    # Track overall status
+    local overall_success=true
+    local maas_status="not_attempted"
+    
+    # Run integrated workflow
+    if ! run_integrated_workflow; then
+        overall_success=false
+        print_error "Integrated workflow failed."
+        return 1
+    fi
+    
+    # Ask about MaaS setup
+    ask_about_maas
+    
+    # Run MaaS setup if requested
+    if [ "$SETUP_MAAS" = "yes" ]; then
+        if run_maas_setup; then
+            maas_status="success"
+        else
+            maas_status="failed"
+            overall_success=false
+            print_warning "MaaS setup failed, but RHOAI is still functional"
+        fi
+    elif [ "$SETUP_MAAS" = "no" ]; then
+        maas_status="skipped"
+    fi
+    
+    # Display final summary
+    display_final_summary "$maas_status"
+    
+    return 0
+}
+
+run_maas_only_setup() {
+    print_header "MaaS Setup Only"
+    
+    echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
+    echo -e "${YELLOW}Assumes RHOAI is already installed.${NC}"
+    echo ""
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "Setup cancelled by user"
+        return 0
+    fi
+    
+    echo ""
+    
+    if run_maas_setup; then
+        print_success "MaaS setup completed successfully"
+    else
+        print_error "MaaS setup failed"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Run main function
