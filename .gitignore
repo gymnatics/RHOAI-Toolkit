@@ -40,3 +40,6 @@ openshift-install
 *.swp
 *~
 
+# Reference repositories
+reference-repo/
+
