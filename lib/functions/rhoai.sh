@@ -228,6 +228,11 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue
 EOF
         print_success "GPU hardware profile created in $namespace"
     }

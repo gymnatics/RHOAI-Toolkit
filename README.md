@@ -1,297 +1,258 @@
-# OpenShift Installation & RHOAI Setup
+# OpenShift AI Installation & Setup
 
-Automated scripts for installing OpenShift on AWS with Red Hat OpenShift AI (RHOAI), GPU workers, GenAI Playground, and Model as a Service (MaaS).
+Automated installation and configuration of Red Hat OpenShift AI (RHOAI) 3.0 on AWS with GPU support.
 
-## 🎯 Quick Start
+## Quick Start
 
-### Complete Setup (Recommended)
 ```bash
+# Complete setup (OpenShift + RHOAI + GPU + MaaS)
 ./complete-setup.sh
+
+# Or use the interactive menu
+./complete-setup.sh
+# Then select: 1) Complete Setup
 ```
 
-**Interactive Menu Mode** (default when run without arguments):
-1. **Complete Setup** - Full OpenShift + RHOAI + GPU + MaaS installation
-2. **Create GPU Hardware Profile** - Interactive profile creation with custom resources
-3. **Setup MaaS Only** - MaaS API infrastructure (assumes RHOAI exists)
-4. **Exit**
+## What This Does
 
-**Non-Interactive Mode** (with command-line arguments):
-- `--with-maas` - Automatically set up MaaS API (no prompt)
-- `--skip-maas` - Skip MaaS API setup (no prompt)
-- `--maas-only` - Only set up MaaS (skip OpenShift/RHOAI)
-- `--skip-openshift` - Skip OpenShift installation (use existing cluster)
-- `--skip-gpu` - Skip GPU worker node creation
-- `--skip-rhoai` - Skip RHOAI installation
-- `--legacy` - Use legacy/original version (scripts/integrated-workflow.sh)
+- ✅ Installs OpenShift 4.19 on AWS (us-east-2)
+- ✅ Configures GPU support (NVIDIA H100, L40S, etc.)
+- ✅ Installs RHOAI 3.0 with all operators
+- ✅ Sets up hardware profiles for model deployment
+- ✅ Configures Kueue for resource management
+- ✅ Optional: MaaS (Model as a Service) setup
 
-### Direct Usage
-```bash
-# Modular version (default, recommended)
-./integrated-workflow-v2.sh
+## Prerequisites
 
-# Legacy version (backup)
-./scripts/integrated-workflow.sh
-```
+- macOS (Apple Silicon or Intel)
+- AWS account with appropriate permissions
+- Red Hat pull secret
+- SSH key for OpenShift access
 
-**Why Modular?**
-- ✅ Cleaner code organization
-- ✅ Reusable function modules in `lib/`
-- ✅ Better maintainability
-- ✅ Same functionality as the original
+## Main Scripts
 
-## 📁 Project Structure
+| Script | Purpose |
+|--------|---------|
+| `complete-setup.sh` | Master script with interactive menu |
+| `scripts/openshift-installer-master.sh` | OpenShift installation |
+| `scripts/create-gpu-machineset.sh` | Add GPU worker nodes |
+| `scripts/create-hardware-profile.sh` | Create GPU hardware profiles |
+| `scripts/cleanup-all.sh` | Clean up AWS resources |
+
+## Hardware Profiles - IMPORTANT! 🎯
+
+**If hardware profiles aren't showing in the dashboard**, read this:
+
+📖 **[HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md)** ← **READ THIS FIRST**
+
+This document explains the **complete solution** including the critical `scheduling` section required for RHOAI 3.0.
+
+## Project Structure
 
 ```
 .
-├── complete-setup.sh                    # 🎯 Main entry point (uses modular by default)
-├── integrated-workflow-v2.sh            # ⭐ Modular RHOAI workflow (DEFAULT)
+├── complete-setup.sh              # Main entry point
+├── README.md                      # This file
+├── QUICK-REFERENCE.md            # Quick command reference
+├── HARDWARE-PROFILE-FINAL-SOLUTION.md  # Hardware profile solution
+├── HARDWARE-PROFILE-USAGE.md     # How to use hardware profiles
 │
-├── lib/                                 # 📦 Modular functions and manifests
-│   ├── functions/                       # Reusable function modules
-│   │   ├── operators.sh                 # Operator installation functions
-│   │   └── rhoai.sh                     # RHOAI-specific functions
-│   ├── manifests/                       # YAML manifest files
-│   │   ├── operators/                   # NFD, GPU operator manifests
-│   │   ├── rhcl/                        # RHCL/Kuadrant manifests
-│   │   └── rhoai/                       # RHOAI manifests
-│   └── utils/                           # Utility functions
-│       ├── colors.sh                    # Color definitions
-│       └── common.sh                    # Common helper functions
+├── scripts/                      # Executable scripts
+│   ├── openshift-installer-master.sh
+│   ├── create-gpu-machineset.sh
+│   ├── create-hardware-profile.sh
+│   ├── cleanup-all.sh
+│   └── setup-maas.sh
 │
-├── scripts/                             # Utility & legacy scripts
-│   ├── openshift-installer-master.sh    # OpenShift cluster installation
-│   ├── integrated-workflow.sh           # Legacy RHOAI workflow (use --legacy)
-│   ├── cleanup-all.sh                   # Clean up AWS resources
-│   ├── create-gpu-machineset.sh         # Create GPU worker nodes
-│   ├── enable-genai-maas.sh             # Enable GenAI Playground & MaaS UI
-│   └── setup-maas.sh                    # MaaS API infrastructure
+├── lib/                          # Reusable functions
+│   ├── functions/                # Function libraries
+│   │   ├── operators.sh
+│   │   └── rhoai.sh
+│   ├── manifests/                # Kubernetes manifests
+│   │   ├── operators/
+│   │   └── rhoai/
+│   └── utils/                    # Utility functions
+│       ├── colors.sh
+│       └── common.sh
 │
-├── tests/                               # Test scripts
-│   ├── test-audience-extraction.sh
-│   └── test-audience-extraction-v2.sh
+├── docs/                         # Detailed documentation
+│   ├── INDEX.md                  # Documentation index
+│   ├── README.md                 # Detailed setup guide
+│   ├── TROUBLESHOOTING.md
+│   ├── SETUP-COMPARISON.md
+│   └── KSERVE-DEPLOYMENT-MODES.md
 │
-├── diagnostics/                         # Diagnostic tools
-│   ├── diagnose-authorino.sh
-│   └── check-operator-pod.sh
+├── demo/                         # MaaS demo scripts
+│   ├── README.md
+│   ├── setup-demo-model.sh
+│   ├── generate-maas-token.sh
+│   └── test-maas-api.sh
 │
-├── docs/                                # Documentation
-│   ├── README.md                        # Detailed documentation
-│   └── TROUBLESHOOTING.md               # Troubleshooting guide
-│
-└── archive/                             # Legacy/deprecated scripts
-    ├── fix-macos-security.sh
-    ├── fix-rhcl-operator.sh
-    └── README.md
+├── tests/                        # Test scripts
+├── diagnostics/                  # Diagnostic tools
+└── archive/                      # Historical docs
 ```
 
-## 🔧 Individual Scripts
+## Common Tasks
 
-### Main Workflow Scripts
+### Install OpenShift + RHOAI
 
-**Modular Version (Recommended - Default)**
 ```bash
-./integrated-workflow-v2.sh [OPTIONS]
-
-Options:
-  --skip-openshift    Skip OpenShift installation
-  --skip-gpu          Skip GPU worker node creation
-  --skip-rhoai        Skip RHOAI installation
-```
-Uses modular functions from `lib/` - cleaner and more maintainable.
-
-**Legacy Version (Backup)**
-```bash
-./scripts/integrated-workflow.sh [OPTIONS]
-```
-Original monolithic version - still works, kept for compatibility.
-
-### Utility Scripts
-```bash
-./scripts/openshift-installer-master.sh  # OpenShift cluster installation
-./scripts/create-gpu-machineset.sh       # Create GPU worker nodes
-./scripts/enable-genai-maas.sh           # Enable GenAI & MaaS UI
-./scripts/setup-maas.sh                  # Set up MaaS API infrastructure
-./scripts/cleanup-all.sh                 # Clean up AWS resources
-```
-
-See `scripts/README.md` and `lib/README.md` for detailed documentation.
-
-## 📋 Prerequisites
-
-### Required Tools
-- AWS CLI configured with credentials
-- `oc` (OpenShift CLI)
-- `jq` (for JSON parsing)
-- `git`
-
-### AWS Requirements
-- Valid AWS account with appropriate permissions
-- Route53 hosted zone for DNS
-- Sufficient service quotas (Elastic IPs, EC2 instances, VPCs)
-- Access to GPU instance types in your region (p5.48xlarge, g6e.*)
-
-### Red Hat Requirements
-- Red Hat pull secret (from https://console.redhat.com/openshift/install/pull-secret)
-- SSH public key for cluster access
-
-## 🚀 Usage Examples
-
-### Fresh Installation
-```bash
-# Complete setup with MaaS
-./complete-setup.sh --with-maas
-
-# Or interactive (will prompt for MaaS)
 ./complete-setup.sh
+# Select: 1) Complete Setup
 ```
 
-### Existing RHOAI Installation
+### Add GPU Worker Nodes
+
 ```bash
-# Enable GenAI and MaaS features
-./scripts/enable-genai-maas.sh
-
-# Set up MaaS API
-./scripts/setup-maas.sh
-
-# Create GPU nodes
 ./scripts/create-gpu-machineset.sh
 ```
 
-### Step-by-Step Installation
+### Create Hardware Profile
+
 ```bash
-# 1. Install OpenShift + RHOAI + GenAI/MaaS
-./scripts/integrated-workflow.sh
+./scripts/create-hardware-profile.sh <namespace>
+```
 
-# 2. Create GPU nodes
-./scripts/create-gpu-machineset.sh
+### Setup MaaS
 
-# 3. Set up MaaS API (optional)
+```bash
 ./scripts/setup-maas.sh
 ```
 
-### Cleanup
+### Clean Up Everything
+
 ```bash
-# Clean up all AWS resources
 ./scripts/cleanup-all.sh
 ```
 
-## 📖 What Gets Installed
+## Troubleshooting
 
-### OpenShift Components
-- OpenShift 4.19+ cluster on AWS
-- VPC with public and private subnets
-- NAT Gateways and Internet Gateway
-- Route53 DNS configuration
-- Master and worker nodes
+### Hardware Profiles Not Showing?
 
-### RHOAI Components
+📖 Read: [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md)
+
+**TL;DR**: Hardware profiles in RHOAI 3.0 require a `scheduling` section:
+
+```yaml
+spec:
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue
+```
+
+### Other Issues
+
+- 📖 [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Common commands
+- 📖 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Detailed troubleshooting
+- 📖 [docs/INDEX.md](docs/INDEX.md) - Full documentation index
+
+## Key Features
+
+### ✅ Automated Installation
+- One-command setup
+- Interactive prompts for configuration
+- Automatic prerequisite checks
+
+### ✅ GPU Support
+- NVIDIA GPU operator
 - Node Feature Discovery (NFD)
-- NVIDIA GPU Operator
-- Red Hat OpenShift AI Operator
-- Service Mesh 3.x (auto-installed)
-- Serverless (Knative) (auto-installed)
-- Red Hat Connectivity Link (RHCL/Kuadrant)
-- Leader Worker Set (LWS) Operator
-- Kueue Operator
+- Dynamic MachineSet creation
+- Hardware profiles for GPU workloads
 
-### GenAI & MaaS Features
-- GenAI Playground UI
-- Model as a Service UI
-- `llm-d` serving runtime
-- GPU hardware profiles
-- MaaS API infrastructure (optional)
-- Authentication policies (Authorino)
-- Rate limiting (Limitador)
+### ✅ RHOAI 3.0
+- Serverless + Kueue deployment mode
+- Model deployment via Dashboard
+- Auto-scaling and resource management
+- GenAI Playground and Model Catalog
 
-## 🔍 Key Features
+### ✅ MaaS (Optional)
+- Model as a Service API
+- Token-based authentication
+- OpenAI-compatible endpoints
+- Demo scripts included
 
-- **Interactive Prompts**: Guides you through configuration
-- **Version Selection**: Choose OpenShift and RHOAI versions
-- **GPU Support**: Automated GPU worker node creation (p5.48xlarge, g6e.*)
-- **Idempotent**: Safe to run multiple times
-- **Comprehensive Cleanup**: Handles complex AWS resource dependencies
-- **Dynamic Configuration**: Adapts to your cluster and AWS environment
-- **Skip Flags**: Skip components you've already installed
+## Configuration
 
-## 📚 Documentation
+### OpenShift Version
 
-- **Detailed Guide**: See `docs/README.md` for comprehensive documentation
-- **Troubleshooting**: See `docs/TROUBLESHOOTING.md` for common issues
-- **Script Documentation**: See `scripts/README.md` for utility script details
+Default: 4.19 (configurable in installer script)
 
-## 🛠️ Troubleshooting
+### AWS Region
 
-### GPU Hardware Profiles
+Default: us-east-2 (supports H100 instances)
 
-**Create Hardware Profile Interactively** 🆕
+### GPU Instance Types
+
+Supported:
+- `p5.48xlarge` (H100)
+- `g6e.xlarge`, `g6e.2xlarge`, `g6e.4xlarge` (L40S)
+- Other NVIDIA GPU instances
+
+### RHOAI Version
+
+Default: 3.0 (`fast-3.x` channel)
+
+## Documentation
+
+### Essential Reading
+
+1. 📖 [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md) - **Start here for hardware profiles**
+2. 📖 [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick commands
+3. 📖 [docs/README.md](docs/README.md) - Detailed setup guide
+
+### Advanced Topics
+
+- 📖 [docs/KSERVE-DEPLOYMENT-MODES.md](docs/KSERVE-DEPLOYMENT-MODES.md) - RawDeployment vs Serverless
+- 📖 [docs/SETUP-COMPARISON.md](docs/SETUP-COMPARISON.md) - Comparison with reference repos
+- 📖 [docs/INDEX.md](docs/INDEX.md) - Complete documentation index
+
+## Support
+
+### Verification
+
 ```bash
-./complete-setup.sh
-# Select option 2: Create GPU Hardware Profile
-```
-This interactive wizard will prompt you for:
-- Target namespace
-- CPU resources (default, min, max)
-- Memory resources (default, min, max)
-- GPU resources (default, min, max)
-- Profile name and display name
+# Check all operators
+oc get csv -A | grep -E "nfd|gpu|kueue|lws|rhcl|rhods"
 
-**Or use the standalone script:**
-```bash
-./scripts/create-hardware-profile.sh [namespace]
-```
+# Check DataScienceCluster
+oc get datasciencecluster default-dsc
 
-**Fix Existing Profile:**
-```bash
-./scripts/fix-hardware-profile.sh
-```
+# Check hardware profiles
+oc get hardwareprofiles -n redhat-ods-applications
 
-See `docs/HARDWARE-PROFILE-FIX.md` for complete troubleshooting guide.
+# Check Kueue resources
+oc get clusterqueue
+oc get localqueue -n <namespace>
+```
 
 ### Common Issues
 
-**GPU Hardware Profile Not Visible in Model Deployment UI** ⚠️
-```bash
-./scripts/fix-hardware-profile.sh
-```
-See `docs/HARDWARE-PROFILE-TROUBLESHOOTING.md` for details.
+| Issue | Solution |
+|-------|----------|
+| Hardware profiles not showing | Read [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md) |
+| Kueue disabled | Check [docs/KUEUE-FIX-SUMMARY.md](docs/KUEUE-FIX-SUMMARY.md) |
+| LWS operator failed | Check [docs/LWS-FIX-SUMMARY.md](docs/LWS-FIX-SUMMARY.md) |
+| NFD pods failing | Check [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 
-**macOS Security Warning**
-```bash
-xattr -d com.apple.quarantine openshift-install
-chmod +x openshift-install
-```
+## Contributing
 
-**Pull Secret Issues**
-- Use the file path option instead of pasting
-- Ensure no extra whitespace or newlines
+This is a personal project for OpenShift AI setup automation. Feel free to fork and adapt for your needs.
 
-**AWS Quota Limits**
-- Check Elastic IP limits (default: 5 per region)
-- Request quota increases if needed
+## License
 
-**Operator Installation Failures**
-- Scripts are idempotent - safe to re-run
-- Check operator logs: `oc logs -n openshift-operators <pod-name>`
+MIT License - See LICENSE file for details
 
-For more troubleshooting, see `docs/TROUBLESHOOTING.md`.
+## References
 
-## 🤝 Contributing
+- Red Hat OpenShift AI Documentation: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0
+- Reference Repository: https://github.com/tsailiming/openshift-ai-bootstrap/tree/rhoai-3
+- OpenShift Documentation: https://docs.openshift.com/
 
-This is a personal automation project. Feel free to fork and adapt to your needs.
+---
 
-## 📝 License
-
-MIT License - See LICENSE file for details.
-
-## ⚠️ Important Notes
-
-- **Costs**: Running OpenShift on AWS incurs costs. Monitor your AWS billing.
-- **Security**: Never commit sensitive files (pull secrets, SSH keys, cluster configs).
-- **Cleanup**: Always run `./scripts/cleanup-all.sh` when done to avoid unnecessary charges.
-- **Long-Running**: Installation can take 45-60 minutes. Use `tmux` or `caffeinate` on macOS.
-
-## 🎓 Learning Resources
-
-- [OpenShift Documentation](https://docs.openshift.com/)
-- [RHOAI Documentation](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai/)
-- [AWS OpenShift Guide](https://docs.openshift.com/container-platform/latest/installing/installing_aws/preparing-to-install-on-aws.html)
+**Last Updated**: November 2025  
+**RHOAI Version**: 3.0  
+**OpenShift Version**: 4.19
