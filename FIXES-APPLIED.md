@@ -1,281 +1,179 @@
-# Fixes Applied - RHOAI 3.0 Hardware Profiles & NFD
+# Fixes Applied - Hardware Profile & NFD Issues
 
-## Summary
+## 🎯 Summary
 
-Fixed two critical issues preventing GPU hardware profiles from appearing in the RHOAI 3.0 UI:
+Fixed two critical issues preventing GPU hardware profiles from appearing in the RHOAI dashboard:
 
-1. **NFD Image Pull Failure** - Node Feature Discovery couldn't start
-2. **Hardware Profile Namespace Scoping** - Profiles weren't visible in project namespaces
+1. **Hardware profiles are namespace-scoped** in RHOAI 3.0
+2. **NFD image pull failure** preventing GPU detection
 
----
+## 🔧 Issues Fixed
 
-## Issue 1: NFD Image Pull Failure ❌→✅
+### 1. Hardware Profile Not Visible in UI ✅
 
-### Problem
-```
-Error: ImagePullBackOff
-Back-off pulling image "registry.redhat.io/openshift4/ose-node-feature-discovery:v4.19"
-reading manifest v4.19: manifest unknown
-```
+**Problem**: GPU hardware profile existed but didn't appear in model deployment dropdown.
 
-### Root Cause
-The NFD instance manifest had a hardcoded image version (`v4.19`) that doesn't exist in the Red Hat registry.
+**Root Causes**:
+- ❌ Profile created in `redhat-ods-applications` (wrong namespace)
+- ❌ Missing required labels for UI discovery
+- ❌ Scheduling constraints hide profile when no GPU nodes match selector
 
-### Fix Applied
-**File**: `lib/manifests/operators/nfd-instance.yaml`
+**Solution**:
+- ✅ Create profiles in the **same namespace** where you deploy models
+- ✅ Add required labels: `app.opendatahub.io/hardwareprofile: "true"`
+- ✅ Remove `spec.scheduling` constraints (GPU resource request still works)
 
-**Before**:
-```yaml
-spec:
-  operand:
-    image: registry.redhat.io/openshift4/ose-node-feature-discovery:v4.19
-    imagePullPolicy: Always
-```
+### 2. NFD Pods in ImagePullBackOff ✅
 
-**After**:
-```yaml
-spec:
-  operand:
-    servicePort: 12000
-```
+**Problem**: Node Feature Discovery pods couldn't pull images, preventing GPU detection.
 
-**Result**: NFD operator now uses the correct default image for your OpenShift version.
+**Root Cause**:
+- ❌ NFD CR specified `image: registry.redhat.io/openshift4/ose-node-feature-discovery:v4.19`
+- ❌ The `v4.19` tag doesn't exist in the registry
 
-### Verification
-```bash
-# Check NFD pods are running
-oc get pods -n openshift-nfd
+**Solution**:
+- ✅ Removed explicit image override from NFD CR
+- ✅ Let NFD operator use correct default image
+- ✅ NFD pods now running successfully
+- ✅ GPU nodes properly labeled with `nvidia.com/gpu.present=true`
 
-# Check GPU node has proper labels
-oc get node <gpu-node-name> -L nvidia.com/gpu.present
-# Should show: nvidia.com/gpu.present=true
-```
+## 📝 Changes Made
 
----
+### Scripts Updated
 
-## Issue 2: Hardware Profile Not Visible in UI ❌→✅
+1. **`lib/functions/rhoai.sh`**
+   - `create_gpu_hardware_profile()` now creates profiles in current namespace
+   - Removes scheduling constraints for better visibility
+   - Adds all required labels and annotations
 
-### Problem
-- Hardware profile exists in `redhat-ods-applications` namespace
-- Profile shows in Settings → Hardware Profiles
-- **BUT** profile NOT in dropdown when deploying models
+2. **`scripts/create-hardware-profile.sh`** (NEW)
+   - Helper script to create GPU profiles in any namespace
+   - Usage: `./scripts/create-hardware-profile.sh [namespace]`
 
-### Root Causes
+3. **`scripts/fix-hardware-profile.sh`** (UPDATED)
+   - Now operates on current namespace
+   - Removes scheduling constraints
+   - Comprehensive verification
 
-1. **Namespace Scoping**: RHOAI 3.0 hardware profiles are namespace-scoped
-   - Profiles in `redhat-ods-applications` are global but not visible in projects
-   - Must create profile in the **same namespace** where you deploy models
+### Documentation Added
 
-2. **Missing Labels**: Required label for UI discovery
-   - `app.opendatahub.io/hardwareprofile: "true"` was missing
+1. **`docs/HARDWARE-PROFILE-FIX.md`** (NEW)
+   - Complete troubleshooting guide
+   - Explains namespace-scoped profiles
+   - Quick fix steps and manual procedures
+   - NFD troubleshooting
 
-3. **API Version**: Using `v1alpha1` instead of stable `v1`
+2. **`docs/HARDWARE-PROFILE-TROUBLESHOOTING.md`** (EXISTING)
+   - Detailed API version and structure info
+   - Manual fix procedures
 
-4. **Missing Annotations**: Several required annotations were missing
+3. **`QUICK-REFERENCE.md`** (EXISTING)
+   - Quick reference for common issues
 
-### Fix Applied
-
-**File**: `lib/functions/rhoai.sh` - Updated `create_gpu_hardware_profile()`
-
-**Key Changes**:
-- Use `infrastructure.opendatahub.io/v1` (stable API)
-- Add required labels:
-  - `app.opendatahub.io/hardwareprofile: "true"`
-  - `app.kubernetes.io/part-of: hardwareprofile`
-- Add required annotations:
-  - `opendatahub.io/managed: "false"`
-  - `opendatahub.io/description`
-- Remove scheduling constraints (nodeSelector) that hide profile when no GPU nodes match
-
-**Complete Working Profile**:
-```yaml
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: gpu-profile
-  namespace: <your-project-namespace>  # ← Must be in project namespace!
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'  # ← Required!
-    app.kubernetes.io/part-of: hardwareprofile  # ← Required!
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '16'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 16Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 64Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-```
-
----
-
-## New Tools Created
-
-### 1. `scripts/create-hardware-profile-in-namespace.sh`
-Create GPU hardware profile in any namespace.
-
-**Usage**:
-```bash
-# Interactive mode
-./scripts/create-hardware-profile-in-namespace.sh
-
-# Specify namespace
-./scripts/create-hardware-profile-in-namespace.sh my-project
-```
-
-### 2. Updated `scripts/fix-hardware-profile.sh`
-Now prompts for namespace and creates profile with correct configuration.
-
-**Usage**:
-```bash
-./scripts/fix-hardware-profile.sh
-```
-
----
-
-## How to Use
+## 🚀 How to Use
 
 ### For New Installations
+
 The updated scripts will automatically:
-1. Install NFD with correct configuration (no hardcoded image)
-2. Create hardware profile in appropriate namespace
-3. Add all required labels and annotations
+1. Create hardware profiles in the correct namespace
+2. Add all required labels and annotations
+3. Skip scheduling constraints
 
-### For Existing Installations
+### For Existing Clusters
 
-#### Fix NFD (if pods are failing)
+**Quick Fix**:
 ```bash
-# Apply the fix
-oc apply -f lib/manifests/operators/nfd-instance.yaml
+# Switch to your project
+oc project my-project
 
-# Wait for pods to restart
-oc get pods -n openshift-nfd -w
-```
-
-#### Create Hardware Profile in Your Project
-```bash
-# Option 1: Use helper script
-./scripts/create-hardware-profile-in-namespace.sh my-project
-
-# Option 2: Use fix script
+# Fix the hardware profile
 ./scripts/fix-hardware-profile.sh
+
+# Refresh your browser
 ```
 
-#### Verify
+**Create in Multiple Namespaces**:
 ```bash
-# Check profile exists in your namespace
-oc get hardwareprofile -n my-project
-
-# Refresh browser (Cmd+Shift+R)
-# Go to RHOAI Dashboard → Your Project → Deploy Model
-# GPU Profile should appear in Hardware Profile dropdown
+./scripts/create-hardware-profile.sh project-1
+./scripts/create-hardware-profile.sh project-2
+./scripts/create-hardware-profile.sh project-3
 ```
 
----
+## 📊 Verification
 
-## Key Learnings
+### Check NFD is Working
 
-### RHOAI 3.0 Changes
+```bash
+# NFD pods should be Running
+oc get pods -n openshift-nfd
 
-1. **Hardware Profiles are Namespace-Scoped**
-   - Create in each namespace where you deploy models
-   - Global profiles in `redhat-ods-applications` may not appear in UI
+# GPU nodes should have the label
+oc get nodes -l nvidia.com/gpu.present=true
+```
 
-2. **API Version Stability**
-   - Use `infrastructure.opendatahub.io/v1` (stable)
-   - Not `v1alpha1` or `dashboard.opendatahub.io/v1`
+### Check Hardware Profile
 
-3. **Required Metadata**
-   - Labels: `app.opendatahub.io/hardwareprofile: "true"`
-   - Annotations: `opendatahub.io/managed`, `opendatahub.io/display-name`
+```bash
+# Switch to your project
+oc project my-project
 
-4. **NFD Image Versions**
-   - Don't hardcode image versions
-   - Let operator choose correct version for OpenShift
+# Profile should exist
+oc get hardwareprofile gpu-profile
 
-### Best Practices
+# Check it has correct labels
+oc get hardwareprofile gpu-profile -o jsonpath='{.metadata.labels}' | jq .
+```
 
-1. **Always create hardware profiles in project namespaces**
-2. **Use the helper scripts** for consistent configuration
-3. **Verify NFD is running** before expecting GPU detection
-4. **Check GPU node labels** to ensure NFD discovered the GPU
+### Check in UI
 
----
+1. Go to RHOAI Dashboard
+2. Navigate to model deployment
+3. "GPU Profile" should appear in the hardware profile dropdown
 
-## Troubleshooting
+## 🎓 Key Learnings
 
-### Profile Still Not Visible?
+### Hardware Profiles in RHOAI 3.0
 
-1. **Check namespace**:
-   ```bash
-   oc get hardwareprofile -n <your-project-namespace>
-   ```
+**Namespace-Scoped**:
+- Profiles must be in the **same namespace** as your model deployment
+- Creating in `redhat-ods-applications` won't make them visible for model deployment
+- Each project needs its own hardware profile
 
-2. **Check labels**:
-   ```bash
-   oc get hardwareprofile gpu-profile -n <namespace> -o jsonpath='{.metadata.labels}'
-   ```
-   Should include: `app.opendatahub.io/hardwareprofile: "true"`
+**Required Metadata**:
+```yaml
+metadata:
+  labels:
+    app.opendatahub.io/hardwareprofile: "true"  # REQUIRED for UI discovery
+    app.kubernetes.io/part-of: hardwareprofile   # REQUIRED
+  annotations:
+    opendatahub.io/display-name: "GPU Profile"   # REQUIRED
+    opendatahub.io/disabled: "false"             # REQUIRED
+```
 
-3. **Restart dashboard**:
-   ```bash
-   oc delete pod -n redhat-ods-applications -l app=rhods-dashboard
-   ```
+**Scheduling Constraints**:
+- Profiles with `spec.scheduling.node.nodeSelector` are hidden when no matching nodes exist
+- Better to omit scheduling section - GPU resource request still schedules on GPU nodes
 
-4. **Hard refresh browser**: Cmd+Shift+R (Mac) or Ctrl+Shift+R (Windows/Linux)
+### NFD Image Tags
 
-### NFD Still Failing?
+- Don't hardcode image tags in NFD CR
+- Let the operator manage the correct image version
+- The `v4.19` tag pattern doesn't exist in registry
 
-1. **Check pods**:
-   ```bash
-   oc get pods -n openshift-nfd
-   ```
+## 🔗 Related Documentation
 
-2. **Check events**:
-   ```bash
-   oc get events -n openshift-nfd --sort-by='.lastTimestamp' | tail -20
-   ```
+- [docs/HARDWARE-PROFILE-FIX.md](docs/HARDWARE-PROFILE-FIX.md) - Complete fix guide
+- [docs/HARDWARE-PROFILE-TROUBLESHOOTING.md](docs/HARDWARE-PROFILE-TROUBLESHOOTING.md) - Detailed troubleshooting
+- [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick reference card
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - General troubleshooting
 
-3. **Verify NFD instance**:
-   ```bash
-   oc get nodefeaturediscovery nfd-instance -n openshift-nfd -o yaml
-   ```
-   Should NOT have hardcoded `image:` field
+## ✅ Status
 
----
+- [x] NFD pods running successfully
+- [x] GPU nodes properly labeled
+- [x] Hardware profile creation fixed
+- [x] Scripts updated
+- [x] Documentation complete
+- [x] Changes committed and pushed to Git
 
-## Documentation
-
-- **Detailed Troubleshooting**: `docs/HARDWARE-PROFILE-TROUBLESHOOTING.md`
-- **Quick Reference**: `QUICK-REFERENCE.md`
-- **Main README**: `README.md`
-
----
-
-## Status
-
-✅ **NFD Fixed**: Pods running, GPU nodes labeled  
-✅ **Hardware Profile Fixed**: Correct API version, labels, and namespace  
-✅ **Scripts Updated**: All future installations will work correctly  
-✅ **Documentation Updated**: Comprehensive troubleshooting guides  
-
-**All changes committed and pushed to Git repository.**
-
+All fixes have been applied and tested! 🎉
