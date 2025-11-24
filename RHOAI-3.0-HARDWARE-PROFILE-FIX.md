@@ -54,7 +54,7 @@ spec:
 | `displayName` | `spec.displayName` | `spec.displayName` (but stripped in v1) |
 | `enabled` | `spec.enabled` | `spec.enabled` (but stripped in v1) |
 | Dashboard Config | `disableHardwareProfiles: false` | Field removed (deprecated) |
-| Kueue Management | `managementState: Managed` | `managementState: Removed` or `Unmanaged` |
+| Kueue Management | `managementState: Managed` | `managementState: Unmanaged` (NOT `Removed`!) |
 
 ### Dashboard Configuration
 
@@ -92,7 +92,7 @@ spec:
     kueue:
       defaultClusterQueueName: default
       defaultLocalQueueName: default
-      managementState: Removed  # ← Use "Removed", not "Managed"
+      managementState: Unmanaged  # ← Use "Unmanaged" (NOT "Removed" - that disables Kueue!)
     # ... other components
 ```
 
@@ -102,7 +102,7 @@ spec:
 2. **Spec Fields**: While `description`, `displayName`, and `enabled` can be specified in the YAML, they are **stripped out** when the resource is created in the cluster (converted to v1)
 3. **No Annotations Needed**: Unlike our previous attempts, you don't need to add `opendatahub.io/description`, `opendatahub.io/managed`, etc. as annotations
 4. **No Labels Needed**: You don't need `app.kubernetes.io/part-of` or other labels
-5. **Kueue**: In RHOAI 3.0, Kueue should be set to `Removed` (not `Managed` or `Unmanaged`)
+5. **Kueue**: In RHOAI 3.0, Kueue should be set to `Unmanaged` (NOT `Removed` - that disables Kueue entirely!)
 6. **No Scheduling Constraints**: Don't add `nodeSelector` or `tolerations` to the hardware profile - let the GPU resource request handle scheduling
 
 ## Verification Steps
@@ -236,7 +236,7 @@ EOF
 ### 3. Updated Kueue Configuration
 
 ```bash
-oc patch datasciencecluster default-dsc --type=merge -p '{"spec":{"components":{"kueue":{"managementState":"Removed"}}}}'
+oc patch datasciencecluster default-dsc --type=merge -p '{"spec":{"components":{"kueue":{"managementState":"Unmanaged"}}}}'
 ```
 
 ### 4. Restarted Dashboard
@@ -248,10 +248,12 @@ oc delete pods -l app=rhods-dashboard -n redhat-ods-applications
 ## Summary
 
 ✅ **Hardware Profile**: Using correct RHOAI 3.0 v1 API format  
-✅ **Kueue**: Set to `Removed` (not `Unmanaged` or `Managed`)  
+✅ **Kueue**: Set to `Unmanaged` (NOT `Removed` - that disables Kueue!)  
 ✅ **Dashboard**: Restarted to pick up changes  
 ✅ **No Deprecated Fields**: Removed `disableHardwareProfiles` from dashboard config  
 ✅ **Simplified Format**: No extra annotations or labels needed  
+
+**IMPORTANT**: The reference repository had Kueue set to `Removed` because they're not using Kueue for model deployment. For RHOAI 3.0 with model deployment, Kueue must be set to `Unmanaged` (as per the CAI guide).
 
 The hardware profiles should now be visible and functional in the RHOAI 3.0 dashboard! 🚀
 
