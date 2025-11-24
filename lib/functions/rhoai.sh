@@ -204,7 +204,7 @@ spec:
         managementState: Managed
         name: knative-serving
     kueue:
-      managementState: Unmanaged
+      managementState: Removed
     llamastackoperator:
       managementState: Managed
     modelmeshserving:

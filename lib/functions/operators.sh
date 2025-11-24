@@ -134,30 +134,76 @@ install_rhcl_operator() {
 install_lws_operator() {
     print_header "Installing Leader Worker Set (LWS) Operator"
     
+    # LWS requires its own namespace (doesn't support AllNamespaces mode)
+    local lws_namespace="openshift-lws-operator"
+    
     # Check if already installed
-    if check_operator_installed "lws-operator" "openshift-operators"; then
+    if oc get csv -n "$lws_namespace" 2>/dev/null | grep -q leader-worker-set; then
         print_success "LWS Operator already installed"
         return 0
     fi
     
-    print_step "Installing LWS Operator..."
+    print_step "Creating LWS namespace..."
+    
+    # Create namespace
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: $lws_namespace
+EOF
+    
+    # Clean up any duplicate OperatorGroups (prevents "Multiple OperatorGroup" error)
+    print_step "Ensuring clean OperatorGroup configuration..."
+    local existing_ogs=$(oc get operatorgroup -n "$lws_namespace" -o name 2>/dev/null | wc -l)
+    if [ "$existing_ogs" -gt 1 ]; then
+        print_step "Removing duplicate OperatorGroups..."
+        oc delete operatorgroup --all -n "$lws_namespace"
+        sleep 2
+    fi
+    
+    # Create OperatorGroup (name matches namespace to avoid conflicts)
+    print_step "Creating OperatorGroup..."
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: $lws_namespace
+  namespace: $lws_namespace
+spec:
+  targetNamespaces:
+  - $lws_namespace
+EOF
+    
+    print_step "Installing LWS Operator subscription..."
     
     cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: lws-operator
-  namespace: openshift-operators
+  name: leader-worker-set
+  namespace: $lws_namespace
 spec:
-  channel: stable
+  channel: stable-v1.0
   installPlanApproval: Automatic
-  name: lws-operator
+  name: leader-worker-set
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
     
     # Wait for operator to be ready
-    wait_for_operator_ready "lws" "openshift-operators"
+    print_step "Waiting for LWS operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n "$lws_namespace" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "LWS operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for LWS operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
     
     print_success "LWS operator installation complete"
 }
@@ -181,7 +227,7 @@ metadata:
   name: kueue-operator
   namespace: openshift-operators
 spec:
-  channel: stable
+  channel: stable-v1.1
   installPlanApproval: Automatic
   name: kueue-operator
   source: redhat-operators
@@ -189,7 +235,18 @@ spec:
 EOF
     
     # Wait for operator to be ready
-    wait_for_operator_ready "kueue" "openshift-operators"
+    print_step "Waiting for Kueue operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n openshift-operators 2>/dev/null | grep -q "kueue-operator.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Kueue operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for Kueue operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
     
     print_success "Kueue operator installation complete"
 }

@@ -881,9 +881,7 @@ spec:
     llamastackoperator:
       managementState: Managed
     kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
+      managementState: Removed
     modelregistry:
       managementState: Managed
       registriesNamespace: rhoai-model-registries
