@@ -208,6 +208,67 @@ EOF
     print_success "LWS operator installation complete"
 }
 
+# Install cert-manager Operator (required by Kueue)
+install_certmanager_operator() {
+    print_header "Installing cert-manager Operator"
+    
+    local cm_namespace="cert-manager-operator"
+    
+    # Check if already installed
+    if check_operator_installed "cert-manager-operator" "$cm_namespace"; then
+        print_success "cert-manager Operator already installed"
+        return 0
+    fi
+    
+    print_step "Creating cert-manager-operator namespace..."
+    oc create namespace "$cm_namespace" 2>/dev/null || true
+    
+    # Check for existing OperatorGroup
+    local existing_ogs=$(oc get operatorgroup -n "$cm_namespace" -o name 2>/dev/null | wc -l)
+    if [ "$existing_ogs" -eq 0 ]; then
+        print_step "Creating OperatorGroup..."
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: $cm_namespace
+  namespace: $cm_namespace
+spec: {}
+EOF
+    fi
+    
+    print_step "Installing cert-manager Operator subscription..."
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: $cm_namespace
+spec:
+  channel: stable-v1
+  installPlanApproval: Automatic
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator to be ready
+    print_step "Waiting for cert-manager operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n "$cm_namespace" 2>/dev/null | grep -q "cert-manager-operator.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "cert-manager operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for cert-manager operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "cert-manager operator installation complete"
+}
+
 # Install Kueue Operator
 install_kueue_operator() {
     print_header "Installing Kueue Operator"
@@ -216,6 +277,23 @@ install_kueue_operator() {
     if check_operator_installed "kueue-operator" "openshift-operators"; then
         print_success "Kueue Operator already installed"
         return 0
+    fi
+    
+    # Ensure cert-manager is installed first (required dependency)
+    print_step "Checking cert-manager dependency..."
+    if ! check_operator_installed "cert-manager-operator" "cert-manager-operator"; then
+        print_step "cert-manager not found, installing..."
+        install_certmanager_operator
+    else
+        print_success "cert-manager already installed"
+    fi
+    
+    # Clean up any duplicate Kueue subscriptions
+    print_step "Checking for duplicate Kueue subscriptions..."
+    if oc get subscription kueue-operator -n openshift-kueue-system &>/dev/null; then
+        print_step "Removing duplicate Kueue subscription in openshift-kueue-system..."
+        oc delete subscription kueue-operator -n openshift-kueue-system 2>/dev/null || true
+        oc delete csv -n openshift-kueue-system -l operators.coreos.com/kueue-operator.openshift-kueue-system 2>/dev/null || true
     fi
     
     print_step "Installing Kueue Operator..."

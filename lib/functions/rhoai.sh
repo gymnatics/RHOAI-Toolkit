@@ -204,7 +204,9 @@ spec:
         managementState: Managed
         name: knative-serving
     kueue:
-      managementState: Removed
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
     llamastackoperator:
       managementState: Managed
     modelmeshserving:
@@ -239,6 +241,7 @@ spec:
     disableModelCatalog: false
     disableKServeMetrics: false
     disableLMEval: false
+    disableKueue: false
 EOF
     
     print_success "Dashboard configured"

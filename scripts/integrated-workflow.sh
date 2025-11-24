@@ -749,6 +749,156 @@ EOF
     print_success "RHCL operator installation complete (enables llm-d serving runtime)"
 }
 
+install_certmanager_operator() {
+    print_step "Checking cert-manager Operator..."
+    
+    local cm_namespace="cert-manager-operator"
+    
+    if check_operator_installed "cert-manager-operator" "$cm_namespace"; then
+        print_success "cert-manager Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing cert-manager Operator (required by Kueue)..."
+    oc create namespace "$cm_namespace" 2>/dev/null || true
+    
+    # Create OperatorGroup
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: $cm_namespace
+  namespace: $cm_namespace
+spec: {}
+EOF
+    
+    # Create Subscription
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: $cm_namespace
+spec:
+  channel: stable-v1
+  installPlanApproval: Automatic
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator
+    sleep 30
+    until oc get csv -n "$cm_namespace" 2>/dev/null | grep -q "cert-manager-operator.*Succeeded"; do
+        echo "Waiting for cert-manager operator..."
+        sleep 10
+    done
+    
+    print_success "cert-manager operator installed"
+}
+
+install_lws_operator() {
+    print_step "Checking Leader Worker Set (LWS) Operator..."
+    
+    local lws_namespace="openshift-lws-operator"
+    
+    if oc get csv -n "$lws_namespace" 2>/dev/null | grep -q leader-worker-set; then
+        print_success "LWS Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing Leader Worker Set Operator..."
+    oc create namespace "$lws_namespace" 2>/dev/null || true
+    
+    # Clean up duplicate OperatorGroups
+    local existing_ogs=$(oc get operatorgroup -n "$lws_namespace" -o name 2>/dev/null | wc -l)
+    if [ "$existing_ogs" -gt 1 ]; then
+        oc delete operatorgroup --all -n "$lws_namespace"
+        sleep 2
+    fi
+    
+    # Create OperatorGroup
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: $lws_namespace
+  namespace: $lws_namespace
+spec:
+  targetNamespaces:
+  - $lws_namespace
+EOF
+    
+    # Create Subscription
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: leader-worker-set
+  namespace: $lws_namespace
+spec:
+  channel: stable-v1.0
+  installPlanApproval: Automatic
+  name: leader-worker-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator
+    sleep 30
+    until oc get csv -n "$lws_namespace" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; do
+        echo "Waiting for LWS operator..."
+        sleep 10
+    done
+    
+    print_success "LWS operator installed"
+}
+
+install_kueue_operator() {
+    print_step "Checking Kueue Operator..."
+    
+    if check_operator_installed "kueue-operator" "openshift-operators"; then
+        print_success "Kueue Operator already installed"
+        return 0
+    fi
+    
+    # Ensure cert-manager is installed first
+    if ! check_operator_installed "cert-manager-operator" "cert-manager-operator"; then
+        install_certmanager_operator
+    fi
+    
+    # Clean up duplicate subscriptions
+    if oc get subscription kueue-operator -n openshift-kueue-system &>/dev/null; then
+        print_step "Removing duplicate Kueue subscription..."
+        oc delete subscription kueue-operator -n openshift-kueue-system 2>/dev/null || true
+        oc delete csv -n openshift-kueue-system -l operators.coreos.com/kueue-operator.openshift-kueue-system 2>/dev/null || true
+    fi
+    
+    print_step "Installing Kueue Operator..."
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kueue-operator
+  namespace: openshift-operators
+spec:
+  channel: stable-v1.1
+  installPlanApproval: Automatic
+  name: kueue-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator
+    sleep 30
+    until oc get csv -n openshift-operators 2>/dev/null | grep -q "kueue-operator.*Succeeded"; do
+        echo "Waiting for Kueue operator..."
+        sleep 10
+    done
+    
+    print_success "Kueue operator installed"
+}
+
 install_rhoai_operator() {
     print_step "Checking Red Hat OpenShift AI Operator (version $RHOAI_VERSION)..."
     
@@ -881,7 +1031,9 @@ spec:
     llamastackoperator:
       managementState: Managed
     kueue:
-      managementState: Removed
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
     modelregistry:
       managementState: Managed
       registriesNamespace: rhoai-model-registries
@@ -960,6 +1112,9 @@ install_rhoai() {
     install_nfd_operator
     install_gpu_operator
     install_rhcl_operator
+    install_certmanager_operator
+    install_lws_operator
+    install_kueue_operator
     install_rhoai_operator
     create_rhoai_instance
     
