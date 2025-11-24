@@ -251,18 +251,25 @@ create_gpu_hardware_profile() {
     # Get current namespace or use default
     local current_ns=$(oc project -q 2>/dev/null || echo "default")
     
-    # Check if profile exists in redhat-ods-applications (global)
-    if oc get hardwareprofile gpu-profile -n redhat-ods-applications &>/dev/null; then
-        print_success "GPU hardware profile already exists in redhat-ods-applications"
-    else
-        print_step "Creating global GPU hardware profile in redhat-ods-applications..."
+    # Function to create hardware profile in a namespace
+    create_profile_in_namespace() {
+        local namespace=$1
         
+        if oc get hardwareprofile gpu-profile -n "$namespace" &>/dev/null; then
+            print_success "GPU hardware profile already exists in $namespace"
+            return 0
+        fi
+        
+        print_step "Creating GPU hardware profile in $namespace..."
+        
+        # Create hardware profile WITHOUT scheduling constraints
+        # This makes it visible in the UI regardless of GPU node availability
         cat <<EOF | oc apply -f -
 apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
 metadata:
   name: gpu-profile
-  namespace: redhat-ods-applications
+  namespace: $namespace
   annotations:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
@@ -293,12 +300,23 @@ spec:
       minCount: 1
       resourceType: Accelerator
 EOF
-        print_success "Global GPU hardware profile created"
+        print_success "GPU hardware profile created in $namespace"
+    }
+    
+    # Create in redhat-ods-applications (for reference)
+    create_profile_in_namespace "redhat-ods-applications"
+    
+    # Also create in current namespace if it's different and not a system namespace
+    if [[ "$current_ns" != "redhat-ods-applications" ]] && \
+       [[ "$current_ns" != "default" ]] && \
+       [[ "$current_ns" != "openshift-"* ]]; then
+        print_info "Also creating profile in current namespace: $current_ns"
+        create_profile_in_namespace "$current_ns"
     fi
     
     print_success "GPU hardware profile setup complete"
     print_info "Note: Hardware profiles in RHOAI 3.0 are namespace-scoped for model deployment"
-    print_info "To use this profile, create it in your project namespace or use the helper script"
+    print_info "Use './scripts/create-hardware-profile.sh <namespace>' to create in other namespaces"
 }
 
 # Enable User Workload Monitoring
