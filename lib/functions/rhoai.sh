@@ -132,37 +132,7 @@ create_datasciencecluster_v1() {
     fi
     
     print_step "Creating DataScienceCluster..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v1
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-spec:
-  components:
-    codeflare:
-      managementState: Managed
-    dashboard:
-      managementState: Managed
-    datasciencepipelines:
-      managementState: Managed
-    kserve:
-      managementState: Managed
-      serving:
-        ingressGateway:
-          certificate:
-            type: SelfSigned
-        managementState: Managed
-        name: knative-serving
-    modelmeshserving:
-      managementState: Managed
-    ray:
-      managementState: Managed
-    trustyai:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v1.yaml" "DataScienceCluster v1"
     
     print_success "DataScienceCluster created"
 }
@@ -177,51 +147,7 @@ create_datasciencecluster_v2() {
     fi
     
     print_step "Creating DataScienceCluster with GenAI and MaaS components..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-spec:
-  components:
-    aipipelines:
-      managementState: Managed
-    codeflare:
-      managementState: Managed
-    dashboard:
-      managementState: Managed
-    datasciencepipelines:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
-    kserve:
-      managementState: Managed
-      serving:
-        ingressGateway:
-          certificate:
-            type: SelfSigned
-        managementState: Managed
-        name: knative-serving
-    kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
-    llamastackoperator:
-      managementState: Managed
-    modelmeshserving:
-      managementState: Managed
-    modelregistry:
-      managementState: Managed
-    ray:
-      managementState: Managed
-    trainingoperator:
-      managementState: Managed
-    trustyai:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
     
     print_success "DataScienceCluster created with GenAI and MaaS support"
 }

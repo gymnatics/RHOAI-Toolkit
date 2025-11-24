@@ -22,7 +22,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Configuration
 RHOAI_VERSION=""
@@ -58,6 +58,18 @@ print_error() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
+}
+
+apply_manifest() {
+    local manifest_file=$1
+    local description=$2
+    
+    if [ ! -f "$manifest_file" ]; then
+        echo -e "${RED}Error: Manifest file not found: $manifest_file${NC}"
+        return 1
+    fi
+    
+    oc apply -f "$manifest_file" &>/dev/null
 }
 
 check_prerequisites() {
@@ -760,32 +772,9 @@ install_certmanager_operator() {
     fi
     
     print_step "Installing cert-manager Operator (required by Kueue)..."
-    oc create namespace "$cm_namespace" 2>/dev/null || true
-    
-    # Create OperatorGroup
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: $cm_namespace
-  namespace: $cm_namespace
-spec: {}
-EOF
-    
-    # Create Subscription
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: openshift-cert-manager-operator
-  namespace: $cm_namespace
-spec:
-  channel: stable-v1
-  installPlanApproval: Automatic
-  name: openshift-cert-manager-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-namespace.yaml" "cert-manager namespace"
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-operatorgroup.yaml" "cert-manager OperatorGroup"
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-subscription.yaml" "cert-manager Subscription"
     
     # Wait for operator
     sleep 30
@@ -808,7 +797,7 @@ install_lws_operator() {
     fi
     
     print_step "Installing Leader Worker Set Operator..."
-    oc create namespace "$lws_namespace" 2>/dev/null || true
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-namespace.yaml" "LWS namespace"
     
     # Clean up duplicate OperatorGroups
     local existing_ogs=$(oc get operatorgroup -n "$lws_namespace" -o name 2>/dev/null | wc -l)
@@ -817,32 +806,9 @@ install_lws_operator() {
         sleep 2
     fi
     
-    # Create OperatorGroup
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: $lws_namespace
-  namespace: $lws_namespace
-spec:
-  targetNamespaces:
-  - $lws_namespace
-EOF
-    
-    # Create Subscription
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: leader-worker-set
-  namespace: $lws_namespace
-spec:
-  channel: stable-v1.0
-  installPlanApproval: Automatic
-  name: leader-worker-set
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    # Create OperatorGroup and Subscription
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-operatorgroup.yaml" "LWS OperatorGroup"
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-subscription.yaml" "LWS Subscription"
     
     # Wait for operator
     sleep 30
@@ -875,19 +841,7 @@ install_kueue_operator() {
     fi
     
     print_step "Installing Kueue Operator..."
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: kueue-operator
-  namespace: openshift-operators
-spec:
-  channel: stable-v1.1
-  installPlanApproval: Automatic
-  name: kueue-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/kueue-subscription.yaml" "Kueue Subscription"
     
     # Wait for operator
     sleep 30
@@ -1009,45 +963,7 @@ EOF
     fi
     
     print_step "Creating DataScienceCluster..."
-    
-    # Create DataScienceCluster
-    cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-  labels:
-    app.kubernetes.io/name: datasciencecluster
-spec:
-  components:
-    dashboard:
-      managementState: Managed
-    aipipelines:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
-    kserve:
-      managementState: Managed
-    llamastackoperator:
-      managementState: Managed
-    kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
-    modelregistry:
-      managementState: Managed
-      registriesNamespace: rhoai-model-registries
-    ray:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    trainingoperator:
-      managementState: Managed
-    trustyai:
-      managementState: Managed
-    codeflare:
-      managementState: Removed
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
 
     # Wait for DataScienceCluster to be ready
     print_step "Waiting for DataScienceCluster to be ready (this may take 10-15 minutes)..."

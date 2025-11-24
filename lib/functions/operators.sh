@@ -144,14 +144,7 @@ install_lws_operator() {
     fi
     
     print_step "Creating LWS namespace..."
-    
-    # Create namespace
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: $lws_namespace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-namespace.yaml" "LWS namespace"
     
     # Clean up any duplicate OperatorGroups (prevents "Multiple OperatorGroup" error)
     print_step "Ensuring clean OperatorGroup configuration..."
@@ -164,32 +157,10 @@ EOF
     
     # Create OperatorGroup (name matches namespace to avoid conflicts)
     print_step "Creating OperatorGroup..."
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: $lws_namespace
-  namespace: $lws_namespace
-spec:
-  targetNamespaces:
-  - $lws_namespace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-operatorgroup.yaml" "LWS OperatorGroup"
     
     print_step "Installing LWS Operator subscription..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: leader-worker-set
-  namespace: $lws_namespace
-spec:
-  channel: stable-v1.0
-  installPlanApproval: Automatic
-  name: leader-worker-set
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-subscription.yaml" "LWS Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for LWS operator to be ready..."
@@ -221,36 +192,17 @@ install_certmanager_operator() {
     fi
     
     print_step "Creating cert-manager-operator namespace..."
-    oc create namespace "$cm_namespace" 2>/dev/null || true
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-namespace.yaml" "cert-manager namespace"
     
     # Check for existing OperatorGroup
     local existing_ogs=$(oc get operatorgroup -n "$cm_namespace" -o name 2>/dev/null | wc -l)
     if [ "$existing_ogs" -eq 0 ]; then
         print_step "Creating OperatorGroup..."
-        cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: $cm_namespace
-  namespace: $cm_namespace
-spec: {}
-EOF
+        apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-operatorgroup.yaml" "cert-manager OperatorGroup"
     fi
     
     print_step "Installing cert-manager Operator subscription..."
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: openshift-cert-manager-operator
-  namespace: $cm_namespace
-spec:
-  channel: stable-v1
-  installPlanApproval: Automatic
-  name: openshift-cert-manager-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-subscription.yaml" "cert-manager Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for cert-manager operator to be ready..."
@@ -297,20 +249,7 @@ install_kueue_operator() {
     fi
     
     print_step "Installing Kueue Operator..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: kueue-operator
-  namespace: openshift-operators
-spec:
-  channel: stable-v1.1
-  installPlanApproval: Automatic
-  name: kueue-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/kueue-subscription.yaml" "Kueue Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for Kueue operator to be ready..."
