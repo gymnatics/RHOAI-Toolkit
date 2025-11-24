@@ -118,19 +118,16 @@ create_hardware_profile_interactive() {
     print_success "Connected to OpenShift cluster"
     echo ""
     
-    # Get current namespace
-    local current_ns=$(oc project -q 2>/dev/null || echo "")
+    # Default to redhat-ods-applications for global profiles
+    local default_ns="redhat-ods-applications"
     
     # Prompt for namespace
     echo -e "${CYAN}Enter the namespace where you want to create the hardware profile${NC}"
-    echo -e "${YELLOW}(This should be the namespace where you deploy models)${NC}"
-    if [ -n "$current_ns" ]; then
-        echo -e "Current namespace: ${GREEN}$current_ns${NC}"
-        read -p "Press Enter to use current namespace, or type a different one: " input_ns
-        local target_ns="${input_ns:-$current_ns}"
-    else
-        read -p "Namespace: " target_ns
-    fi
+    echo -e "${YELLOW}Default: ${GREEN}redhat-ods-applications${YELLOW} (global scope - visible in all projects)${NC}"
+    echo -e "${YELLOW}Or specify a project namespace for project-scoped profiles${NC}"
+    echo ""
+    read -p "Namespace [default: redhat-ods-applications]: " input_ns
+    local target_ns="${input_ns:-$default_ns}"
     
     # Validate namespace exists
     if ! oc get namespace "$target_ns" &>/dev/null; then
@@ -227,6 +224,11 @@ spec:
       maxCount: $gpu_max
       minCount: $gpu_min
       resourceType: Accelerator
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue
 EOF
     
     if [ $? -eq 0 ]; then
@@ -239,11 +241,18 @@ EOF
         oc get hardwareprofile "$profile_name" -n "$target_ns" -o custom-columns=NAME:.metadata.name,DISPLAY:.metadata.annotations.'opendatahub\.io/display-name',DISABLED:.metadata.annotations.'opendatahub\.io/disabled'
         
         echo ""
-        print_info "The hardware profile should now be visible in the RHOAI dashboard"
-        print_info "when deploying models in the '$target_ns' namespace."
-        echo ""
-        print_warning "Remember: Hardware profiles are namespace-scoped in RHOAI 3.0"
-        print_warning "Create this profile in each namespace where you want to deploy GPU models"
+        if [ "$target_ns" == "redhat-ods-applications" ]; then
+            print_info "✓ Global profile created - visible in ALL data science projects"
+            print_info "The hardware profile should now appear in the RHOAI dashboard"
+            print_info "when deploying models in any project."
+        else
+            print_info "✓ Project-scoped profile created - visible only in '$target_ns'"
+            print_info "The hardware profile will appear in the RHOAI dashboard"
+            print_info "when deploying models in the '$target_ns' project."
+            echo ""
+            print_warning "To create a global profile visible in all projects,"
+            print_warning "create it in the 'redhat-ods-applications' namespace."
+        fi
         echo ""
         
         return 0
