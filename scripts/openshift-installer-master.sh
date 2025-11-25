@@ -418,10 +418,11 @@ download_installer() {
     if [[ "$VERSION" =~ ^4\.[0-9]+$ ]]; then
         CHANNEL_URL="$BASE_URL/stable-${VERSION}"
         print_info "Fetching latest version in $VERSION channel..."
-        FULL_VERSION=$(curl -s "${CHANNEL_URL}/release.txt" 2>/dev/null | grep "^Version:" | awk '{print $2}')
+        FULL_VERSION=$(curl -s --insecure "${CHANNEL_URL}/release.txt" 2>/dev/null | grep "^Name:" | awk '{print $2}')
         
         if [ -z "$FULL_VERSION" ]; then
-            print_error "Could not fetch version information"
+            print_error "Could not fetch version information from $CHANNEL_URL"
+            print_error "Please check your network connection or try specifying a full version number"
             return 1
         fi
     else
