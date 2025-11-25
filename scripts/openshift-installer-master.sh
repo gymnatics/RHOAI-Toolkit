@@ -709,6 +709,47 @@ detect_and_choose_vpc() {
     echo -e "${CYAN}Before we begin, let's check your AWS infrastructure.${NC}"
     echo ""
     
+    # Check AWS credentials first
+    print_info "Verifying AWS credentials..."
+    if ! aws sts get-caller-identity &>/dev/null; then
+        print_error "AWS credentials are not configured or are invalid"
+        echo ""
+        echo -e "${YELLOW}You need to configure AWS credentials before continuing.${NC}"
+        echo ""
+        echo "Options:"
+        echo "  1) Configure AWS credentials now"
+        echo "  2) Cancel and configure manually"
+        echo ""
+        read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" cred_choice
+        cred_choice="${cred_choice:-1}"
+        
+        if [ "$cred_choice" = "1" ]; then
+            configure_aws_credentials
+            # Verify again after configuration
+            if ! aws sts get-caller-identity &>/dev/null; then
+                print_error "AWS credentials still not valid. Please configure manually."
+                echo ""
+                echo "Run: aws configure"
+                echo "Or: export AWS_ACCESS_KEY_ID=... and AWS_SECRET_ACCESS_KEY=..."
+                exit 1
+            fi
+        else
+            print_info "Please configure AWS credentials and try again"
+            echo ""
+            echo "Run: aws configure"
+            exit 1
+        fi
+    fi
+    
+    # Show current AWS identity
+    local aws_identity=$(aws sts get-caller-identity 2>/dev/null)
+    local aws_account=$(echo "$aws_identity" | jq -r '.Account' 2>/dev/null || echo "unknown")
+    local aws_user=$(echo "$aws_identity" | jq -r '.Arn' 2>/dev/null || echo "unknown")
+    print_success "AWS credentials verified"
+    echo "  Account: $aws_account"
+    echo "  User/Role: $aws_user"
+    echo ""
+    
     # Prompt for AWS region first (needed for VPC queries)
     print_info "Which AWS region will you use for this OpenShift cluster?"
     prompt_with_default "AWS Region" "us-east-2" AWS_REGION
