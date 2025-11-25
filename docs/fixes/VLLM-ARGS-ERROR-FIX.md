@@ -17,26 +17,16 @@ The `VLLM_ADDITIONAL_ARGS` environment variable is being interpreted by bash ins
 
 ## Solution
 
-### Option 1: Remove Leading Dashes (Recommended for UI)
+### ❌ What DOESN'T Work
 
-When deploying via the **RHOAI Dashboard UI**:
-
-**Instead of**:
+**Removing the dashes doesn't work** - you'll get:
 ```
---enable-auto-tool-choice --tool-call-parser=hermes
+enable-auto-tool-choice: command not found
 ```
 
-**Use** (without leading dashes):
-```
-enable-auto-tool-choice tool-call-parser=hermes
-```
+This is because the container is trying to execute it as a shell command.
 
-Or try with single dash:
-```
--enable-auto-tool-choice -tool-call-parser=hermes
-```
-
-### Option 2: Use YAML Deployment (Most Reliable)
+### ✅ Option 1: Use YAML Deployment (ONLY Reliable Solution)
 
 Deploy using `LLMInferenceService` YAML with proper escaping:
 
@@ -76,31 +66,39 @@ spec:
 
 **Key point**: In YAML, the `value` field is properly quoted as a string.
 
-### Option 3: Fix Existing Deployment
+### ✅ Option 2: Don't Use VLLM_ADDITIONAL_ARGS via UI
 
-If you already deployed and got the error:
+**The UI doesn't properly handle `VLLM_ADDITIONAL_ARGS` with arguments.**
+
+Instead, deploy **without** tool calling first, then patch the deployment directly:
 
 ```bash
-# Get the LLMInferenceService name
-oc get llmisvc -n <your-namespace>
+# Deploy via UI normally (without VLLM_ADDITIONAL_ARGS)
+# Then patch the deployment after it's created:
 
-# Patch it with correct format
-oc patch llmisvc qwen3-4b -n <your-namespace> --type=json -p='[
+# Get the deployment name
+DEPLOYMENT=$(oc get deployment -n <your-namespace> -l serving.kserve.io/inferenceservice=qwen3-4b -o name)
+
+# Patch the deployment directly
+oc patch $DEPLOYMENT -n <your-namespace> --type=json -p='[
   {
     "op": "add",
-    "path": "/spec/template/containers/0/env/-",
-    "value": {
-      "name": "VLLM_ADDITIONAL_ARGS",
-      "value": "--enable-auto-tool-choice --tool-call-parser=hermes"
-    }
+    "path": "/spec/template/spec/containers/0/args",
+    "value": [
+      "--enable-auto-tool-choice",
+      "--tool-call-parser=hermes"
+    ]
   }
 ]'
 ```
 
-Or delete and redeploy:
+### ✅ Option 3: Delete and Redeploy via YAML (Recommended)
+
 ```bash
+# Delete the failed deployment
 oc delete llmisvc qwen3-4b -n <your-namespace>
-# Then redeploy using YAML above
+
+# Then redeploy using YAML (see Option 1 above)
 ```
 
 ## Verification
@@ -122,23 +120,47 @@ oc logs <pod-name> -n <your-namespace> -c kserve-container
 
 ## Why This Happens
 
+### The Real Problem
+
+The `VLLM_ADDITIONAL_ARGS` environment variable is designed to be **expanded by the shell**, but:
+
+1. **With `--` prefix**: Bash interprets `--enable-auto-tool-choice` as bash options
+   - Error: `/bin/bash: --: invalid option`
+
+2. **Without `--` prefix**: Bash tries to execute `enable-auto-tool-choice` as a command
+   - Error: `enable-auto-tool-choice: command not found`
+
 ### Container Entrypoint Issue
 
-Some container images use `/bin/bash` as the entrypoint with a command like:
+The container likely has an entrypoint like:
 
 ```bash
 /bin/bash -c "python -m vllm.entrypoints.openai.api_server $VLLM_ADDITIONAL_ARGS"
 ```
 
-When `VLLM_ADDITIONAL_ARGS` starts with `--`, bash interprets it as bash options instead of passing it to Python.
+When bash expands `$VLLM_ADDITIONAL_ARGS`, it processes the arguments **before** passing them to Python.
 
-### Proper Format
+### Why YAML Works
 
-The vLLM container should directly execute Python:
+In YAML, you're not using `VLLM_ADDITIONAL_ARGS`. Instead, you're directly setting the container `args`:
 
-```bash
-python -m vllm.entrypoints.openai.api_server --enable-auto-tool-choice --tool-call-parser=hermes
+```yaml
+args:
+  - '--enable-auto-tool-choice'
+  - '--tool-call-parser=hermes'
 ```
+
+This bypasses shell expansion entirely and passes arguments directly to the container command.
+
+### Why UI Doesn't Work
+
+The RHOAI UI likely:
+1. Takes your `VLLM_ADDITIONAL_ARGS` value
+2. Sets it as an environment variable
+3. The container's entrypoint script tries to expand it
+4. Bash interprets it incorrectly
+
+**Conclusion**: `VLLM_ADDITIONAL_ARGS` via UI is fundamentally broken for arguments with `--`.
 
 ## Alternative: Use args Instead of env
 
