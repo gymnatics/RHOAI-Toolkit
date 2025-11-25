@@ -253,6 +253,177 @@ EOF
     print_info "Use './scripts/create-hardware-profile.sh <namespace>' to create in other namespaces"
 }
 
+# Configure Kueue ResourceFlavor for GPU nodes with taints
+configure_gpu_resourceflavor() {
+    print_header "Configuring Kueue ResourceFlavor for GPU Nodes"
+    
+    # Check if nvidia-gpu-flavor exists
+    if ! oc get resourceflavor nvidia-gpu-flavor &>/dev/null; then
+        print_warning "ResourceFlavor 'nvidia-gpu-flavor' not found"
+        print_info "This will be created automatically by RHOAI when Kueue is enabled"
+        print_info "Skipping ResourceFlavor configuration for now"
+        return 0
+    fi
+    
+    print_step "Checking for GPU nodes..."
+    
+    # Check if GPU nodes exist
+    local gpu_nodes=$(oc get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null)
+    if [ -z "$gpu_nodes" ]; then
+        print_warning "No GPU nodes found with label nvidia.com/gpu.present=true"
+        echo ""
+        echo -e "${YELLOW}GPU nodes will be detected when they are added.${NC}"
+        echo -e "${YELLOW}Run this configuration again after adding GPU nodes.${NC}"
+        echo ""
+        
+        # Configure with node selector only for now
+        print_step "Configuring ResourceFlavor with node selector..."
+        cat <<'EOF' | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "ResourceFlavor configured (will auto-detect GPU nodes when added)"
+        fi
+        return 0
+    fi
+    
+    # Show GPU nodes found
+    local node_count=$(echo "$gpu_nodes" | wc -l | tr -d ' ')
+    print_success "Found $node_count GPU node(s):"
+    echo "$gpu_nodes" | sed 's/node\//  - /'
+    echo ""
+    
+    # Check if GPU nodes have taints
+    print_step "Checking GPU node taints..."
+    local has_taint=$(oc get nodes -l nvidia.com/gpu.present=true -o json | jq -r '.items[].spec.taints[]? | select(.key=="nvidia.com/gpu") | .key' | head -1)
+    
+    if [ -n "$has_taint" ]; then
+        print_info "✓ GPU nodes are tainted with nvidia.com/gpu:NoSchedule"
+        echo ""
+        echo -e "${CYAN}GPU nodes are tainted to prevent non-GPU workloads.${NC}"
+        echo -e "${CYAN}ResourceFlavor needs toleration to schedule GPU workloads.${NC}"
+        echo ""
+        
+        read -p "Configure ResourceFlavor with GPU toleration? (Y/n): " add_toleration
+        add_toleration=${add_toleration:-Y}
+        
+        if [[ "$add_toleration" =~ ^[Yy]$ ]]; then
+            print_step "Updating nvidia-gpu-flavor ResourceFlavor with toleration..."
+            
+            cat <<'EOF' | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+EOF
+            
+            if [ $? -eq 0 ]; then
+                print_success "ResourceFlavor configured with GPU toleration"
+                echo ""
+                print_info "✓ Node selector: nvidia.com/gpu.present=true"
+                print_info "✓ Toleration: nvidia.com/gpu:NoSchedule"
+            else
+                print_error "Failed to configure ResourceFlavor"
+                return 1
+            fi
+        else
+            print_warning "Skipping toleration configuration"
+            print_warning "GPU workloads may fail with 'untolerated taint' error"
+        fi
+    else
+        print_info "✓ GPU nodes are NOT tainted"
+        echo ""
+        echo -e "${YELLOW}GPU nodes are not tainted.${NC}"
+        echo -e "${YELLOW}This means any workload can be scheduled on GPU nodes.${NC}"
+        echo ""
+        echo -e "${CYAN}Recommendation: Taint GPU nodes to reserve them for GPU workloads only.${NC}"
+        echo -e "${CYAN}Command: oc adm taint nodes -l nvidia.com/gpu.present=true nvidia.com/gpu=:NoSchedule${NC}"
+        echo ""
+        
+        read -p "Do you want to taint GPU nodes now? (y/N): " taint_nodes
+        taint_nodes=${taint_nodes:-N}
+        
+        if [[ "$taint_nodes" =~ ^[Yy]$ ]]; then
+            print_step "Tainting GPU nodes..."
+            oc adm taint nodes -l nvidia.com/gpu.present=true nvidia.com/gpu=:NoSchedule --overwrite
+            
+            if [ $? -eq 0 ]; then
+                print_success "GPU nodes tainted successfully"
+                echo ""
+                print_step "Updating ResourceFlavor with toleration..."
+                
+                cat <<'EOF' | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+EOF
+                
+                if [ $? -eq 0 ]; then
+                    print_success "ResourceFlavor configured with GPU toleration"
+                    echo ""
+                    print_info "✓ Node selector: nvidia.com/gpu.present=true"
+                    print_info "✓ Toleration: nvidia.com/gpu:NoSchedule"
+                fi
+            else
+                print_error "Failed to taint GPU nodes"
+                return 1
+            fi
+        else
+            print_step "Configuring ResourceFlavor without toleration..."
+            
+            cat <<'EOF' | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+EOF
+            
+            if [ $? -eq 0 ]; then
+                print_success "ResourceFlavor configured with node selector only"
+                echo ""
+                print_info "✓ Node selector: nvidia.com/gpu.present=true"
+                print_info "✓ No tolerations (GPU nodes not tainted)"
+            else
+                print_error "Failed to configure ResourceFlavor"
+                return 1
+            fi
+        fi
+    fi
+}
+
 # Enable User Workload Monitoring
 enable_user_workload_monitoring() {
     print_header "Enabling User Workload Monitoring"

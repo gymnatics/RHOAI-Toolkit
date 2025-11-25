@@ -358,6 +358,7 @@ install_rhoai() {
     if [[ "$RHOAI_VERSION" == "3.0" ]]; then
         configure_rhoai_dashboard
         create_gpu_hardware_profile
+        configure_gpu_resourceflavor
         enable_user_workload_monitoring
     fi
     

@@ -1034,6 +1034,11 @@ install_rhoai() {
     install_rhoai_operator
     create_rhoai_instance
     
+    # Configure Kueue ResourceFlavor for GPU nodes (if they exist)
+    print_step "Configuring Kueue ResourceFlavor for GPU nodes..."
+    sleep 10  # Wait for Kueue to create default ResourceFlavors
+    configure_gpu_resourceflavor || print_warning "ResourceFlavor configuration skipped (will be configured when GPU nodes are added)"
+    
     print_success "RHOAI $RHOAI_VERSION installed successfully"
     
     # Display RHOAI dashboard URL
