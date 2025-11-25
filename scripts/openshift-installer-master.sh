@@ -742,6 +742,97 @@ configure_cluster() {
     prompt_with_default "Machine network CIDR" "10.0.0.0/16" MACHINE_CIDR
 }
 
+use_existing_vpc() {
+    print_header "Use Existing VPC and Subnets"
+    
+    echo -e "${YELLOW}This option allows you to use existing AWS infrastructure.${NC}"
+    echo ""
+    
+    # Get VPC ID
+    print_info "Enter your existing VPC ID (e.g., vpc-0123456789abcdef0)"
+    read -p "$(echo -e ${BLUE}VPC ID${NC}: )" VPC_ID
+    
+    if [ -z "$VPC_ID" ]; then
+        print_error "VPC ID is required"
+        return 1
+    fi
+    
+    # Verify VPC exists
+    print_step "Verifying VPC..."
+    if ! aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" &>/dev/null; then
+        print_error "VPC $VPC_ID not found in region $AWS_REGION"
+        return 1
+    fi
+    
+    VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)
+    print_success "Found VPC: $VPC_ID (CIDR: $VPC_CIDR)"
+    
+    # Set machine CIDR to match VPC CIDR
+    MACHINE_CIDR="$VPC_CIDR"
+    
+    echo ""
+    print_info "Enter subnet IDs (comma-separated)"
+    print_info "You need both public and private subnets across your availability zones"
+    echo ""
+    
+    # List available subnets in the VPC
+    print_step "Available subnets in VPC $VPC_ID:"
+    aws ec2 describe-subnets \
+        --filters "Name=vpc-id,Values=$VPC_ID" \
+        --region "$AWS_REGION" \
+        --query 'Subnets[*].[SubnetId,AvailabilityZone,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
+        --output table
+    
+    echo ""
+    read -p "$(echo -e ${BLUE}Subnet IDs${NC} (comma-separated): )" subnets_input
+    
+    if [ -z "$subnets_input" ]; then
+        print_error "Subnet IDs are required"
+        return 1
+    fi
+    
+    # Parse subnet IDs
+    IFS=',' read -r -a SUBNET_IDS <<< "$subnets_input"
+    
+    # Trim whitespace from each subnet ID
+    for i in "${!SUBNET_IDS[@]}"; do
+        SUBNET_IDS[$i]=$(echo "${SUBNET_IDS[$i]}" | xargs)
+    done
+    
+    # Verify subnets exist
+    print_step "Verifying subnets..."
+    for subnet_id in "${SUBNET_IDS[@]}"; do
+        if ! aws ec2 describe-subnets --subnet-ids "$subnet_id" --region "$AWS_REGION" &>/dev/null; then
+            print_error "Subnet $subnet_id not found"
+            return 1
+        fi
+        
+        subnet_az=$(aws ec2 describe-subnets --subnet-ids "$subnet_id" --region "$AWS_REGION" --query 'Subnets[0].AvailabilityZone' --output text)
+        subnet_cidr=$(aws ec2 describe-subnets --subnet-ids "$subnet_id" --region "$AWS_REGION" --query 'Subnets[0].CidrBlock' --output text)
+        print_success "Verified subnet: $subnet_id ($subnet_az, $subnet_cidr)"
+    done
+    
+    echo ""
+    print_success "VPC and subnet configuration complete"
+    echo ""
+    echo "Summary:"
+    echo "  - VPC: $VPC_ID"
+    echo "  - VPC CIDR: $VPC_CIDR"
+    echo "  - Subnets: ${#SUBNET_IDS[@]}"
+    for subnet_id in "${SUBNET_IDS[@]}"; do
+        echo "    • $subnet_id"
+    done
+    echo ""
+    
+    print_warning "Important: Ensure your subnets have:"
+    echo "  1. Proper route tables (public subnets → Internet Gateway, private → NAT Gateway)"
+    echo "  2. Appropriate tags for OpenShift (kubernetes.io/role/elb for public, kubernetes.io/role/internal-elb for private)"
+    echo "  3. Sufficient IP address space for the cluster"
+    echo ""
+    
+    read -p "Press Enter to continue..."
+}
+
 create_vpc_and_subnets() {
     print_info "Creating VPC and subnets for OpenShift cluster..."
     
@@ -1170,7 +1261,32 @@ installation_only() {
     get_pull_secret
     get_ssh_key
     configure_cluster
-    create_vpc_and_subnets
+    
+    # Ask if user wants to use existing VPC or create new one
+    echo ""
+    print_header "Network Infrastructure"
+    echo ""
+    echo -e "${YELLOW}Do you want to use existing VPC and subnets, or create new ones?${NC}"
+    echo ""
+    echo "  1) Create new VPC and subnets (recommended for new installations)"
+    echo "  2) Use existing VPC and subnets"
+    echo ""
+    read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_choice
+    vpc_choice="${vpc_choice:-1}"
+    
+    case $vpc_choice in
+        1)
+            create_vpc_and_subnets
+            ;;
+        2)
+            use_existing_vpc
+            ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
     generate_install_config
     display_summary
     
@@ -1210,7 +1326,32 @@ full_installation() {
     get_pull_secret
     get_ssh_key
     configure_cluster
-    create_vpc_and_subnets
+    
+    # Ask if user wants to use existing VPC or create new one
+    echo ""
+    print_header "Network Infrastructure"
+    echo ""
+    echo -e "${YELLOW}Do you want to use existing VPC and subnets, or create new ones?${NC}"
+    echo ""
+    echo "  1) Create new VPC and subnets (recommended for new installations)"
+    echo "  2) Use existing VPC and subnets"
+    echo ""
+    read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_choice
+    vpc_choice="${vpc_choice:-1}"
+    
+    case $vpc_choice in
+        1)
+            create_vpc_and_subnets
+            ;;
+        2)
+            use_existing_vpc
+            ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
     generate_install_config
     display_summary
     
