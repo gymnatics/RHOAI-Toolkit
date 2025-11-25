@@ -711,7 +711,46 @@ detect_and_choose_vpc() {
     
     # Check AWS credentials first
     print_info "Verifying AWS credentials..."
-    if ! aws sts get-caller-identity &>/dev/null; then
+    
+    local aws_identity
+    local aws_account
+    local aws_user
+    
+    if aws_identity=$(aws sts get-caller-identity 2>/dev/null); then
+        # Credentials are valid
+        aws_account=$(echo "$aws_identity" | jq -r '.Account' 2>/dev/null || echo "unknown")
+        aws_user=$(echo "$aws_identity" | jq -r '.Arn' 2>/dev/null || echo "unknown")
+        print_success "AWS credentials verified"
+        echo "  Account: $aws_account"
+        echo "  User/Role: $aws_user"
+        echo ""
+        
+        # Ask if they want to use different credentials
+        read -p "$(echo -e ${BLUE}Use these credentials?${NC} [Y/n]: )" use_current
+        use_current="${use_current:-Y}"
+        
+        if [[ ! "$use_current" =~ ^[Yy]$ ]]; then
+            echo ""
+            print_info "Reconfiguring AWS credentials..."
+            configure_aws_credentials
+            
+            # Verify new credentials
+            if ! aws sts get-caller-identity &>/dev/null; then
+                print_error "New credentials are not valid"
+                exit 1
+            fi
+            
+            # Show new identity
+            aws_identity=$(aws sts get-caller-identity 2>/dev/null)
+            aws_account=$(echo "$aws_identity" | jq -r '.Account' 2>/dev/null || echo "unknown")
+            aws_user=$(echo "$aws_identity" | jq -r '.Arn' 2>/dev/null || echo "unknown")
+            print_success "New AWS credentials configured"
+            echo "  Account: $aws_account"
+            echo "  User/Role: $aws_user"
+            echo ""
+        fi
+    else
+        # Credentials are missing or invalid
         print_error "AWS credentials are not configured or are invalid"
         echo ""
         echo -e "${YELLOW}You need to configure AWS credentials before continuing.${NC}"
@@ -733,6 +772,15 @@ detect_and_choose_vpc() {
                 echo "Or: export AWS_ACCESS_KEY_ID=... and AWS_SECRET_ACCESS_KEY=..."
                 exit 1
             fi
+            
+            # Show new identity
+            aws_identity=$(aws sts get-caller-identity 2>/dev/null)
+            aws_account=$(echo "$aws_identity" | jq -r '.Account' 2>/dev/null || echo "unknown")
+            aws_user=$(echo "$aws_identity" | jq -r '.Arn' 2>/dev/null || echo "unknown")
+            print_success "AWS credentials configured"
+            echo "  Account: $aws_account"
+            echo "  User/Role: $aws_user"
+            echo ""
         else
             print_info "Please configure AWS credentials and try again"
             echo ""
@@ -740,15 +788,6 @@ detect_and_choose_vpc() {
             exit 1
         fi
     fi
-    
-    # Show current AWS identity
-    local aws_identity=$(aws sts get-caller-identity 2>/dev/null)
-    local aws_account=$(echo "$aws_identity" | jq -r '.Account' 2>/dev/null || echo "unknown")
-    local aws_user=$(echo "$aws_identity" | jq -r '.Arn' 2>/dev/null || echo "unknown")
-    print_success "AWS credentials verified"
-    echo "  Account: $aws_account"
-    echo "  User/Role: $aws_user"
-    echo ""
     
     # Prompt for AWS region first (needed for VPC queries)
     print_info "Which AWS region will you use for this OpenShift cluster?"
