@@ -454,4 +454,100 @@ EOF
     print_success "User workload monitoring enabled"
 }
 
+# Setup llm-d infrastructure (per CAI Guide Section 3)
+setup_llmd_infrastructure() {
+    print_header "Setting up llm-d Infrastructure (per CAI Guide)"
+    
+    # Step 1: Create GatewayClass
+    print_step "Creating GatewayClass 'openshift-ai-inference'..."
+    if oc get gatewayclass openshift-ai-inference &>/dev/null; then
+        print_success "GatewayClass already exists"
+    else
+        cat <<'EOF' | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-ai-inference
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+EOF
+        print_success "GatewayClass created"
+    fi
+    
+    # Step 2: Create Gateway
+    print_step "Creating Gateway 'openshift-ai-inference'..."
+    if oc get gateway openshift-ai-inference -n openshift-ingress &>/dev/null; then
+        print_success "Gateway already exists"
+    else
+        local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+        print_info "Cluster domain: $cluster_domain"
+        
+        cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/rev: openshift-gateway
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: inference-gateway.apps.$cluster_domain
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: default-gateway-tls
+        mode: Terminate
+EOF
+        print_success "Gateway created"
+        print_info "Gateway hostname: inference-gateway.apps.$cluster_domain"
+    fi
+    
+    # Step 3: Create LeaderWorkerSetOperator instance
+    print_step "Creating LeaderWorkerSetOperator instance..."
+    if oc get leaderworkersetoperator cluster -n openshift-lws-operator &>/dev/null; then
+        print_success "LeaderWorkerSetOperator instance already exists"
+    else
+        cat <<'EOF' | oc apply -f -
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata:
+  name: cluster
+  namespace: openshift-lws-operator
+spec:
+  managementState: Managed
+  logLevel: Normal
+  operatorLogLevel: Normal
+EOF
+        print_success "LeaderWorkerSetOperator instance created"
+        
+        # Wait for it to be ready
+        print_step "Waiting for LeaderWorkerSetOperator to be ready..."
+        sleep 10
+        local timeout=60
+        local elapsed=0
+        until oc get leaderworkersetoperator cluster -n openshift-lws-operator -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Timeout waiting for LeaderWorkerSetOperator"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+    fi
+    
+    print_success "llm-d infrastructure setup complete"
+    echo ""
+    print_info "You can now deploy models using llm-d serving runtime"
+    print_info "Remember to check 'Require authentication' checkbox in the UI"
+}
+
 

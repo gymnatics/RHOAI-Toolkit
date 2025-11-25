@@ -359,6 +359,7 @@ install_rhoai() {
         configure_rhoai_dashboard
         create_gpu_hardware_profile
         configure_gpu_resourceflavor
+        setup_llmd_infrastructure  # Setup llm-d infrastructure (per CAI Guide)
         enable_user_workload_monitoring
     fi
     

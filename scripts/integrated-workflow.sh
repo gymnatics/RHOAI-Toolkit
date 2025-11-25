@@ -1034,6 +1034,11 @@ install_rhoai() {
     install_rhoai_operator
     create_rhoai_instance
     
+    # Setup llm-d infrastructure (per CAI Guide Section 3)
+    if [[ "$RHOAI_VERSION" == "3.0" ]]; then
+        setup_llmd_infrastructure
+    fi
+    
     # Configure Kueue ResourceFlavor for GPU nodes (if they exist)
     print_step "Configuring Kueue ResourceFlavor for GPU nodes..."
     sleep 10  # Wait for Kueue to create default ResourceFlavors
