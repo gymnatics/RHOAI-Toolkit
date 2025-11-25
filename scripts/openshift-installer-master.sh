@@ -718,10 +718,37 @@ detect_and_choose_vpc() {
     echo ""
     
     # Check for existing VPCs
-    local vpc_list=$(aws ec2 describe-vpcs \
+    local vpc_query_output
+    local vpc_query_error
+    vpc_query_output=$(aws ec2 describe-vpcs \
         --region "$AWS_REGION" \
         --query 'Vpcs[*].[VpcId,CidrBlock,Tags[?Key==`Name`].Value|[0],State]' \
-        --output text 2>/dev/null)
+        --output text 2>&1)
+    local vpc_query_exit_code=$?
+    
+    # Check if the AWS query failed
+    if [ $vpc_query_exit_code -ne 0 ]; then
+        print_error "Failed to query VPCs in $AWS_REGION"
+        echo ""
+        echo "Error details:"
+        echo "$vpc_query_output"
+        echo ""
+        print_warning "This could be due to:"
+        echo "  • AWS credentials not configured or expired"
+        echo "  • Insufficient permissions to describe VPCs"
+        echo "  • Network connectivity issues"
+        echo "  • Invalid region name"
+        echo ""
+        read -p "Do you want to continue anyway and create a new VPC? (y/N): " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+            print_info "Installation cancelled"
+            exit 1
+        fi
+        USE_EXISTING_VPC=false
+        return 0
+    fi
+    
+    local vpc_list="$vpc_query_output"
     
     if [ -z "$vpc_list" ]; then
         print_info "No existing VPCs found in $AWS_REGION"
