@@ -45,7 +45,7 @@ Automated installation and configuration of Red Hat OpenShift AI (RHOAI) 3.0 on 
 
 📖 **[HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md)** ← **READ THIS FIRST**
 
-This document explains the **complete solution** including the critical `scheduling` section required for RHOAI 3.0.
+Or see: [FEATURES.md](FEATURES.md) for a quick overview of all key features.
 
 ## Project Structure
 
@@ -199,15 +199,21 @@ Default: 3.0 (`fast-3.x` channel)
 
 ### Essential Reading
 
-1. 📖 [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md) - **Start here for hardware profiles**
-2. 📖 [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick commands
-3. 📖 [docs/README.md](docs/README.md) - Detailed setup guide
+1. 📖 [FEATURES.md](FEATURES.md) - **Key features overview**
+2. 📖 [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md) - Hardware profile solution
+3. 📖 [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick commands
+4. 📖 [docs/README.md](docs/README.md) - Complete documentation index
 
-### Advanced Topics
+### Guides
 
-- 📖 [docs/KSERVE-DEPLOYMENT-MODES.md](docs/KSERVE-DEPLOYMENT-MODES.md) - RawDeployment vs Serverless
-- 📖 [docs/SETUP-COMPARISON.md](docs/SETUP-COMPARISON.md) - Comparison with reference repos
-- 📖 [docs/INDEX.md](docs/INDEX.md) - Complete documentation index
+- 📖 [docs/guides/GPU-TAINTS-RHOAI3.md](docs/guides/GPU-TAINTS-RHOAI3.md) - GPU taint configuration
+- 📖 [docs/guides/TOOL-CALLING-GUIDE.md](docs/guides/TOOL-CALLING-GUIDE.md) - Enable function calling
+- 📖 [docs/guides/MAAS-SERVING-RUNTIMES.md](docs/guides/MAAS-SERVING-RUNTIMES.md) - MaaS compatibility
+
+### Reference
+
+- 📖 [docs/reference/KSERVE-DEPLOYMENT-MODES.md](docs/reference/KSERVE-DEPLOYMENT-MODES.md) - Deployment modes
+- 📖 [docs/reference/SETUP-COMPARISON.md](docs/reference/SETUP-COMPARISON.md) - Setup comparison
 
 ## Support
 
