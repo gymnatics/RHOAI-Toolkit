@@ -1650,6 +1650,36 @@ main() {
     done
 }
 
-# Run main program
+# Parse command line arguments
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        --full-install|--full)
+            full_installation
+            exit 0
+            ;;
+        --install-only|--install)
+            installation_only
+            exit 0
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTION]"
+            echo ""
+            echo "Options:"
+            echo "  --full-install, --full     Run full installation (download + install)"
+            echo "  --install-only, --install  Run installation only (skip download)"
+            echo "  --help, -h                 Show this help message"
+            echo ""
+            echo "If no option is provided, the interactive menu will be shown."
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+fi
+
+# Run main program (interactive menu)
 main
 

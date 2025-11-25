@@ -177,7 +177,7 @@ install_openshift() {
     # Proceed with installation
     if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
         print_step "Calling OpenShift installer script..."
-        "$SCRIPT_DIR/scripts/openshift-installer-master.sh"
+        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --install-only
     else
         print_warning "OpenShift installer script not found"
         print_info "Please install OpenShift manually or run: ./scripts/openshift-installer-master.sh"
