@@ -757,7 +757,7 @@ detect_and_choose_vpc() {
         echo ""
         echo "Options:"
         echo "  1) Configure AWS credentials now"
-        echo "  2) Cancel and configure manually"
+        echo "  2) Cancel and return to menu"
         echo ""
         read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" cred_choice
         cred_choice="${cred_choice:-1}"
@@ -860,7 +860,7 @@ detect_and_choose_vpc() {
     echo ""
     echo "  1) Create a NEW VPC for OpenShift (recommended)"
     echo "  2) Use an EXISTING VPC from the list above"
-    echo "  3) Cancel and exit"
+    echo "  3) Go back / Cancel"
     echo ""
     
     read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_decision
@@ -878,6 +878,7 @@ detect_and_choose_vpc() {
             # Pre-select the VPC now
             echo ""
             print_info "Enter the VPC ID you want to use (e.g., vpc-0123456789abcdef0)"
+            echo -e "${YELLOW}Or press Ctrl+C to go back${NC}"
             read -p "$(echo -e ${BLUE}VPC ID${NC}: )" VPC_ID
             
             if [ -z "$VPC_ID" ]; then
@@ -889,7 +890,13 @@ detect_and_choose_vpc() {
             print_info "Verifying VPC..."
             if ! aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" &>/dev/null; then
                 print_error "VPC $VPC_ID not found in region $AWS_REGION"
-                return 1
+                echo ""
+                read -p "$(echo -e ${BLUE}Try again? (Y/n)${NC}: )" try_again
+                if [[ "$try_again" =~ ^[Nn]$ ]]; then
+                    return 1
+                fi
+                # Recursive call to try again
+                return $(detect_and_choose_vpc)
             fi
             
             VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)
@@ -909,8 +916,8 @@ detect_and_choose_vpc() {
             print_warning "You'll need to provide subnet IDs later during configuration"
             ;;
         3)
-            print_info "Installation cancelled by user"
-            exit 0
+            print_info "Going back..."
+            return 1
             ;;
         *)
             print_error "Invalid choice"
@@ -1592,13 +1599,17 @@ full_installation() {
     echo ""
     read -p "$(echo -e ${BLUE}Proceed with installation configuration?${NC} [Y/n]: )" proceed
     if [[ "$proceed" == "n" || "$proceed" == "N" ]]; then
-        print_info "Installation cancelled"
+        print_info "Returning to main menu..."
         press_any_key
-        return 1
+        return 0
     fi
     
     # NEW: Check VPC first, before other prompts
-    detect_and_choose_vpc
+    if ! detect_and_choose_vpc; then
+        print_warning "VPC selection cancelled. Returning to main menu..."
+        press_any_key
+        return 0
+    fi
     
     get_pull_secret
     get_ssh_key
@@ -1690,6 +1701,7 @@ EOF
     echo "5) Run Full Installation (Download + Install)"
     echo "6) Run Installation Only (Skip Download)"
     echo "7) View Documentation"
+    echo ""
     echo "8) Exit"
     echo ""
 }
