@@ -461,6 +461,47 @@ test_maas_configuration() {
 }
 
 ################################################################################
+# Verify Security Configuration
+################################################################################
+
+verify_security_configuration() {
+    print_header "Step 10: Verifying Security Configuration"
+    
+    print_step "Checking for models with MaaS enabled but no authentication..."
+    
+    # Check all namespaces for LLMInferenceServices
+    local insecure_models=0
+    local namespaces=$(oc get ns -o name | grep -v "openshift\|kube\|default" | sed 's/namespace\///')
+    
+    for ns in $namespaces; do
+        # Check for llmisvc with MaaS enabled but auth disabled
+        local models=$(oc get llmisvc -n "$ns" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.annotations."security.opendatahub.io/enable-auth" == "false") | .metadata.name' 2>/dev/null || echo "")
+        
+        if [ -n "$models" ]; then
+            for model in $models; do
+                # Check if model has MaaS enabled (has HTTPRoute to maas gateway)
+                local has_maas=$(oc get httproute -n "$ns" -l serving.kserve.io/inferenceservice="$model" -o json 2>/dev/null | jq -r '.items[] | select(.spec.parentRefs[]?.name == "maas-default-gateway") | .metadata.name' 2>/dev/null || echo "")
+                
+                if [ -n "$has_maas" ]; then
+                    print_warning "SECURITY RISK: Model '$model' in namespace '$ns' has MaaS enabled but authentication disabled!"
+                    echo "   Direct route is unprotected: https://maas.${CLUSTER_DOMAIN}/${ns}/${model}/v1/..."
+                    echo "   Fix: oc annotate llmisvc/$model -n $ns security.opendatahub.io/enable-auth=true"
+                    insecure_models=$((insecure_models + 1))
+                fi
+            done
+        fi
+    done
+    
+    if [ $insecure_models -eq 0 ]; then
+        print_success "No security issues detected"
+    else
+        echo ""
+        print_error "Found $insecure_models model(s) with potential security issues"
+        print_warning "Please enable authentication on these models to secure direct routes"
+    fi
+}
+
+################################################################################
 # Display Usage Instructions
 ################################################################################
 
@@ -481,8 +522,9 @@ display_usage_instructions() {
     echo "1. Deploy a model with MaaS enabled:"
     echo "   - Go to RHOAI Dashboard → Models → Deploy Model"
     echo "   - Select a model (e.g., Llama 3.2-3B)"
-    echo "   - Choose 'llm-d' as serving runtime"
-    echo "   - ✅ Check 'Model as a Service' checkbox"
+    echo "   - Choose 'llm-d' as serving runtime (REQUIRED - vLLM does NOT work with MaaS)"
+    echo "   - ✅ Check 'Enable Model as a Service' checkbox"
+    echo "   - ✅ Check 'Require authentication' checkbox (CRITICAL for security!)"
     echo "   - Deploy and wait for Running status"
     echo ""
     echo "2. Access via MaaS API:"
@@ -523,13 +565,24 @@ display_usage_instructions() {
     echo "   - Direct URL: https://maas.${CLUSTER_DOMAIN}/<namespace>/<model>/v1/..."
     echo "   - Direct access bypasses MaaS billing/tracking!"
     echo ""
-    echo "⚠️  Security:"
-    echo "   - Always enable 'Require authentication' with MaaS"
-    echo "   - Otherwise, direct model access is unprotected"
+    echo "⚠️  CRITICAL SECURITY ISSUE:"
+    echo "   - When you enable MaaS, TWO routes are created:"
+    echo "     1. MaaS Gateway: https://maas.${CLUSTER_DOMAIN}/maas-api/v1/..."
+    echo "     2. Direct Route: https://maas.${CLUSTER_DOMAIN}/<namespace>/<model>/v1/..."
+    echo ""
+    echo "   - The direct route BYPASSES MaaS policies!"
+    echo "   - If you only enable 'Model as a Service' but NOT 'Require authentication':"
+    echo "     ✓ MaaS route is protected"
+    echo "     ✗ Direct route is UNPROTECTED (anyone can access!)"
+    echo ""
+    echo "   - ALWAYS enable BOTH checkboxes when deploying:"
+    echo "     ✅ Enable Model as a Service"
+    echo "     ✅ Require authentication"
     echo ""
     echo "⚠️  Token Management:"
-    echo "   - All tokens you create are active"
+    echo "   - All tokens you create remain active until expiration"
     echo "   - No revocation mechanism currently available"
+    echo "   - Recommendation: Use short expiration times (10m, 1h)"
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}✓ MaaS infrastructure deployment complete!${NC}"
@@ -574,6 +627,7 @@ main() {
     configure_audience_policy
     restart_controllers
     test_maas_configuration
+    verify_security_configuration
     display_usage_instructions
 }
 
