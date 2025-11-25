@@ -7,13 +7,58 @@
 Usage: /bin/bash [GNU long option] [option] ...
 ```
 
-## Root Cause
+## What the CAI Guide Says
+
+The CAI guide shows **TWO different approaches**:
+
+### 1. For InferenceService (vLLM) - Uses `args`
+
+```yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: llama-32-3b-instruct
+spec:
+  predictor:
+    model:
+      args:
+        - '--dtype=half'
+        - '--max-model-len=20000'
+        - '--enable-auto-tool-choice'
+        - '--tool-call-parser=llama3_json'
+      modelFormat:
+        name: vLLM
+```
+
+### 2. For LLMInferenceService (llm-d) - Uses `VLLM_ADDITIONAL_ARGS`
+
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-sample
+spec:
+  template:
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+```
+
+**Key difference**: 
+- `InferenceService` uses `args` (works reliably)
+- `LLMInferenceService` uses `VLLM_ADDITIONAL_ARGS` env var
+
+## Root Cause of Your Error
 
 The `VLLM_ADDITIONAL_ARGS` environment variable is being interpreted by bash instead of being passed to the vLLM Python command. This happens when:
 
 1. Arguments start with `--` and bash tries to interpret them
-2. Arguments are not properly quoted
-3. The container entrypoint is `/bin/bash` instead of direct Python execution
+2. The container entrypoint uses shell expansion
+3. Bash processes the env var before passing to Python
+
+**The CAI guide uses YAML deployment**, not the UI, which is why it works for them.
 
 ## Solution
 
@@ -161,6 +206,31 @@ The RHOAI UI likely:
 4. Bash interprets it incorrectly
 
 **Conclusion**: `VLLM_ADDITIONAL_ARGS` via UI is fundamentally broken for arguments with `--`.
+
+### What the CAI Guide Does Differently
+
+The CAI guide **always uses YAML deployment**, never the UI. Their example works because:
+
+1. They deploy via `oc apply -f` (not UI)
+2. The YAML properly quotes the env var value
+3. They're using `LLMInferenceService` (llm-d), not `InferenceService` (vLLM)
+
+**From CAI guide** (Section 3 - llm-d):
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-sample
+spec:
+  template:
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+```
+
+This works when deployed via YAML, but **fails when you try to add it via the UI**.
 
 ## Alternative: Use args Instead of env
 

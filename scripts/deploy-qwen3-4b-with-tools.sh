@@ -123,9 +123,9 @@ spec:
   template:
     containers:
     - name: main
-      args:
-        - '--enable-auto-tool-choice'
-        - '--tool-call-parser=hermes'
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
       resources:
         limits:
           cpu: '4'
