@@ -34,6 +34,7 @@ SUBNET_IDS=()
 PULL_SECRET=""
 SSH_KEY=""
 INSTALL_TYPE=""
+USE_EXISTING_VPC=false  # Track VPC decision early
 
 #############################################################################
 # Utility Functions
@@ -698,15 +699,158 @@ get_ssh_key() {
     print_success "SSH key configured"
 }
 
+#############################################################################
+# Early VPC Detection and Selection
+#############################################################################
+
+detect_and_choose_vpc() {
+    print_header "Network Infrastructure Pre-Check"
+    
+    echo -e "${CYAN}Before we begin, let's check your AWS infrastructure.${NC}"
+    echo ""
+    
+    # Prompt for AWS region first (needed for VPC queries)
+    print_info "Which AWS region will you use for this OpenShift cluster?"
+    prompt_with_default "AWS Region" "us-east-2" AWS_REGION
+    
+    echo ""
+    print_info "Checking for existing VPCs in $AWS_REGION..."
+    echo ""
+    
+    # Check for existing VPCs
+    local vpc_list=$(aws ec2 describe-vpcs \
+        --region "$AWS_REGION" \
+        --query 'Vpcs[*].[VpcId,CidrBlock,Tags[?Key==`Name`].Value|[0],State]' \
+        --output text 2>/dev/null)
+    
+    if [ -z "$vpc_list" ]; then
+        print_info "No existing VPCs found in $AWS_REGION"
+        echo ""
+        echo -e "${GREEN}✓ We'll create a new VPC for your OpenShift cluster${NC}"
+        USE_EXISTING_VPC=false
+        press_any_key
+        return 0
+    fi
+    
+    # Display existing VPCs
+    local vpc_count=$(echo "$vpc_list" | wc -l | tr -d ' ')
+    print_success "Found $vpc_count existing VPC(s) in $AWS_REGION:"
+    echo ""
+    echo "┌──────────────────────────────────────────────────────────────────────────┐"
+    printf "│ %-21s │ %-17s │ %-15s │ %-10s │\n" "VPC ID" "CIDR Block" "Name" "State"
+    echo "├──────────────────────────────────────────────────────────────────────────┤"
+    
+    while IFS=$'\t' read -r vpc_id cidr name state; do
+        name="${name:-<no name>}"
+        printf "│ %-21s │ %-17s │ %-15s │ %-10s │\n" "$vpc_id" "$cidr" "$name" "$state"
+    done <<< "$vpc_list"
+    
+    echo "└──────────────────────────────────────────────────────────────────────────┘"
+    echo ""
+    
+    # Ask user what they want to do
+    echo -e "${YELLOW}What would you like to do?${NC}"
+    echo ""
+    echo "  1) Create a NEW VPC for OpenShift (recommended)"
+    echo "  2) Use an EXISTING VPC from the list above"
+    echo "  3) Cancel and exit"
+    echo ""
+    
+    read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_decision
+    vpc_decision="${vpc_decision:-1}"
+    
+    case $vpc_decision in
+        1)
+            print_success "Will create a new VPC during installation"
+            USE_EXISTING_VPC=false
+            ;;
+        2)
+            print_success "Will use an existing VPC"
+            USE_EXISTING_VPC=true
+            
+            # Pre-select the VPC now
+            echo ""
+            print_info "Enter the VPC ID you want to use (e.g., vpc-0123456789abcdef0)"
+            read -p "$(echo -e ${BLUE}VPC ID${NC}: )" VPC_ID
+            
+            if [ -z "$VPC_ID" ]; then
+                print_error "VPC ID is required"
+                return 1
+            fi
+            
+            # Verify VPC exists
+            print_info "Verifying VPC..."
+            if ! aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" &>/dev/null; then
+                print_error "VPC $VPC_ID not found in region $AWS_REGION"
+                return 1
+            fi
+            
+            VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text)
+            print_success "Verified VPC: $VPC_ID (CIDR: $VPC_CIDR)"
+            MACHINE_CIDR="$VPC_CIDR"
+            
+            # Show available subnets
+            echo ""
+            print_info "Available subnets in VPC $VPC_ID:"
+            aws ec2 describe-subnets \
+                --filters "Name=vpc-id,Values=$VPC_ID" \
+                --region "$AWS_REGION" \
+                --query 'Subnets[*].[SubnetId,AvailabilityZone,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
+                --output table
+            
+            echo ""
+            print_warning "You'll need to provide subnet IDs later during configuration"
+            ;;
+        3)
+            print_info "Installation cancelled by user"
+            exit 0
+            ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
+    echo ""
+    print_success "Network infrastructure decision recorded"
+    echo ""
+    
+    if [ "$USE_EXISTING_VPC" = true ]; then
+        echo -e "${CYAN}Summary:${NC}"
+        echo "  • Using existing VPC: $VPC_ID"
+        echo "  • VPC CIDR: $VPC_CIDR"
+        echo "  • Region: $AWS_REGION"
+    else
+        echo -e "${CYAN}Summary:${NC}"
+        echo "  • Will create new VPC"
+        echo "  • Region: $AWS_REGION"
+    fi
+    
+    press_any_key
+    return 0
+}
+
 configure_cluster() {
     print_header "OpenShift Cluster Configuration"
+    
+    # Show VPC context at the beginning
+    echo -e "${CYAN}Network Context:${NC}"
+    if [ "$USE_EXISTING_VPC" = true ]; then
+        echo "  • Using existing VPC: $VPC_ID ($VPC_CIDR)"
+    else
+        echo "  • Will create new VPC"
+    fi
+    echo "  • Region: $AWS_REGION"
+    echo ""
     
     prompt_with_default "Enter cluster name" "openshift-cluster" CLUSTER_NAME
     prompt_with_default "Enter base domain" "example.com" BASE_DOMAIN
     
     echo ""
-    print_info "AWS Region and Availability Zone Configuration"
-    prompt_with_default "Enter AWS region" "us-east-2" AWS_REGION
+    print_info "Availability Zone Configuration"
+    
+    # AWS_REGION already set in detect_and_choose_vpc()
+    echo -e "${BLUE}AWS Region:${NC} ${GREEN}$AWS_REGION${NC} (already set)"
     
     print_info "Fetching available availability zones for $AWS_REGION..."
     available_azs=$(aws ec2 describe-availability-zones --region $AWS_REGION --query 'AvailabilityZones[?State==`available`].ZoneName' --output text)
@@ -736,10 +880,18 @@ configure_cluster() {
     prompt_with_default "Worker node instance type" "m6i.2xlarge" WORKER_INSTANCE_TYPE
     prompt_with_default "Number of worker replicas" "3" WORKER_REPLICAS
     
-    echo ""
-    print_info "Network Configuration"
-    prompt_with_default "VPC CIDR block" "10.0.0.0/16" VPC_CIDR
-    prompt_with_default "Machine network CIDR" "10.0.0.0/16" MACHINE_CIDR
+    # Network configuration (only if creating new VPC)
+    if [ "$USE_EXISTING_VPC" = false ]; then
+        echo ""
+        print_info "Network Configuration (for new VPC)"
+        prompt_with_default "VPC CIDR block" "10.0.0.0/16" VPC_CIDR
+        prompt_with_default "Machine network CIDR" "10.0.0.0/16" MACHINE_CIDR
+    else
+        echo ""
+        print_info "Network Configuration"
+        echo -e "${BLUE}VPC CIDR:${NC} ${GREEN}$VPC_CIDR${NC} (from existing VPC)"
+        echo -e "${BLUE}Machine CIDR:${NC} ${GREEN}$MACHINE_CIDR${NC} (from existing VPC)"
+    fi
 }
 
 use_existing_vpc() {
@@ -1258,34 +1410,49 @@ installation_only() {
         return 1
     fi
     
+    # NEW: Check VPC first, before other prompts
+    detect_and_choose_vpc
+    
     get_pull_secret
     get_ssh_key
     configure_cluster
     
-    # Ask if user wants to use existing VPC or create new one
+    # Handle VPC/Subnet configuration based on earlier decision
     echo ""
-    print_header "Network Infrastructure"
-    echo ""
-    echo -e "${YELLOW}Do you want to use existing VPC and subnets, or create new ones?${NC}"
-    echo ""
-    echo "  1) Create new VPC and subnets (recommended for new installations)"
-    echo "  2) Use existing VPC and subnets"
-    echo ""
-    read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_choice
-    vpc_choice="${vpc_choice:-1}"
+    print_header "Network Infrastructure Setup"
     
-    case $vpc_choice in
-        1)
-            create_vpc_and_subnets
-            ;;
-        2)
-            use_existing_vpc
-            ;;
-        *)
-            print_error "Invalid choice"
+    if [ "$USE_EXISTING_VPC" = true ]; then
+        # User already selected VPC, now just get subnets
+        echo ""
+        print_info "Using VPC: $VPC_ID"
+        echo ""
+        
+        # Prompt for subnet IDs
+        print_info "Enter subnet IDs (space-separated, at least 6 recommended: 3 public + 3 private)"
+        echo "You can see the available subnets listed above."
+        echo ""
+        read -p "$(echo -e ${BLUE}Subnet IDs${NC}: )" subnet_input
+        
+        if [ -z "$subnet_input" ]; then
+            print_error "At least one subnet ID is required"
             return 1
-            ;;
-    esac
+        fi
+        
+        IFS=' ' read -r -a SUBNET_IDS <<< "$subnet_input"
+        
+        print_success "VPC and subnet configuration complete"
+        echo ""
+        echo "Summary:"
+        echo "  - VPC: $VPC_ID"
+        echo "  - VPC CIDR: $VPC_CIDR"
+        echo "  - Subnets: ${#SUBNET_IDS[@]}"
+        for subnet_id in "${SUBNET_IDS[@]}"; do
+            echo "    • $subnet_id"
+        done
+    else
+        # Create new VPC and subnets
+        create_vpc_and_subnets
+    fi
     
     generate_install_config
     display_summary
@@ -1323,34 +1490,49 @@ full_installation() {
         return 1
     fi
     
+    # NEW: Check VPC first, before other prompts
+    detect_and_choose_vpc
+    
     get_pull_secret
     get_ssh_key
     configure_cluster
     
-    # Ask if user wants to use existing VPC or create new one
+    # Handle VPC/Subnet configuration based on earlier decision
     echo ""
-    print_header "Network Infrastructure"
-    echo ""
-    echo -e "${YELLOW}Do you want to use existing VPC and subnets, or create new ones?${NC}"
-    echo ""
-    echo "  1) Create new VPC and subnets (recommended for new installations)"
-    echo "  2) Use existing VPC and subnets"
-    echo ""
-    read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" vpc_choice
-    vpc_choice="${vpc_choice:-1}"
+    print_header "Network Infrastructure Setup"
     
-    case $vpc_choice in
-        1)
-            create_vpc_and_subnets
-            ;;
-        2)
-            use_existing_vpc
-            ;;
-        *)
-            print_error "Invalid choice"
+    if [ "$USE_EXISTING_VPC" = true ]; then
+        # User already selected VPC, now just get subnets
+        echo ""
+        print_info "Using VPC: $VPC_ID"
+        echo ""
+        
+        # Prompt for subnet IDs
+        print_info "Enter subnet IDs (space-separated, at least 6 recommended: 3 public + 3 private)"
+        echo "You can see the available subnets listed above."
+        echo ""
+        read -p "$(echo -e ${BLUE}Subnet IDs${NC}: )" subnet_input
+        
+        if [ -z "$subnet_input" ]; then
+            print_error "At least one subnet ID is required"
             return 1
-            ;;
-    esac
+        fi
+        
+        IFS=' ' read -r -a SUBNET_IDS <<< "$subnet_input"
+        
+        print_success "VPC and subnet configuration complete"
+        echo ""
+        echo "Summary:"
+        echo "  - VPC: $VPC_ID"
+        echo "  - VPC CIDR: $VPC_CIDR"
+        echo "  - Subnets: ${#SUBNET_IDS[@]}"
+        for subnet_id in "${SUBNET_IDS[@]}"; do
+            echo "    • $subnet_id"
+        done
+    else
+        # Create new VPC and subnets
+        create_vpc_and_subnets
+    fi
     
     generate_install_config
     display_summary
