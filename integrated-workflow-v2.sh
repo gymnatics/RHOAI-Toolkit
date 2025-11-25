@@ -21,6 +21,7 @@ source "$SCRIPT_DIR/lib/utils/colors.sh"
 source "$SCRIPT_DIR/lib/utils/common.sh"
 source "$SCRIPT_DIR/lib/functions/operators.sh"
 source "$SCRIPT_DIR/lib/functions/rhoai.sh"
+source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
 
 # Global variables
 SKIP_OPENSHIFT=false
@@ -361,6 +362,10 @@ install_rhoai() {
         configure_gpu_resourceflavor
         setup_llmd_infrastructure  # Setup llm-d infrastructure (per CAI Guide)
         enable_user_workload_monitoring
+        
+        # Optional: Deploy a model interactively
+        echo ""
+        deploy_llmd_model_interactive
     fi
     
     print_success "RHOAI $RHOAI_VERSION installed successfully"

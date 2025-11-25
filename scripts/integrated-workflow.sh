@@ -1051,6 +1051,19 @@ install_rhoai() {
     echo -e "${BLUE}RHOAI Dashboard:${NC}"
     RHOAI_URL=$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || echo "Not available yet")
     echo "https://${RHOAI_URL}"
+    
+    # Optional: Deploy a model interactively (RHOAI 3.0 only)
+    if [[ "$RHOAI_VERSION" == "3.0" ]]; then
+        echo ""
+        # Source model deployment functions
+        if [ -f "$SCRIPT_DIR/lib/functions/model-deployment.sh" ]; then
+            source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
+            deploy_llmd_model_interactive
+        else
+            print_info "Model deployment script not found. You can deploy models later using:"
+            echo "  ./scripts/deploy-llmd-model.sh"
+        fi
+    fi
 }
 
 

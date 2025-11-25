@@ -682,14 +682,18 @@ display_final_summary() {
         echo ""
     fi
     
-    echo "4. Deploy a model to GenAI Playground:"
+    echo "4. Deploy a model:"
+    echo -e "   ${YELLOW}./scripts/deploy-llmd-model.sh${NC}  # Interactive deployment with llm-d"
+    echo ""
+    echo "5. Or deploy via GenAI Playground UI:"
     echo "   a) Dashboard → Models → Deploy Model"
-    echo "   b) Select model (e.g., Llama 3.2-3B)"
-    echo "   c) Choose vLLM runtime"
+    echo "   b) Select model (e.g., Qwen3-4B)"
+    echo "   c) Choose llm-d runtime"
     echo "   d) Select gpu-profile"
-    echo "   e) Wait for Running status"
-    echo "   f) Go to AI Assets Endpoints"
-    echo "   g) Click 'Add to Playground'"
+    echo "   e) Check 'Require authentication' checkbox"
+    echo "   f) Wait for Running status"
+    echo "   g) Go to AI Assets Endpoints"
+    echo "   h) Click 'Add to Playground'"
     echo ""
     
     if [ "$maas_status" = "success" ]; then
