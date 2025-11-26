@@ -405,7 +405,8 @@ check_prerequisites() {
         echo "  4) Back to menu / Cancel"
         echo ""
         
-        read -p "$(echo -e ${BLUE}Enter choice [1-4]${NC} (default: 1): )" cluster_choice
+        echo -e -n "${BLUE}Enter choice [1-4]${NC} (default: 1): "
+        read cluster_choice
         cluster_choice="${cluster_choice:-1}"
         
         case $cluster_choice in
@@ -425,7 +426,8 @@ check_prerequisites() {
                     echo ""
                     print_info "Current KUBECONFIG: $KUBECONFIG"
                     echo ""
-                    read -p "$(echo -e ${BLUE}Remove this kubeconfig file?${NC} [y/N]: )" remove_file
+                    echo -e -n "${BLUE}Remove this kubeconfig file?${NC} [y/N]: "
+                    read remove_file
                     
                     if [[ "$remove_file" =~ ^[Yy]$ ]]; then
                         if [ -f "$KUBECONFIG" ]; then

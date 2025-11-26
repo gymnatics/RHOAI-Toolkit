@@ -141,6 +141,7 @@ openshift-cluster-install/
 
 ### 🔍 Checking for Exposed Secrets
 
+#### Manual Scan
 Run the security scanner anytime:
 ```bash
 ./scripts/scan-for-secrets.sh
@@ -153,6 +154,62 @@ This will check for:
 - Private Keys
 - Kubeconfig files
 - And more...
+
+#### Automatic Pre-Commit Hook (Recommended!)
+
+Install a pre-commit hook that automatically scans before each commit:
+
+```bash
+# Install the hook (already installed by default)
+./scripts/install-pre-commit-hook.sh --install
+
+# Check status
+./scripts/install-pre-commit-hook.sh --status
+
+# Test it
+./scripts/install-pre-commit-hook.sh --test
+```
+
+**What the pre-commit hook does:**
+- ✅ Runs automatically before EVERY commit
+- ✅ Scans staged files for sensitive data
+- ✅ Blocks commits containing secrets
+- ✅ Warns about large files (>5MB)
+- ✅ Prevents accidental credential leaks
+
+**The hook checks for:**
+1. Sensitive filenames (pull-secret, kubeconfig, *.pem, *.key, etc.)
+2. AWS credentials (access keys, secret keys)
+3. OpenShift pull secrets
+4. Private keys (RSA, EC, SSH, OPENSSH)
+5. Passwords and tokens
+6. Large files (>5MB)
+
+**Example output when blocking a commit:**
+```
+╔════════════════════════════════════════════════════════════════╗
+║         Pre-Commit Security Check: Scanning for Secrets       ║
+╚════════════════════════════════════════════════════════════════╝
+
+Scanning staged files:
+  - pull-secret.txt
+
+1. Checking for sensitive filenames...
+✗ Found sensitive filename pattern: pull-secret
+    pull-secret.txt
+
+✗ COMMIT BLOCKED: Found 1 potential security issue(s)
+
+What to do:
+  1. Review the files listed above
+  2. Remove any sensitive data
+  3. Add sensitive files to .gitignore
+  4. Run 'git add' again after fixing
+  5. Try committing again
+
+To bypass (NOT RECOMMENDED):
+  git commit --no-verify
+```
 
 ---
 
