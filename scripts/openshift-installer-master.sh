@@ -383,35 +383,46 @@ download_installer() {
     
     print_info "Detected platform: $PLATFORM"
     
-    echo ""
-    echo "Available OpenShift versions:"
-    echo "  1) 4.19 (latest 4.19.x)"
-    echo "  2) 4.20 (latest 4.20.x)"
-    echo "  3) 4.18 (latest 4.18.x)"
-    echo "  4) Custom version"
-    echo ""
-    
-    read -p "$(echo -e ${BLUE}Select version${NC} [1]: )" version_choice
-    version_choice="${version_choice:-1}"
-    
-    case $version_choice in
-        1)
-            VERSION="4.19"
-            ;;
-        2)
-            VERSION="4.20"
-            ;;
-        3)
-            VERSION="4.18"
-            ;;
-        4)
-            read -p "$(echo -e ${BLUE}Enter version (e.g., 4.19.5)${NC}: )" VERSION
-            ;;
-        *)
-            print_error "Invalid choice"
-            return 1
-            ;;
-    esac
+    # Loop until valid version is selected
+    while true; do
+        echo ""
+        echo "Available OpenShift versions:"
+        echo "  1) 4.19 (latest 4.19.x)"
+        echo "  2) 4.20 (latest 4.20.x)"
+        echo "  3) 4.18 (latest 4.18.x)"
+        echo "  4) Custom version"
+        echo ""
+        
+        read -p "$(echo -e ${BLUE}Select version${NC} [1]: )" version_choice
+        version_choice="${version_choice:-1}"
+        
+        case $version_choice in
+            1)
+                VERSION="4.19"
+                break
+                ;;
+            2)
+                VERSION="4.20"
+                break
+                ;;
+            3)
+                VERSION="4.18"
+                break
+                ;;
+            4)
+                read -p "$(echo -e ${BLUE}Enter version (e.g., 4.19.5)${NC}: )" VERSION
+                if [ -n "$VERSION" ]; then
+                    break
+                else
+                    print_error "Version cannot be empty"
+                fi
+                ;;
+            *)
+                print_error "Invalid choice. Please select 1-4."
+                sleep 1
+                ;;
+        esac
+    done
     
     # Construct download URL
     BASE_URL="https://mirror.openshift.com/pub/openshift-v4/clients/ocp"
@@ -1506,43 +1517,48 @@ installation_only() {
         echo ""
         echo "The OpenShift installer binary is required but missing."
         echo ""
-        echo -e "${YELLOW}Options:${NC}"
-        echo "  1) Download installer now (recommended)"
-        echo "  2) Exit and download manually"
-        echo ""
-        read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" installer_choice
-        installer_choice="${installer_choice:-1}"
         
-        case $installer_choice in
-            1)
-                echo ""
-                download_installer
-                if [ ! -f "./openshift-install" ]; then
-                    print_error "Installer download failed or was cancelled"
+        # Loop until valid choice
+        while true; do
+            echo -e "${YELLOW}Options:${NC}"
+            echo "  1) Download installer now (recommended)"
+            echo "  2) Exit and download manually"
+            echo ""
+            read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" installer_choice
+            installer_choice="${installer_choice:-1}"
+            
+            case $installer_choice in
+                1)
+                    echo ""
+                    download_installer
+                    if [ ! -f "./openshift-install" ]; then
+                        print_error "Installer download failed or was cancelled"
+                        press_any_key
+                        return 1
+                    fi
+                    echo ""
+                    print_success "Installer ready! Continuing with installation..."
+                    echo ""
+                    sleep 2
+                    break
+                    ;;
+                2)
+                    print_info "Please download the installer and try again"
+                    echo ""
+                    echo "You can download it from:"
+                    echo "  • https://console.redhat.com/openshift/install"
+                    echo "  • Or use option 4 from the main menu"
+                    echo ""
                     press_any_key
                     return 1
-                fi
-                echo ""
-                print_success "Installer ready! Continuing with installation..."
-                echo ""
-                sleep 2
-                ;;
-            2)
-                print_info "Please download the installer and try again"
-                echo ""
-                echo "You can download it from:"
-                echo "  • https://console.redhat.com/openshift/install"
-                echo "  • Or use option 4 from the main menu"
-                echo ""
-                press_any_key
-                return 1
-                ;;
-            *)
-                print_error "Invalid option"
-                press_any_key
-                return 1
-                ;;
-        esac
+                    ;;
+                *)
+                    print_error "Invalid option. Please select 1 or 2."
+                    sleep 1
+                    echo ""
+                    ;;
+            esac
+        done
     fi
     
     # Show current version

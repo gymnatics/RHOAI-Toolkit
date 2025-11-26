@@ -1,24 +1,95 @@
 #!/bin/bash
 ################################################################################
-# Interactive Model Deployment with llm-d
+# Interactive Model Deployment
 ################################################################################
-# This function provides an interactive menu for deploying models using llm-d
-# serving runtime after RHOAI installation.
+# This function provides an interactive menu for deploying models using
+# available serving runtimes (llm-d, vLLM, etc.)
 ################################################################################
 
-# Interactive model deployment function
-deploy_llmd_model_interactive() {
-    print_header "Interactive Model Deployment with llm-d"
+# Interactive model deployment function (runtime-agnostic)
+deploy_model_interactive() {
+    print_header "Interactive Model Deployment"
     
     echo -e "${YELLOW}Would you like to deploy a model now?${NC}"
     echo ""
     read -p "Deploy a model? (y/N): " deploy_choice
+    deploy_choice=$(echo "$deploy_choice" | tr -d '[:space:]')  # Remove any whitespace
     
     if [[ ! "$deploy_choice" =~ ^[Yy]$ ]]; then
         print_info "Skipping model deployment. You can deploy later using:"
         echo "  ./scripts/deploy-llmd-model.sh"
         return 0
     fi
+    
+    echo ""
+    print_header "Serving Runtime Selection"
+    
+    # Detect available serving runtimes
+    print_step "Detecting available serving runtimes..."
+    echo ""
+    
+    local runtimes=()
+    local runtime_names=()
+    local runtime_descriptions=()
+    
+    # Check for llm-d (LLMInferenceService CRD)
+    if oc get crd llminferenceservices.serving.kserve.io &>/dev/null; then
+        runtimes+=("llmd")
+        runtime_names+=("llm-d (LLMInferenceService)")
+        runtime_descriptions+=("Multi-replica, MaaS support, Leader Worker Set")
+    fi
+    
+    # Check for vLLM (InferenceService CRD with vLLM runtime)
+    if oc get crd inferenceservices.serving.kserve.io &>/dev/null; then
+        runtimes+=("vllm")
+        runtime_names+=("vLLM (InferenceService)")
+        runtime_descriptions+=("Simple deployment, GenAI Playground")
+    fi
+    
+    # Check for ServingRuntime templates
+    local serving_runtimes=$(oc get servingruntimes -n redhat-ods-applications -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    if [ -n "$serving_runtimes" ]; then
+        print_info "Available ServingRuntime templates:"
+        echo "$serving_runtimes" | tr ' ' '\n' | sed 's/^/  - /'
+        echo ""
+    fi
+    
+    if [ ${#runtimes[@]} -eq 0 ]; then
+        print_error "No serving runtimes detected!"
+        echo ""
+        echo "Please ensure RHOAI is installed with serving components."
+        echo ""
+        echo "Check with:"
+        echo "  oc get crd | grep -E 'inferenceservice|llminferenceservice'"
+        return 1
+    fi
+    
+    # Display available runtimes
+    echo -e "${BLUE}Available serving runtimes:${NC}"
+    echo ""
+    
+    for i in "${!runtimes[@]}"; do
+        local num=$((i + 1))
+        echo -e "${YELLOW}$num)${NC} ${runtime_names[$i]}"
+        echo "   ${runtime_descriptions[$i]}"
+        echo ""
+    done
+    
+    # Let user choose runtime
+    local runtime_choice=""
+    while true; do
+        read -p "Select serving runtime (1-${#runtimes[@]}): " runtime_choice
+        runtime_choice=$(echo "$runtime_choice" | tr -d '[:space:]')
+        
+        if [[ "$runtime_choice" =~ ^[0-9]+$ ]] && [ "$runtime_choice" -ge 1 ] && [ "$runtime_choice" -le ${#runtimes[@]} ]; then
+            break
+        else
+            print_error "Invalid choice. Please select 1-${#runtimes[@]}."
+        fi
+    done
+    
+    local selected_runtime="${runtimes[$((runtime_choice - 1))]}"
+    print_success "Selected runtime: ${runtime_names[$((runtime_choice - 1))]}"
     
     echo ""
     print_header "Model Selection"
@@ -178,31 +249,128 @@ deploy_llmd_model_interactive() {
     echo ""
     print_header "Resource Configuration"
     
-    echo -e "${YELLOW}Configure resources for the model:${NC}"
-    echo ""
-    echo "  GPU limit: $default_gpu"
-    echo "  CPU limit: $default_cpu"
-    echo "  Memory limit: $default_memory"
+    # Detect available hardware profiles
+    print_step "Detecting available hardware profiles..."
     echo ""
     
-    read -p "Use default resources? (Y/n): " use_defaults
+    local profiles=()
+    local profile_names=()
+    local profile_gpus=()
+    local profile_cpus=()
+    local profile_memories=()
     
+    # Check for GPU hardware profiles
+    local gpu_profiles=$(oc get hardwareprofiles -o json 2>/dev/null | jq -r '.items[] | select(.spec.hardwareCharacteristic.nodeSelector."nvidia.com/gpu.present" == "true") | .metadata.name' 2>/dev/null)
+    
+    if [ -n "$gpu_profiles" ]; then
+        print_info "Found GPU hardware profiles:"
+        echo ""
+        
+        while IFS= read -r profile; do
+            if [ -n "$profile" ]; then
+                profiles+=("$profile")
+                
+                # Get profile details
+                local gpu_count=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.count"}' 2>/dev/null || echo "1")
+                local cpu=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.cpu}' 2>/dev/null || echo "4")
+                local memory=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.memory}' 2>/dev/null || echo "16Gi")
+                
+                profile_names+=("$profile")
+                profile_gpus+=("$gpu_count")
+                profile_cpus+=("$cpu")
+                profile_memories+=("$memory")
+                
+                echo "  - $profile: ${gpu_count} GPU, ${cpu} CPU, ${memory} Memory"
+            fi
+        done <<< "$gpu_profiles"
+        echo ""
+    fi
+    
+    # Offer hardware profile selection or manual configuration
     local gpu_limit="$default_gpu"
     local cpu_limit="$default_cpu"
     local memory_limit="$default_memory"
     
-    if [[ "$use_defaults" =~ ^[Nn]$ ]]; then
+    if [ ${#profiles[@]} -gt 0 ]; then
+        echo -e "${BLUE}Resource configuration options:${NC}"
         echo ""
-        read -p "GPU limit (default: $default_gpu): " input_gpu
-        gpu_limit="${input_gpu:-$default_gpu}"
         
-        read -p "CPU limit (default: $default_cpu): " input_cpu
-        cpu_limit="${input_cpu:-$default_cpu}"
+        for i in "${!profiles[@]}"; do
+            local num=$((i + 1))
+            echo -e "${YELLOW}$num)${NC} Use hardware profile: ${profile_names[$i]}"
+            echo "   GPU: ${profile_gpus[$i]}, CPU: ${profile_cpus[$i]}, Memory: ${profile_memories[$i]}"
+            echo ""
+        done
         
-        read -p "Memory limit (default: $default_memory): " input_memory
-        memory_limit="${input_memory:-$default_memory}"
+        local manual_option=$((${#profiles[@]} + 1))
+        echo -e "${YELLOW}$manual_option)${NC} Use default resources (GPU: $default_gpu, CPU: $default_cpu, Memory: $default_memory)"
+        echo ""
+        
+        local custom_option=$((${#profiles[@]} + 2))
+        echo -e "${YELLOW}$custom_option)${NC} Custom configuration (enter manually)"
+        echo ""
+        
+        local resource_choice=""
+        while true; do
+            read -p "Select option (1-$custom_option): " resource_choice
+            resource_choice=$(echo "$resource_choice" | tr -d '[:space:]')
+            
+            if [[ "$resource_choice" =~ ^[0-9]+$ ]] && [ "$resource_choice" -ge 1 ] && [ "$resource_choice" -le "$custom_option" ]; then
+                break
+            else
+                print_error "Invalid choice. Please select 1-$custom_option."
+            fi
+        done
+        
+        if [ "$resource_choice" -le ${#profiles[@]} ]; then
+            # User selected a hardware profile
+            local idx=$((resource_choice - 1))
+            gpu_limit="${profile_gpus[$idx]}"
+            cpu_limit="${profile_cpus[$idx]}"
+            memory_limit="${profile_memories[$idx]}"
+            print_success "Using hardware profile: ${profile_names[$idx]}"
+        elif [ "$resource_choice" -eq "$manual_option" ]; then
+            # Use defaults
+            print_success "Using default resources"
+        else
+            # Custom configuration
+            echo ""
+            read -p "GPU limit (default: $default_gpu): " input_gpu
+            gpu_limit="${input_gpu:-$default_gpu}"
+            
+            read -p "CPU limit (default: $default_cpu): " input_cpu
+            cpu_limit="${input_cpu:-$default_cpu}"
+            
+            read -p "Memory limit (default: $default_memory): " input_memory
+            memory_limit="${input_memory:-$default_memory}"
+        fi
+    else
+        # No hardware profiles found, ask for manual or default
+        echo -e "${YELLOW}No GPU hardware profiles found.${NC}"
+        echo ""
+        echo "Default resources:"
+        echo "  GPU limit: $default_gpu"
+        echo "  CPU limit: $default_cpu"
+        echo "  Memory limit: $default_memory"
+        echo ""
+        
+        read -p "Use default resources? (Y/n): " use_defaults
+        use_defaults=$(echo "$use_defaults" | tr -d '[:space:]')
+        
+        if [[ "$use_defaults" =~ ^[Nn]$ ]]; then
+            echo ""
+            read -p "GPU limit (default: $default_gpu): " input_gpu
+            gpu_limit="${input_gpu:-$default_gpu}"
+            
+            read -p "CPU limit (default: $default_cpu): " input_cpu
+            cpu_limit="${input_cpu:-$default_cpu}"
+            
+            read -p "Memory limit (default: $default_memory): " input_memory
+            memory_limit="${input_memory:-$default_memory}"
+        fi
     fi
     
+    echo ""
     print_success "Resources configured:"
     echo "  GPU: $gpu_limit"
     echo "  CPU: $cpu_limit"
@@ -249,6 +417,7 @@ deploy_llmd_model_interactive() {
     echo ""
     print_header "Deployment Summary"
     
+    echo -e "${BLUE}Serving Runtime:${NC} ${runtime_names[$((runtime_choice - 1))]}"
     echo -e "${BLUE}Model:${NC} $model_name"
     echo -e "${BLUE}URI:${NC} $model_uri"
     echo -e "${BLUE}Namespace:${NC} $target_namespace"
@@ -268,26 +437,29 @@ deploy_llmd_model_interactive() {
     
     echo ""
     read -p "Proceed with deployment? (Y/n): " confirm_deploy
+    confirm_deploy=$(echo "$confirm_deploy" | tr -d '[:space:]')
     
     if [[ "$confirm_deploy" =~ ^[Nn]$ ]]; then
         print_info "Deployment cancelled."
         return 0
     fi
     
-    # Deploy the model
+    # Deploy the model based on selected runtime
     echo ""
     print_header "Deploying Model"
     
-    print_step "Creating LLMInferenceService '$model_name' in namespace '$target_namespace'..."
-    
-    local env_section=""
-    if [ -n "$vllm_args" ]; then
-        env_section="      env:
+    if [ "$selected_runtime" = "llmd" ]; then
+        # Deploy using llm-d (LLMInferenceService)
+        print_step "Creating LLMInferenceService '$model_name' in namespace '$target_namespace'..."
+        
+        local env_section=""
+        if [ -n "$vllm_args" ]; then
+            env_section="      env:
         - name: VLLM_ADDITIONAL_ARGS
           value: \"$vllm_args\""
-    fi
-    
-    cat <<EOF | oc apply -f -
+        fi
+        
+        cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1alpha1
 kind: LLMInferenceService
 metadata:
@@ -322,37 +494,98 @@ $env_section
           memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
           nvidia.com/gpu: "$gpu_limit"
 EOF
-    
-    if [ $? -eq 0 ]; then
-        print_success "Model deployment created!"
-        echo ""
         
-        print_info "Deployment initiated. The model will take 5-10 minutes to be ready."
-        echo ""
-        
-        print_info "Monitor deployment status:"
-        echo "  oc get llmisvc $model_name -n $target_namespace -w"
-        echo ""
-        
-        print_info "View pods:"
-        echo "  oc get pods -n $target_namespace -l serving.kserve.io/inferenceservice=$model_name"
-        echo ""
-        
-        if [[ "$auth_annotation" =~ "true" ]]; then
-            print_info "Generate API token:"
-            echo "  oc create token default -n $target_namespace --duration=24h"
+        if [ $? -eq 0 ]; then
+            print_success "LLMInferenceService created!"
             echo ""
-            print_info "Or use the demo script:"
-            echo "  ./demo/generate-maas-token.sh"
+            print_info "Monitor deployment:"
+            echo "  oc get llmisvc $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create LLMInferenceService"
+            return 1
         fi
         
-        echo ""
-        print_info "Test the model (after it's ready):"
-        echo "  ./demo/test-maas-api.sh"
+    elif [ "$selected_runtime" = "vllm" ]; then
+        # Deploy using vLLM (InferenceService)
+        print_step "Creating InferenceService '$model_name' in namespace '$target_namespace'..."
         
-    else
-        print_error "Failed to deploy model."
-        return 1
+        local args_section=""
+        if [ -n "$vllm_args" ]; then
+            args_section="        args:
+          - --enable-auto-tool-choice
+          - --tool-call-parser=hermes"
+        fi
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    $auth_annotation
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: vLLM
+      runtime: vllm-runtime
+      storage:
+        key: aws-connection-model-storage
+        path: $model_uri
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: "$gpu_limit"
+        requests:
+          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2)}')'
+          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
+          nvidia.com/gpu: "$gpu_limit"
+$args_section
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
     fi
+    
+    # Common post-deployment info
+    echo ""
+    print_info "Deployment initiated. The model will take 5-10 minutes to be ready."
+    echo ""
+    
+    print_info "View pods:"
+    echo "  oc get pods -n $target_namespace"
+    echo ""
+    
+    if [[ "$auth_annotation" =~ "true" ]]; then
+        print_info "Generate API token:"
+        echo "  oc create token default -n $target_namespace --duration=24h"
+        echo ""
+    fi
+    
+    print_info "Get model endpoint:"
+    echo "  oc get route -n $target_namespace"
+    echo ""
+    
+    return 0
+}
+
+################################################################################
+# Backward Compatibility Alias
+################################################################################
+# Maintain backward compatibility with old function name
+deploy_llmd_model_interactive() {
+    deploy_model_interactive "$@"
 }
 

@@ -19,9 +19,10 @@
 #
 # Interactive Menu Options:
 #   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
-#   2. Create GPU Hardware Profile - Interactive hardware profile creation
-#   3. Setup MaaS Only - MaaS API infrastructure only
-#   4. Exit
+#   2. Deploy Model - Interactive model deployment with llm-d
+#   3. Create GPU Hardware Profile - Interactive hardware profile creation
+#   4. Setup MaaS Only - MaaS API infrastructure only
+#   5. Exit
 
 set -e
 
@@ -45,6 +46,7 @@ USE_LEGACY=false
 SKIP_OPENSHIFT=false
 SKIP_GPU=false
 SKIP_RHOAI=false
+FORCE_NEW_CLUSTER=false  # Track if user explicitly cleared kubeconfig
 
 ################################################################################
 # Helper Functions
@@ -67,9 +69,10 @@ show_main_menu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
-    echo -e "${YELLOW}2)${NC} Create GPU Hardware Profile (for existing cluster)"
-    echo -e "${YELLOW}3)${NC} Setup MaaS Only (assumes RHOAI exists)"
-    echo -e "${YELLOW}4)${NC} Exit"
+    echo -e "${YELLOW}2)${NC} Deploy Model (interactive model deployment)"
+    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile (for existing cluster)"
+    echo -e "${YELLOW}4)${NC} Setup MaaS Only (assumes RHOAI exists)"
+    echo -e "${YELLOW}5)${NC} Exit"
     echo ""
 }
 
@@ -99,6 +102,48 @@ print_warning() {
 
 print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
+}
+
+################################################################################
+# Model Deployment
+################################################################################
+
+deploy_model_interactive() {
+    print_header "Deploy Model"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    
+    # Check if model-deployment.sh exists
+    if [ ! -f "$SCRIPT_DIR/lib/functions/model-deployment.sh" ]; then
+        print_error "Model deployment library not found"
+        echo ""
+        echo "Expected: $SCRIPT_DIR/lib/functions/model-deployment.sh"
+        return 1
+    fi
+    
+    # Source required libraries
+    if [ ! -f "$SCRIPT_DIR/lib/utils/colors.sh" ]; then
+        print_error "Colors library not found"
+        return 1
+    fi
+    
+    source "$SCRIPT_DIR/lib/utils/colors.sh"
+    source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
+    
+    # Run the interactive deployment
+    echo ""
+    deploy_model_interactive
+    
+    return $?
 }
 
 ################################################################################
@@ -444,7 +489,26 @@ check_prerequisites() {
                     print_info "To persist, remove KUBECONFIG from your shell profile (~/.bashrc, ~/.zshrc, etc.)"
                 fi
                 
+                # Also clear default kubeconfig
+                if [ -f "$HOME/.kube/config" ]; then
+                    echo ""
+                    echo -e -n "${BLUE}Also remove default kubeconfig (~/.kube/config)?${NC} [y/N]: "
+                    read remove_default
+                    
+                    if [[ "$remove_default" =~ ^[Yy]$ ]]; then
+                        # Backup first
+                        cp "$HOME/.kube/config" "$HOME/.kube/config.backup.$(date +%Y%m%d-%H%M%S)"
+                        print_info "Created backup: ~/.kube/config.backup.$(date +%Y%m%d-%H%M%S)"
+                        rm -f "$HOME/.kube/config"
+                        print_success "Removed ~/.kube/config"
+                    fi
+                fi
+                
                 echo ""
+                print_success "Kubeconfig cleared - ready for fresh installation"
+                # Force skip of existing cluster check since we just cleared it
+                SKIP_OPENSHIFT=false
+                FORCE_NEW_CLUSTER=true  # Flag to skip cluster detection in integrated workflow
                 read -p "Press Enter to continue..."
                 ;;
             4)
@@ -630,6 +694,11 @@ run_integrated_workflow() {
         print_info "Flags: $workflow_args"
     fi
     echo ""
+    
+    # Export flag for integrated workflow to detect
+    if [ "$FORCE_NEW_CLUSTER" = true ]; then
+        export FORCE_NEW_CLUSTER=true
+    fi
     
     if $workflow_script $workflow_args; then
         print_success "Integrated workflow completed successfully!"
@@ -837,29 +906,34 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-4): " choice
+        read -p "Select an option (1-5): " choice
         
         case $choice in
             1)
                 run_complete_setup
                 ;;
             2)
-                create_hardware_profile_interactive
+                deploy_model_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
             3)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            4)
                 MAAS_ONLY=true
                 run_maas_only_setup
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            4)
+            5)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-4."
+                print_error "Invalid option. Please select 1-5."
                 sleep 2
                 ;;
         esac

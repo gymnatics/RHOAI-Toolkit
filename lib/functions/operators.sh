@@ -57,11 +57,23 @@ install_gpu_operator() {
         done
     fi
     
-    # Create ClusterPolicy if not exists
+    # Check if GPU nodes exist before creating ClusterPolicy
+    local gpu_nodes=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    
     if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
-        print_step "Creating GPU ClusterPolicy..."
-        apply_manifest "$SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml" "GPU ClusterPolicy"
-        print_success "GPU ClusterPolicy created"
+        if [ "$gpu_nodes" -gt 0 ]; then
+            print_step "GPU nodes detected, creating GPU ClusterPolicy..."
+            apply_manifest "$SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml" "GPU ClusterPolicy"
+            print_success "GPU ClusterPolicy created"
+        else
+            print_warning "No GPU nodes detected yet"
+            print_info "GPU ClusterPolicy will be created when GPU nodes are added"
+            print_info "To create it manually later, run:"
+            echo "  oc apply -f $SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
+            echo ""
+            print_info "Or the ClusterPolicy will be auto-created when you run:"
+            echo "  ./scripts/create-gpu-machineset.sh"
+        fi
     else
         print_success "GPU ClusterPolicy already exists"
     fi

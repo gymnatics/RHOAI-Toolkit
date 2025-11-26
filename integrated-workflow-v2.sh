@@ -129,14 +129,36 @@ select_rhoai_version() {
 }
 
 ################################################################################
+# Helper Functions
+################################################################################
+
+approve_pending_installplans() {
+    # Check for any pending InstallPlans and approve them automatically
+    local pending_plans=$(oc get installplan -A -o json 2>/dev/null | jq -r '.items[] | select(.spec.approved==false) | "\(.metadata.namespace) \(.metadata.name)"' 2>/dev/null)
+    
+    if [ -n "$pending_plans" ]; then
+        echo "$pending_plans" | while read -r namespace plan_name; do
+            if [ -n "$namespace" ] && [ -n "$plan_name" ]; then
+                print_info "Approving pending InstallPlan: $plan_name in namespace $namespace"
+                oc patch installplan "$plan_name" -n "$namespace" --type merge -p '{"spec":{"approved":true}}' &>/dev/null
+            fi
+        done
+    fi
+}
+
+################################################################################
 # Main Installation Phases
 ################################################################################
 
 install_openshift() {
     print_header "PHASE 1: OpenShift Installation"
     
+    # Check if user explicitly cleared kubeconfig in complete-setup.sh
+    if [ "${FORCE_NEW_CLUSTER}" = "true" ]; then
+        print_info "Kubeconfig was cleared - proceeding with fresh installation"
+        # Skip the existing cluster check
     # Check if already connected to a cluster
-    if oc whoami &>/dev/null; then
+    elif oc whoami &>/dev/null; then
         local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
         local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
         
@@ -313,6 +335,10 @@ install_rhoai() {
     # Install RHOAI operator
     install_rhoai_operator "$RHOAI_VERSION"
     
+    # Approve any pending InstallPlans (Service Mesh may require approval)
+    print_step "Checking for pending operator InstallPlans..."
+    approve_pending_installplans
+    
     # Initialize RHOAI
     initialize_rhoai
     
@@ -327,6 +353,10 @@ install_rhoai() {
             print_warning "Service Mesh not ready yet (continuing anyway)"
             break
         fi
+        
+        # Check for and approve any pending InstallPlans
+        approve_pending_installplans
+        
         echo "Waiting for Service Mesh Control Plane... (${sm_elapsed}s elapsed)"
         sleep 15
         sm_elapsed=$((sm_elapsed + 15))
@@ -365,7 +395,7 @@ install_rhoai() {
         
         # Optional: Deploy a model interactively
         echo ""
-        deploy_llmd_model_interactive
+        deploy_llmd_model_interactive || true  # Don't fail if user skips or deployment fails
     fi
     
     print_success "RHOAI $RHOAI_VERSION installed successfully"
@@ -425,6 +455,9 @@ main() {
         echo "To set up MaaS API infrastructure, run: ./scripts/setup-maas.sh"
         echo ""
     fi
+    
+    # Ensure we exit with success
+    return 0
 }
 
 # Run main function

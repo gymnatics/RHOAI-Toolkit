@@ -391,6 +391,42 @@ if [[ "$apply_now" == "y" || "$apply_now" == "Y" ]]; then
         echo ""
         print_success "✅ MachineSet applied successfully!"
         echo ""
+        
+        # Check if GPU ClusterPolicy needs to be created
+        if oc get crd clusterpolicies.nvidia.com &>/dev/null; then
+            if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+                print_info "GPU Operator detected but no ClusterPolicy found"
+                echo ""
+                read -p "Create GPU ClusterPolicy now? [Y/n]: " create_policy
+                create_policy="${create_policy:-Y}"
+                
+                if [[ "$create_policy" =~ ^[Yy]$ ]]; then
+                    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                    PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+                    POLICY_FILE="$PARENT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
+                    
+                    if [ -f "$POLICY_FILE" ]; then
+                        print_info "Creating GPU ClusterPolicy..."
+                        oc apply -f "$POLICY_FILE"
+                        
+                        if [ $? -eq 0 ]; then
+                            echo ""
+                            print_success "✅ GPU ClusterPolicy created!"
+                            print_info "GPU operator daemonsets will deploy when nodes are ready"
+                        else
+                            print_warning "Failed to create ClusterPolicy"
+                            echo "You can create it manually later:"
+                            echo "  oc apply -f $POLICY_FILE"
+                        fi
+                    else
+                        print_warning "ClusterPolicy manifest not found at: $POLICY_FILE"
+                        echo "You can create it manually from the GPU Operator console"
+                    fi
+                    echo ""
+                fi
+            fi
+        fi
+        
         print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         print_header "Next Steps"
         print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -404,13 +440,11 @@ if [[ "$apply_now" == "y" || "$apply_now" == "Y" ]]; then
         echo "3️⃣  View GPU nodes when ready:"
         echo "   oc get nodes -l node-role.kubernetes.io/gpu-worker"
         echo ""
-        echo "4️⃣  Scale up/down:"
-        echo "   oc scale machineset ${MACHINESET_NAME} -n openshift-machine-api --replicas=<number>"
+        echo "4️⃣  Verify GPU operator pods (once nodes are ready):"
+        echo "   oc get pods -n nvidia-gpu-operator"
         echo ""
-        echo "5️⃣  Install NVIDIA GPU Operator (if not already installed):"
-        echo "   oc create ns gpu-operator-resources"
-        echo "   oc label ns gpu-operator-resources openshift.io/cluster-monitoring=true"
-        echo "   # Then install GPU Operator from OperatorHub"
+        echo "5️⃣  Scale up/down:"
+        echo "   oc scale machineset ${MACHINESET_NAME} -n openshift-machine-api --replicas=<number>"
         echo ""
     else
         echo ""

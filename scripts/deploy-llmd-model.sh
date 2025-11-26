@@ -1,15 +1,17 @@
 #!/bin/bash
 
 ################################################################################
-# Deploy Model with llm-d (Interactive)
+# Deploy Model (Interactive)
 ################################################################################
-# This script provides an interactive interface to deploy models using llm-d
-# serving runtime in RHOAI 3.0.
+# This script provides an interactive interface to deploy models using
+# available serving runtimes (llm-d, vLLM, etc.) in RHOAI.
 #
 # Features:
+# - Auto-detect available serving runtimes
 # - Pre-defined model catalog (Qwen3, Llama, Granite)
 # - Custom model URI support
 # - Namespace selection/creation
+# - Hardware profile detection and selection
 # - Resource configuration
 # - Tool calling configuration
 # - Authentication setup
@@ -32,9 +34,9 @@ source "$SCRIPT_DIR/../lib/functions/model-deployment.sh"
 ################################################################################
 
 main() {
-    print_header "Interactive Model Deployment with llm-d"
+    print_header "Interactive Model Deployment"
     
-    echo -e "${YELLOW}This script will help you deploy a model using llm-d serving runtime.${NC}"
+    echo -e "${YELLOW}This script will help you deploy a model using available serving runtimes.${NC}"
     echo ""
     
     # Check if logged in
@@ -54,42 +56,8 @@ main() {
     print_success "RHOAI is installed"
     echo ""
     
-    # Check if llm-d prerequisites are met
-    print_step "Checking llm-d prerequisites..."
-    
-    local missing_prereqs=false
-    
-    if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
-        print_warning "GatewayClass 'openshift-ai-inference' not found"
-        missing_prereqs=true
-    fi
-    
-    if ! oc get gateway openshift-ai-inference -n openshift-ingress &>/dev/null; then
-        print_warning "Gateway 'openshift-ai-inference' not found"
-        missing_prereqs=true
-    fi
-    
-    if ! oc get leaderworkersetoperator cluster -n openshift-lws-operator &>/dev/null; then
-        print_warning "LeaderWorkerSetOperator instance not found"
-        missing_prereqs=true
-    fi
-    
-    if [ "$missing_prereqs" = true ]; then
-        print_error "Some llm-d prerequisites are missing."
-        print_info "Run ./scripts/setup-llmd.sh to configure llm-d infrastructure."
-        echo ""
-        read -p "Continue anyway? (y/N): " continue_choice
-        if [[ ! "$continue_choice" =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    else
-        print_success "All llm-d prerequisites are configured"
-    fi
-    
-    echo ""
-    
-    # Deploy model interactively
-    deploy_llmd_model_interactive
+    # Deploy model interactively (will auto-detect available runtimes)
+    deploy_model_interactive
     
     if [ $? -eq 0 ]; then
         echo ""
@@ -99,7 +67,7 @@ main() {
         echo ""
         print_info "Next steps:"
         echo "  1. Wait 5-10 minutes for the model to be ready"
-        echo "  2. Check status: oc get llmisvc -n <namespace>"
+        echo "  2. Check status: oc get llmisvc -A  (or inferenceservice -A)"
         echo "  3. Generate token: ./demo/generate-maas-token.sh"
         echo "  4. Test model: ./demo/test-maas-api.sh"
         echo ""
