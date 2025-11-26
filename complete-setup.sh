@@ -367,6 +367,95 @@ check_prerequisites() {
     
     local all_good=true
     
+    # Check for KUBECONFIG environment variable
+    if [ -n "$KUBECONFIG" ]; then
+        print_info "KUBECONFIG environment variable is set:"
+        echo "  $KUBECONFIG"
+        echo ""
+        
+        if [ -f "$KUBECONFIG" ]; then
+            print_success "Kubeconfig file exists"
+        else
+            print_warning "Kubeconfig file does not exist at that path"
+        fi
+        echo ""
+    fi
+    
+    # Check if already logged in (existing cluster)
+    if oc whoami &>/dev/null; then
+        print_success "Already logged in to an OpenShift cluster"
+        
+        # Get cluster info
+        local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+        local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
+        echo ""
+        echo "  Cluster: $cluster_url"
+        echo "  User: $cluster_user"
+        
+        if [ -n "$KUBECONFIG" ]; then
+            echo "  Kubeconfig: $KUBECONFIG"
+        fi
+        echo ""
+        
+        echo -e "${YELLOW}What would you like to do?${NC}"
+        echo ""
+        echo "  1) Use this existing cluster (skip OpenShift installation)"
+        echo "  2) Logout and install a new cluster"
+        echo "  3) Clear kubeconfig and install a new cluster"
+        echo "  4) Back to menu / Cancel"
+        echo ""
+        
+        read -p "$(echo -e ${BLUE}Enter choice [1-4]${NC} (default: 1): )" cluster_choice
+        cluster_choice="${cluster_choice:-1}"
+        
+        case $cluster_choice in
+            1)
+                print_info "Will use existing cluster (skip OpenShift installation)"
+                SKIP_OPENSHIFT=true
+                ;;
+            2)
+                print_warning "You'll need to logout and install a new cluster"
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                print_warning "Clearing kubeconfig..."
+                
+                # Unset KUBECONFIG
+                if [ -n "$KUBECONFIG" ]; then
+                    echo ""
+                    print_info "Current KUBECONFIG: $KUBECONFIG"
+                    echo ""
+                    read -p "$(echo -e ${BLUE}Remove this kubeconfig file?${NC} [y/N]: )" remove_file
+                    
+                    if [[ "$remove_file" =~ ^[Yy]$ ]]; then
+                        if [ -f "$KUBECONFIG" ]; then
+                            rm -f "$KUBECONFIG"
+                            print_success "Removed kubeconfig file: $KUBECONFIG"
+                        fi
+                    fi
+                    
+                    export KUBECONFIG=""
+                    unset KUBECONFIG
+                    print_success "KUBECONFIG environment variable cleared"
+                    echo ""
+                    print_warning "Note: This only clears for the current session"
+                    print_info "To persist, remove KUBECONFIG from your shell profile (~/.bashrc, ~/.zshrc, etc.)"
+                fi
+                
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                print_info "Cancelled"
+                return 1
+                ;;
+            *)
+                print_error "Invalid choice"
+                return 1
+                ;;
+        esac
+    fi
+    
     # Check for required scripts based on USE_MODULAR flag
     if [ "$USE_MODULAR" = true ]; then
         if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
@@ -415,7 +504,7 @@ check_prerequisites() {
         exit 1
     fi
     
-    print_success "All prerequisites met"
+    print_success "Prerequisites check passed"
 }
 
 ################################################################################

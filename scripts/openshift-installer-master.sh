@@ -1504,12 +1504,45 @@ installation_only() {
     if [ ! -f "./openshift-install" ]; then
         print_error "openshift-install binary not found in current directory"
         echo ""
-        echo "Options:"
-        echo "  1. Download installer from main menu (option 3)"
-        echo "  2. Place your openshift-install binary in this directory"
+        echo "The OpenShift installer binary is required but missing."
         echo ""
-        press_any_key
-        return 1
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  1) Download installer now (recommended)"
+        echo "  2) Exit and download manually"
+        echo ""
+        read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" installer_choice
+        installer_choice="${installer_choice:-1}"
+        
+        case $installer_choice in
+            1)
+                echo ""
+                download_installer
+                if [ ! -f "./openshift-install" ]; then
+                    print_error "Installer download failed or was cancelled"
+                    press_any_key
+                    return 1
+                fi
+                echo ""
+                print_success "Installer ready! Continuing with installation..."
+                echo ""
+                sleep 2
+                ;;
+            2)
+                print_info "Please download the installer and try again"
+                echo ""
+                echo "You can download it from:"
+                echo "  • https://console.redhat.com/openshift/install"
+                echo "  • Or use option 4 from the main menu"
+                echo ""
+                press_any_key
+                return 1
+                ;;
+            *)
+                print_error "Invalid option"
+                press_any_key
+                return 1
+                ;;
+        esac
     fi
     
     # Show current version

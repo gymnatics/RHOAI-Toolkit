@@ -4,6 +4,52 @@ This folder contains utility scripts that support the main installation workflow
 
 ## Scripts
 
+---
+
+### manage-kubeconfig.sh
+**Purpose**: Manage kubeconfig files and KUBECONFIG environment variable
+
+**Usage**:
+```bash
+# Interactive menu
+./scripts/manage-kubeconfig.sh
+
+# Quick commands
+./scripts/manage-kubeconfig.sh --show      # Show current configuration
+./scripts/manage-kubeconfig.sh --clear     # Clear kubeconfig
+./scripts/manage-kubeconfig.sh --logout    # Logout from cluster
+./scripts/manage-kubeconfig.sh --set       # Set kubeconfig file
+```
+
+**What it does**:
+- Shows current kubeconfig configuration and cluster connection
+- Clears KUBECONFIG environment variable
+- Removes kubeconfig files (with backup)
+- Logs out from current cluster
+- Sets kubeconfig to a specific file
+- Checks shell profiles for KUBECONFIG exports
+
+**When to use**:
+- When switching between clusters
+- When kubeconfig is pointing to an old/deleted cluster
+- To clean up after cluster deletion
+- To troubleshoot connection issues
+- Before installing a new cluster
+
+**Common scenarios**:
+```bash
+# Stuck with old cluster? Clear it
+./scripts/manage-kubeconfig.sh --clear
+
+# Want to see current setup?
+./scripts/manage-kubeconfig.sh --show
+
+# Need to logout?
+./scripts/manage-kubeconfig.sh --logout
+```
+
+---
+
 ### cleanup-all.sh
 **Purpose**: Comprehensive cleanup of AWS resources
 
