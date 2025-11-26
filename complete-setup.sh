@@ -20,9 +20,10 @@
 # Interactive Menu Options:
 #   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
 #   2. Deploy Model - Interactive model deployment with llm-d
-#   3. Create GPU Hardware Profile - Interactive hardware profile creation
-#   4. Setup MaaS Only - MaaS API infrastructure only
-#   5. Exit
+#   3. Setup MCP Servers - Configure MCP servers for GenAI Playground/AI Agents
+#   4. Create GPU Hardware Profile - Interactive hardware profile creation
+#   5. Setup MaaS Only - MaaS API infrastructure only
+#   6. Exit
 
 set -e
 
@@ -70,9 +71,10 @@ show_main_menu() {
     echo ""
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
     echo -e "${YELLOW}2)${NC} Deploy Model (interactive model deployment)"
-    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile (for existing cluster)"
-    echo -e "${YELLOW}4)${NC} Setup MaaS Only (assumes RHOAI exists)"
-    echo -e "${YELLOW}5)${NC} Exit"
+    echo -e "${YELLOW}3)${NC} Setup MCP Servers (for GenAI Playground/AI Agents)"
+    echo -e "${YELLOW}4)${NC} Create GPU Hardware Profile (for existing cluster)"
+    echo -e "${YELLOW}5)${NC} Setup MaaS Only (assumes RHOAI exists)"
+    echo -e "${YELLOW}6)${NC} Exit"
     echo ""
 }
 
@@ -102,6 +104,39 @@ print_warning() {
 
 print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
+}
+
+################################################################################
+# MCP Server Setup
+################################################################################
+
+setup_mcp_servers_interactive() {
+    print_header "Setup MCP Servers"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    
+    # Check if MCP setup script exists
+    if [ ! -f "$SCRIPT_DIR/scripts/setup-mcp-servers.sh" ]; then
+        print_error "MCP server setup script not found"
+        echo ""
+        echo "Expected: $SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+        return 1
+    fi
+    
+    # Run the MCP setup script
+    echo ""
+    "$SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+    
+    return $?
 }
 
 ################################################################################
@@ -906,7 +941,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-5): " choice
+        read -p "Select an option (1-6): " choice
         
         case $choice in
             1)
@@ -918,22 +953,27 @@ main() {
                 read -p "Press Enter to return to main menu..."
                 ;;
             3)
-                create_hardware_profile_interactive
+                setup_mcp_servers_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
             4)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            5)
                 MAAS_ONLY=true
                 run_maas_only_setup
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            5)
+            6)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-5."
+                print_error "Invalid option. Please select 1-6."
                 sleep 2
                 ;;
         esac

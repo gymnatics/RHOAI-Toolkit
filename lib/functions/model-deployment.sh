@@ -259,31 +259,74 @@ deploy_model_interactive() {
     local profile_cpus=()
     local profile_memories=()
     
-    # Check for GPU hardware profiles
-    local gpu_profiles=$(oc get hardwareprofiles -o json 2>/dev/null | jq -r '.items[] | select(.spec.hardwareCharacteristic.nodeSelector."nvidia.com/gpu.present" == "true") | .metadata.name' 2>/dev/null)
+    # Check for all hardware profiles (look for GPU-related ones)
+    # Hardware profiles are typically in redhat-ods-applications namespace
+    local all_profiles=$(oc get hardwareprofiles -n redhat-ods-applications -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null)
     
-    if [ -n "$gpu_profiles" ]; then
-        print_info "Found GPU hardware profiles:"
+    # If not found in redhat-ods-applications, try all namespaces
+    if [ -z "$all_profiles" ]; then
+        all_profiles=$(oc get hardwareprofiles -A -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null)
+    fi
+    
+    # Debug: show what we found
+    if [ -n "$all_profiles" ]; then
+        print_info "Found hardware profiles:"
+        echo "$all_profiles" | sed 's/^/  - /'
         echo ""
-        
+    else
+        print_warning "No hardware profiles found in cluster"
+        echo ""
+    fi
+    
+    if [ -n "$all_profiles" ]; then
         while IFS= read -r profile; do
             if [ -n "$profile" ]; then
+                # Get profile details (try redhat-ods-applications namespace)
+                local cpu=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.cpu}' 2>/dev/null)
+                local memory=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.memory}' 2>/dev/null)
+                
+                # Get GPU count from nodeSelector
+                local gpu_count=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.count"}' 2>/dev/null)
+                
+                # If no gpu.count, try gpu.present
+                if [ -z "$gpu_count" ]; then
+                    local gpu_present=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.present"}' 2>/dev/null)
+                    if [ "$gpu_present" = "true" ]; then
+                        gpu_count="1"
+                    fi
+                fi
+                
+                # If still no GPU count but profile has "gpu" in name, assume 1 GPU
+                if [ -z "$gpu_count" ] && [[ "$profile" =~ [Gg][Pp][Uu] ]]; then
+                    gpu_count="1"
+                fi
+                
+                # Default values if not specified
+                cpu="${cpu:-4}"
+                memory="${memory:-16Gi}"
+                gpu_count="${gpu_count:-0}"
+                
+                # Add all profiles (including non-GPU ones)
                 profiles+=("$profile")
-                
-                # Get profile details
-                local gpu_count=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.count"}' 2>/dev/null || echo "1")
-                local cpu=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.cpu}' 2>/dev/null || echo "4")
-                local memory=$(oc get hardwareprofile "$profile" -o jsonpath='{.spec.hardwareCharacteristic.memory}' 2>/dev/null || echo "16Gi")
-                
                 profile_names+=("$profile")
                 profile_gpus+=("$gpu_count")
                 profile_cpus+=("$cpu")
                 profile_memories+=("$memory")
-                
-                echo "  - $profile: ${gpu_count} GPU, ${cpu} CPU, ${memory} Memory"
             fi
-        done <<< "$gpu_profiles"
-        echo ""
+        done <<< "$all_profiles"
+        
+        if [ ${#profiles[@]} -gt 0 ]; then
+            print_info "Available hardware profiles:"
+            echo ""
+            for i in "${!profiles[@]}"; do
+                if [ "${profile_gpus[$i]}" != "0" ]; then
+                    echo "  - ${profile_names[$i]}: ${profile_gpus[$i]} GPU, ${profile_cpus[$i]} CPU, ${profile_memories[$i]} Memory"
+                else
+                    echo "  - ${profile_names[$i]}: ${profile_cpus[$i]} CPU, ${profile_memories[$i]} Memory (no GPU)"
+                fi
+            done
+            echo ""
+        fi
     fi
     
     # Offer hardware profile selection or manual configuration
