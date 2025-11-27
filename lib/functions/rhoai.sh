@@ -4,9 +4,10 @@
 ################################################################################
 
 # Source required utilities
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$SCRIPT_DIR/lib/utils/colors.sh"
-source "$SCRIPT_DIR/lib/utils/common.sh"
+# Use a local variable to avoid overwriting caller's SCRIPT_DIR
+_RHOAI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
+source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 
 # Get RHOAI channel based on version
 get_rhoai_channel() {
@@ -202,7 +203,7 @@ create_datasciencecluster_v1() {
     fi
     
     print_step "Creating DataScienceCluster..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v1.yaml" "DataScienceCluster v1"
+    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v1.yaml" "DataScienceCluster v1"
     
     print_success "DataScienceCluster created"
 }
@@ -217,7 +218,7 @@ create_datasciencecluster_v2() {
     fi
     
     print_step "Creating DataScienceCluster with GenAI and MaaS components..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
+    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
     
     print_success "DataScienceCluster created with GenAI and MaaS support"
 }

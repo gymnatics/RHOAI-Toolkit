@@ -4,9 +4,10 @@
 ################################################################################
 
 # Source required utilities
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$SCRIPT_DIR/lib/utils/colors.sh"
-source "$SCRIPT_DIR/lib/utils/common.sh"
+# Use a local variable to avoid overwriting caller's SCRIPT_DIR
+_OPERATORS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_OPERATORS_LIB_DIR/lib/utils/colors.sh"
+source "$_OPERATORS_LIB_DIR/lib/utils/common.sh"
 
 # Install NFD Operator
 install_nfd_operator() {
@@ -19,7 +20,7 @@ install_nfd_operator() {
     fi
     
     # Apply operator manifest
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/nfd-operator.yaml" "NFD Operator"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/nfd-operator.yaml" "NFD Operator"
     
     # Wait for operator to be ready
     wait_for_operator_ready "nfd" "openshift-nfd"
@@ -27,7 +28,7 @@ install_nfd_operator() {
     # Create NFD instance if not exists
     if ! oc get nodefeaturediscovery nfd-instance -n openshift-nfd &>/dev/null; then
         print_step "Creating NFD instance..."
-        apply_manifest "$SCRIPT_DIR/lib/manifests/operators/nfd-instance.yaml" "NFD instance"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/nfd-instance.yaml" "NFD instance"
         print_success "NFD instance created"
     else
         print_success "NFD instance already exists"
@@ -45,7 +46,7 @@ install_gpu_operator() {
         print_success "GPU Operator already installed"
     else
         # Apply operator manifest
-        apply_manifest "$SCRIPT_DIR/lib/manifests/operators/gpu-operator.yaml" "GPU Operator"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/gpu-operator.yaml" "GPU Operator"
         
         # Wait for operator to be ready
         print_step "Waiting for GPU operator to be ready..."
@@ -63,13 +64,13 @@ install_gpu_operator() {
     if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
         if [ "$gpu_nodes" -gt 0 ]; then
             print_step "GPU nodes detected, creating GPU ClusterPolicy..."
-            apply_manifest "$SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml" "GPU ClusterPolicy"
+            apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml" "GPU ClusterPolicy"
             print_success "GPU ClusterPolicy created"
         else
             print_warning "No GPU nodes detected yet"
             print_info "GPU ClusterPolicy will be created when GPU nodes are added"
             print_info "To create it manually later, run:"
-            echo "  oc apply -f $SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
+            echo "  oc apply -f $_OPERATORS_LIB_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
             echo ""
             print_info "Or the ClusterPolicy will be auto-created when you run:"
             echo "  ./scripts/create-gpu-machineset.sh"
@@ -103,7 +104,7 @@ install_rhcl_operator() {
         fi
     else
         # Apply operator manifest
-        apply_manifest "$SCRIPT_DIR/lib/manifests/rhcl/rhcl-operator.yaml" "RHCL Operator"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/rhcl-operator.yaml" "RHCL Operator"
         
         # Wait for operator to be ready
         print_step "Waiting for RHCL operator to be ready (this may take 2-3 minutes)..."
@@ -129,7 +130,7 @@ install_rhcl_operator() {
         print_success "Kuadrant instance already exists"
     else
         print_step "Creating Kuadrant instance..."
-        apply_manifest "$SCRIPT_DIR/lib/manifests/rhcl/kuadrant-instance.yaml" "Kuadrant instance"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/kuadrant-instance.yaml" "Kuadrant instance"
         print_success "Kuadrant instance created"
     fi
     
@@ -156,7 +157,7 @@ install_lws_operator() {
     fi
     
     print_step "Creating LWS namespace..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-namespace.yaml" "LWS namespace"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/lws-namespace.yaml" "LWS namespace"
     
     # Clean up any duplicate OperatorGroups (prevents "Multiple OperatorGroup" error)
     print_step "Ensuring clean OperatorGroup configuration..."
@@ -169,10 +170,10 @@ install_lws_operator() {
     
     # Create OperatorGroup (name matches namespace to avoid conflicts)
     print_step "Creating OperatorGroup..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-operatorgroup.yaml" "LWS OperatorGroup"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/lws-operatorgroup.yaml" "LWS OperatorGroup"
     
     print_step "Installing LWS Operator subscription..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/lws-subscription.yaml" "LWS Subscription"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/lws-subscription.yaml" "LWS Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for LWS operator to be ready..."
@@ -204,17 +205,17 @@ install_certmanager_operator() {
     fi
     
     print_step "Creating cert-manager-operator namespace..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-namespace.yaml" "cert-manager namespace"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/certmanager-namespace.yaml" "cert-manager namespace"
     
     # Check for existing OperatorGroup
     local existing_ogs=$(oc get operatorgroup -n "$cm_namespace" -o name 2>/dev/null | wc -l)
     if [ "$existing_ogs" -eq 0 ]; then
         print_step "Creating OperatorGroup..."
-        apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-operatorgroup.yaml" "cert-manager OperatorGroup"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/certmanager-operatorgroup.yaml" "cert-manager OperatorGroup"
     fi
     
     print_step "Installing cert-manager Operator subscription..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/certmanager-subscription.yaml" "cert-manager Subscription"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/certmanager-subscription.yaml" "cert-manager Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for cert-manager operator to be ready..."
@@ -261,7 +262,7 @@ install_kueue_operator() {
     fi
     
     print_step "Installing Kueue Operator..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/operators/kueue-subscription.yaml" "Kueue Subscription"
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/kueue-subscription.yaml" "Kueue Subscription"
     
     # Wait for operator to be ready
     print_step "Waiting for Kueue operator to be ready..."
@@ -338,7 +339,7 @@ configure_authorino_tls() {
         sleep 10
         
         # Enable TLS in Authorino
-        apply_manifest "$SCRIPT_DIR/lib/manifests/rhcl/authorino-tls.yaml" "Authorino TLS configuration"
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/authorino-tls.yaml" "Authorino TLS configuration"
         
         print_success "Authorino configured with TLS"
     fi

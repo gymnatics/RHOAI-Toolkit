@@ -7,8 +7,9 @@
 ################################################################################
 
 # Source OS compatibility library
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../utils/os-compat.sh"
+# Use a local variable to avoid overwriting caller's SCRIPT_DIR
+_MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
 
 # Interactive model deployment function (runtime-agnostic)
 deploy_model_interactive() {
