@@ -990,19 +990,20 @@ configure_cluster() {
     
     echo ""
     print_info "Master Node Configuration"
-    prompt_with_default "Master node instance type" "m6i.xlarge" MASTER_INSTANCE_TYPE
+    prompt_with_default "Master node instance type" "m6a.4xlarge" MASTER_INSTANCE_TYPE
     prompt_with_default "Number of master replicas" "3" MASTER_REPLICAS
     
     echo ""
     print_info "Worker Node Configuration"
     echo "Common instance types:"
-    echo "  - m6i.2xlarge (standard)"
+    echo "  - m6a.4xlarge (standard - AMD-based, cost-effective)"
+    echo "  - m6i.2xlarge (standard - Intel-based)"
     echo "  - p5.48xlarge (H100 GPU - 8x H100 80GB)"
     echo "  - p4d.24xlarge (A100 GPU - 8x A100 40GB)"
     echo "  - g6e.xlarge (L40S GPU - 1x L40S 48GB)"
     echo "  - g6e.4xlarge (L40S GPU - 1x L40S 48GB)"
     echo "  - g5.xlarge (A10G GPU - 1x A10G 24GB)"
-    prompt_with_default "Worker node instance type" "m6i.2xlarge" WORKER_INSTANCE_TYPE
+    prompt_with_default "Worker node instance type" "m6a.4xlarge" WORKER_INSTANCE_TYPE
     prompt_with_default "Number of worker replicas" "3" WORKER_REPLICAS
     
     # Network configuration (only if creating new VPC)
