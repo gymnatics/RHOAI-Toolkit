@@ -71,13 +71,33 @@ read -p "Which MCP servers would you like to enable? (comma-separated, e.g., 1,2
 MCP_DATA=""
 
 if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 1 ]]; then
-    print_info "Adding GitHub MCP Server..."
-    MCP_DATA+='  GitHub-MCP-Server: |
+    echo ""
+    print_info "GitHub MCP Server Configuration"
+    print_warning "GitHub MCP requires authentication to access repositories and API."
+    echo ""
+    echo "To create a GitHub Personal Access Token:"
+    echo "  1. Go to: https://github.com/settings/tokens/new"
+    echo "  2. Give it a name (e.g., 'OpenShift AI MCP')"
+    echo "  3. Select scopes: 'repo' and 'read:org'"
+    echo "  4. Click 'Generate token' and copy it"
+    echo ""
+    read -p "Enter your GitHub Personal Access Token (or press Enter to skip): " github_token
+    
+    if [ -n "$github_token" ]; then
+        print_info "Adding GitHub MCP Server with authentication..."
+        MCP_DATA+='  GitHub-MCP-Server: |
     {
       "url": "https://api.githubcopilot.com/mcp",
-      "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows."
+      "headers": {
+        "Authorization": "Bearer '"$github_token"'"
+      },
+      "description": "GitHub MCP server with authentication for repository access, code search, issues, and pull requests."
     }
 '
+    else
+        print_warning "Skipping GitHub MCP Server (no token provided)"
+        print_info "You can add it later by re-running this script"
+    fi
 fi
 
 if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 2 ]]; then

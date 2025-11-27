@@ -57,7 +57,10 @@ data:
   GitHub-MCP-Server: |
     {
       "url": "https://api.githubcopilot.com/mcp",
-      "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows."
+      "headers": {
+        "Authorization": "Bearer YOUR_GITHUB_TOKEN_HERE"
+      },
+      "description": "GitHub MCP server with authentication for repository access, code search, issues, and pull requests."
     }
   Filesystem-MCP-Server: |
     {
@@ -105,12 +108,33 @@ oc wait --for=condition=Ready pod -l app=lsd-genai-playground -n ai-bu-shared --
 
 **URL**: `https://api.githubcopilot.com/mcp`
 
+**Authentication**: Required (GitHub Personal Access Token)
+
 **Capabilities**:
 - Search repositories
 - View file contents
 - Create and manage issues
 - Review pull requests
 - Access commit history
+
+**Setup**:
+1. Create a GitHub Personal Access Token:
+   - Go to: https://github.com/settings/tokens/new
+   - Give it a name (e.g., "OpenShift AI MCP")
+   - Select scopes: `repo`, `read:org`
+   - Click "Generate token" and copy it
+
+2. Add to ConfigMap with authentication:
+```yaml
+GitHub-MCP-Server: |
+  {
+    "url": "https://api.githubcopilot.com/mcp",
+    "headers": {
+      "Authorization": "Bearer YOUR_GITHUB_TOKEN_HERE"
+    },
+    "description": "GitHub MCP server with authentication"
+  }
+```
 
 **Example Usage**:
 ```
