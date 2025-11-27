@@ -120,6 +120,7 @@ deploy_model_interactive() {
     local default_cpu="4"
     local default_memory="16Gi"
     local tool_calling_enabled=false
+    local tool_parser="hermes"  # Default parser for Qwen models
     
     case "$model_choice" in
         1)
@@ -129,6 +130,7 @@ deploy_model_interactive() {
             default_cpu="4"
             default_memory="16Gi"
             tool_calling_enabled=true
+            tool_parser="hermes"
             ;;
         2)
             model_uri="oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest"
@@ -137,6 +139,7 @@ deploy_model_interactive() {
             default_cpu="8"
             default_memory="32Gi"
             tool_calling_enabled=true
+            tool_parser="hermes"
             ;;
         3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
@@ -144,6 +147,8 @@ deploy_model_interactive() {
             default_gpu="1"
             default_cpu="4"
             default_memory="16Gi"
+            tool_calling_enabled=true
+            tool_parser="llama3_json"
             ;;
         4)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
@@ -427,12 +432,13 @@ deploy_model_interactive() {
         print_header "Tool Calling Configuration"
         
         echo -e "${YELLOW}This model supports tool calling (function calling).${NC}"
+        echo -e "${CYAN}Parser: $tool_parser${NC}"
         echo ""
         read -p "Enable tool calling? (Y/n): " enable_tools
         
         if [[ ! "$enable_tools" =~ ^[Nn]$ ]]; then
-            vllm_args="--enable-auto-tool-choice --tool-call-parser=hermes"
-            print_success "Tool calling enabled"
+            vllm_args="--enable-auto-tool-choice --tool-call-parser=$tool_parser"
+            print_success "Tool calling enabled with $tool_parser parser"
         else
             print_info "Tool calling disabled"
         fi
@@ -549,14 +555,100 @@ EOF
         fi
         
     elif [ "$selected_runtime" = "vllm" ]; then
-        # Deploy using vLLM (InferenceService)
-        print_step "Creating InferenceService '$model_name' in namespace '$target_namespace'..."
+        # Deploy using vLLM (InferenceService) - CAI Guide Section 2 format
+        print_step "Creating vLLM deployment for '$model_name' in namespace '$target_namespace'..."
         
-        local args_section=""
+        # Step 1: Create Secret for model storage URI
+        print_step "Creating model storage secret..."
+        
+        # Base64 encode the model URI
+        local encoded_uri=$(echo -n "$model_uri" | base64)
+        
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${model_name}-storage
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/connection-type-protocol: uri
+    opendatahub.io/connection-type-ref: uri-v1
+    openshift.io/description: 'Model storage for ${model_name}'
+    openshift.io/display-name: ${model_name}
+data:
+  URI: ${encoded_uri}
+type: Opaque
+EOF
+        
+        print_success "Model storage secret created"
+        
+        # Step 2: Create ServingRuntime
+        print_step "Creating vLLM ServingRuntime..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${model_name}-runtime
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:latest'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+EOF
+        
+        print_success "ServingRuntime created"
+        
+        # Step 3: Create InferenceService
+        print_step "Creating InferenceService..."
+        
+        # Build model args based on tool calling
+        local model_args=""
         if [ -n "$vllm_args" ]; then
-            args_section="        args:
-          - --enable-auto-tool-choice
-          - --tool-call-parser=hermes"
+            # Extract parser from vllm_args
+            local parser=$(echo "$vllm_args" | grep -oP '(?<=tool-call-parser=)\w+')
+            model_args="      args:
+        - '--dtype=half'
+        - '--max-model-len=20000'
+        - '--gpu-memory-utilization=0.95'
+        - '--enable-auto-tool-choice'
+        - '--tool-call-parser=${parser}'"
+        else
+            model_args="      args:
+        - '--dtype=half'
+        - '--max-model-len=20000'
+        - '--gpu-memory-utilization=0.95'"
         fi
         
         cat <<EOF | oc apply -f -
@@ -566,29 +658,37 @@ metadata:
   name: $model_name
   namespace: $target_namespace
   labels:
-    opendatahub.io/dashboard: "true"
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
   annotations:
+    serving.kserve.io/stop: 'false'
     $auth_annotation
+    openshift.io/description: ''
+    openshift.io/display-name: $model_name
     serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/connections: ${model_name}-storage
+    opendatahub.io/model-type: generative
 spec:
   predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
     model:
+$model_args
       modelFormat:
         name: vLLM
-      runtime: vllm-runtime
-      storage:
-        key: aws-connection-model-storage
-        path: $model_uri
+      name: ''
       resources:
         limits:
           cpu: '$cpu_limit'
           memory: $memory_limit
-          nvidia.com/gpu: "$gpu_limit"
+          nvidia.com/gpu: '$gpu_limit'
         requests:
-          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2)}')'
-          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
-          nvidia.com/gpu: "$gpu_limit"
-$args_section
+          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2) > 0 ? int($1/2) : 1}')'
+          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2) > 1 ? int($1/2) : 1}')Gi
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: ${model_name}-runtime
+      storageUri: '$model_uri'
 EOF
         
         if [ $? -eq 0 ]; then
