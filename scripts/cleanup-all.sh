@@ -4,6 +4,15 @@
 # Complete OpenShift Cleanup Script
 # Cleans up ALL OpenShift resources: VPCs, subnets, route tables, 
 # NAT gateways, Elastic IPs, security groups, network interfaces, etc.
+#
+# Usage:
+#   ./cleanup-all.sh                # Interactive menu
+#   ./cleanup-all.sh --local-only   # Quick: Remove local directory only
+#   ./cleanup-all.sh -l             # Same as --local-only
+#
+# Options:
+#   --local-only, -l    Remove only local installation directory
+#                       (Does NOT delete AWS resources)
 #############################################################################
 
 RED='\033[0;31m'
@@ -38,11 +47,100 @@ print_header() {
 
 AWS_REGION="us-east-2"
 
+# Parse command line arguments
+LOCAL_ONLY=false
+if [ "$1" == "--local-only" ] || [ "$1" == "-l" ]; then
+    LOCAL_ONLY=true
+fi
+
 echo ""
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
 echo "║                    Complete OpenShift Cleanup Script                       ║"
 echo "╚════════════════════════════════════════════════════════════════════════════╝"
 echo ""
+
+# If no arguments, show menu
+if [ "$LOCAL_ONLY" = false ] && [ $# -eq 0 ]; then
+    echo -e "${CYAN}What would you like to clean up?${NC}"
+    echo ""
+    echo "  1) Local installation directory only (quick - no AWS changes)"
+    echo "  2) Complete cleanup (local + all AWS resources)"
+    echo "  3) Cancel"
+    echo ""
+    read -p "Select option [1-3]: " cleanup_choice
+    
+    case $cleanup_choice in
+        1)
+            LOCAL_ONLY=true
+            ;;
+        2)
+            LOCAL_ONLY=false
+            ;;
+        3)
+            print_info "Cleanup cancelled"
+            exit 0
+            ;;
+        *)
+            print_error "Invalid option"
+            exit 1
+            ;;
+    esac
+    echo ""
+fi
+
+# Quick local cleanup function
+quick_local_cleanup() {
+    print_header "Quick Local Cleanup"
+    
+    if [ -d "openshift-cluster-install" ]; then
+        print_info "Found installation directory: openshift-cluster-install"
+        
+        # Change permissions to allow deletion
+        print_info "Adjusting permissions..."
+        chmod -R u+w openshift-cluster-install 2>/dev/null || true
+        
+        # Remove directory
+        print_info "Removing installation directory..."
+        rm -rf openshift-cluster-install
+        
+        if [ ! -d "openshift-cluster-install" ]; then
+            print_success "Installation directory removed"
+        else
+            print_error "Failed to remove installation directory"
+            return 1
+        fi
+    else
+        print_info "No installation directory found"
+    fi
+    
+    # Remove cluster-info.txt if it exists
+    if [ -f "cluster-info.txt" ]; then
+        print_info "Removing cluster-info.txt..."
+        rm -f cluster-info.txt
+        print_success "Removed cluster-info.txt"
+    fi
+    
+    echo ""
+    print_success "Local cleanup complete!"
+    echo ""
+    echo -e "${YELLOW}Note: AWS resources (if any) were NOT deleted.${NC}"
+    echo "The cluster may still be running in AWS."
+    echo ""
+    echo "To delete AWS resources, run:"
+    echo "  ${GREEN}./scripts/cleanup-all.sh${NC}  (and select option 2)"
+    echo ""
+    echo "Ready for fresh installation:"
+    echo "  ${GREEN}./complete-setup.sh${NC}"
+    echo ""
+    
+    return 0
+}
+
+# If local-only mode, do quick cleanup and exit
+if [ "$LOCAL_ONLY" = true ]; then
+    quick_local_cleanup
+    exit $?
+fi
 
 # ============================================================================
 # STEP 1: Clean up installation directory

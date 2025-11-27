@@ -6,6 +6,41 @@ This folder contains utility scripts that support the main installation workflow
 
 ---
 
+### check-aws-prerequisites.sh
+**Purpose**: Validate AWS environment before OpenShift installation
+
+**Usage**:
+```bash
+# Run standalone check
+./scripts/check-aws-prerequisites.sh
+
+# Or it runs automatically in complete-setup.sh
+```
+
+**What it checks**:
+- ✅ AWS CLI installation and credentials
+- ✅ Route53 hosted zones (public vs private)
+- ✅ AWS service quotas (VPC, Elastic IPs)
+- ✅ Existing OpenShift resources
+- ✅ SSH key configuration
+- ✅ OpenShift installer binary
+- ⚠️ Conflicting private hosted zones from failed installs
+
+**When to use**:
+- Before first installation
+- After failed installation (diagnose issues)
+- After changing AWS environments
+- When troubleshooting DNS/bootstrap failures
+
+**Benefits**:
+- Catches issues BEFORE spending 30-45 minutes on installation
+- Clear error messages with actionable solutions
+- Prevents common mistakes (like domain with leading dot!)
+
+**See**: `docs/AWS-PREREQUISITES-CHECK.md` for detailed documentation
+
+---
+
 ### manage-kubeconfig.sh
 **Purpose**: Manage kubeconfig files and KUBECONFIG environment variable
 
@@ -51,14 +86,30 @@ This folder contains utility scripts that support the main installation workflow
 ---
 
 ### cleanup-all.sh
-**Purpose**: Comprehensive cleanup of AWS resources
+**Purpose**: Comprehensive cleanup of AWS resources (now with quick local cleanup option!)
 
 **Usage**:
 ```bash
+# Interactive menu (recommended)
 ./scripts/cleanup-all.sh
+
+# Quick local cleanup only (no AWS changes)
+./scripts/cleanup-all.sh --local-only
+./scripts/cleanup-all.sh -l
+
+# See detailed usage guide
+cat scripts/CLEANUP-USAGE.md
 ```
 
 **What it does**:
+
+**Option 1: Local Cleanup Only** (Quick - seconds)
+- Removes `openshift-cluster-install/` directory
+- Removes `cluster-info.txt`
+- Does NOT touch AWS resources
+- Perfect for retrying failed installations
+
+**Option 2: Complete Cleanup** (Thorough - 10-20 minutes)
 - Runs `openshift-install destroy` if cluster exists
 - Releases unassociated Elastic IPs
 - Deletes NAT Gateways and waits for deletion
@@ -68,10 +119,8 @@ This folder contains utility scripts that support the main installation workflow
 - Handles orphaned resources
 
 **When to use**:
-- After testing/development
-- When decommissioning a cluster
-- To clean up failed installations
-- To free up AWS resources and reduce costs
+- **Local cleanup**: Failed installation, quick retry, local files only
+- **Complete cleanup**: Decommissioning cluster, stopping AWS charges, full reset
 
 ---
 

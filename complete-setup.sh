@@ -447,6 +447,34 @@ check_prerequisites() {
     
     local all_good=true
     
+    # Source AWS checks if installing OpenShift
+    if [ "$SKIP_OPENSHIFT" = false ] && [ "$MAAS_ONLY" = false ]; then
+        if [ -f "$SCRIPT_DIR/lib/utils/aws-checks.sh" ]; then
+            source "$SCRIPT_DIR/lib/utils/aws-checks.sh"
+            
+            echo ""
+            echo -e "${CYAN}Would you like to run AWS prerequisites check?${NC}"
+            echo "This will verify:"
+            echo "  • AWS credentials and permissions"
+            echo "  • Route53 hosted zones"
+            echo "  • Service quotas"
+            echo "  • Existing resources"
+            echo "  • SSH keys"
+            echo ""
+            read -p "Run AWS checks? [Y/n]: " run_aws_checks
+            
+            if [[ ! "$run_aws_checks" =~ ^[Nn]$ ]]; then
+                if ! check_aws_prerequisites; then
+                    echo ""
+                    echo -e "${RED}AWS prerequisites check failed.${NC}"
+                    echo ""
+                    read -p "Press Enter to return to menu..."
+                    return 1
+                fi
+            fi
+        fi
+    fi
+    
     # Check for KUBECONFIG environment variable
     if [ -n "$KUBECONFIG" ]; then
         print_info "KUBECONFIG environment variable is set:"
