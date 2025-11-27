@@ -125,6 +125,40 @@ xattr -rc .
 
 ---
 
+### 9. Authorino Service Not Created (Fresh Clusters)
+
+**Error:** Installation hangs waiting for Authorino service, timeout after 2 minutes
+
+**Symptoms:**
+```bash
+Waiting for Authorino service... (120s elapsed)
+⚠ Authorino service not ready yet (continuing anyway)
+```
+
+**Root Cause:** CRD caching issue on fresh OpenShift clusters (< 1 hour old)
+
+**Solution:** The script now **automatically fixes this** by restarting the Kuadrant operator. You'll see:
+```bash
+⚠ Authorino service not ready yet
+▶ Applying fix for fresh cluster CRD registration issue...
+▶ Restarting Kuadrant operator to trigger reconciliation...
+✓ Kuadrant is ready
+```
+
+**Manual Fix** (if needed):
+```bash
+# Restart Kuadrant operator
+oc delete pod -l control-plane=controller-manager -n kuadrant-system | grep kuadrant-operator
+
+# Wait and verify
+sleep 30
+oc get svc/authorino-authorino-authorization -n kuadrant-system
+```
+
+**More Info:** [KUADRANT-FRESH-CLUSTER-FIX.md](fixes/KUADRANT-FRESH-CLUSTER-FIX.md)
+
+---
+
 ## 🧹 Clean Up Failed Installation
 
 ### Quick Cleanup

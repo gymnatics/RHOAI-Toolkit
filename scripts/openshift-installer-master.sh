@@ -8,6 +8,14 @@
 
 set -e
 
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source configuration manager if available
+if [ -f "$SCRIPT_DIR/lib/utils/config-manager.sh" ]; then
+    source "$SCRIPT_DIR/lib/utils/config-manager.sh"
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -33,8 +41,11 @@ VPC_ID=""
 SUBNET_IDS=()
 PULL_SECRET=""
 SSH_KEY=""
+SSH_KEY_PATH=""
+PULL_SECRET_PATH=""
 INSTALL_TYPE=""
 USE_EXISTING_VPC=false  # Track VPC decision early
+USE_SAVED_CONFIG=false  # Track if using saved configuration
 
 #############################################################################
 # Utility Functions
@@ -493,6 +504,7 @@ get_pull_secret() {
         read -p "$(echo -e ${BLUE}Use existing pull secret?${NC} [Y/n]: )" use_existing
         if [[ "$use_existing" != "n" && "$use_existing" != "N" ]]; then
             PULL_SECRET=$(cat "$HOME/.openshift/pull-secret.json")
+            PULL_SECRET_PATH="$HOME/.openshift/pull-secret.json"
             print_success "Using existing pull secret"
             return
         fi
@@ -585,7 +597,8 @@ get_pull_secret() {
     mkdir -p "$HOME/.openshift"
     echo "$PULL_SECRET" > "$HOME/.openshift/pull-secret.json"
     chmod 600 "$HOME/.openshift/pull-secret.json"
-    print_success "Pull secret saved to $HOME/.openshift/pull-secret.json"
+    PULL_SECRET_PATH="$HOME/.openshift/pull-secret.json"
+    print_success "Pull secret saved to $PULL_SECRET_PATH"
 }
 
 get_ssh_key() {
@@ -606,6 +619,7 @@ get_ssh_key() {
         read -p "$(echo -e ${BLUE}Use this SSH key?${NC} [Y/n]: )" use_existing
         if [[ "$use_existing" != "n" && "$use_existing" != "N" ]]; then
             SSH_KEY=$(cat "$HOME/.ssh/id_rsa.pub")
+            SSH_KEY_PATH="$HOME/.ssh/id_rsa.pub"
             print_success "Using existing SSH key"
             return
         fi
@@ -640,6 +654,7 @@ get_ssh_key() {
                 if [[ "$overwrite" != "y" && "$overwrite" != "Y" ]]; then
                     print_info "Using existing key"
                     SSH_KEY=$(cat "${key_path}.pub")
+                    SSH_KEY_PATH="${key_path}.pub"
                     return
                 fi
             fi
@@ -665,6 +680,7 @@ get_ssh_key() {
                 echo "Public key:  ${key_path}.pub"
                 echo ""
                 SSH_KEY=$(cat "${key_path}.pub")
+                SSH_KEY_PATH="${key_path}.pub"
                 
                 # Show the public key
                 print_info "Your public key:"
@@ -699,6 +715,7 @@ get_ssh_key() {
             fi
             
             SSH_KEY=$(cat "$ssh_key_path")
+            SSH_KEY_PATH="$ssh_key_path"
             print_success "SSH key loaded from $ssh_key_path"
             ;;
         *)
@@ -1577,9 +1594,44 @@ installation_only() {
     # NEW: Check VPC first, before other prompts
     detect_and_choose_vpc
     
-    get_pull_secret
-    get_ssh_key
-    configure_cluster
+    # Check for saved configuration
+    if type prompt_use_saved_configuration &>/dev/null && prompt_use_saved_configuration; then
+        USE_SAVED_CONFIG=true
+        print_success "Using saved configuration"
+        echo ""
+        
+        # Load pull secret and SSH key from saved paths if they exist
+        if [ -n "$PULL_SECRET_PATH" ] && [ -f "$PULL_SECRET_PATH" ]; then
+            PULL_SECRET=$(cat "$PULL_SECRET_PATH")
+            print_success "Loaded pull secret from $PULL_SECRET_PATH"
+        else
+            print_info "Pull secret not found, please provide it"
+            get_pull_secret
+        fi
+        
+        if [ -n "$SSH_KEY_PATH" ] && [ -f "$SSH_KEY_PATH" ]; then
+            SSH_KEY=$(cat "$SSH_KEY_PATH")
+            print_success "Loaded SSH key from $SSH_KEY_PATH"
+        else
+            print_info "SSH key not found, please provide it"
+            get_ssh_key
+        fi
+    else
+        # No saved config or user chose not to use it
+        get_pull_secret
+        get_ssh_key
+        configure_cluster
+        
+        # Save configuration for next time
+        if type save_configuration &>/dev/null; then
+            echo ""
+            read -p "Save this configuration for future use? [Y/n]: " save_config
+            if [[ ! "$save_config" =~ ^[Nn]$ ]]; then
+                save_configuration
+                print_success "Configuration saved!"
+            fi
+        fi
+    fi
     
     # Handle VPC/Subnet configuration based on earlier decision
     echo ""

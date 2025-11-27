@@ -286,14 +286,39 @@ wait_for_authorino_service() {
     
     local auth_timeout=120
     local auth_elapsed=0
+    local restart_attempted=false
+    
     until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
         if [ $auth_elapsed -ge $auth_timeout ]; then
-            print_warning "Authorino service not ready yet (continuing anyway)"
-            return 1
+            # On fresh clusters, CRD registration may not be complete
+            # Restart Kuadrant operator to trigger reconciliation
+            if [ "$restart_attempted" = false ]; then
+                print_warning "Authorino service not ready yet"
+                print_step "Applying fix for fresh cluster CRD registration issue..."
+                print_step "Restarting Kuadrant operator to trigger reconciliation..."
+                
+                # Find and restart the kuadrant operator pod
+                local operator_pod=$(oc get pods -n kuadrant-system -l control-plane=controller-manager -o name 2>/dev/null | grep kuadrant-operator | head -n 1)
+                if [ -n "$operator_pod" ]; then
+                    oc delete "$operator_pod" -n kuadrant-system &>/dev/null
+                    print_step "Kuadrant operator restarted, waiting for reconciliation..."
+                    sleep 30
+                    restart_attempted=true
+                    auth_timeout=180  # Extend timeout after restart
+                    auth_elapsed=0     # Reset counter
+                else
+                    print_warning "Could not find Kuadrant operator pod (continuing anyway)"
+                    return 1
+                fi
+            else
+                print_warning "Authorino service still not ready after restart (continuing anyway)"
+                return 1
+            fi
+        else
+            echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
+            sleep 10
+            auth_elapsed=$((auth_elapsed + 10))
         fi
-        echo "Waiting for Authorino service... (${auth_elapsed}s elapsed)"
-        sleep 10
-        auth_elapsed=$((auth_elapsed + 10))
     done
     
     print_success "Kuadrant is ready"

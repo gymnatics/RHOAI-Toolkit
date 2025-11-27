@@ -14,8 +14,10 @@ Complete documentation for OpenShift AI installation and configuration on AWS.
 - [Interactive Taint Feature](../INTERACTIVE-TAINT-FEATURE.md) - Automatic GPU taint detection
 
 ### How-To Guides
+- [Configuration Reuse](guides/CONFIGURATION-REUSE.md) - Save and reuse installation settings
 - [Tool Calling](guides/TOOL-CALLING-GUIDE.md) - Enable function calling in models
 - [MaaS Serving Runtimes](guides/MAAS-SERVING-RUNTIMES.md) - Which runtimes work with MaaS
+- [Using Existing AWS Infrastructure](guides/USING-EXISTING-AWS-INFRASTRUCTURE.md) - Reuse VPCs and subnets
 
 ### Reference
 - [KServe Deployment Modes](reference/KSERVE-DEPLOYMENT-MODES.md) - RawDeployment vs Serverless
@@ -33,9 +35,11 @@ docs/
 ├── TROUBLESHOOTING.md             # General troubleshooting
 │
 ├── guides/                        # Step-by-step guides
+│   ├── CONFIGURATION-REUSE.md    # Save/reuse installation config
 │   ├── GPU-TAINTS-RHOAI3.md      # GPU taint configuration
 │   ├── TOOL-CALLING-GUIDE.md     # Model tool calling setup
-│   └── MAAS-SERVING-RUNTIMES.md  # MaaS compatibility
+│   ├── MAAS-SERVING-RUNTIMES.md  # MaaS compatibility
+│   └── USING-EXISTING-AWS-INFRASTRUCTURE.md  # Reuse VPCs
 │
 ├── reference/                     # Reference documentation
 │   ├── KSERVE-DEPLOYMENT-MODES.md

@@ -121,6 +121,47 @@ Centralized API gateway for serving models with authentication, rate limiting, a
 
 ---
 
+## 💾 Configuration Reuse
+
+### What It Does
+Saves your installation configuration so you don't have to re-enter the same details every time.
+
+### What Gets Saved
+- Cluster name and domain
+- AWS region
+- Master/Worker instance types
+- VPC settings (new or existing)
+- Subnet IDs
+
+### How It Works
+1. **First installation**: After configuration, you're asked to save settings
+2. **Subsequent runs**: Automatically offers to reuse saved configuration
+3. **Quick edits**: Option to modify specific values without re-entering everything
+
+### Interactive Options
+```
+Would you like to use this saved configuration?
+
+  1) Yes - Use saved configuration (quick)
+  2) No - Enter new configuration
+  3) Edit - Modify specific values
+```
+
+### Use Cases
+- **Retry failed installations**: Quick cleanup and retry with same settings
+- **Multiple clusters**: Deploy multiple clusters with similar configuration
+- **Temporary environments**: Update only VPC/subnet IDs when switching AWS accounts
+
+### Security
+- Pull secrets and SSH keys stored separately (not in config file)
+- Configuration file has secure permissions (chmod 600)
+- Only non-sensitive settings are saved
+
+### Full Documentation
+📖 [docs/guides/CONFIGURATION-REUSE.md](docs/guides/CONFIGURATION-REUSE.md)
+
+---
+
 ## 🚀 Complete Setup Script
 
 ### What It Does
@@ -149,6 +190,7 @@ Master script with interactive menu for:
 - ✅ Automatic detection of RHOAI installation
 - ✅ Interactive prompts with clear explanations
 - ✅ Skip flags for advanced users
+- ✅ Configuration reuse for faster reinstalls
 
 ---
 
