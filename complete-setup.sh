@@ -72,7 +72,8 @@ show_main_menu() {
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
     echo -e "${YELLOW}2)${NC} RHOAI Management (configure features, deploy models, etc.)"
     echo -e "${YELLOW}3)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}4)${NC} Exit"
+    echo -e "${YELLOW}4)${NC} Help (show scripts and documentation)"
+    echo -e "${YELLOW}5)${NC} Exit"
     echo ""
 }
 
@@ -88,7 +89,8 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
     echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
     echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
-    echo -e "${YELLOW}7)${NC} Back to Main Menu"
+    echo -e "${YELLOW}7)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
+    echo -e "${YELLOW}8)${NC} Back to Main Menu"
     echo ""
 }
 
@@ -251,10 +253,238 @@ add_model_to_playground_interactive() {
     return $?
 }
 
+quick_start_wizard() {
+    print_header "🚀 Quick Start Wizard"
+    
+    echo -e "${CYAN}This wizard will guide you through the typical post-installation workflow:${NC}"
+    echo ""
+    echo "  1️⃣  Enable Dashboard Features"
+    echo "  2️⃣  Deploy a Model"
+    echo "  3️⃣  Add Model to Playground"
+    echo "  4️⃣  Setup MCP Servers"
+    echo ""
+    echo -e "${YELLOW}This is recommended after a fresh RHOAI installation.${NC}"
+    echo ""
+    
+    read -p "Continue with Quick Start? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Quick Start cancelled"
+        return 0
+    fi
+    
+    echo ""
+    
+    local overall_success=true
+    
+    # Step 1: Enable Dashboard Features
+    print_header "Step 1/4: Enable Dashboard Features"
+    if enable_dashboard_features_interactive; then
+        print_success "✓ Dashboard features enabled"
+    else
+        print_error "✗ Failed to enable dashboard features"
+        overall_success=false
+        echo ""
+        read -p "Continue anyway? (y/N): " continue_prompt
+        if [[ ! "$continue_prompt" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+    
+    echo ""
+    sleep 2
+    
+    # Step 2: Deploy Model
+    print_header "Step 2/4: Deploy Model"
+    echo -e "${YELLOW}Would you like to deploy a model now?${NC}"
+    read -p "Deploy model? (Y/n): " deploy_prompt
+    
+    if [[ ! "$deploy_prompt" =~ ^[Nn]$ ]]; then
+        if deploy_model_interactive; then
+            print_success "✓ Model deployed"
+            local model_deployed=true
+        else
+            print_warning "⚠ Model deployment skipped or failed"
+            model_deployed=false
+        fi
+    else
+        print_info "Skipping model deployment"
+        model_deployed=false
+    fi
+    
+    echo ""
+    sleep 2
+    
+    # Step 3: Add Model to Playground (only if model was deployed)
+    if [ "$model_deployed" = true ]; then
+        print_header "Step 3/4: Add Model to Playground"
+        echo -e "${YELLOW}Would you like to add the deployed model to the playground?${NC}"
+        read -p "Add to playground? (Y/n): " playground_prompt
+        
+        if [[ ! "$playground_prompt" =~ ^[Nn]$ ]]; then
+            if add_model_to_playground_interactive; then
+                print_success "✓ Model added to playground"
+            else
+                print_warning "⚠ Failed to add model to playground"
+            fi
+        else
+            print_info "Skipping playground setup"
+        fi
+    else
+        print_header "Step 3/4: Add Model to Playground"
+        print_info "⏭️  Skipped (no model deployed)"
+    fi
+    
+    echo ""
+    sleep 2
+    
+    # Step 4: Setup MCP Servers
+    print_header "Step 4/4: Setup MCP Servers"
+    echo -e "${YELLOW}Would you like to setup MCP servers for tool calling?${NC}"
+    read -p "Setup MCP servers? (Y/n): " mcp_prompt
+    
+    if [[ ! "$mcp_prompt" =~ ^[Nn]$ ]]; then
+        if setup_mcp_servers_interactive; then
+            print_success "✓ MCP servers configured"
+        else
+            print_warning "⚠ MCP servers setup skipped or failed"
+        fi
+    else
+        print_info "Skipping MCP servers setup"
+    fi
+    
+    echo ""
+    
+    # Final summary
+    print_header "✅ Quick Start Complete!"
+    
+    echo -e "${GREEN}Your RHOAI environment is now fully configured!${NC}"
+    echo ""
+    
+    if [ "$model_deployed" = true ]; then
+        echo -e "${CYAN}What you can do now:${NC}"
+        echo "  • Access GenAI Playground to test your model"
+        echo "  • Use MCP servers for tool calling"
+        echo "  • Deploy additional models"
+        echo "  • Register models in Model Registry"
+    else
+        echo -e "${CYAN}Next steps:${NC}"
+        echo "  • Deploy a model (Option 2)"
+        echo "  • Add it to playground (Option 3)"
+        echo "  • Explore GenAI Studio features"
+    fi
+    
+    echo ""
+    
+    local dashboard_url=$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$dashboard_url" ]; then
+        echo -e "${GREEN}📊 RHOAI Dashboard:${NC}"
+        echo "   https://$dashboard_url"
+        echo ""
+    fi
+    
+    return 0
+}
+
+show_help() {
+    print_header "📚 Help & Quick Reference"
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Direct Script Access${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}You can run these scripts directly without using the menu:${NC}"
+    echo ""
+    echo -e "${GREEN}Installation:${NC}"
+    echo "  ./scripts/openshift-installer-master.sh"
+    echo "  ./scripts/create-gpu-machineset.sh"
+    echo ""
+    echo -e "${GREEN}RHOAI Configuration:${NC}"
+    echo "  ./scripts/enable-dashboard-features.sh"
+    echo "  ./scripts/create-hardware-profile.sh <namespace>"
+    echo "  ./scripts/fix-gpu-resourceflavor.sh"
+    echo ""
+    echo -e "${GREEN}Model Deployment:${NC}"
+    echo "  ./scripts/quick-deploy-model.sh"
+    echo "  ./scripts/deploy-llmd-model.sh"
+    echo "  ./scripts/add-model-to-playground.sh"
+    echo ""
+    echo -e "${GREEN}Services:${NC}"
+    echo "  ./scripts/setup-maas.sh"
+    echo "  ./scripts/setup-mcp-servers.sh"
+    echo ""
+    echo -e "${GREEN}Utilities:${NC}"
+    echo "  ./scripts/cleanup-all.sh [--local-only]"
+    echo "  ./scripts/manage-kubeconfig.sh"
+    echo ""
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Command-Line Flags${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}Run complete-setup.sh with options:${NC}"
+    echo ""
+    echo "  --with-maas          Auto-enable MaaS (non-interactive)"
+    echo "  --skip-maas          Skip MaaS setup"
+    echo "  --maas-only          Only setup MaaS (assumes RHOAI exists)"
+    echo "  --skip-openshift     Skip OpenShift installation"
+    echo "  --skip-gpu           Skip GPU node creation"
+    echo "  --skip-rhoai         Skip RHOAI installation"
+    echo ""
+    echo -e "${GREEN}Examples:${NC}"
+    echo "  ./complete-setup.sh --skip-openshift --with-maas"
+    echo "  ./complete-setup.sh --maas-only"
+    echo ""
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Documentation${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${GREEN}Main Documentation:${NC}"
+    echo "  README.md                    - Quick start guide"
+    echo "  QUICK-REFERENCE.md           - Command cheat sheet"
+    echo "  docs/README.md               - Documentation index"
+    echo "  docs/TROUBLESHOOTING.md      - Common issues"
+    echo ""
+    echo -e "${GREEN}Feature Guides:${NC}"
+    echo "  docs/guides/MODEL-REGISTRY.md"
+    echo "  docs/guides/GENAI-PLAYGROUND-INTEGRATION.md"
+    echo "  docs/guides/MCP-SERVERS.md"
+    echo "  docs/guides/TOOL-CALLING-GUIDE.md"
+    echo "  docs/guides/GPU-TAINTS-RHOAI3.md"
+    echo ""
+    echo -e "${GREEN}Reference:${NC}"
+    echo "  docs/reference/KSERVE-DEPLOYMENT-MODES.md"
+    echo "  docs/reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md"
+    echo ""
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Common Tasks${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}Check cluster status:${NC}"
+    echo "  oc get nodes"
+    echo "  oc get clusteroperators"
+    echo ""
+    echo -e "${YELLOW}Check RHOAI status:${NC}"
+    echo "  oc get datasciencecluster -n redhat-ods-applications"
+    echo "  oc get pods -n redhat-ods-applications"
+    echo ""
+    echo -e "${YELLOW}Check deployed models:${NC}"
+    echo "  oc get inferenceservice -A"
+    echo "  oc get llmisvc -A"
+    echo ""
+    echo -e "${YELLOW}Get dashboard URL:${NC}"
+    echo "  oc get route rhods-dashboard -n redhat-ods-applications"
+    echo ""
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-7): " rhoai_choice
+        read -p "Select an option (1-8): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -289,11 +519,16 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
+                quick_start_wizard
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            8)
                 print_info "Returning to main menu..."
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-7."
+                print_error "Invalid option. Please select 1-8."
                 sleep 2
                 ;;
         esac
@@ -1073,8 +1308,47 @@ display_final_summary() {
     
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}Next Steps:${NC}"
+    echo -e "${BLUE}🚀 Recommended Next Steps:${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${YELLOW}From the main menu, select:${NC}"
+    echo -e "  ${CYAN}2${NC} → RHOAI Management"
+    echo ""
+    echo -e "${YELLOW}Then follow this typical workflow:${NC}"
+    echo ""
+    echo -e "  ${CYAN}1${NC}. Enable Dashboard Features"
+    echo "     └─ Enables Model Registry, GenAI Studio, MaaS UI, Kueue, etc."
+    echo ""
+    echo -e "  ${CYAN}2${NC}. Deploy Model"
+    echo "     └─ Interactive deployment with vLLM or llm-d runtime"
+    echo ""
+    echo -e "  ${CYAN}3${NC}. Add Model to Playground"
+    echo "     └─ Test your model interactively in GenAI Studio"
+    echo ""
+    echo -e "  ${CYAN}4${NC}. Setup MCP Servers"
+    echo "     └─ Enable tool calling with external services"
+    echo ""
+    echo -e "${YELLOW}💡 Tip:${NC} Use option ${CYAN}8${NC} (Quick Start) to run all steps automatically!"
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    # Show dashboard URL
+    local dashboard_url=$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$dashboard_url" ]; then
+        echo -e "${GREEN}📊 RHOAI Dashboard:${NC}"
+        echo "   https://$dashboard_url"
+        echo ""
+    fi
+    
+    echo -e "${CYAN}📚 Documentation:${NC}"
+    echo "   • Model Registry: docs/guides/MODEL-REGISTRY.md"
+    echo "   • GenAI Playground: docs/guides/GENAI-PLAYGROUND-INTEGRATION.md"
+    echo "   • MCP Servers: docs/guides/MCP-SERVERS.md"
+    echo ""
+    
+    read -p "Press Enter to return to main menu..."
+    echo ""
     echo ""
     
     if [ "$MAAS_ONLY" = false ]; then
@@ -1154,7 +1428,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-4): " choice
+        read -p "Select an option (1-5): " choice
         
         case $choice in
             1)
@@ -1169,11 +1443,16 @@ main() {
                 read -p "Press Enter to return to main menu..."
                 ;;
             4)
+                show_help
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            5)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-4."
+                print_error "Invalid option. Please select 1-5."
                 sleep 2
                 ;;
         esac
