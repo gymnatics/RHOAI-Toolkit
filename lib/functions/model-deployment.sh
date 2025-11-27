@@ -6,6 +6,11 @@
 # available serving runtimes (llm-d, vLLM, etc.)
 ################################################################################
 
+# Source OS compatibility library
+# Use a local variable to avoid overwriting caller's SCRIPT_DIR
+_MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
+
 # Interactive model deployment function (runtime-agnostic)
 deploy_model_interactive() {
     print_header "Interactive Model Deployment"
@@ -561,8 +566,8 @@ EOF
         # Step 1: Create Secret for model storage URI
         print_step "Creating model storage secret..."
         
-        # Base64 encode the model URI
-        local encoded_uri=$(echo -n "$model_uri" | base64)
+        # Base64 encode the model URI (OS-compatible)
+        local encoded_uri=$(base64_encode "$model_uri")
         
         cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -636,8 +641,8 @@ EOF
         # Build model args based on tool calling
         local model_args=""
         if [ -n "$vllm_args" ]; then
-            # Extract parser from vllm_args
-            local parser=$(echo "$vllm_args" | grep -oP '(?<=tool-call-parser=)\w+')
+            # Extract parser from vllm_args (OS-compatible)
+            local parser=$(grep_extract "tool-call-parser=" "$vllm_args")
             model_args="      args:
         - '--dtype=half'
         - '--max-model-len=20000'
@@ -650,6 +655,15 @@ EOF
         - '--max-model-len=20000'
         - '--gpu-memory-utilization=0.95'"
         fi
+        
+        # Calculate resource requests (half of limits, matching CAI guide)
+        # Use OS-compatible functions
+        local cpu_value=$(parse_cpu "$cpu_limit")
+        local cpu_request=$(calc_half "$cpu_value" 1)
+        
+        local mem_value=$(parse_memory_gi "$memory_limit")
+        local mem_half=$(calc_half "$mem_value" 1)
+        local memory_request="${mem_half}Gi"
         
         cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1beta1
@@ -684,8 +698,8 @@ $model_args
           memory: $memory_limit
           nvidia.com/gpu: '$gpu_limit'
         requests:
-          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2) > 0 ? int($1/2) : 1}')'
-          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2) > 1 ? int($1/2) : 1}')Gi
+          cpu: '$cpu_request'
+          memory: $memory_request
           nvidia.com/gpu: '$gpu_limit'
       runtime: ${model_name}-runtime
       storageUri: '$model_uri'

@@ -4,9 +4,10 @@
 ################################################################################
 
 # Source required utilities
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$SCRIPT_DIR/lib/utils/colors.sh"
-source "$SCRIPT_DIR/lib/utils/common.sh"
+# Use a local variable to avoid overwriting caller's SCRIPT_DIR
+_RHOAI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
+source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 
 # Get RHOAI channel based on version
 get_rhoai_channel() {
@@ -202,7 +203,7 @@ create_datasciencecluster_v1() {
     fi
     
     print_step "Creating DataScienceCluster..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v1.yaml" "DataScienceCluster v1"
+    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v1.yaml" "DataScienceCluster v1"
     
     print_success "DataScienceCluster created"
 }
@@ -217,7 +218,7 @@ create_datasciencecluster_v2() {
     fi
     
     print_step "Creating DataScienceCluster with GenAI and MaaS components..."
-    apply_manifest "$SCRIPT_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
+    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
     
     print_success "DataScienceCluster created with GenAI and MaaS support"
 }
@@ -327,12 +328,44 @@ EOF
 configure_gpu_resourceflavor() {
     print_header "Configuring Kueue ResourceFlavor for GPU Nodes"
     
-    # Check if nvidia-gpu-flavor exists
+    # Check if nvidia-gpu-flavor exists, create it if not
     if ! oc get resourceflavor nvidia-gpu-flavor &>/dev/null; then
         print_warning "ResourceFlavor 'nvidia-gpu-flavor' not found"
-        print_info "This will be created automatically by RHOAI when Kueue is enabled"
-        print_info "Skipping ResourceFlavor configuration for now"
-        return 0
+        
+        # Check if Kueue is Unmanaged (won't auto-create resources)
+        local kueue_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kueue.managementState}' 2>/dev/null || echo "Unknown")
+        
+        if [[ "$kueue_state" == "Unmanaged" ]]; then
+            print_info "Kueue is 'Unmanaged' - creating ResourceFlavor manually..."
+            
+            cat <<'EOF' | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+EOF
+            
+            if oc get resourceflavor nvidia-gpu-flavor &>/dev/null; then
+                print_success "ResourceFlavor created"
+            else
+                print_error "Failed to create ResourceFlavor"
+                return 1
+            fi
+        else
+            print_info "Kueue managementState: $kueue_state"
+            print_info "This will be created automatically by RHOAI when Kueue is enabled"
+            print_info "Skipping ResourceFlavor configuration for now"
+            return 0
+        fi
+    else
+        print_success "ResourceFlavor 'nvidia-gpu-flavor' already exists"
     fi
     
     print_step "Checking for GPU nodes..."

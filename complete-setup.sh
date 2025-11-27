@@ -70,11 +70,12 @@ show_main_menu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
-    echo -e "${YELLOW}2)${NC} Deploy Model (interactive model deployment)"
-    echo -e "${YELLOW}3)${NC} Setup MCP Servers (for GenAI Playground/AI Agents)"
-    echo -e "${YELLOW}4)${NC} Create GPU Hardware Profile (for existing cluster)"
-    echo -e "${YELLOW}5)${NC} Setup MaaS Only (assumes RHOAI exists)"
-    echo -e "${YELLOW}6)${NC} Exit"
+    echo -e "${YELLOW}2)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}3)${NC} Deploy Model (interactive model deployment)"
+    echo -e "${YELLOW}4)${NC} Setup MCP Servers (for GenAI Playground/AI Agents)"
+    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for existing cluster)"
+    echo -e "${YELLOW}6)${NC} Setup MaaS Only (assumes RHOAI exists)"
+    echo -e "${YELLOW}7)${NC} Exit"
     echo ""
 }
 
@@ -179,6 +180,72 @@ deploy_model_interactive() {
     deploy_model_interactive
     
     return $?
+}
+
+################################################################################
+# GPU MachineSet Creation
+################################################################################
+
+create_gpu_machineset_interactive() {
+    print_header "Create GPU MachineSet"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift"
+        echo "Please login first: oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to OpenShift cluster"
+    
+    # Show cluster info
+    local cluster_url=$(oc whoami --show-server 2>/dev/null)
+    echo "Cluster: $cluster_url"
+    echo ""
+    
+    # Check for existing GPU nodes
+    local gpu_nodes=$(oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local gpu_machinesets=$(oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | .metadata.name' 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [ "$gpu_nodes" -gt 0 ] || [ "$gpu_machinesets" -gt 0 ]; then
+        print_info "Existing GPU resources found:"
+        if [ "$gpu_nodes" -gt 0 ]; then
+            echo "  GPU Nodes: $gpu_nodes"
+            oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | awk '{print "    - " $1}'
+        fi
+        if [ "$gpu_machinesets" -gt 0 ]; then
+            echo "  GPU MachineSets: $gpu_machinesets"
+            oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | "    - " + .metadata.name' 2>/dev/null
+        fi
+        echo ""
+    else
+        print_info "No existing GPU resources found"
+        echo ""
+    fi
+    
+    # Check if script exists
+    local gpu_script="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
+    if [ ! -f "$gpu_script" ]; then
+        print_error "GPU MachineSet script not found at: $gpu_script"
+        return 1
+    fi
+    
+    # Run the GPU MachineSet script
+    print_step "Launching GPU MachineSet creation script..."
+    echo ""
+    
+    "$gpu_script"
+    
+    local result=$?
+    echo ""
+    
+    if [ $result -eq 0 ]; then
+        print_success "GPU MachineSet creation completed"
+    else
+        print_warning "GPU MachineSet creation returned with code: $result"
+    fi
+    
+    return $result
 }
 
 ################################################################################
@@ -969,39 +1036,44 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-6): " choice
+        read -p "Select an option (1-7): " choice
         
         case $choice in
             1)
                 run_complete_setup
                 ;;
             2)
-                deploy_model_interactive
+                create_gpu_machineset_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
             3)
-                setup_mcp_servers_interactive
+                deploy_model_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
             4)
-                create_hardware_profile_interactive
+                setup_mcp_servers_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
             5)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            6)
                 MAAS_ONLY=true
                 run_maas_only_setup
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            6)
+            7)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6."
+                print_error "Invalid option. Please select 1-7."
                 sleep 2
                 ;;
         esac
