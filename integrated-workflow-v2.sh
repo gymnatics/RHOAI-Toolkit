@@ -245,10 +245,14 @@ install_gpu_nodes() {
     read -p "Create GPU nodes now? (y/n): " create_gpu
     
     if [[ "$create_gpu" =~ ^[Yy]$ ]]; then
-        if [ -f "$SCRIPT_DIR/scripts/create-gpu-machineset.sh" ]; then
-            "$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
+        local gpu_script_path="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
+        if [ -f "$gpu_script_path" ]; then
+            "$gpu_script_path"
         else
-            print_error "GPU MachineSet script not found at ./scripts/create-gpu-machineset.sh"
+            print_error "GPU MachineSet script not found at: $gpu_script_path"
+            print_info "SCRIPT_DIR is set to: $SCRIPT_DIR"
+            print_info "Current directory: $(pwd)"
+            print_info "Please ensure the script exists or skip GPU creation."
         fi
     else
         print_info "Skipping GPU node creation. You can create them later."
