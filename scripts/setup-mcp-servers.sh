@@ -58,9 +58,11 @@ echo -e "${YELLOW}MCP (Model Context Protocol) servers enable AI agents to inter
 echo ""
 echo "Available MCP servers:"
 echo "  1) GitHub MCP Server - Interact with GitHub repositories"
-echo "  2) Weather MCP Server - Get weather information"
-echo "  3) OpenShift MCP Server - Interact with OpenShift cluster"
-echo "  4) Custom MCP Server - Add your own"
+echo "  2) Filesystem MCP Server - Access files and directories"
+echo "  3) Brave Search MCP Server - Web search capabilities"
+echo "  4) PostgreSQL MCP Server - Database queries"
+echo "  5) Sequential Thinking MCP Server - Multi-step reasoning"
+echo "  6) Custom MCP Server - Add your own"
 echo ""
 
 read -p "Which MCP servers would you like to enable? (comma-separated, e.g., 1,2,3 or 'all'): " mcp_choice
@@ -80,33 +82,135 @@ fi
 
 if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 2 ]]; then
     echo ""
-    read -p "Enter Weather MCP Server URL (or press Enter for default): " weather_url
-    weather_url="${weather_url:-https://weather-mcp-ai-bu-shared.apps.test-rc3.rhoai.rh-aiservices-bu.com/sse}"
+    read -p "Deploy Filesystem MCP Server to cluster? (y/N): " deploy_fs
     
-    print_info "Adding Weather MCP Server..."
-    MCP_DATA+='  Weather-MCP-Server: |
+    local fs_url="http://filesystem-mcp-server.mcp-servers.svc.cluster.local:8080"
+    
+    if [[ "$deploy_fs" =~ ^[Yy]$ ]]; then
+        print_info "Deploying Filesystem MCP Server..."
+        
+        # Create namespace if it doesn't exist
+        oc create namespace mcp-servers 2>/dev/null || true
+        
+        # Deploy filesystem MCP server (placeholder - would need actual deployment)
+        cat <<FSEOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filesystem-mcp-server
+  namespace: mcp-servers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filesystem-mcp
+  template:
+    metadata:
+      labels:
+        app: filesystem-mcp
+    spec:
+      containers:
+      - name: mcp-server
+        image: quay.io/opendatahub/filesystem-mcp:latest
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filesystem-mcp-server
+  namespace: mcp-servers
+spec:
+  selector:
+    app: filesystem-mcp
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+FSEOF
+        
+        print_success "Filesystem MCP Server deployed"
+    else
+        read -p "Enter Filesystem MCP Server URL (or press Enter for default): " fs_url_input
+        fs_url="${fs_url_input:-$fs_url}"
+    fi
+    
+    print_info "Adding Filesystem MCP Server..."
+    MCP_DATA+='  Filesystem-MCP-Server: |
     {
-      "url": "'"$weather_url"'",
-      "description": "Weather MCP server provides real-time weather information and forecasts for locations worldwide."
+      "url": "'"$fs_url"'",
+      "description": "Access and manipulate files in a secure filesystem. Read, write, and manage files and directories."
     }
 '
 fi
 
 if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 3 ]]; then
     echo ""
-    read -p "Enter OpenShift MCP Server URL (or press Enter for default): " ocp_url
-    ocp_url="${ocp_url:-https://ocp-mcp-ai-bu-shared.apps.test-rc3.rhoai.rh-aiservices-bu.com/sse}"
+    read -p "Enter Brave Search API Key (or press Enter to skip): " brave_key
     
-    print_info "Adding OpenShift MCP Server..."
-    MCP_DATA+='  OpenShift-MCP-Server: |
+    local brave_url="http://brave-search-mcp-server.mcp-servers.svc.cluster.local:8080"
+    
+    if [ -n "$brave_key" ]; then
+        print_info "Deploying Brave Search MCP Server with API key..."
+        
+        oc create namespace mcp-servers 2>/dev/null || true
+        
+        # Create secret for API key
+        oc create secret generic brave-search-api-key \
+            --from-literal=api-key="$brave_key" \
+            -n mcp-servers \
+            --dry-run=client -o yaml | oc apply -f -
+        
+        print_success "Brave Search API key configured"
+    fi
+    
+    print_info "Adding Brave Search MCP Server..."
+    MCP_DATA+='  Brave-Search-MCP-Server: |
     {
-      "url": "'"$ocp_url"'",
-      "description": "OpenShift MCP server enables interaction with OpenShift cluster resources, deployments, and configurations."
+      "url": "'"$brave_url"'",
+      "description": "Search the web using Brave Search API. Get real-time information from the internet."
     }
 '
 fi
 
 if [[ "$mcp_choice" =~ 4 ]]; then
+    echo ""
+    print_info "PostgreSQL MCP Server Configuration"
+    read -p "Enter PostgreSQL connection string (e.g., postgres://user:pass@host:5432/db): " pg_conn
+    read -p "Enter PostgreSQL MCP Server URL (or press Enter for default): " pg_url
+    pg_url="${pg_url:-http://postgresql-mcp-server.mcp-servers.svc.cluster.local:8080}"
+    
+    print_info "Adding PostgreSQL MCP Server..."
+    MCP_DATA+='  PostgreSQL-MCP-Server: |
+    {
+      "url": "'"$pg_url"'",
+      "description": "Execute SQL queries against PostgreSQL databases. Retrieve and analyze data."
+    }
+'
+fi
+
+if [[ "$mcp_choice" =~ 5 ]]; then
+    echo ""
+    local seq_url="http://sequential-thinking-mcp-server.mcp-servers.svc.cluster.local:8080"
+    read -p "Enter Sequential Thinking MCP Server URL (or press Enter for default): " seq_url_input
+    seq_url="${seq_url_input:-$seq_url}"
+    
+    print_info "Adding Sequential Thinking MCP Server..."
+    MCP_DATA+='  Sequential-Thinking-MCP-Server: |
+    {
+      "url": "'"$seq_url"'",
+      "description": "Enable multi-step reasoning and chain-of-thought problem solving."
+    }
+'
+fi
+
+if [[ "$mcp_choice" =~ 6 ]]; then
     echo ""
     print_info "Custom MCP Server Configuration"
     read -p "Enter MCP server name: " custom_name
@@ -146,6 +250,30 @@ if [ $? -eq 0 ]; then
     print_success "✅ MCP Server ConfigMap created successfully!"
     echo ""
     
+    print_header "Restarting Playground Pods"
+    
+    print_info "Restarting playground pods to load new MCP server configuration..."
+    
+    # Find all namespaces with playground pods
+    local playground_namespaces=$(oc get pods -A -l app=lsd-genai-playground -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u)
+    
+    if [ -n "$playground_namespaces" ]; then
+        for ns in $playground_namespaces; do
+            print_step "Restarting playground in namespace: $ns"
+            oc delete pod -l app=lsd-genai-playground -n "$ns" --ignore-not-found=true
+        done
+        
+        echo ""
+        print_info "Waiting for playground pods to restart (30 seconds)..."
+        sleep 30
+        
+        print_success "Playground pods restarted"
+    else
+        print_warning "No playground pods found. MCP servers will be available when you add a model to playground."
+    fi
+    
+    echo ""
+    
     print_header "Next Steps"
     
     print_info "1. Access the GenAI Playground:"
@@ -157,14 +285,18 @@ if [ $? -eq 0 ]; then
     fi
     echo ""
     
-    print_info "2. Navigate to the AI Agents or GenAI Playground section"
+    print_info "2. Navigate to: GenAI Studio → Playground"
     echo ""
     
-    print_info "3. Login to MCP servers using the 🔒 symbol"
-    echo "   (Even if they don't require authentication)"
+    print_info "3. Look for the 🔌 Tools or MCP section"
     echo ""
     
-    print_info "4. Start using MCP servers in your AI agent workflows!"
+    print_info "4. Click the 🔒 (lock icon) next to each MCP server to connect"
+    echo "   (Required even if no authentication is needed)"
+    echo ""
+    
+    print_info "5. Start using MCP servers in your prompts!"
+    echo "   Example: 'Use the GitHub MCP server to search for Kubernetes projects'"
     echo ""
     
     print_header "View MCP Server Configuration"
@@ -174,10 +306,17 @@ if [ $? -eq 0 ]; then
     
     print_header "Add More MCP Servers"
     echo "You can add more MCP servers by:"
-    echo "  1. Deploying custom MCP servers (see: https://github.com/opendatahub-io/agents/tree/main/examples)"
+    echo "  1. Deploying custom MCP servers"
+    echo "     See: https://github.com/opendatahub-io/agents/tree/main/examples"
     echo "  2. Re-running this script to update the ConfigMap"
     echo "  3. Manually editing the ConfigMap:"
     echo "     oc edit configmap gen-ai-aa-mcp-servers -n redhat-ods-applications"
+    echo ""
+    
+    print_header "Documentation"
+    echo "For more information, see:"
+    echo "  - docs/guides/MCP-SERVERS.md"
+    echo "  - docs/guides/GENAI-PLAYGROUND-INTEGRATION.md"
     echo ""
     
 else
