@@ -159,6 +159,64 @@ oc get svc/authorino-authorino-authorization -n kuadrant-system
 
 ---
 
+### 10. RHOAI Dashboard Route Not Created
+
+**Error:** Dashboard pods are ready but route doesn't exist
+
+**Symptoms:**
+```bash
+# Dashboard deployment is ready
+$ oc get deployment rhods-dashboard -n redhat-ods-applications
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+rhods-dashboard   2/2     2            2           5m
+
+# But no route exists
+$ oc get route rhods-dashboard -n redhat-ods-applications
+No resources found in redhat-ods-applications namespace.
+```
+
+**Root Cause:** Timing/orchestration issue in RHOAI 3.0 on fresh clusters
+
+**Solution:** The script now **automatically creates the route** if missing. You'll see:
+```bash
+▶ Checking for dashboard route...
+⚠ Dashboard route not found (common on fresh RHOAI 3.0 installs)
+▶ Creating dashboard route...
+✓ Dashboard route created successfully
+```
+
+**Manual Fix** (if needed):
+```bash
+# Create the route
+cat <<'EOF' | oc apply -f -
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: rhods-dashboard
+  namespace: redhat-ods-applications
+  labels:
+    app: rhods-dashboard
+spec:
+  port:
+    targetPort: https
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: reencrypt
+  to:
+    kind: Service
+    name: rhods-dashboard
+    weight: 100
+  wildcardPolicy: None
+EOF
+
+# Verify
+oc get route rhods-dashboard -n redhat-ods-applications
+```
+
+**More Info:** [DASHBOARD-ROUTE-FIX.md](fixes/DASHBOARD-ROUTE-FIX.md)
+
+---
+
 ## 🧹 Clean Up Failed Installation
 
 ### Quick Cleanup

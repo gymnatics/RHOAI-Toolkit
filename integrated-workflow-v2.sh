@@ -354,20 +354,65 @@ install_rhoai() {
     fi
     
     # Wait for RHOAI dashboard to be ready
-    print_step "Waiting for RHOAI dashboard to be ready..."
-    sleep 30
+    print_step "Waiting for RHOAI dashboard deployment to be ready..."
     
-    local dash_timeout=300
-    local dash_elapsed=0
-    until oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; do
-        if [ $dash_elapsed -ge $dash_timeout ]; then
-            print_warning "Dashboard not ready yet (continuing anyway)"
-            break
+    # First, wait for the dashboard deployment and service to exist
+    local deploy_timeout=300
+    local deploy_elapsed=0
+    until oc get deployment rhods-dashboard -n redhat-ods-applications &>/dev/null && \
+          oc get svc rhods-dashboard -n redhat-ods-applications &>/dev/null; do
+        if [ $deploy_elapsed -ge $deploy_timeout ]; then
+            print_error "Dashboard deployment/service not ready after ${deploy_timeout}s"
+            return 1
         fi
-        echo "Waiting for RHOAI dashboard... (${dash_elapsed}s elapsed)"
+        echo "Waiting for dashboard deployment and service... (${deploy_elapsed}s elapsed)"
         sleep 10
-        dash_elapsed=$((dash_elapsed + 10))
+        deploy_elapsed=$((deploy_elapsed + 10))
     done
+    
+    # Wait for deployment to be ready (2/2 replicas)
+    print_step "Waiting for dashboard pods to be ready..."
+    oc wait --for=condition=Available deployment/rhods-dashboard \
+        -n redhat-ods-applications --timeout=300s || true
+    
+    print_success "Dashboard deployment is ready"
+    
+    # Check if route exists, create it if not (handles RHOAI 3.0 fresh install timing issue)
+    print_step "Checking for dashboard route..."
+    if ! oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
+        print_warning "Dashboard route not found (common on fresh RHOAI 3.0 installs)"
+        print_step "Creating dashboard route..."
+        
+        cat <<'EOF' | oc apply -f -
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: rhods-dashboard
+  namespace: redhat-ods-applications
+  labels:
+    app: rhods-dashboard
+spec:
+  port:
+    targetPort: https
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: reencrypt
+  to:
+    kind: Service
+    name: rhods-dashboard
+    weight: 100
+  wildcardPolicy: None
+EOF
+        
+        if oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
+            print_success "Dashboard route created successfully"
+        else
+            print_error "Failed to create dashboard route"
+            return 1
+        fi
+    else
+        print_success "Dashboard route already exists"
+    fi
     
     # Configure dashboard for GenAI and MaaS
     if [[ "$RHOAI_VERSION" == "3.0" ]]; then
