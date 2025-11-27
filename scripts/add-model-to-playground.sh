@@ -136,7 +136,7 @@ metadata:
 spec:
   server:
     distribution:
-      name: self-hosted
+      image: quay.io/meta-llama/llamastack-distribution:0.0.53
   models:
     - modelId: "$model_name"
       providerConfig:
