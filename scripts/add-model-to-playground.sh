@@ -136,7 +136,7 @@ metadata:
 spec:
   server:
     distribution:
-      image: quay.io/meta-llama/llamastack-distribution:0.0.53
+      image: registry.redhat.io/rhoai/odh-llama-stack-core-rhel9@sha256:13ec5c9b96a9ca8c0a1fcc0568cf6f893478742d28d3b1381f073b9bdafb3320
   models:
     - modelId: "$model_name"
       providerConfig:
