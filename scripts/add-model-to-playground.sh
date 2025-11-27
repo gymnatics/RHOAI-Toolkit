@@ -134,6 +134,9 @@ metadata:
   name: genai-playground
   namespace: $namespace
 spec:
+  server:
+    distribution:
+      name: self-hosted
   models:
     - modelId: "$model_name"
       providerConfig:

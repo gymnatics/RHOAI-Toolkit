@@ -110,6 +110,9 @@ metadata:
   name: genai-playground
   namespace: ai-bu-shared
 spec:
+  server:
+    distribution:
+      name: self-hosted
   models:
     - modelId: "llama-32-3b-instruct"
       providerConfig:
@@ -227,6 +230,9 @@ metadata:
   name: genai-playground
   namespace: ai-bu-shared
 spec:
+  server:
+    distribution:
+      name: self-hosted
   models:
     - modelId: "llama-32-3b-instruct"
       providerConfig:
