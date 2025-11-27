@@ -70,12 +70,25 @@ show_main_menu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
-    echo -e "${YELLOW}2)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}3)${NC} Deploy Model (interactive model deployment)"
-    echo -e "${YELLOW}4)${NC} Setup MCP Servers (for GenAI Playground/AI Agents)"
-    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for existing cluster)"
-    echo -e "${YELLOW}6)${NC} Setup MaaS Only (assumes RHOAI exists)"
-    echo -e "${YELLOW}7)${NC} Exit"
+    echo -e "${YELLOW}2)${NC} RHOAI Management (configure features, deploy models, etc.)"
+    echo -e "${YELLOW}3)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}4)${NC} Exit"
+    echo ""
+}
+
+show_rhoai_management_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                 RHOAI Management Menu                          ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Enable Dashboard Features (Model Registry, GenAI Studio, etc.)"
+    echo -e "${YELLOW}2)${NC} Deploy Model (interactive model deployment)"
+    echo -e "${YELLOW}3)${NC} Add Model to Playground (test models interactively)"
+    echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
+    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
+    echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
+    echo -e "${YELLOW}7)${NC} Back to Main Menu"
     echo ""
 }
 
@@ -180,6 +193,111 @@ deploy_model_interactive() {
     deploy_model_interactive
     
     return $?
+}
+
+################################################################################
+# RHOAI Management Functions
+################################################################################
+
+enable_dashboard_features_interactive() {
+    print_header "Enable Dashboard Features"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift"
+        echo "Please login first: oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to OpenShift cluster"
+    echo ""
+    
+    # Check if script exists
+    local script="$SCRIPT_DIR/scripts/enable-dashboard-features.sh"
+    if [ ! -f "$script" ]; then
+        print_error "Script not found at: $script"
+        return 1
+    fi
+    
+    # Run the script
+    "$script"
+    
+    return $?
+}
+
+add_model_to_playground_interactive() {
+    print_header "Add Model to Playground"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift"
+        echo "Please login first: oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to OpenShift cluster"
+    echo ""
+    
+    # Check if script exists
+    local script="$SCRIPT_DIR/scripts/add-model-to-playground.sh"
+    if [ ! -f "$script" ]; then
+        print_error "Script not found at: $script"
+        return 1
+    fi
+    
+    # Run the script
+    "$script"
+    
+    return $?
+}
+
+rhoai_management_menu() {
+    while true; do
+        show_rhoai_management_menu
+        read -p "Select an option (1-7): " rhoai_choice
+        
+        case $rhoai_choice in
+            1)
+                enable_dashboard_features_interactive
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            2)
+                deploy_model_interactive
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            3)
+                add_model_to_playground_interactive
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            4)
+                setup_mcp_servers_interactive
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            5)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            6)
+                MAAS_ONLY=true
+                run_maas_only_setup
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            7)
+                print_info "Returning to main menu..."
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-7."
+                sleep 2
+                ;;
+        esac
+    done
 }
 
 ################################################################################
@@ -1036,44 +1154,26 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-7): " choice
+        read -p "Select an option (1-4): " choice
         
         case $choice in
             1)
                 run_complete_setup
                 ;;
             2)
+                rhoai_management_menu
+                ;;
+            3)
                 create_gpu_machineset_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            3)
-                deploy_model_interactive
-                echo ""
-                read -p "Press Enter to return to main menu..."
-                ;;
             4)
-                setup_mcp_servers_interactive
-                echo ""
-                read -p "Press Enter to return to main menu..."
-                ;;
-            5)
-                create_hardware_profile_interactive
-                echo ""
-                read -p "Press Enter to return to main menu..."
-                ;;
-            6)
-                MAAS_ONLY=true
-                run_maas_only_setup
-                echo ""
-                read -p "Press Enter to return to main menu..."
-                ;;
-            7)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-7."
+                print_error "Invalid option. Please select 1-4."
                 sleep 2
                 ;;
         esac
