@@ -127,27 +127,157 @@ create_llamastack_distribution() {
     
     print_step "Creating LlamaStackDistribution for model: $model_name"
     
+    # Check if LlamaStackDistribution already exists
+    if oc get llamastackdistribution lsd-genai-playground -n "$namespace" &>/dev/null; then
+        print_info "LlamaStackDistribution 'lsd-genai-playground' already exists"
+        print_info "Adding model to existing playground..."
+        
+        # Get current models
+        local current_models=$(oc get llamastackdistribution lsd-genai-playground -n "$namespace" -o json | jq -r '.spec.models // []')
+        
+        # Add new model (this is complex, so we'll just inform the user)
+        print_warning "To add a model to an existing playground:"
+        print_info "1. Edit the ConfigMap: oc edit configmap llama-stack-config -n $namespace"
+        print_info "2. Add your model under 'models:' section in run.yaml"
+        print_info "3. Restart the pod: oc delete pod -l app=lsd-genai-playground -n $namespace"
+        return 0
+    fi
+    
     cat <<EOF | oc apply -f -
 apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
-  name: genai-playground
+  name: lsd-genai-playground
   namespace: $namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: lsd-genai-playground
 spec:
+  replicas: 1
   server:
     distribution:
-      image: registry.redhat.io/rhoai/odh-llama-stack-core-rhel9@sha256:13ec5c9b96a9ca8c0a1fcc0568cf6f893478742d28d3b1381f073b9bdafb3320
-  models:
-    - modelId: "$model_name"
-      providerConfig:
-        config:
-          endpoint: "${endpoint}/v1"
-          modelType: "$model_type"
-        providerId: "remote::vllm"
-      model:
-        metadata: {}
-        modelType: "$model_type"
-        providerResourceId: "$model_name"
+      name: rh-dev
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      command:
+        - /bin/sh
+        - -c
+        - llama stack run /etc/llama-stack/run.yaml
+      env:
+        - name: VLLM_TLS_VERIFY
+          value: "false"
+        - name: MILVUS_DB_PATH
+          value: ~/.llama/milvus.db
+        - name: FMS_ORCHESTRATOR_URL
+          value: http://localhost
+        - name: VLLM_MAX_TOKENS
+          value: "4096"
+        - name: VLLM_API_TOKEN_1
+          value: fake
+        - name: LLAMA_STACK_CONFIG_DIR
+          value: /opt/app-root/src/.llama/distributions/rh/
+      resources:
+        requests:
+          cpu: 250m
+          memory: 500Mi
+        limits:
+          cpu: "2"
+          memory: 12Gi
+    userConfig:
+      inline:
+        version: "2"
+        image_name: rh
+        apis:
+          - agents
+          - datasetio
+          - files
+          - inference
+          - safety
+          - scoring
+          - tool_runtime
+          - vector_io
+        providers:
+          inference:
+            - provider_id: sentence-transformers
+              provider_type: inline::sentence-transformers
+              config: {}
+            - provider_id: vllm-inference-1
+              provider_type: remote::vllm
+              config:
+                api_token: \${env.VLLM_API_TOKEN_1:=fake}
+                max_tokens: \${env.VLLM_MAX_TOKENS:=4096}
+                tls_verify: \${env.VLLM_TLS_VERIFY:=false}
+                url: ${endpoint}/v1
+          vector_io:
+            - provider_id: milvus
+              provider_type: inline::milvus
+              config:
+                db_path: /opt/app-root/src/.llama/distributions/rh/milvus.db
+                kvstore:
+                  db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
+                  type: sqlite
+          agents:
+            - provider_id: meta-reference
+              provider_type: inline::meta-reference
+              config:
+                persistence_store:
+                  db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
+                  type: sqlite
+                responses_store:
+                  db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
+                  type: sqlite
+          files:
+            - provider_id: meta-reference-files
+              provider_type: inline::localfs
+              config:
+                metadata_store:
+                  db_path: /opt/app-root/src/.llama/distributions/rh/files_metadata.db
+                  type: sqlite
+                storage_dir: /opt/app-root/src/.llama/distributions/rh/files
+          datasetio:
+            - provider_id: huggingface
+              provider_type: remote::huggingface
+              config:
+                kvstore:
+                  db_path: /opt/app-root/src/.llama/distributions/rh/huggingface_datasetio.db
+                  type: sqlite
+          scoring:
+            - provider_id: basic
+              provider_type: inline::basic
+              config: {}
+            - provider_id: llm-as-judge
+              provider_type: inline::llm-as-judge
+              config: {}
+          tool_runtime:
+            - provider_id: rag-runtime
+              provider_type: inline::rag-runtime
+              config: {}
+            - provider_id: model-context-protocol
+              provider_type: remote::model-context-protocol
+              config: {}
+        metadata_store:
+          type: sqlite
+          db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
+        models:
+          - provider_id: sentence-transformers
+            model_id: granite-embedding-125m
+            provider_model_id: ibm-granite/granite-embedding-125m-english
+            model_type: embedding
+            metadata:
+              embedding_dimension: 768
+          - provider_id: vllm-inference-1
+            model_id: $model_name
+            model_type: llm
+            metadata:
+              description: ""
+              display_name: $model_name
+        tool_groups:
+          - toolgroup_id: builtin::rag
+            provider_id: rag-runtime
+        server:
+          port: 8321
 EOF
     
     if [ $? -eq 0 ]; then

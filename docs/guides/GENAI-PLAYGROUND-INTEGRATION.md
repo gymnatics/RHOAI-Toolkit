@@ -107,23 +107,48 @@ Alternatively, you can create the LlamaStackDistribution manually:
 apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
-  name: genai-playground
+  name: lsd-genai-playground
   namespace: ai-bu-shared
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: lsd-genai-playground
 spec:
+  replicas: 1
   server:
     distribution:
-      name: self-hosted
-  models:
-    - modelId: "llama-32-3b-instruct"
-      providerConfig:
-        config:
-          endpoint: "https://llama-32-3b-instruct-ai-bu-shared.apps.cluster.example.com/v1"
-          modelType: "llama3"
-        providerId: "remote::vllm"
-      model:
-        metadata: {}
-        modelType: "llama3"
-        providerResourceId: "llama-32-3b-instruct"
+      name: rh-dev
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      resources:
+        requests:
+          cpu: 250m
+          memory: 500Mi
+        limits:
+          cpu: "2"
+          memory: 12Gi
+    userConfig:
+      inline:
+        version: "2"
+        image_name: rh
+        apis:
+          - inference
+        providers:
+          inference:
+            - provider_id: vllm-inference-1
+              provider_type: remote::vllm
+              config:
+                url: https://llama-32-3b-instruct-ai-bu-shared.apps.cluster.example.com/v1
+                tls_verify: false
+        models:
+          - provider_id: vllm-inference-1
+            model_id: llama-32-3b-instruct
+            model_type: llm
+            metadata:
+              display_name: llama-32-3b-instruct
+        server:
+          port: 8321
 ```
 
 Apply it:
@@ -227,25 +252,36 @@ Add multiple models to the same playground:
 apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
-  name: genai-playground
+  name: lsd-genai-playground
   namespace: ai-bu-shared
+  labels:
+    opendatahub.io/dashboard: "true"
 spec:
+  replicas: 1
   server:
     distribution:
-      name: self-hosted
-  models:
-    - modelId: "llama-32-3b-instruct"
-      providerConfig:
-        config:
-          endpoint: "https://llama-32-3b-instruct.../v1"
-          modelType: "llama3"
-        providerId: "remote::vllm"
-    - modelId: "mistral-7b-instruct"
-      providerConfig:
-        config:
-          endpoint: "https://mistral-7b-instruct.../v1"
-          modelType: "mistral"
-        providerId: "remote::vllm"
+      name: rh-dev
+    userConfig:
+      inline:
+        version: "2"
+        image_name: rh
+        providers:
+          inference:
+            - provider_id: vllm-inference-1
+              provider_type: remote::vllm
+              config:
+                url: https://llama-32-3b-instruct.../v1
+            - provider_id: vllm-inference-2
+              provider_type: remote::vllm
+              config:
+                url: https://mistral-7b-instruct.../v1
+        models:
+          - provider_id: vllm-inference-1
+            model_id: llama-32-3b-instruct
+            model_type: llm
+          - provider_id: vllm-inference-2
+            model_id: mistral-7b-instruct
+            model_type: llm
 ```
 
 ### Customizing run.yaml ConfigMap
