@@ -128,7 +128,7 @@ create_llamastack_distribution() {
     print_step "Creating LlamaStackDistribution for model: $model_name"
     
     cat <<EOF | oc apply -f -
-apiVersion: llamastack.opendatahub.io/v1alpha1
+apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
   name: genai-playground

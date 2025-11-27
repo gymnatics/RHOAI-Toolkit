@@ -104,7 +104,7 @@ The model should show:
 Alternatively, you can create the LlamaStackDistribution manually:
 
 ```yaml
-apiVersion: llamastack.opendatahub.io/v1alpha1
+apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
   name: genai-playground
@@ -221,7 +221,7 @@ Use this token as `VLLM_API_TOKEN_1`.
 Add multiple models to the same playground:
 
 ```yaml
-apiVersion: llamastack.opendatahub.io/v1alpha1
+apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
   name: genai-playground
