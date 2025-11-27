@@ -342,25 +342,9 @@ install_rhoai() {
     # Initialize RHOAI
     initialize_rhoai
     
-    # Wait for Service Mesh to be ready
-    print_step "Waiting for Service Mesh to be installed (this may take 5-10 minutes)..."
-    sleep 30
-    
-    local sm_timeout=600
-    local sm_elapsed=0
-    until oc get smcp data-science-smcp -n istio-system &>/dev/null; do
-        if [ $sm_elapsed -ge $sm_timeout ]; then
-            print_warning "Service Mesh not ready yet (continuing anyway)"
-            break
-        fi
-        
-        # Check for and approve any pending InstallPlans
-        approve_pending_installplans
-        
-        echo "Waiting for Service Mesh Control Plane... (${sm_elapsed}s elapsed)"
-        sleep 15
-        sm_elapsed=$((sm_elapsed + 15))
-    done
+    # Note: Service Mesh Control Plane is created automatically by DataScienceCluster
+    # deployment, not by DSCInitialization. No need to wait for it here.
+    print_info "Service Mesh will be deployed automatically with DataScienceCluster"
     
     # Create DataScienceCluster
     if [[ "$RHOAI_VERSION" == "3.0" ]]; then
