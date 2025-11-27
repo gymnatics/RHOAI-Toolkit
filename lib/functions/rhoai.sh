@@ -93,9 +93,46 @@ initialize_rhoai() {
         return 0
     fi
     
+    # Wait for RHOAI operator webhook service to be ready
+    print_step "Waiting for RHOAI operator webhook service to be ready..."
+    local webhook_timeout=180
+    local webhook_elapsed=0
+    
+    until oc get svc -n redhat-ods-operator | grep -q "rhods-operator"; do
+        if [ $webhook_elapsed -ge $webhook_timeout ]; then
+            print_error "Timeout waiting for RHOAI operator webhook service"
+            return 1
+        fi
+        echo "Waiting for webhook service... (${webhook_elapsed}s elapsed)"
+        sleep 10
+        webhook_elapsed=$((webhook_elapsed + 10))
+    done
+    
+    # Additional wait for webhook to be fully functional
+    print_step "Waiting for webhook to be fully registered..."
+    sleep 30
+    
+    # Verify webhook endpoints are ready
+    local endpoint_check=0
+    until oc get endpoints -n redhat-ods-operator rhods-operator-service &>/dev/null && \
+          [ "$(oc get endpoints -n redhat-ods-operator rhods-operator-service -o jsonpath='{.subsets[*].addresses}' 2>/dev/null)" != "" ]; do
+        if [ $endpoint_check -ge 60 ]; then
+            print_warning "Webhook endpoints not fully ready, proceeding anyway"
+            break
+        fi
+        echo "Waiting for webhook endpoints... (${endpoint_check}s elapsed)"
+        sleep 10
+        endpoint_check=$((endpoint_check + 10))
+    done
+    
+    print_success "RHOAI operator webhook is ready"
+    
     print_step "Creating DSCInitialization..."
     
-    cat <<EOF | oc apply -f -
+    # Use replace if exists, apply if not (handles conversion webhook issues better)
+    if oc get dscinitialization default-dsci &>/dev/null 2>&1; then
+        print_step "DSCInitialization exists but may be in wrong version, replacing..."
+        cat <<EOF | oc replace -f -
 apiVersion: dscinitialization.opendatahub.io/v1
 kind: DSCInitialization
 metadata:
@@ -118,8 +155,41 @@ spec:
     customCABundle: ''
     managementState: Managed
 EOF
+    else
+        cat <<EOF | oc apply -f -
+apiVersion: dscinitialization.opendatahub.io/v1
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+  serviceMesh:
+    auth:
+      audiences:
+        - 'https://kubernetes.default.svc'
+    controlPlane:
+      metricsCollection: Istio
+      name: data-science-smcp
+      namespace: istio-system
+    managementState: Managed
+  trustedCABundle:
+    customCABundle: ''
+    managementState: Managed
+EOF
+    fi
     
-    print_success "RHOAI initialized"
+    if [ $? -eq 0 ]; then
+        print_success "RHOAI initialized"
+    else
+        print_error "Failed to initialize RHOAI"
+        print_info "This may be due to webhook timing. Check:"
+        print_info "  oc get pods -n redhat-ods-operator"
+        print_info "  oc get svc -n redhat-ods-operator"
+        return 1
+    fi
 }
 
 # Create DataScienceCluster (RHOAI 2.x)
