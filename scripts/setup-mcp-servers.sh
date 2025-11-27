@@ -255,7 +255,7 @@ if [ $? -eq 0 ]; then
     print_info "Restarting playground pods to load new MCP server configuration..."
     
     # Find all namespaces with playground pods
-    local playground_namespaces=$(oc get pods -A -l app=lsd-genai-playground -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u)
+    playground_namespaces=$(oc get pods -A -l app=lsd-genai-playground -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u)
     
     if [ -n "$playground_namespaces" ]; then
         for ns in $playground_namespaces; do
