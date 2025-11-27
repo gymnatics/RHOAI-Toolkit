@@ -15,6 +15,9 @@ Complete documentation for OpenShift AI installation and configuration on AWS.
 
 ### How-To Guides
 - [Configuration Reuse](guides/CONFIGURATION-REUSE.md) - Save and reuse installation settings
+- [Model Registry](guides/MODEL-REGISTRY.md) - Model versioning and lifecycle management
+- [GenAI Playground Integration](guides/GENAI-PLAYGROUND-INTEGRATION.md) - Add models to playground
+- [MCP Servers](guides/MCP-SERVERS.md) - Model Context Protocol for tool calling
 - [Tool Calling](guides/TOOL-CALLING-GUIDE.md) - Enable function calling in models
 - [MaaS Serving Runtimes](guides/MAAS-SERVING-RUNTIMES.md) - Which runtimes work with MaaS
 - [Using Existing AWS Infrastructure](guides/USING-EXISTING-AWS-INFRASTRUCTURE.md) - Reuse VPCs and subnets
@@ -37,6 +40,9 @@ docs/
 ├── guides/                        # Step-by-step guides
 │   ├── CONFIGURATION-REUSE.md    # Save/reuse installation config
 │   ├── GPU-TAINTS-RHOAI3.md      # GPU taint configuration
+│   ├── MODEL-REGISTRY.md         # Model versioning and tracking
+│   ├── GENAI-PLAYGROUND-INTEGRATION.md  # Add models to playground
+│   ├── MCP-SERVERS.md            # Model Context Protocol servers
 │   ├── TOOL-CALLING-GUIDE.md     # Model tool calling setup
 │   ├── MAAS-SERVING-RUNTIMES.md  # MaaS compatibility
 │   └── USING-EXISTING-AWS-INFRASTRUCTURE.md  # Reuse VPCs
@@ -78,9 +84,12 @@ docs/
 - `./scripts/create-gpu-machineset.sh` - Add GPU nodes
 
 ### Configuration
+- `./scripts/enable-dashboard-features.sh` - Enable all dashboard features
 - `./scripts/create-hardware-profile.sh <namespace>` - Create GPU hardware profile
 - `./scripts/fix-gpu-resourceflavor.sh` - Fix GPU taint tolerations
 - `./scripts/setup-maas.sh` - Setup MaaS API
+- `./scripts/setup-mcp-servers.sh` - Configure MCP servers
+- `./scripts/add-model-to-playground.sh` - Add model to GenAI Playground
 
 ### Cleanup
 - `./scripts/cleanup-all.sh` - Clean up all AWS resources
