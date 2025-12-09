@@ -759,6 +759,33 @@ EOF
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
+            
+            # Create external route
+            echo ""
+            print_step "Creating external route..."
+            
+            # Wait a moment for the service to be created
+            sleep 5
+            
+            # Check if service exists
+            if oc get service ${model_name}-predictor -n $target_namespace &>/dev/null; then
+                oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_success "External route created"
+                    local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
+                    if [ -n "$route_url" ]; then
+                        print_info "Model endpoint: https://$route_url"
+                    fi
+                else
+                    print_warning "Route may already exist or service not ready yet"
+                    print_info "Create route manually after deployment:"
+                    echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+                fi
+            else
+                print_info "Service not ready yet. Create route after deployment:"
+                echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+            fi
+            
             echo ""
             print_info "Monitor deployment:"
             echo "  oc get inferenceservice $model_name -n $target_namespace -w"
@@ -772,7 +799,107 @@ EOF
         print_step "Creating vLLM deployment with community image for '$model_name'..."
         print_info "Using community vLLM image with CUDA 13+ support and security hardening"
         
+        # === vLLM Image Configuration ===
+        echo ""
+        print_header "vLLM Image Configuration"
+        
+        local default_vllm_image="docker.io/vllm/vllm-openai:v0.6.6.post1"
+        echo -e "${BLUE}Available vLLM images:${NC}"
+        echo ""
+        echo "  1) v0.6.6.post1 (stable, recommended)"
+        echo "  2) v0.6.5 (previous stable)"
+        echo "  3) v0.7.0 (latest, experimental)"
+        echo "  4) latest (rolling release)"
+        echo "  5) Custom image (enter your own)"
+        echo ""
+        
+        read -p "Select vLLM image (1-5, default: 1): " vllm_image_choice
+        vllm_image_choice="${vllm_image_choice:-1}"
+        
+        local vllm_image=""
+        case "$vllm_image_choice" in
+            1) vllm_image="docker.io/vllm/vllm-openai:v0.6.6.post1" ;;
+            2) vllm_image="docker.io/vllm/vllm-openai:v0.6.5" ;;
+            3) vllm_image="docker.io/vllm/vllm-openai:v0.7.0" ;;
+            4) vllm_image="docker.io/vllm/vllm-openai:latest" ;;
+            5)
+                echo ""
+                read -p "Enter custom vLLM image: " vllm_image
+                if [ -z "$vllm_image" ]; then
+                    vllm_image="$default_vllm_image"
+                fi
+                ;;
+            *) vllm_image="$default_vllm_image" ;;
+        esac
+        
+        print_success "Using vLLM image: $vllm_image"
+        
+        # === vLLM Runtime Configuration ===
+        echo ""
+        print_header "vLLM Runtime Configuration"
+        
+        # Max model length
+        local default_max_model_len="8192"
+        echo -e "${BLUE}Max model length:${NC}"
+        echo "  This determines the maximum context window size."
+        echo "  Higher values use more GPU memory."
+        echo ""
+        read -p "Max model length (default: $default_max_model_len): " max_model_len
+        max_model_len="${max_model_len:-$default_max_model_len}"
+        
+        # GPU memory utilization
+        local default_gpu_mem_util="0.90"
+        echo ""
+        echo -e "${BLUE}GPU memory utilization:${NC}"
+        echo "  Fraction of GPU memory to use (0.0-1.0)."
+        echo "  Lower values leave room for other workloads."
+        echo ""
+        read -p "GPU memory utilization (default: $default_gpu_mem_util): " gpu_mem_util
+        gpu_mem_util="${gpu_mem_util:-$default_gpu_mem_util}"
+        
+        # Data type
+        local default_dtype="half"
+        echo ""
+        echo -e "${BLUE}Data type:${NC}"
+        echo "  1) half (FP16, recommended for most GPUs)"
+        echo "  2) bfloat16 (BF16, for newer GPUs like A100/H100)"
+        echo "  3) float16 (same as half)"
+        echo "  4) auto (let vLLM decide)"
+        echo ""
+        read -p "Select data type (1-4, default: 1): " dtype_choice
+        dtype_choice="${dtype_choice:-1}"
+        
+        local dtype=""
+        case "$dtype_choice" in
+            1) dtype="half" ;;
+            2) dtype="bfloat16" ;;
+            3) dtype="float16" ;;
+            4) dtype="auto" ;;
+            *) dtype="half" ;;
+        esac
+        
+        print_success "Configuration: max_model_len=$max_model_len, gpu_memory_utilization=$gpu_mem_util, dtype=$dtype"
+        
+        # === Tool Calling Configuration (if supported) ===
+        local vllm_additional_args=""
+        if [ "$tool_calling_enabled" = true ]; then
+            echo ""
+            print_header "Tool Calling Configuration"
+            echo -e "${YELLOW}This model supports tool calling (function calling).${NC}"
+            echo -e "${CYAN}Parser: $tool_parser${NC}"
+            echo ""
+            read -p "Enable tool calling? (Y/n): " enable_tools_community
+            
+            if [[ ! "$enable_tools_community" =~ ^[Nn]$ ]]; then
+                vllm_additional_args="--enable-auto-tool-choice --tool-call-parser=$tool_parser"
+                print_success "Tool calling enabled with $tool_parser parser"
+            else
+                print_info "Tool calling disabled"
+            fi
+        fi
+        
         # Step 1: Create Secret for model storage URI
+        echo ""
         print_step "Creating model storage secret..."
         
         local encoded_uri=$(base64_encode "$model_uri")
@@ -800,6 +927,23 @@ EOF
         # Step 2: Create ServingRuntime with community vLLM image (security hardened)
         print_step "Creating security-hardened ServingRuntime..."
         
+        # Build args array
+        local args_section="    args:
+    - --port=8080
+    - --model=/mnt/models
+    - --served-model-name={{.Name}}
+    - --dtype=$dtype
+    - --max-model-len=$max_model_len
+    - --gpu-memory-utilization=$gpu_mem_util"
+        
+        # Add tool calling args if enabled
+        if [ -n "$vllm_additional_args" ]; then
+            for arg in $vllm_additional_args; do
+                args_section="$args_section
+    - $arg"
+            done
+        fi
+        
         cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
@@ -817,14 +961,8 @@ spec:
     prometheus.io/port: "8080"
   containers:
   - name: kserve-container
-    image: docker.io/vllm/vllm-openai:v0.6.6.post1
-    args:
-    - --port=8080
-    - --model=/mnt/models
-    - --served-model-name={{.Name}}
-    - --dtype=half
-    - --max-model-len=8192
-    - --gpu-memory-utilization=0.90
+    image: $vllm_image
+$args_section
     env:
     # Disable telemetry/usage stats
     - name: VLLM_NO_USAGE_STATS
@@ -942,6 +1080,42 @@ EOF
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
+            echo ""
+            print_info "Deployment configuration:"
+            echo "  vLLM Image: $vllm_image"
+            echo "  Max Model Length: $max_model_len"
+            echo "  GPU Memory Utilization: $gpu_mem_util"
+            echo "  Data Type: $dtype"
+            if [ -n "$vllm_additional_args" ]; then
+                echo "  Tool Calling: Enabled ($tool_parser)"
+            fi
+            
+            # Create external route
+            echo ""
+            print_step "Creating external route..."
+            
+            # Wait a moment for the service to be created
+            sleep 5
+            
+            # Check if service exists
+            if oc get service ${model_name}-predictor -n $target_namespace &>/dev/null; then
+                oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_success "External route created"
+                    local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
+                    if [ -n "$route_url" ]; then
+                        print_info "Model endpoint: https://$route_url"
+                    fi
+                else
+                    print_warning "Route may already exist or service not ready yet"
+                    print_info "Create route manually after deployment:"
+                    echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+                fi
+            else
+                print_info "Service not ready yet. Create route after deployment:"
+                echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+            fi
+            
             echo ""
             print_info "Monitor deployment:"
             echo "  oc get inferenceservice $model_name -n $target_namespace -w"
