@@ -343,6 +343,8 @@ deploy_model_interactive() {
     local gpu_limit="$default_gpu"
     local cpu_limit="$default_cpu"
     local memory_limit="$default_memory"
+    local selected_profile_name=""
+    local selected_profile_namespace="redhat-ods-applications"
     
     if [ ${#profiles[@]} -gt 0 ]; then
         echo -e "${BLUE}Resource configuration options:${NC}"
@@ -381,6 +383,7 @@ deploy_model_interactive() {
             gpu_limit="${profile_gpus[$idx]}"
             cpu_limit="${profile_cpus[$idx]}"
             memory_limit="${profile_memories[$idx]}"
+            selected_profile_name="${profile_names[$idx]}"
             print_success "Using hardware profile: ${profile_names[$idx]}"
         elif [ "$resource_choice" -eq "$manual_option" ]; then
             # Use defaults
@@ -513,6 +516,13 @@ deploy_model_interactive() {
           value: \"$vllm_args\""
         fi
         
+        # Build hardware profile annotations if a profile was selected
+        local hw_profile_annotations_llmd=""
+        if [ -n "$selected_profile_name" ]; then
+            hw_profile_annotations_llmd="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
+    opendatahub.io/hardware-profile-name: $selected_profile_name"
+        fi
+        
         cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1alpha1
 kind: LLMInferenceService
@@ -525,6 +535,7 @@ metadata:
     opendatahub.io/genai-asset: "true"
   annotations:
     $auth_annotation
+$hw_profile_annotations_llmd
 spec:
   replicas: 1
   model:
@@ -665,6 +676,13 @@ EOF
         local mem_half=$(calc_half "$mem_value" 1)
         local memory_request="${mem_half}Gi"
         
+        # Build hardware profile annotations if a profile was selected
+        local hw_profile_annotations=""
+        if [ -n "$selected_profile_name" ]; then
+            hw_profile_annotations="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
+    opendatahub.io/hardware-profile-name: $selected_profile_name"
+        fi
+        
         cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
@@ -682,6 +700,7 @@ metadata:
     serving.kserve.io/deploymentMode: RawDeployment
     opendatahub.io/connections: ${model_name}-storage
     opendatahub.io/model-type: generative
+$hw_profile_annotations
 spec:
   predictor:
     automountServiceAccountToken: false
