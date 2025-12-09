@@ -99,25 +99,29 @@ deploy_model_interactive() {
     echo ""
     print_header "Model Selection"
     
-    # Pre-defined model catalog
-    echo -e "${BLUE}Available models:${NC}"
+    # Pre-defined model catalog from quay.io/redhat-ai-services/modelcar-catalog
+    # See: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags
+    echo -e "${BLUE}Available models (from Red Hat AI Services Modelcar Catalog):${NC}"
     echo ""
-    echo "  1) Qwen3-4B (FP8) - 4B params, tool calling support"
-    echo "     oci://registry.redhat.io/rhelai1/modelcar-qwen3-4b-fp8-dynamic:latest"
-    echo ""
-    echo "  2) Qwen3-8B (FP8) - 8B params, tool calling support"
-    echo "     oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest"
-    echo ""
-    echo "  3) Llama 3.2-3B Instruct"
+    echo "  1) Llama 3.2-3B Instruct - 3B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
     echo ""
-    echo "  4) Granite 3.0-8B Instruct"
+    echo "  2) Llama 3.1-8B Instruct - 8B params, tool calling support"
+    echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
+    echo ""
+    echo "  3) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
     echo ""
-    echo "  5) Custom model URI (enter your own)"
+    echo "  4) Granite 3.1-8B Instruct - 8B params, latest Granite"
+    echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
+    echo ""
+    echo "  5) Mistral 7B Instruct v0.3 - 7B params"
+    echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
+    echo ""
+    echo "  6) Custom model URI (enter your own)"
     echo ""
     
-    read -p "Select a model (1-5): " model_choice
+    read -p "Select a model (1-6): " model_choice
     
     local model_uri=""
     local model_name=""
@@ -125,28 +129,10 @@ deploy_model_interactive() {
     local default_cpu="4"
     local default_memory="16Gi"
     local tool_calling_enabled=false
-    local tool_parser="hermes"  # Default parser for Qwen models
+    local tool_parser="hermes"  # Default parser
     
     case "$model_choice" in
         1)
-            model_uri="oci://registry.redhat.io/rhelai1/modelcar-qwen3-4b-fp8-dynamic:latest"
-            model_name="qwen3-4b"
-            default_gpu="1"
-            default_cpu="4"
-            default_memory="16Gi"
-            tool_calling_enabled=true
-            tool_parser="hermes"
-            ;;
-        2)
-            model_uri="oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest"
-            model_name="qwen3-8b"
-            default_gpu="1"
-            default_cpu="8"
-            default_memory="32Gi"
-            tool_calling_enabled=true
-            tool_parser="hermes"
-            ;;
-        3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
             model_name="llama-32-3b-instruct"
             default_gpu="1"
@@ -155,16 +141,46 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        4)
+        2)
+            model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
+            model_name="llama-31-8b-instruct"
+            default_gpu="1"
+            default_cpu="8"
+            default_memory="32Gi"
+            tool_calling_enabled=true
+            tool_parser="llama3_json"
+            ;;
+        3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
             model_name="granite-30-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
+        4)
+            model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
+            model_name="granite-31-8b-instruct"
+            default_gpu="1"
+            default_cpu="8"
+            default_memory="32Gi"
+            ;;
         5)
+            model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
+            model_name="mistral-7b-instruct"
+            default_gpu="1"
+            default_cpu="8"
+            default_memory="32Gi"
+            ;;
+        6)
             echo ""
-            print_info "Enter custom model URI (e.g., oci://registry.example.com/model:tag):"
+            print_info "Enter custom model URI"
+            echo "  Examples:"
+            echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:qwen2.5-7b-instruct"
+            echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:phi-3-mini-128k-instruct"
+            echo ""
+            echo "  Browse available models at:"
+            echo "    https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags"
+            echo ""
             read -p "Model URI: " model_uri
             
             if [ -z "$model_uri" ]; then
