@@ -6,7 +6,7 @@
 # - OpenShift cluster (optional)
 # - GPU worker nodes (optional)
 # - RHOAI with all dependencies
-# - GenAI Playground and MaaS UI features
+# - GenAI Playground and Dashboard features (Model Registry, GenAI Studio, etc.)
 #
 # This is a refactored version using modular functions and separate manifests
 ################################################################################
@@ -484,7 +484,7 @@ main() {
     echo ""
     
     if [[ "$RHOAI_VERSION" == "3.0" ]]; then
-        echo -e "${CYAN}GenAI Playground and Model as a Service UI are enabled!${NC}"
+        echo -e "${CYAN}GenAI Playground and Dashboard features are enabled!${NC}"
         echo "To set up MaaS API infrastructure, run: ./scripts/setup-maas.sh"
         echo ""
     fi

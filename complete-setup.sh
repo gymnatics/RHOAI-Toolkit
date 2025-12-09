@@ -1440,7 +1440,7 @@ display_final_summary() {
     echo -e "${YELLOW}Then follow this typical workflow:${NC}"
     echo ""
     echo -e "  ${CYAN}1${NC}. Enable Dashboard Features"
-    echo "     └─ Enables Model Registry, GenAI Studio, MaaS UI, Kueue, etc."
+    echo "     └─ Enables Model Registry, GenAI Studio, Kueue, etc."
     echo ""
     echo -e "  ${CYAN}2${NC}. Deploy Model"
     echo "     └─ Interactive deployment with vLLM or llm-d runtime"

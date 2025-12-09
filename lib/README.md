@@ -35,7 +35,7 @@ Provides RHOAI-specific functions:
 - `initialize_rhoai()` - Create DSCInitialization
 - `create_datasciencecluster_v1()` - Create DSC for RHOAI 2.x
 - `create_datasciencecluster_v2()` - Create DSC for RHOAI 3.x with GenAI/MaaS
-- `configure_rhoai_dashboard()` - Enable GenAI Studio and MaaS UI
+- `configure_rhoai_dashboard()` - Enable GenAI Studio and Dashboard features
 - `create_gpu_hardware_profile()` - Create GPU hardware profile
 - `enable_user_workload_monitoring()` - Enable monitoring
 

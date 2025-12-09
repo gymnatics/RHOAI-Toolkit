@@ -150,7 +150,7 @@ cat scripts/CLEANUP-USAGE.md
 ---
 
 ### enable-genai-maas.sh
-**Purpose**: Enable GenAI Playground and MaaS UI features
+**Purpose**: Enable GenAI Playground and Dashboard features (Model Registry, GenAI Studio, etc.)
 
 **Usage**:
 ```bash
@@ -197,14 +197,14 @@ cat scripts/CLEANUP-USAGE.md
 - Restarts controllers
 
 **When to use**:
-- After enabling MaaS UI features
+- After enabling Dashboard features
 - When you want MaaS API endpoints
 - For production model serving with authentication
 - To enable billing/tracking for models
 
 **Prerequisites**:
 - RHOAI installed
-- GenAI and MaaS UI features enabled
+- GenAI and Dashboard features enabled
 - `jq` installed (`brew install jq`)
 
 **Note**: MaaS API pods may take 2-3 minutes to be ready after deployment.
