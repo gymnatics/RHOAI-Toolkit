@@ -460,13 +460,25 @@ deploy_model_interactive() {
     echo -e "${CYAN}(Recommended: Yes for production)${NC}"
     echo ""
     read -p "Require authentication? (Y/n): " enable_auth
+    enable_auth=$(echo "$enable_auth" | tr -d '[:space:]')
     
     local auth_annotation=""
+    local auth_enabled=false
+    local service_account_name=""
+    
     if [[ ! "$enable_auth" =~ ^[Nn]$ ]]; then
-        auth_annotation="security.opendatahub.io/enable-auth: \"true\""
-        print_success "Authentication enabled"
+        auth_enabled=true
+        auth_annotation="security.opendatahub.io/enable-auth: 'true'"
+        
+        # Ask for service account name
+        echo ""
+        local default_sa="${model_name}-sa"
+        read -p "Service account name (default: $default_sa): " service_account_name
+        service_account_name="${service_account_name:-$default_sa}"
+        
+        print_success "Authentication enabled with service account: $service_account_name"
     else
-        auth_annotation="security.opendatahub.io/enable-auth: \"false\""
+        auth_annotation="security.opendatahub.io/enable-auth: 'false'"
         print_warning "Authentication disabled (model will be publicly accessible)"
     fi
     
@@ -486,8 +498,8 @@ deploy_model_interactive() {
         echo -e "${BLUE}Tool Calling:${NC} Disabled"
     fi
     
-    if [[ "$auth_annotation" =~ "true" ]]; then
-        echo -e "${BLUE}Authentication:${NC} Required"
+    if [ "$auth_enabled" = true ]; then
+        echo -e "${BLUE}Authentication:${NC} Required (ServiceAccount: $service_account_name)"
     else
         echo -e "${BLUE}Authentication:${NC} Disabled"
     fi
@@ -735,6 +747,80 @@ EOF
         fi
     fi
     
+    # Create ServiceAccount and RBAC if authentication is enabled
+    if [ "$auth_enabled" = true ] && [ -n "$service_account_name" ]; then
+        echo ""
+        print_step "Creating ServiceAccount and RBAC for authentication..."
+        
+        # Determine the resource type for RBAC
+        local resource_type="inferenceservices"
+        if [ "$selected_runtime" = "llmd" ]; then
+            resource_type="llminferenceservices"
+        fi
+        
+        # Create ServiceAccount, Secret, Role, and RoleBinding (based on CAI guide)
+        cat <<EOF | oc apply -f -
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $service_account_name
+  namespace: $target_namespace
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${service_account_name}-token
+  namespace: $target_namespace
+  annotations:
+    kubernetes.io/service-account.name: "$service_account_name"
+    openshift.io/display-name: $service_account_name
+  labels:
+    opendatahub.io/dashboard: "true"
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${model_name}-view-role
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+rules:
+- apiGroups:
+  - serving.kserve.io
+  resourceNames:
+  - $model_name
+  resources:
+  - $resource_type
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${model_name}-view
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${model_name}-view-role
+subjects:
+- kind: ServiceAccount
+  name: $service_account_name
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "ServiceAccount and RBAC created"
+            print_info "Service Account: $service_account_name"
+            print_info "Token Secret: ${service_account_name}-token"
+        else
+            print_warning "Failed to create ServiceAccount/RBAC (authentication may not work)"
+        fi
+    fi
+    
     # Common post-deployment info
     echo ""
     print_info "Deployment initiated. The model will take 5-10 minutes to be ready."
@@ -744,9 +830,12 @@ EOF
     echo "  oc get pods -n $target_namespace"
     echo ""
     
-    if [[ "$auth_annotation" =~ "true" ]]; then
-        print_info "Generate API token:"
-        echo "  oc create token default -n $target_namespace --duration=24h"
+    if [ "$auth_enabled" = true ] && [ -n "$service_account_name" ]; then
+        print_info "Get API token:"
+        echo "  oc get secret ${service_account_name}-token -n $target_namespace -o jsonpath='{.data.token}' | base64 -d"
+        echo ""
+        print_info "Or create a short-lived token:"
+        echo "  oc create token $service_account_name -n $target_namespace --duration=24h"
         echo ""
     fi
     
