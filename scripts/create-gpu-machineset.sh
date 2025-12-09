@@ -159,28 +159,48 @@ echo ""
 # Create arrays to store AZ and subnet information
 declare -a AZ_LIST
 declare -a SUBNET_LIST
+declare -a SUBNET_TYPE_LIST  # "id" or "filter"
 declare -a MACHINESET_LIST
 
-# Extract unique AZ/subnet combinations
-while IFS='|' read -r ms_name az subnet; do
-    if [ -n "$az" ] && [ "$az" != "null" ] && [ -n "$subnet" ] && [ "$subnet" != "null" ]; then
+# Extract unique AZ/subnet combinations - handle both subnet.id and subnet.filters
+while IFS='|' read -r ms_name az subnet_id subnet_filter; do
+    if [ -n "$az" ] && [ "$az" != "null" ]; then
         AZ_LIST+=("$az")
-        SUBNET_LIST+=("$subnet")
         MACHINESET_LIST+=("$ms_name")
+        
+        # Check if subnet.id is used (direct subnet ID)
+        if [ -n "$subnet_id" ] && [ "$subnet_id" != "null" ]; then
+            SUBNET_LIST+=("$subnet_id")
+            SUBNET_TYPE_LIST+=("id")
+        # Otherwise check for subnet.filters (tag-based)
+        elif [ -n "$subnet_filter" ] && [ "$subnet_filter" != "null" ]; then
+            SUBNET_LIST+=("$subnet_filter")
+            SUBNET_TYPE_LIST+=("filter")
+        else
+            # Fallback - try to get the full subnet spec
+            SUBNET_LIST+=("(auto-detect from AZ)")
+            SUBNET_TYPE_LIST+=("auto")
+        fi
     fi
 done < <(oc get machineset -n openshift-machine-api -o json | \
-    jq -r '.items[] | "\(.metadata.name)|\(.spec.template.spec.providerSpec.value.placement.availabilityZone)|\(.spec.template.spec.providerSpec.value.subnet.id)"')
+    jq -r '.items[] | "\(.metadata.name)|\(.spec.template.spec.providerSpec.value.placement.availabilityZone)|\(.spec.template.spec.providerSpec.value.subnet.id // "null")|\(.spec.template.spec.providerSpec.value.subnet.filters[0].values[0] // "null")"')
 
 if [ ${#AZ_LIST[@]} -eq 0 ]; then
-    print_error "No subnets found in existing MachineSets"
+    print_error "No availability zones found in existing MachineSets"
     exit 1
 fi
 
 # Display available options
-echo "Available subnets (from existing MachineSets):"
+echo "Available availability zones (from existing MachineSets):"
 echo ""
 for i in "${!AZ_LIST[@]}"; do
-    echo "  $((i+1))) ${AZ_LIST[$i]} - ${SUBNET_LIST[$i]}"
+    if [ "${SUBNET_TYPE_LIST[$i]}" = "id" ]; then
+        echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet ID: ${SUBNET_LIST[$i]}"
+    elif [ "${SUBNET_TYPE_LIST[$i]}" = "filter" ]; then
+        echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet Tag: ${SUBNET_LIST[$i]}"
+    else
+        echo "  $((i+1))) ${AZ_LIST[$i]} - (will use same subnet config as source)"
+    fi
     echo "     (from MachineSet: ${MACHINESET_LIST[$i]})"
 done
 echo ""
@@ -188,6 +208,11 @@ echo "  $((${#AZ_LIST[@]}+1))) Enter custom AZ and subnet"
 echo ""
 
 read -p "Enter choice [1-$((${#AZ_LIST[@]}+1))]: " subnet_choice
+
+# Variables to track subnet configuration
+SUBNET_ID=""
+SUBNET_FILTER_NAME=""
+USE_SUBNET_FILTER=false
 
 if [ "$subnet_choice" -eq "$((${#AZ_LIST[@]}+1))" ]; then
     # Custom AZ and subnet
@@ -200,8 +225,26 @@ else
     idx=$((subnet_choice-1))
     if [ $idx -ge 0 ] && [ $idx -lt ${#AZ_LIST[@]} ]; then
         AZ="${AZ_LIST[$idx]}"
-        SUBNET_ID="${SUBNET_LIST[$idx]}"
-        print_success "Selected: $AZ - $SUBNET_ID"
+        
+        if [ "${SUBNET_TYPE_LIST[$idx]}" = "id" ]; then
+            SUBNET_ID="${SUBNET_LIST[$idx]}"
+            print_success "Selected: $AZ - Subnet ID: $SUBNET_ID"
+        elif [ "${SUBNET_TYPE_LIST[$idx]}" = "filter" ]; then
+            SUBNET_FILTER_NAME="${SUBNET_LIST[$idx]}"
+            USE_SUBNET_FILTER=true
+            print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME"
+        else
+            # Auto-detect - get full subnet config from source MachineSet
+            SOURCE_MS="${MACHINESET_LIST[$idx]}"
+            SUBNET_FILTER_NAME=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.filters[0].values[0]}' 2>/dev/null)
+            if [ -n "$SUBNET_FILTER_NAME" ]; then
+                USE_SUBNET_FILTER=true
+                print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME (from $SOURCE_MS)"
+            else
+                SUBNET_ID=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.id}' 2>/dev/null)
+                print_success "Selected: $AZ - Subnet ID: $SUBNET_ID (from $SOURCE_MS)"
+            fi
+        fi
     else
         print_error "Invalid choice"
         exit 1
@@ -263,6 +306,18 @@ print_header "━━━━━━━━━━━━━━━━━━━━━━
 print_info "Generating GPU MachineSet YAML..."
 print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+
+# Generate subnet configuration based on type
+if [ "$USE_SUBNET_FILTER" = true ]; then
+    SUBNET_CONFIG="          subnet:
+            filters:
+              - name: 'tag:Name'
+                values:
+                  - ${SUBNET_FILTER_NAME}"
+else
+    SUBNET_CONFIG="          subnet:
+            id: ${SUBNET_ID}"
+fi
 
 cat > "$OUTPUT_FILE" << EOF
 apiVersion: machine.openshift.io/v1beta1
@@ -335,8 +390,7 @@ spec:
                 - name: 'tag:Name'
                   values:
                     - ${CLUSTER_ID}-lb
-          subnet:
-            id: ${SUBNET_ID}
+${SUBNET_CONFIG}
           tags:
             - name: kubernetes.io/cluster/${CLUSTER_ID}
               value: owned
@@ -358,7 +412,11 @@ echo "🎮 GPU Count:          $GPU_COUNT"
 echo "⚙️  vCPU:               $VCPU"
 echo "💾 Memory:             $((MEMORY_MB/1024)) GB"
 echo "🌍 Availability Zone:  $AZ"
-echo "🔗 Subnet:             $SUBNET_ID"
+if [ "$USE_SUBNET_FILTER" = true ]; then
+    echo "🔗 Subnet:             $SUBNET_FILTER_NAME (tag filter)"
+else
+    echo "🔗 Subnet:             $SUBNET_ID"
+fi
 echo "💿 Storage:            ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
 echo "📊 Replicas:           $REPLICAS"
 echo ""

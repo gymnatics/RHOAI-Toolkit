@@ -90,7 +90,8 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
     echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
     echo -e "${YELLOW}7)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
-    echo -e "${YELLOW}8)${NC} Back to Main Menu"
+    echo -e "${YELLOW}8)${NC} Approve Pending CSRs (Day 2 node management)"
+    echo -e "${YELLOW}9)${NC} Back to Main Menu"
     echo ""
 }
 
@@ -120,6 +121,123 @@ print_warning() {
 
 print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
+}
+
+################################################################################
+# CSR Approval (Day 2 Operations)
+################################################################################
+
+approve_pending_csrs() {
+    print_header "Approve Pending Certificate Signing Requests (CSRs)"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    echo ""
+    
+    # Check for pending CSRs
+    print_step "Checking for pending CSRs..."
+    local pending_csrs
+    pending_csrs=$(oc get csr 2>/dev/null | grep -i pending || true)
+    
+    if [ -z "$pending_csrs" ]; then
+        print_success "No pending CSRs found - all certificates are approved!"
+        echo ""
+        echo "Current CSR status:"
+        oc get csr 2>/dev/null | head -20 || echo "  No CSRs found"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}Found pending CSRs:${NC}"
+    echo "$pending_csrs"
+    echo ""
+    
+    local pending_count
+    pending_count=$(echo "$pending_csrs" | wc -l | tr -d ' ')
+    
+    echo -e "${CYAN}Found ${pending_count} pending CSR(s).${NC}"
+    echo ""
+    echo "CSRs are typically generated when:"
+    echo "  • New nodes join the cluster"
+    echo "  • Nodes are rebooted"
+    echo "  • Kubelet certificates need renewal"
+    echo ""
+    
+    read -p "Approve all pending CSRs? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "CSR approval cancelled"
+        return 0
+    fi
+    
+    echo ""
+    print_step "Approving all pending CSRs..."
+    
+    # Get list of pending CSR names and approve them
+    local approved_count=0
+    local failed_count=0
+    
+    while IFS= read -r csr_name; do
+        if [ -n "$csr_name" ]; then
+            if oc adm certificate approve "$csr_name" &>/dev/null; then
+                print_success "Approved: $csr_name"
+                ((approved_count++))
+            else
+                print_error "Failed to approve: $csr_name"
+                ((failed_count++))
+            fi
+        fi
+    done < <(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' 2>/dev/null)
+    
+    echo ""
+    if [ $approved_count -gt 0 ]; then
+        print_success "Approved $approved_count CSR(s)"
+    fi
+    if [ $failed_count -gt 0 ]; then
+        print_warning "Failed to approve $failed_count CSR(s)"
+    fi
+    
+    # Check if there are more pending (sometimes CSRs come in waves)
+    echo ""
+    print_step "Checking for additional pending CSRs..."
+    sleep 3
+    
+    local more_pending
+    more_pending=$(oc get csr 2>/dev/null | grep -i pending || true)
+    
+    if [ -n "$more_pending" ]; then
+        echo ""
+        print_warning "More pending CSRs detected (nodes may generate multiple CSRs):"
+        echo "$more_pending"
+        echo ""
+        read -p "Approve these as well? (y/N): " confirm_more
+        if [[ "$confirm_more" =~ ^[Yy]$ ]]; then
+            while IFS= read -r csr_name; do
+                if [ -n "$csr_name" ]; then
+                    if oc adm certificate approve "$csr_name" &>/dev/null; then
+                        print_success "Approved: $csr_name"
+                    fi
+                fi
+            done < <(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' 2>/dev/null)
+        fi
+    else
+        print_success "No more pending CSRs"
+    fi
+    
+    echo ""
+    echo -e "${GREEN}CSR approval complete!${NC}"
+    echo ""
+    echo "Current node status:"
+    oc get nodes 2>/dev/null || echo "  Unable to get node status"
+    
+    return 0
 }
 
 ################################################################################
@@ -484,7 +602,7 @@ show_help() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-8): " rhoai_choice
+        read -p "Select an option (1-9): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -524,11 +642,16 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             8)
+                approve_pending_csrs
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            9)
                 print_info "Returning to main menu..."
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8."
+                print_error "Invalid option. Please select 1-9."
                 sleep 2
                 ;;
         esac
