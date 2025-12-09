@@ -880,22 +880,10 @@ EOF
         
         print_success "Configuration: max_model_len=$max_model_len, gpu_memory_utilization=$gpu_mem_util, dtype=$dtype"
         
-        # === Tool Calling Configuration (if supported) ===
-        local vllm_additional_args=""
-        if [ "$tool_calling_enabled" = true ]; then
-            echo ""
-            print_header "Tool Calling Configuration"
-            echo -e "${YELLOW}This model supports tool calling (function calling).${NC}"
-            echo -e "${CYAN}Parser: $tool_parser${NC}"
-            echo ""
-            read -p "Enable tool calling? (Y/n): " enable_tools_community
-            
-            if [[ ! "$enable_tools_community" =~ ^[Nn]$ ]]; then
-                vllm_additional_args="--enable-auto-tool-choice --tool-call-parser=$tool_parser"
-                print_success "Tool calling enabled with $tool_parser parser"
-            else
-                print_info "Tool calling disabled"
-            fi
+        # Tool calling was already configured in the main flow (vllm_args variable)
+        # Just display the status
+        if [ -n "$vllm_args" ]; then
+            print_info "Tool calling: Enabled ($tool_parser parser)"
         fi
         
         # Step 1: Create Secret for model storage URI
@@ -936,9 +924,9 @@ EOF
     - --max-model-len=$max_model_len
     - --gpu-memory-utilization=$gpu_mem_util"
         
-        # Add tool calling args if enabled
-        if [ -n "$vllm_additional_args" ]; then
-            for arg in $vllm_additional_args; do
+        # Add tool calling args if enabled (from main flow's vllm_args)
+        if [ -n "$vllm_args" ]; then
+            for arg in $vllm_args; do
                 args_section="$args_section
     - $arg"
             done
@@ -1086,7 +1074,7 @@ EOF
             echo "  Max Model Length: $max_model_len"
             echo "  GPU Memory Utilization: $gpu_mem_util"
             echo "  Data Type: $dtype"
-            if [ -n "$vllm_additional_args" ]; then
+            if [ -n "$vllm_args" ]; then
                 echo "  Tool Calling: Enabled ($tool_parser)"
             fi
             
