@@ -47,8 +47,13 @@ deploy_model_interactive() {
     # Check for vLLM (InferenceService CRD with vLLM runtime)
     if oc get crd inferenceservices.serving.kserve.io &>/dev/null; then
         runtimes+=("vllm")
-        runtime_names+=("vLLM (InferenceService)")
-        runtime_descriptions+=("Simple deployment, GenAI Playground")
+        runtime_names+=("vLLM (Red Hat Image)")
+        runtime_descriptions+=("Red Hat supported image, GenAI Playground")
+        
+        # Also offer community vLLM for CUDA 13+ compatibility
+        runtimes+=("vllm-community")
+        runtime_names+=("vLLM (Community Image - CUDA 13+)")
+        runtime_descriptions+=("Community vLLM image, newer GPU driver support, security hardened")
     fi
     
     # Check for ServingRuntime templates
@@ -736,6 +741,189 @@ spec:
     minReplicas: 1
     model:
 $model_args
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: '$gpu_limit'
+        requests:
+          cpu: '$cpu_request'
+          memory: $memory_request
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: ${model_name}-runtime
+      storageUri: '$model_uri'
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
+        
+    elif [ "$selected_runtime" = "vllm-community" ]; then
+        # Deploy using community vLLM image (CUDA 13+ compatible, security hardened)
+        print_step "Creating vLLM deployment with community image for '$model_name'..."
+        print_info "Using community vLLM image with CUDA 13+ support and security hardening"
+        
+        # Step 1: Create Secret for model storage URI
+        print_step "Creating model storage secret..."
+        
+        local encoded_uri=$(base64_encode "$model_uri")
+        
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${model_name}-storage
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/connection-type-protocol: uri
+    opendatahub.io/connection-type-ref: uri-v1
+    openshift.io/description: 'Model storage for ${model_name}'
+    openshift.io/display-name: ${model_name}
+data:
+  URI: ${encoded_uri}
+type: Opaque
+EOF
+        
+        print_success "Model storage secret created"
+        
+        # Step 2: Create ServingRuntime with community vLLM image (security hardened)
+        print_step "Creating security-hardened ServingRuntime..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${model_name}-runtime
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/template-display-name: "vLLM Community Runtime (CUDA 13+)"
+    openshift.io/display-name: "vLLM Community Runtime"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+  - name: kserve-container
+    image: docker.io/vllm/vllm-openai:v0.6.6.post1
+    args:
+    - --port=8080
+    - --model=/mnt/models
+    - --served-model-name={{.Name}}
+    - --dtype=half
+    - --max-model-len=8192
+    - --gpu-memory-utilization=0.90
+    env:
+    # Disable telemetry/usage stats
+    - name: VLLM_NO_USAGE_STATS
+      value: "1"
+    - name: DO_NOT_TRACK
+      value: "1"
+    # Writable directories for non-root container
+    - name: HOME
+      value: "/tmp/vllm-home"
+    - name: HF_HOME
+      value: "/tmp/hf-cache"
+    - name: HF_HUB_OFFLINE
+      value: "1"
+    - name: TRANSFORMERS_CACHE
+      value: "/tmp/transformers-cache"
+    - name: XDG_CACHE_HOME
+      value: "/tmp/cache"
+    - name: XDG_CONFIG_HOME
+      value: "/tmp/config"
+    - name: PYTHONDONTWRITEBYTECODE
+      value: "1"
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    # Security context - prevent privilege escalation
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - mountPath: /dev/shm
+      name: shm
+    - mountPath: /tmp
+      name: tmp-volume
+  multiModel: false
+  supportedModelFormats:
+  - autoSelect: true
+    name: vLLM
+  volumes:
+  - emptyDir:
+      medium: Memory
+      sizeLimit: 12Gi
+    name: shm
+  - emptyDir:
+      sizeLimit: 1Gi
+    name: tmp-volume
+EOF
+        
+        print_success "ServingRuntime created"
+        
+        # Step 3: Create InferenceService
+        print_step "Creating InferenceService..."
+        
+        # Calculate resource requests
+        local cpu_value=$(parse_cpu "$cpu_limit")
+        local cpu_request=$(calc_half "$cpu_value" 1)
+        local mem_value=$(parse_memory_gi "$memory_limit")
+        local mem_half=$(calc_half "$mem_value" 1)
+        local memory_request="${mem_half}Gi"
+        
+        # Build hardware profile annotations if a profile was selected
+        local hw_profile_annotations_community=""
+        if [ -n "$selected_profile_name" ]; then
+            hw_profile_annotations_community="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
+    opendatahub.io/hardware-profile-name: $selected_profile_name"
+        fi
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    serving.kserve.io/stop: 'false'
+    $auth_annotation
+    openshift.io/description: 'Deployed with community vLLM (CUDA 13+)'
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/connections: ${model_name}-storage
+    opendatahub.io/model-type: generative
+$hw_profile_annotations_community
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    maxReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
       modelFormat:
         name: vLLM
       name: ''
