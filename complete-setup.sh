@@ -19,11 +19,15 @@
 #
 # Interactive Menu Options:
 #   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
-#   2. Deploy Model - Interactive model deployment with llm-d
-#   3. Setup MCP Servers - Configure MCP servers for GenAI Playground/AI Agents
-#   4. Create GPU Hardware Profile - Interactive hardware profile creation
-#   5. Setup MaaS Only - MaaS API infrastructure only
+#   2. Minimal RHOAI Setup - Choose which operators to install (flexible)
+#   3. RHOAI Management - Configure features, deploy models, etc.
+#   4. Create GPU MachineSet - Add GPU nodes to existing cluster
+#   5. Help - Show scripts and documentation
 #   6. Exit
+#
+# RHOAI 3.0 Operator Requirements:
+#   REQUIRED: NFD, GPU Operator
+#   OPTIONAL: Kueue (distributed workloads), LWS (llm-d), RHCL (auth)
 
 set -e
 
@@ -69,11 +73,12 @@ show_main_menu() {
     echo -e "${CYAN}║                    Main Menu                                   ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS)"
-    echo -e "${YELLOW}2)${NC} RHOAI Management (configure features, deploy models, etc.)"
-    echo -e "${YELLOW}3)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}4)${NC} Help (show scripts and documentation)"
-    echo -e "${YELLOW}5)${NC} Exit"
+    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI + GPU + MaaS) ${MAGENTA}[Full]${NC}"
+    echo -e "${YELLOW}2)${NC} Minimal RHOAI Setup (choose operators) ${GREEN}[Flexible]${NC}"
+    echo -e "${YELLOW}3)${NC} RHOAI Management (configure features, deploy models, etc.)"
+    echo -e "${YELLOW}4)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}5)${NC} Help (show scripts and documentation)"
+    echo -e "${YELLOW}6)${NC} Exit"
     echo ""
 }
 
@@ -1551,31 +1556,34 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-5): " choice
+        read -p "Select an option (1-6): " choice
         
         case $choice in
             1)
                 run_complete_setup
                 ;;
             2)
-                rhoai_management_menu
+                run_minimal_setup
                 ;;
             3)
+                rhoai_management_menu
+                ;;
+            4)
                 create_gpu_machineset_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            4)
+            5)
                 show_help
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            5)
+            6)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-5."
+                print_error "Invalid option. Please select 1-6."
                 sleep 2
                 ;;
         esac
@@ -1696,6 +1704,65 @@ run_complete_setup() {
     # Display final summary
     display_final_summary "$maas_status"
     
+    return 0
+}
+
+run_minimal_setup() {
+    print_header "Minimal RHOAI Setup (Choose Operators)"
+    
+    echo -e "${CYAN}This mode lets you choose which operators to install.${NC}"
+    echo ""
+    echo -e "${GREEN}REQUIRED (always installed):${NC}"
+    echo "  • Node Feature Discovery (NFD)"
+    echo "  • NVIDIA GPU Operator"
+    echo "  • Red Hat OpenShift AI 3.0"
+    echo ""
+    echo -e "${YELLOW}OPTIONAL (you choose):${NC}"
+    echo "  • Kueue - for distributed workloads, scheduling"
+    echo "  • LWS - for llm-d serving runtime"
+    echo "  • RHCL - for llm-d authentication"
+    echo ""
+    
+    # Check if script exists
+    local minimal_script="$SCRIPT_DIR/scripts/install-rhoai-minimal.sh"
+    if [ ! -f "$minimal_script" ]; then
+        print_error "Minimal setup script not found at: $minimal_script"
+        return 1
+    fi
+    
+    # Make executable
+    chmod +x "$minimal_script"
+    
+    # Ask for installation mode
+    echo -e "${CYAN}Select installation mode:${NC}"
+    echo "  1) Interactive - choose each operator"
+    echo "  2) Minimal - only required operators"
+    echo "  3) Full - all operators"
+    echo ""
+    read -p "Enter choice [1-3] (default: 1): " mode_choice
+    mode_choice=${mode_choice:-1}
+    
+    local mode_flag=""
+    case $mode_choice in
+        1) mode_flag="" ;;
+        2) mode_flag="--minimal" ;;
+        3) mode_flag="--full" ;;
+        *) mode_flag="" ;;
+    esac
+    
+    echo ""
+    print_step "Running minimal RHOAI setup script..."
+    echo ""
+    
+    if "$minimal_script" $mode_flag; then
+        print_success "Minimal RHOAI setup completed"
+    else
+        print_error "Minimal RHOAI setup failed"
+        return 1
+    fi
+    
+    echo ""
+    read -p "Press Enter to return to main menu..."
     return 0
 }
 

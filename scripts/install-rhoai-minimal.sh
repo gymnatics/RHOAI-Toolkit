@@ -6,16 +6,19 @@
 # This script installs RHOAI 3.0 with basic model serving capabilities using
 # vLLM, without the llm-d serving runtime or MaaS API infrastructure.
 #
-# What's installed:
+# REQUIRED PRE-REQUISITES (installed by this script):
 #   ✅ Node Feature Discovery (NFD) - for hardware detection
 #   ✅ NVIDIA GPU Operator - for GPU support
-#   ✅ Red Hat Build of Kueue - for workload queueing
 #   ✅ RHOAI 3.0 Operator - core AI platform
-#   ✅ User Workload Monitoring - for KServe metrics
+#   ✅ User Workload Monitoring - for KServe metrics (ConfigMap)
 #
-# What's NOT installed (not needed for basic vLLM serving):
-#   ❌ Leader Worker Set (LWS) - only required for llm-d
-#   ❌ Red Hat Connectivity Link (RHCL/Kuadrant) - only for llm-d auth
+# OPTIONAL OPERATORS (prompted during installation):
+#   ⚙️  Red Hat Build of Kueue - for distributed workloads/scheduling
+#   ⚙️  Leader Worker Set (LWS) - only required for llm-d
+#   ⚙️  Red Hat Connectivity Link (RHCL/Kuadrant) - only for llm-d auth
+#   ⚙️  cert-manager - for TLS (required by Kueue)
+#
+# What's NOT installed by default:
 #   ❌ MaaS API infrastructure - only for Model as a Service
 #
 # Use cases:
@@ -26,7 +29,11 @@
 #   - Model Registry
 #
 # Usage:
-#   ./scripts/install-rhoai-minimal.sh
+#   ./scripts/install-rhoai-minimal.sh              # Interactive (asks about optional operators)
+#   ./scripts/install-rhoai-minimal.sh --minimal    # Minimal only (NFD + GPU + RHOAI)
+#   ./scripts/install-rhoai-minimal.sh --full       # Full installation (all operators)
+#   ./scripts/install-rhoai-minimal.sh --with-kueue # Include Kueue
+#   ./scripts/install-rhoai-minimal.sh --with-llmd  # Include LWS + RHCL for llm-d
 #
 # Reference:
 #   - CAI's guide to RHOAI 3.0 (Section 0 & 1)
@@ -42,13 +49,177 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/utils/colors.sh"
 source "$SCRIPT_DIR/lib/utils/common.sh"
 
+# Installation options (can be set via flags)
+INSTALL_KUEUE=false
+INSTALL_LWS=false
+INSTALL_RHCL=false
+INSTALL_CERTMANAGER=false
+INSTALLATION_MODE="interactive"  # interactive, minimal, full
+
+################################################################################
+# Parse command line arguments
+################################################################################
+
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --minimal)
+                INSTALLATION_MODE="minimal"
+                shift
+                ;;
+            --full)
+                INSTALLATION_MODE="full"
+                INSTALL_KUEUE=true
+                INSTALL_LWS=true
+                INSTALL_RHCL=true
+                INSTALL_CERTMANAGER=true
+                shift
+                ;;
+            --with-kueue)
+                INSTALL_KUEUE=true
+                INSTALL_CERTMANAGER=true  # Kueue requires cert-manager
+                shift
+                ;;
+            --with-llmd)
+                INSTALL_LWS=true
+                INSTALL_RHCL=true
+                shift
+                ;;
+            --with-lws)
+                INSTALL_LWS=true
+                shift
+                ;;
+            --with-rhcl)
+                INSTALL_RHCL=true
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
+
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Minimal RHOAI 3.0 Installation with optional operators
+
+OPTIONS:
+    --minimal       Minimal installation (NFD + GPU + RHOAI only)
+    --full          Full installation (all operators)
+    --with-kueue    Add Kueue operator (includes cert-manager)
+    --with-llmd     Add LWS + RHCL operators (for llm-d runtime)
+    --with-lws      Add only LWS operator
+    --with-rhcl     Add only RHCL operator
+    -h, --help      Show this help
+
+EXAMPLES:
+    $0                      # Interactive mode
+    $0 --minimal            # Just NFD + GPU + RHOAI
+    $0 --with-kueue         # NFD + GPU + Kueue + RHOAI
+    $0 --with-llmd          # NFD + GPU + LWS + RHCL + RHOAI
+    $0 --full               # All operators
+
+REQUIRED OPERATORS (always installed):
+    • Node Feature Discovery (NFD)
+    • NVIDIA GPU Operator
+    • RHOAI 3.0
+
+OPTIONAL OPERATORS:
+    • Kueue         - For distributed workloads, scheduling
+    • LWS           - For llm-d serving runtime
+    • RHCL/Kuadrant - For llm-d authentication
+    • cert-manager  - For TLS (required by Kueue)
+
+EOF
+}
+
 print_banner() {
     echo ""
     echo -e "${MAGENTA}╔════════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${MAGENTA}║                                                                            ║${NC}"
-    echo -e "${MAGENTA}║          🚀 Minimal RHOAI 3.0 Installation (vLLM only)                    ║${NC}"
+    echo -e "${MAGENTA}║          🚀 RHOAI 3.0 Installation (Flexible Configuration)               ║${NC}"
     echo -e "${MAGENTA}║                                                                            ║${NC}"
     echo -e "${MAGENTA}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+################################################################################
+# Interactive operator selection
+################################################################################
+
+select_optional_operators() {
+    if [ "$INSTALLATION_MODE" = "minimal" ]; then
+        print_info "Minimal mode: Only required operators will be installed"
+        return
+    fi
+    
+    if [ "$INSTALLATION_MODE" = "full" ]; then
+        print_info "Full mode: All operators will be installed"
+        return
+    fi
+    
+    print_header "Optional Operator Selection"
+    
+    echo -e "${CYAN}The following operators are REQUIRED and will always be installed:${NC}"
+    echo "  ✅ Node Feature Discovery (NFD)"
+    echo "  ✅ NVIDIA GPU Operator"
+    echo "  ✅ Red Hat OpenShift AI 3.0"
+    echo ""
+    
+    echo -e "${CYAN}The following operators are OPTIONAL:${NC}"
+    echo ""
+    
+    # Kueue
+    echo -e "${YELLOW}1) Red Hat Build of Kueue${NC}"
+    echo "   Purpose: Distributed workload scheduling, GPU scheduling, Ray workloads"
+    echo "   Required for: Distributed training, advanced scheduling"
+    echo "   Dependencies: cert-manager"
+    echo ""
+    read -p "   Install Kueue? (y/N): " kueue_choice
+    if [[ "$kueue_choice" =~ ^[Yy]$ ]]; then
+        INSTALL_KUEUE=true
+        INSTALL_CERTMANAGER=true
+        print_success "   Kueue will be installed (with cert-manager)"
+    else
+        print_info "   Kueue will be skipped"
+    fi
+    echo ""
+    
+    # LWS
+    echo -e "${YELLOW}2) Leader Worker Set (LWS)${NC}"
+    echo "   Purpose: Distributed inference with llm-d runtime"
+    echo "   Required for: llm-d serving runtime"
+    echo ""
+    read -p "   Install LWS? (y/N): " lws_choice
+    if [[ "$lws_choice" =~ ^[Yy]$ ]]; then
+        INSTALL_LWS=true
+        print_success "   LWS will be installed"
+    else
+        print_info "   LWS will be skipped"
+    fi
+    echo ""
+    
+    # RHCL
+    echo -e "${YELLOW}3) Red Hat Connectivity Link (RHCL/Kuadrant)${NC}"
+    echo "   Purpose: API gateway, authentication for llm-d"
+    echo "   Required for: llm-d with authentication, MaaS"
+    echo ""
+    read -p "   Install RHCL? (y/N): " rhcl_choice
+    if [[ "$rhcl_choice" =~ ^[Yy]$ ]]; then
+        INSTALL_RHCL=true
+        print_success "   RHCL will be installed"
+    else
+        print_info "   RHCL will be skipped"
+    fi
     echo ""
 }
 
@@ -401,6 +572,135 @@ EOF
     print_success "Kueue installation complete"
 }
 
+# Install LWS Operator
+install_lws() {
+    print_header "Installing Leader Worker Set (LWS) Operator"
+    
+    local ns="openshift-lws-operator"
+    
+    if oc get csv -n "$ns" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; then
+        print_success "LWS Operator already installed"
+        return 0
+    fi
+    
+    print_step "Creating LWS namespace and subscription..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-lws-operator
+  namespace: openshift-lws-operator
+spec:
+  targetNamespaces:
+    - openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: leader-worker-set
+  namespace: openshift-lws-operator
+spec:
+  channel: stable
+  name: leader-worker-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # Wait for operator
+    print_step "Waiting for LWS operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n "$ns" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "LWS not ready yet (continuing anyway)"
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "LWS installation complete"
+}
+
+# Install RHCL Operator
+install_rhcl() {
+    print_header "Installing Red Hat Connectivity Link (RHCL/Kuadrant) Operator"
+    
+    local ns="kuadrant-system"
+    
+    if oc get csv -n "$ns" 2>/dev/null | grep -q "rhcl.*Succeeded\|kuadrant.*Succeeded"; then
+        print_success "RHCL Operator already installed"
+    else
+        print_step "Creating RHCL namespace and subscription..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuadrant-system
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kuadrant-system
+  namespace: kuadrant-system
+spec:
+  targetNamespaces:
+    - kuadrant-system
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: kuadrant-system
+spec:
+  channel: stable
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        # Wait for operator
+        print_step "Waiting for RHCL operator to be ready..."
+        local timeout=180
+        local elapsed=0
+        until oc get crd kuadrants.kuadrant.io &>/dev/null; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "RHCL CRD not ready yet (continuing anyway)"
+                break
+            fi
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+    fi
+    
+    # Create Kuadrant instance
+    if ! oc get kuadrant kuadrant -n "$ns" &>/dev/null; then
+        print_step "Creating Kuadrant instance..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec: {}
+EOF
+        
+        print_success "Kuadrant instance created"
+    else
+        print_success "Kuadrant instance already exists"
+    fi
+    
+    print_success "RHCL installation complete"
+}
+
 # Install RHOAI Operator
 install_rhoai_operator() {
     print_header "Installing Red Hat OpenShift AI Operator"
@@ -726,14 +1026,29 @@ print_summary() {
     echo -e "${CYAN}What was installed:${NC}"
     echo "  ✅ Node Feature Discovery (NFD)"
     echo "  ✅ NVIDIA GPU Operator"
-    echo "  ✅ Red Hat Build of Kueue"
     echo "  ✅ Red Hat OpenShift AI 3.0"
     echo "  ✅ User Workload Monitoring"
-    echo ""
-    echo -e "${CYAN}What was NOT installed (not needed for basic vLLM):${NC}"
-    echo "  ⏭️  Leader Worker Set (LWS) - only for llm-d"
-    echo "  ⏭️  Red Hat Connectivity Link (RHCL) - only for llm-d auth"
-    echo "  ⏭️  MaaS API infrastructure - only for Model as a Service"
+    
+    # Show optional operators status
+    if [ "$INSTALL_KUEUE" = true ]; then
+        echo "  ✅ Red Hat Build of Kueue"
+        echo "  ✅ cert-manager"
+    else
+        echo "  ⏭️  Red Hat Build of Kueue (skipped)"
+    fi
+    
+    if [ "$INSTALL_LWS" = true ]; then
+        echo "  ✅ Leader Worker Set (LWS)"
+    else
+        echo "  ⏭️  Leader Worker Set (LWS) (skipped)"
+    fi
+    
+    if [ "$INSTALL_RHCL" = true ]; then
+        echo "  ✅ Red Hat Connectivity Link (RHCL)"
+    else
+        echo "  ⏭️  Red Hat Connectivity Link (RHCL) (skipped)"
+    fi
+    
     echo ""
     echo -e "${CYAN}Available features:${NC}"
     echo "  • Model deployment with vLLM serving runtime"
@@ -741,7 +1056,16 @@ print_summary() {
     echo "  • Workbenches and Notebooks"
     echo "  • AI Pipelines"
     echo "  • Model Registry"
-    echo "  • Kueue workload queueing"
+    
+    if [ "$INSTALL_KUEUE" = true ]; then
+        echo "  • Kueue workload queueing"
+        echo "  • Distributed training"
+    fi
+    
+    if [ "$INSTALL_LWS" = true ] && [ "$INSTALL_RHCL" = true ]; then
+        echo "  • llm-d serving runtime"
+        echo "  • Model authentication"
+    fi
     echo ""
     
     local dashboard_url=$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null)
@@ -757,29 +1081,54 @@ print_summary() {
     echo "  3. Deploy a model using vLLM serving runtime"
     echo "  4. (Optional) Add GPU nodes: ./scripts/create-gpu-machineset.sh"
     echo ""
-    echo -e "${YELLOW}To add llm-d and MaaS later:${NC}"
-    echo "  Run: ./complete-setup.sh --skip-openshift"
-    echo "  Or manually install RHCL and LWS operators"
-    echo ""
+    
+    # Show what can be added later
+    local can_add_later=false
+    if [ "$INSTALL_KUEUE" = false ] || [ "$INSTALL_LWS" = false ] || [ "$INSTALL_RHCL" = false ]; then
+        can_add_later=true
+        echo -e "${YELLOW}To add optional operators later:${NC}"
+        
+        if [ "$INSTALL_KUEUE" = false ]; then
+            echo "  • Kueue: $0 --with-kueue"
+        fi
+        if [ "$INSTALL_LWS" = false ] || [ "$INSTALL_RHCL" = false ]; then
+            echo "  • llm-d support: $0 --with-llmd"
+        fi
+        echo "  • Full installation: ./complete-setup.sh --skip-openshift"
+        echo ""
+    fi
 }
 
 # Main function
 main() {
+    # Parse command line arguments first
+    parse_arguments "$@"
+    
     print_banner
     
-    echo -e "${CYAN}This will install RHOAI 3.0 with basic vLLM model serving.${NC}"
+    echo -e "${CYAN}This will install RHOAI 3.0 with configurable operators.${NC}"
     echo ""
-    echo "Components to be installed:"
+    echo -e "${GREEN}REQUIRED operators (always installed):${NC}"
     echo "  • Node Feature Discovery (NFD)"
     echo "  • NVIDIA GPU Operator"
-    echo "  • Red Hat Build of Kueue"
     echo "  • Red Hat OpenShift AI 3.0"
     echo ""
-    echo -e "${YELLOW}Note: llm-d and MaaS will NOT be installed.${NC}"
-    echo "      You can add them later if needed."
+    echo -e "${YELLOW}OPTIONAL operators (you will be asked):${NC}"
+    echo "  • Red Hat Build of Kueue (for distributed workloads)"
+    echo "  • Leader Worker Set (for llm-d)"
+    echo "  • Red Hat Connectivity Link (for llm-d auth)"
     echo ""
     
-    read -p "Continue with minimal RHOAI installation? (y/N): " confirm
+    if [ "$INSTALLATION_MODE" = "minimal" ]; then
+        echo -e "${CYAN}Mode: MINIMAL (only required operators)${NC}"
+    elif [ "$INSTALLATION_MODE" = "full" ]; then
+        echo -e "${CYAN}Mode: FULL (all operators)${NC}"
+    else
+        echo -e "${CYAN}Mode: INTERACTIVE (you will choose optional operators)${NC}"
+    fi
+    echo ""
+    
+    read -p "Continue with RHOAI installation? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Installation cancelled"
         exit 0
@@ -789,16 +1138,73 @@ main() {
     
     # Run installation steps
     check_prerequisites
+    
+    # Select optional operators (if interactive mode)
+    select_optional_operators
+    
+    # Show installation plan
+    print_header "Installation Plan"
+    echo -e "${GREEN}Will install:${NC}"
+    echo "  ✅ Node Feature Discovery (NFD)"
+    echo "  ✅ NVIDIA GPU Operator"
+    echo "  ✅ Red Hat OpenShift AI 3.0"
+    echo "  ✅ User Workload Monitoring"
+    
+    if [ "$INSTALL_CERTMANAGER" = true ]; then
+        echo "  ✅ cert-manager"
+    fi
+    if [ "$INSTALL_KUEUE" = true ]; then
+        echo "  ✅ Red Hat Build of Kueue"
+    fi
+    if [ "$INSTALL_LWS" = true ]; then
+        echo "  ✅ Leader Worker Set (LWS)"
+    fi
+    if [ "$INSTALL_RHCL" = true ]; then
+        echo "  ✅ Red Hat Connectivity Link (RHCL)"
+    fi
+    echo ""
+    
+    read -p "Proceed with installation? (y/N): " proceed
+    if [[ ! "$proceed" =~ ^[Yy]$ ]]; then
+        print_info "Installation cancelled"
+        exit 0
+    fi
+    
+    echo ""
+    
+    # Install required operators
     enable_user_workload_monitoring
     install_nfd
     install_gpu_operator
-    install_kueue
+    
+    # Install optional operators based on selection
+    if [ "$INSTALL_CERTMANAGER" = true ]; then
+        install_certmanager
+    fi
+    
+    if [ "$INSTALL_KUEUE" = true ]; then
+        install_kueue
+    fi
+    
+    if [ "$INSTALL_LWS" = true ]; then
+        install_lws
+    fi
+    
+    if [ "$INSTALL_RHCL" = true ]; then
+        install_rhcl
+    fi
+    
+    # Install RHOAI
     install_rhoai_operator
     create_dsci
     create_dsc
     wait_for_dashboard
     configure_dashboard
-    create_kueue_resources
+    
+    # Create Kueue resources if Kueue was installed
+    if [ "$INSTALL_KUEUE" = true ]; then
+        create_kueue_resources
+    fi
     
     print_summary
 }
