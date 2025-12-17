@@ -53,6 +53,7 @@ source "$SCRIPT_DIR/lib/utils/common.sh"
 INSTALL_KUEUE=false
 INSTALL_LWS=false
 INSTALL_RHCL=false
+INSTALL_AUTHORINO=false  # Standalone Authorino (alternative to RHCL)
 INSTALL_CERTMANAGER=false
 INSTALLATION_MODE="interactive"  # interactive, minimal, full
 
@@ -93,6 +94,11 @@ parse_arguments() {
                 INSTALL_RHCL=true
                 shift
                 ;;
+            --with-authorino)
+                INSTALL_AUTHORINO=true
+                INSTALL_CERTMANAGER=true  # Authorino needs cert-manager for TLS
+                shift
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -113,19 +119,21 @@ Usage: $0 [OPTIONS]
 Minimal RHOAI 3.0 Installation with optional operators
 
 OPTIONS:
-    --minimal       Minimal installation (NFD + GPU + RHOAI only)
-    --full          Full installation (all operators)
-    --with-kueue    Add Kueue operator (includes cert-manager)
-    --with-llmd     Add LWS + RHCL operators (for llm-d runtime)
-    --with-lws      Add only LWS operator
-    --with-rhcl     Add only RHCL operator
-    -h, --help      Show this help
+    --minimal        Minimal installation (NFD + GPU + RHOAI only)
+    --full           Full installation (all operators)
+    --with-kueue     Add Kueue operator (includes cert-manager)
+    --with-llmd      Add LWS + RHCL operators (for llm-d runtime)
+    --with-lws       Add only LWS operator
+    --with-rhcl      Add RHCL/Kuadrant operator (includes Authorino)
+    --with-authorino Add standalone Authorino operator (without Kuadrant)
+    -h, --help       Show this help
 
 EXAMPLES:
     $0                      # Interactive mode
     $0 --minimal            # Just NFD + GPU + RHOAI
     $0 --with-kueue         # NFD + GPU + Kueue + RHOAI
     $0 --with-llmd          # NFD + GPU + LWS + RHCL + RHOAI
+    $0 --with-authorino     # NFD + GPU + Authorino + RHOAI
     $0 --full               # All operators
 
 REQUIRED OPERATORS (always installed):
@@ -136,8 +144,13 @@ REQUIRED OPERATORS (always installed):
 OPTIONAL OPERATORS:
     • Kueue         - For distributed workloads, scheduling
     • LWS           - For llm-d serving runtime
-    • RHCL/Kuadrant - For llm-d authentication
-    • cert-manager  - For TLS (required by Kueue)
+    • RHCL/Kuadrant - For llm-d authentication (includes Authorino + API Gateway)
+    • Authorino     - Standalone auth (alternative to RHCL, lighter weight)
+    • cert-manager  - For TLS (required by Kueue and Authorino)
+
+AUTHORINO OPTIONS:
+    • --with-rhcl      Install full RHCL/Kuadrant (Authorino + API Gateway + Rate Limiting)
+    • --with-authorino Install standalone Authorino only (just authentication)
 
 EOF
 }
@@ -208,18 +221,37 @@ select_optional_operators() {
     fi
     echo ""
     
-    # RHCL
-    echo -e "${YELLOW}3) Red Hat Connectivity Link (RHCL/Kuadrant)${NC}"
-    echo "   Purpose: API gateway, authentication for llm-d"
-    echo "   Required for: llm-d with authentication, MaaS"
+    # RHCL or Authorino
+    echo -e "${YELLOW}3) Authentication Options${NC}"
+    echo "   You have two choices for authentication:"
     echo ""
-    read -p "   Install RHCL? (y/N): " rhcl_choice
-    if [[ "$rhcl_choice" =~ ^[Yy]$ ]]; then
-        INSTALL_RHCL=true
-        print_success "   RHCL will be installed"
-    else
-        print_info "   RHCL will be skipped"
-    fi
+    echo "   a) RHCL/Kuadrant (Full)"
+    echo "      • Includes: Authorino + API Gateway + Rate Limiting"
+    echo "      • Required for: llm-d with full MaaS features"
+    echo ""
+    echo "   b) Authorino (Standalone)"
+    echo "      • Includes: Just Authorino authentication"
+    echo "      • Good for: Simple auth without API gateway overhead"
+    echo ""
+    echo "   c) Neither (skip authentication operators)"
+    echo ""
+    read -p "   Choose (a/b/c) [default: c]: " auth_choice
+    auth_choice=${auth_choice:-c}
+    
+    case $auth_choice in
+        [Aa])
+            INSTALL_RHCL=true
+            print_success "   RHCL/Kuadrant will be installed (includes Authorino)"
+            ;;
+        [Bb])
+            INSTALL_AUTHORINO=true
+            INSTALL_CERTMANAGER=true
+            print_success "   Standalone Authorino will be installed"
+            ;;
+        *)
+            print_info "   Authentication operators will be skipped"
+            ;;
+    esac
     echo ""
 }
 
@@ -701,6 +733,135 @@ EOF
     print_success "RHCL installation complete"
 }
 
+# Install Standalone Authorino Operator
+install_authorino() {
+    print_header "Installing Standalone Authorino Operator"
+    
+    local ns="authorino"
+    
+    # Check if already installed
+    if oc get csv -n "$ns" 2>/dev/null | grep -q "authorino.*Succeeded"; then
+        print_success "Authorino Operator already installed"
+    else
+        print_step "Creating Authorino namespace and subscription..."
+        
+        # Create namespace
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: authorino
+EOF
+        
+        # Install Authorino Operator from community operators
+        # Note: Use certified-operators if available in your catalog
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: authorino
+  namespace: authorino
+spec:
+  targetNamespaces:
+    - authorino
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: authorino-operator
+  namespace: authorino
+spec:
+  channel: stable
+  name: authorino-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        # Wait for operator
+        print_step "Waiting for Authorino operator to be ready..."
+        local timeout=180
+        local elapsed=0
+        until oc get crd authorinos.operator.authorino.kuadrant.io &>/dev/null; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Authorino CRD not ready yet (continuing anyway)"
+                break
+            fi
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+    fi
+    
+    # Create Authorino instance with TLS
+    if ! oc get authorino authorino -n "$ns" &>/dev/null; then
+        print_step "Creating Authorino instance..."
+        
+        # First ensure cert-manager created the certificates
+        print_step "Setting up TLS certificates for Authorino..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-server-cert
+  namespace: authorino
+spec:
+  secretName: authorino-server-cert
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+  commonName: authorino.authorino.svc
+  dnsNames:
+    - authorino.authorino.svc
+    - authorino.authorino.svc.cluster.local
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-oidc-server-cert
+  namespace: authorino
+spec:
+  secretName: authorino-oidc-server-cert
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+  commonName: authorino-oidc.authorino.svc
+  dnsNames:
+    - authorino-oidc.authorino.svc
+    - authorino-oidc.authorino.svc.cluster.local
+EOF
+        
+        sleep 5
+        
+        # Create Authorino instance
+        cat <<EOF | oc apply -f -
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: authorino
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-oidc-server-cert
+EOF
+        
+        print_success "Authorino instance created"
+    else
+        print_success "Authorino instance already exists"
+    fi
+    
+    print_success "Authorino installation complete"
+}
+
 # Install RHOAI Operator
 install_rhoai_operator() {
     print_header "Installing Red Hat OpenShift AI Operator"
@@ -1044,9 +1205,11 @@ print_summary() {
     fi
     
     if [ "$INSTALL_RHCL" = true ]; then
-        echo "  ✅ Red Hat Connectivity Link (RHCL)"
+        echo "  ✅ Red Hat Connectivity Link (RHCL) - includes Authorino"
+    elif [ "$INSTALL_AUTHORINO" = true ]; then
+        echo "  ✅ Authorino (standalone)"
     else
-        echo "  ⏭️  Red Hat Connectivity Link (RHCL) (skipped)"
+        echo "  ⏭️  Authentication operators (skipped)"
     fi
     
     echo ""
@@ -1064,7 +1227,9 @@ print_summary() {
     
     if [ "$INSTALL_LWS" = true ] && [ "$INSTALL_RHCL" = true ]; then
         echo "  • llm-d serving runtime"
-        echo "  • Model authentication"
+        echo "  • Model authentication (via RHCL)"
+    elif [ "$INSTALL_AUTHORINO" = true ]; then
+        echo "  • Model authentication (via Authorino)"
     fi
     echo ""
     
@@ -1192,6 +1357,10 @@ main() {
     
     if [ "$INSTALL_RHCL" = true ]; then
         install_rhcl
+    fi
+    
+    if [ "$INSTALL_AUTHORINO" = true ]; then
+        install_authorino
     fi
     
     # Install RHOAI
