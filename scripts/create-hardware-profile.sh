@@ -161,7 +161,7 @@ else
     
     # Check for GPU node taints
     print_step "Checking for GPU node taints..."
-    local has_taint=$(oc get nodes -l nvidia.com/gpu.present=true -o json 2>/dev/null | jq -r '.items[].spec.taints[]? | select(.key=="nvidia.com/gpu") | .key' | head -1)
+    has_taint=$(oc get nodes -l nvidia.com/gpu.present=true -o json 2>/dev/null | jq -r '.items[].spec.taints[]? | select(.key=="nvidia.com/gpu") | .key' | head -1)
     
     ADD_TOLERATION="n"
     if [ -n "$has_taint" ]; then
