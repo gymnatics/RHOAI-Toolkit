@@ -84,6 +84,13 @@ get_model_endpoint() {
         fi
     fi
     
+    # For internal cluster URLs, ensure we use port 8080 (vLLM default)
+    # KServe headless services route port 80 to pod port 8080
+    if [[ "$url" == *".svc.cluster.local"* ]] && [[ "$url" != *":8080"* ]]; then
+        # Add port 8080 for internal service URLs
+        url=$(echo "$url" | sed 's|\.svc\.cluster\.local|.svc.cluster.local:8080|')
+    fi
+    
     echo "$url"
 }
 
