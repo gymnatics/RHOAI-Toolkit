@@ -14,6 +14,81 @@ source "$SCRIPT_DIR/../lib/utils/colors.sh"
 source "$SCRIPT_DIR/../lib/utils/common.sh"
 
 ################################################################################
+# Default Configuration Values
+################################################################################
+MAX_TOKENS="${MAX_TOKENS:-8192}"
+TLS_VERIFY="${TLS_VERIFY:-false}"
+API_TOKEN="${API_TOKEN:-fake}"
+SKIP_CONFIG="${SKIP_CONFIG:-false}"
+
+################################################################################
+# Usage
+################################################################################
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Add a deployed model to the GenAI Playground"
+    echo ""
+    echo "Options:"
+    echo "  -n, --namespace NAMESPACE   Target namespace (default: current)"
+    echo "  -m, --model MODEL_NAME      Model name (skip interactive selection)"
+    echo "  -t, --max-tokens TOKENS     Max tokens for responses (default: 8192)"
+    echo "  --tls-verify                Enable TLS verification (default: disabled)"
+    echo "  --api-token TOKEN           API token for authenticated models (default: fake)"
+    echo "  --skip-config               Skip interactive configuration"
+    echo "  -h, --help                  Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Interactive mode"
+    echo "  $0 -m qwen3-8b -t 16384              # Set max tokens to 16384"
+    echo "  $0 -m llama-32-3b-instruct --skip-config  # Use defaults"
+    echo ""
+}
+
+################################################################################
+# Parse Command Line Arguments
+################################################################################
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -n|--namespace)
+                NAMESPACE="$2"
+                shift 2
+                ;;
+            -m|--model)
+                MODEL_NAME="$2"
+                shift 2
+                ;;
+            -t|--max-tokens)
+                MAX_TOKENS="$2"
+                shift 2
+                ;;
+            --tls-verify)
+                TLS_VERIFY="true"
+                shift
+                ;;
+            --api-token)
+                API_TOKEN="$2"
+                shift 2
+                ;;
+            --skip-config)
+                SKIP_CONFIG="true"
+                shift
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+################################################################################
 # Functions
 ################################################################################
 
@@ -133,6 +208,63 @@ detect_model_type() {
     esac
 }
 
+configure_playground_settings() {
+    # Skip interactive config if --skip-config was passed
+    if [ "$SKIP_CONFIG" = "true" ]; then
+        print_step "Using configuration:"
+        echo "  Max Tokens: $MAX_TOKENS"
+        echo "  TLS Verify: $TLS_VERIFY"
+        echo "  API Token: ${API_TOKEN:0:10}..."
+        echo ""
+        return 0
+    fi
+    
+    print_header "Playground Configuration"
+    
+    echo "Configure LlamaStack Playground settings:"
+    echo "(Press Enter to accept defaults)"
+    echo ""
+    
+    # Max tokens
+    echo -e "${CYAN}Max Tokens${NC} - Maximum tokens for model responses"
+    echo "  Recommended: 4096 for most models, 8192+ for Qwen3 (thinking mode)"
+    read -p "Max tokens [${MAX_TOKENS}]: " input_max_tokens
+    MAX_TOKENS="${input_max_tokens:-$MAX_TOKENS}"
+    
+    echo ""
+    
+    # TLS verification
+    echo -e "${CYAN}TLS Verification${NC} - Verify SSL certificates for model endpoint"
+    echo "  Set to 'false' for internal cluster endpoints"
+    if [ "$TLS_VERIFY" = "true" ]; then
+        read -p "Enable TLS verification? (Y/n): " TLS_VERIFY_INPUT
+        if [[ "$TLS_VERIFY_INPUT" =~ ^[Nn]$ ]]; then
+            TLS_VERIFY="false"
+        fi
+    else
+        read -p "Enable TLS verification? (y/N): " TLS_VERIFY_INPUT
+        if [[ "$TLS_VERIFY_INPUT" =~ ^[Yy]$ ]]; then
+            TLS_VERIFY="true"
+        fi
+    fi
+    
+    echo ""
+    
+    # API Token (for authenticated models)
+    echo -e "${CYAN}API Token${NC} - Token for authenticated model endpoints"
+    echo "  Leave as 'fake' for unauthenticated models"
+    read -p "API token [${API_TOKEN}]: " input_api_token
+    API_TOKEN="${input_api_token:-$API_TOKEN}"
+    
+    echo ""
+    
+    print_success "Configuration:"
+    echo "  Max Tokens: $MAX_TOKENS"
+    echo "  TLS Verify: $TLS_VERIFY"
+    echo "  API Token: ${API_TOKEN:0:10}..."
+    echo ""
+}
+
 create_llamastack_configmap() {
     local model_name=$1
     local namespace=$2
@@ -171,9 +303,9 @@ data:
       - provider_id: vllm-inference-1
         provider_type: remote::vllm
         config:
-          api_token: \${env.VLLM_API_TOKEN_1:=fake}
-          max_tokens: \${env.VLLM_MAX_TOKENS:=4096}
-          tls_verify: \${env.VLLM_TLS_VERIFY:=false}
+          api_token: ${API_TOKEN}
+          max_tokens: ${MAX_TOKENS}
+          tls_verify: ${TLS_VERIFY}
           url: ${endpoint}/v1
       vector_io:
       - provider_id: milvus
@@ -317,15 +449,15 @@ spec:
         - llama stack run /etc/llama-stack/run.yaml
       env:
         - name: VLLM_TLS_VERIFY
-          value: "false"
+          value: "${TLS_VERIFY}"
         - name: MILVUS_DB_PATH
           value: ~/.llama/milvus.db
         - name: FMS_ORCHESTRATOR_URL
           value: http://localhost
         - name: VLLM_MAX_TOKENS
-          value: "4096"
+          value: "${MAX_TOKENS}"
         - name: VLLM_API_TOKEN_1
-          value: fake
+          value: "${API_TOKEN}"
         - name: LLAMA_STACK_CONFIG_DIR
           value: /opt/app-root/src/.llama/distributions/rh/
       resources:
@@ -420,6 +552,9 @@ show_completion_message() {
 ################################################################################
 
 main() {
+    # Parse command line arguments
+    parse_args "$@"
+    
     print_header "Add Model to GenAI Playground"
     
     # Check connection
@@ -429,11 +564,17 @@ main() {
     
     echo ""
     
-    # Get namespace
-    local current_namespace=$(oc project -q 2>/dev/null)
-    echo -e -n "${BLUE}Enter namespace${NC} (default: $current_namespace): "
-    read namespace
-    namespace=${namespace:-$current_namespace}
+    # Get namespace (from CLI arg or prompt)
+    local namespace
+    if [ -n "$NAMESPACE" ]; then
+        namespace="$NAMESPACE"
+        print_info "Using namespace: $namespace"
+    else
+        local current_namespace=$(oc project -q 2>/dev/null)
+        echo -e -n "${BLUE}Enter namespace${NC} (default: $current_namespace): "
+        read namespace
+        namespace=${namespace:-$current_namespace}
+    fi
     
     echo ""
     
@@ -446,9 +587,15 @@ main() {
         exit 1
     fi
     
-    # Get model name
-    echo -e -n "${BLUE}Enter model name to add to playground${NC}: "
-    read model_name
+    # Get model name (from CLI arg or prompt)
+    local model_name
+    if [ -n "$MODEL_NAME" ]; then
+        model_name="$MODEL_NAME"
+        print_info "Using model: $model_name"
+    else
+        echo -e -n "${BLUE}Enter model name to add to playground${NC}: "
+        read model_name
+    fi
     
     if [ -z "$model_name" ]; then
         print_error "Model name is required"
@@ -516,12 +663,17 @@ main() {
     print_success "Model type: $model_type"
     echo ""
     
+    # Configure playground settings
+    configure_playground_settings
+    
     # Confirm
     echo "Summary:"
     echo "  Model: $model_name"
     echo "  Namespace: $namespace"
     echo "  Endpoint: $endpoint"
     echo "  Type: $model_type"
+    echo "  Max Tokens: $MAX_TOKENS"
+    echo "  TLS Verify: $TLS_VERIFY"
     echo ""
     
     read -p "Add this model to the playground? (y/N): " confirm
