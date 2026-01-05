@@ -9,7 +9,10 @@
 # - GenAI Studio / Playground
 # - Model as a Service (MaaS)
 # - LM Eval
-# - Kueue / Hardware Profiles
+#
+# NOTE: In RHOAI 3.0, disableKueue and disableHardwareProfiles are DEPRECATED
+# and must NOT be included in the OdhDashboardConfig. Kueue is managed via the
+# Red Hat Build of Kueue Operator and DataScienceCluster settings.
 ################################################################################
 
 # Get script directory
@@ -48,6 +51,8 @@ enable_dashboard_features() {
     
     print_step "Patching OdhDashboardConfig..."
     
+    # NOTE: In RHOAI 3.0, disableKueue and disableHardwareProfiles are DEPRECATED
+    # and must NOT be included in the spec. See CAI's guide to RHOAI 3.0.
     cat <<EOF | oc apply -f -
 apiVersion: opendatahub.io/v1alpha
 kind: OdhDashboardConfig
@@ -60,8 +65,6 @@ spec:
     disableModelRegistry: false      # ✓ Enable Model Registry
     disableModelCatalog: false       # ✓ Enable Model Catalog
     disableKServeMetrics: false      # ✓ Enable KServe Metrics
-    disableKueue: false              # ✓ Enable Kueue
-    disableHardwareProfiles: false   # ✓ Enable Hardware Profiles
     genAiStudio: true                # ✓ Enable GenAI Studio/Playground
     modelAsService: true             # ✓ Enable Model as a Service (MaaS)
     disableLMEval: false             # ✓ Enable LM Eval
@@ -104,12 +107,11 @@ verify_features() {
     print_info "Feature Status:"
     
     # Check each feature
+    # NOTE: disableKueue and disableHardwareProfiles are deprecated in RHOAI 3.0
     local features=(
         "disableModelRegistry:Model Registry"
         "disableModelCatalog:Model Catalog"
         "disableKServeMetrics:KServe Metrics"
-        "disableKueue:Kueue"
-        "disableHardwareProfiles:Hardware Profiles"
         "genAiStudio:GenAI Studio"
         "modelAsService:Model as a Service"
         "disableLMEval:LM Eval"
@@ -211,8 +213,9 @@ main() {
     echo "  ✓ GenAI Studio / Playground"
     echo "  ✓ Model as a Service (MaaS)"
     echo "  ✓ LM Eval"
-    echo "  ✓ Kueue"
-    echo "  ✓ Hardware Profiles"
+    echo ""
+    echo "Note: Kueue/Hardware Profiles are managed via Red Hat Build of Kueue Operator"
+    echo "      and DataScienceCluster settings (not OdhDashboardConfig in RHOAI 3.0)"
     echo ""
     
     read -p "Continue? (y/N): " confirm
