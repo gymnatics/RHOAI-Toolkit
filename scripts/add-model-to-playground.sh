@@ -357,15 +357,25 @@ wait_for_playground_pod() {
     local elapsed=0
     
     while [ $elapsed -lt $timeout ]; do
-        local pod_status=$(oc get pods -n "$namespace" -l app=lsd-genai-playground \
+        # Try multiple label selectors - the operator uses different labels
+        local pod_status=""
+        
+        # Try app.kubernetes.io/instance label first (most reliable)
+        pod_status=$(oc get pods -n "$namespace" -l app.kubernetes.io/instance=lsd-genai-playground \
             -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+        
+        # Fallback to app=llama-stack label
+        if [ -z "$pod_status" ]; then
+            pod_status=$(oc get pods -n "$namespace" -l app=llama-stack \
+                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+        fi
         
         if [ "$pod_status" = "Running" ]; then
             print_success "Playground pod is running"
             return 0
         fi
         
-        echo "Waiting for playground pod... (${elapsed}s elapsed)"
+        echo "Waiting for playground pod... (${elapsed}s elapsed, status: ${pod_status:-pending})"
         sleep 10
         elapsed=$((elapsed + 10))
     done
