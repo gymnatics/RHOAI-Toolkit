@@ -119,6 +119,136 @@ detect_model_type() {
     esac
 }
 
+create_llamastack_configmap() {
+    local model_name=$1
+    local namespace=$2
+    local endpoint=$3
+    
+    print_step "Creating ConfigMap with LlamaStack configuration..."
+    
+    cat <<EOF | oc apply -f -
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lsd-genai-playground-config
+  namespace: $namespace
+  labels:
+    llamastack.io/distribution: lsd-genai-playground
+    opendatahub.io/dashboard: "true"
+data:
+  run.yaml: |
+    version: "2"
+    image_name: rh
+    apis:
+    - agents
+    - datasetio
+    - files
+    - inference
+    - safety
+    - scoring
+    - tool_runtime
+    - vector_io
+    providers:
+      inference:
+      - provider_id: sentence-transformers
+        provider_type: inline::sentence-transformers
+        config: {}
+      - provider_id: vllm-inference-1
+        provider_type: remote::vllm
+        config:
+          api_token: \${env.VLLM_API_TOKEN_1:=fake}
+          max_tokens: \${env.VLLM_MAX_TOKENS:=4096}
+          tls_verify: \${env.VLLM_TLS_VERIFY:=false}
+          url: ${endpoint}/v1
+      vector_io:
+      - provider_id: milvus
+        provider_type: inline::milvus
+        config:
+          db_path: /opt/app-root/src/.llama/distributions/rh/milvus.db
+          kvstore:
+            db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
+            namespace: null
+            type: sqlite
+      agents:
+      - provider_id: meta-reference
+        provider_type: inline::meta-reference
+        config:
+          persistence_store:
+            db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
+            namespace: null
+            type: sqlite
+          responses_store:
+            db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
+            type: sqlite
+      eval: []
+      files:
+      - provider_id: meta-reference-files
+        provider_type: inline::localfs
+        config:
+          metadata_store:
+            db_path: /opt/app-root/src/.llama/distributions/rh/files_metadata.db
+            type: sqlite
+          storage_dir: /opt/app-root/src/.llama/distributions/rh/files
+      datasetio:
+      - provider_id: huggingface
+        provider_type: remote::huggingface
+        config:
+          kvstore:
+            db_path: /opt/app-root/src/.llama/distributions/rh/huggingface_datasetio.db
+            namespace: null
+            type: sqlite
+      scoring:
+      - provider_id: basic
+        provider_type: inline::basic
+        config: {}
+      - provider_id: llm-as-judge
+        provider_type: inline::llm-as-judge
+        config: {}
+      tool_runtime:
+      - provider_id: rag-runtime
+        provider_type: inline::rag-runtime
+        config: {}
+      - provider_id: model-context-protocol
+        provider_type: remote::model-context-protocol
+        config: {}
+    metadata_store:
+      type: sqlite
+      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
+    models:
+    - provider_id: sentence-transformers
+      model_id: granite-embedding-125m
+      provider_model_id: ibm-granite/granite-embedding-125m-english
+      model_type: embedding
+      metadata:
+        embedding_dimension: 768
+    - provider_id: vllm-inference-1
+      model_id: ${model_name}
+      model_type: llm
+      metadata:
+        description: ""
+        display_name: ${model_name}
+    shields: []
+    vector_dbs: []
+    datasets: []
+    scoring_fns: []
+    benchmarks: []
+    tool_groups:
+    - toolgroup_id: builtin::rag
+      provider_id: rag-runtime
+    server:
+      port: 8321
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "ConfigMap 'lsd-genai-playground-config' created"
+        return 0
+    else
+        print_error "Failed to create ConfigMap"
+        return 1
+    fi
+}
+
 create_llamastack_distribution() {
     local model_name=$1
     local namespace=$2
@@ -132,18 +262,24 @@ create_llamastack_distribution() {
         print_info "LlamaStackDistribution 'lsd-genai-playground' already exists"
         print_info "Adding model to existing playground..."
         
-        # Get current models
-        local current_models=$(oc get llamastackdistribution lsd-genai-playground -n "$namespace" -o json | jq -r '.spec.models // []')
-        
         # Add new model (this is complex, so we'll just inform the user)
         print_warning "To add a model to an existing playground:"
-        print_info "1. Edit the ConfigMap: oc edit configmap llama-stack-config -n $namespace"
+        print_info "1. Edit the ConfigMap: oc edit configmap lsd-genai-playground-config -n $namespace"
         print_info "2. Add your model under 'models:' section in run.yaml"
         print_info "3. Restart the pod: oc delete pod -l app=lsd-genai-playground -n $namespace"
         return 0
     fi
     
+    # First, create the ConfigMap with the run.yaml configuration
+    if ! create_llamastack_configmap "$model_name" "$namespace" "$endpoint"; then
+        return 1
+    fi
+    
+    print_step "Creating LlamaStackDistribution..."
+    
+    # Now create the LlamaStackDistribution referencing the ConfigMap
     cat <<EOF | oc apply -f -
+---
 apiVersion: llamastack.io/v1alpha1
 kind: LlamaStackDistribution
 metadata:
@@ -186,98 +322,7 @@ spec:
           cpu: "2"
           memory: 12Gi
     userConfig:
-      inline:
-        version: "2"
-        image_name: rh
-        apis:
-          - agents
-          - datasetio
-          - files
-          - inference
-          - safety
-          - scoring
-          - tool_runtime
-          - vector_io
-        providers:
-          inference:
-            - provider_id: sentence-transformers
-              provider_type: inline::sentence-transformers
-              config: {}
-            - provider_id: vllm-inference-1
-              provider_type: remote::vllm
-              config:
-                api_token: \${env.VLLM_API_TOKEN_1:=fake}
-                max_tokens: \${env.VLLM_MAX_TOKENS:=4096}
-                tls_verify: \${env.VLLM_TLS_VERIFY:=false}
-                url: ${endpoint}/v1
-          vector_io:
-            - provider_id: milvus
-              provider_type: inline::milvus
-              config:
-                db_path: /opt/app-root/src/.llama/distributions/rh/milvus.db
-                kvstore:
-                  db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
-                  type: sqlite
-          agents:
-            - provider_id: meta-reference
-              provider_type: inline::meta-reference
-              config:
-                persistence_store:
-                  db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
-                  type: sqlite
-                responses_store:
-                  db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
-                  type: sqlite
-          files:
-            - provider_id: meta-reference-files
-              provider_type: inline::localfs
-              config:
-                metadata_store:
-                  db_path: /opt/app-root/src/.llama/distributions/rh/files_metadata.db
-                  type: sqlite
-                storage_dir: /opt/app-root/src/.llama/distributions/rh/files
-          datasetio:
-            - provider_id: huggingface
-              provider_type: remote::huggingface
-              config:
-                kvstore:
-                  db_path: /opt/app-root/src/.llama/distributions/rh/huggingface_datasetio.db
-                  type: sqlite
-          scoring:
-            - provider_id: basic
-              provider_type: inline::basic
-              config: {}
-            - provider_id: llm-as-judge
-              provider_type: inline::llm-as-judge
-              config: {}
-          tool_runtime:
-            - provider_id: rag-runtime
-              provider_type: inline::rag-runtime
-              config: {}
-            - provider_id: model-context-protocol
-              provider_type: remote::model-context-protocol
-              config: {}
-        metadata_store:
-          type: sqlite
-          db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
-        models:
-          - provider_id: sentence-transformers
-            model_id: granite-embedding-125m
-            provider_model_id: ibm-granite/granite-embedding-125m-english
-            model_type: embedding
-            metadata:
-              embedding_dimension: 768
-          - provider_id: vllm-inference-1
-            model_id: $model_name
-            model_type: llm
-            metadata:
-              description: ""
-              display_name: $model_name
-        tool_groups:
-          - toolgroup_id: builtin::rag
-            provider_id: rag-runtime
-        server:
-          port: 8321
+      configMapName: lsd-genai-playground-config
 EOF
     
     if [ $? -eq 0 ]; then
