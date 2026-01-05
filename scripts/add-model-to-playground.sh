@@ -71,7 +71,7 @@ get_model_endpoint() {
     local model_name=$1
     local namespace=$2
     
-    # Get the model's endpoint URL
+    # Get the model's endpoint URL from InferenceService status
     local url=$(oc get inferenceservice "$model_name" -n "$namespace" \
         -o jsonpath='{.status.url}' 2>/dev/null)
     
@@ -84,11 +84,18 @@ get_model_endpoint() {
         fi
     fi
     
+    # If still no URL, construct it from the predictor service name
+    if [ -z "$url" ]; then
+        url="http://${model_name}-predictor.${namespace}.svc.cluster.local"
+    fi
+    
     # For internal cluster URLs, ensure we use port 8080 (vLLM default)
-    # KServe headless services route port 80 to pod port 8080
-    if [[ "$url" == *".svc.cluster.local"* ]] && [[ "$url" != *":8080"* ]]; then
-        # Add port 8080 for internal service URLs
-        url=$(echo "$url" | sed 's|\.svc\.cluster\.local|.svc.cluster.local:8080|')
+    # KServe InferenceServices use headless services that expose pods directly
+    # The service maps port 80 to pod port 8080, but with headless services
+    # we need to use the actual pod port (8080) when connecting via DNS name
+    if [[ "$url" == *".svc.cluster.local"* ]]; then
+        # Remove any existing port and add :8080
+        url=$(echo "$url" | sed -E 's|(\.svc\.cluster\.local)(:[0-9]+)?|\1:8080|')
     fi
     
     echo "$url"
@@ -472,6 +479,25 @@ main() {
     fi
     
     print_success "Model endpoint: $endpoint"
+    echo ""
+    
+    # Verify endpoint connectivity
+    print_step "Verifying model endpoint connectivity..."
+    local test_url="${endpoint}/v1/models"
+    local connectivity_ok=false
+    
+    # Try to reach the endpoint from a test pod
+    if oc run connectivity-test --rm -i --restart=Never --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+        -n "$namespace" --command -- curl -s --connect-timeout 5 "$test_url" &>/dev/null; then
+        connectivity_ok=true
+    fi
+    
+    if [ "$connectivity_ok" = "true" ]; then
+        print_success "Model endpoint is reachable"
+    else
+        print_warning "Could not verify endpoint connectivity (this may be normal)"
+        print_info "The endpoint will be tested when the playground starts"
+    fi
     echo ""
     
     # Detect model type
