@@ -865,7 +865,6 @@ show_help() {
     echo "  ./scripts/fix-gpu-resourceflavor.sh"
     echo ""
     echo -e "${GREEN}Model Deployment:${NC}"
-    echo "  ./scripts/quick-deploy-model.sh"
     echo "  ./scripts/deploy-llmd-model.sh"
     echo "  ./scripts/add-model-to-playground.sh"
     echo ""

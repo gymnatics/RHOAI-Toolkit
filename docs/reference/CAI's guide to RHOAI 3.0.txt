@@ -1,0 +1,1961 @@
+﻿Must-Read
+CAI's guide to OpenShift AI 3.0
+
+
+* These steps are based on the Customer Adoption and Innovation (CAI) team (and friends!) experience setting up RHOAI 3.0, both Release Candidates and GA. 
+* Please add comments into this document for any suggested changes or improvements
+* NotebookLM with all the RHOAI 3 docs (use your RH account) 🤖 RHOAI3 NotebookLM
+
+
+
+
+
+
+Booking a Demo Env
+* Link to catalog item in Demo Env:
+   * https://catalog.demo.redhat.com/catalog?item=babylon-catalog-prod/published.openshift-ai-v3.prod&utm_source=webapp&utm_medium=share-link
+* Choose this:
+  
+
+*  And keep costs low by choosing this instance type :
+  
+
+NOTE: Some models, such as Mistral-Small-24B, require a larger instance type (like g6e.8xlarge or g6e.12xlarge) as they will not fit on this type of GPU.
+* Wait to get the notification emails telling you it's ready
+Watch the Nov 18th Demo
+Link to e2e demo:
+* Video recording: 
+   * https://videos.learning.redhat.com/media/Deep%20Dive%3A%20%20RH%20AI%203.0%20GA%20%20Demo%20/1_brv936lv        
+* Gemini notes:
+   * Deep Dive: RH AI 3.0 GA & Demo (option 1) - 2025/11/18 06:55 CST - Notes by Gemini
+
+
+
+
+Link to demo steps/docs:
+(these came mostly from PMs, and some were slightly adapted by CAI)
+
+
+* New Navigation items 
+* Deploying a model from the Catalog with vLLM 
+   * model deployment with vLLM
+* Deploying another model, with llm-d, and MaaS-enable it
+   * model deployment with llm-d and MaaS
+* Gen AI Studio Playground 
+   * Gen AI studio script
+* Gen AI Studio AI Assets Endpoints
+   * Gen AI studio script (same)  
+* Using LlamaStack from the workbench
+   * llamastack from workbench
+* Feature Store 
+   * Feast Demo
+* Creating a Hardware Profile
+   * Creating and using a HW profile
+* Model Customization Toolkit
+   * Model Customization with Modular SDKs
+* LLM Compressor
+   * LLM Compressor Well-Lit Paths
+* Kueue
+   * GPUaaS / Kueue - demo script
+
+
+Section 0 - Prerequisites
+🏤 Section 0: Post Deploy steps
+
+
+In case you did not use the Catalog item from the demo environment to create your OpenShift AI environment but started from a “blank” OpenShift, here are a few things to set up or verify as cluster admin.
+
+
+1. Install the Node Discovery Feature Operator
+and deploy a NodeFeatureDiscovery CR (default configuration is ok)
+
+
+2. Install the NVIDIA GPU Operator
+and deploy a ClusterPolicy CR (default configuration is ok)
+
+
+3. Install the Red Hat Build of Leader Worker Set Operator (It is required for llm-d)
+and deploy a LeaderWorkerSetOperator CR (default configuration is ok)
+
+
+4. Install Red Hat Build of Kueue Operator
+
+
+5. Enable UserWorkloadMonitoring (to capture KServe metrics)
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+    alertmanagerMain:
+      enableUserAlertmanagerConfig: true 
+
+
+
+6. Create a shared namespace for the ai-shared-project (or any namespace of your choice where you want to work)
+
+
+
+
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: ai-bu-shared
+
+Important: This guide utilizes the default ai-bu-shared namespace. If you are operating in a different namespace (e.g., my-first-model), ensure you modify the instructions as necessary.
+
+
+NOTE: Service Mesh 3 and Kueue are coming alongside with the DataScience CR in RHOAI
+Section 1 - OpenShift AI 3.0 Install
+🤖 Section 1: OpenShift AI 3.0 installation
+
+
+Follow the instructions from this section if you use an OpenShift environment where RHOAI has not been deployed yet, or to verify your installation has the right configuration for the DSC object to enable all the features.
+
+
+1. Go to Ecosystem > Software Catalog and find OpenShift AI. Select RHOAI 3.0 Catalog
+  
+
+
+
+2. Select fast channel and 3.x
+If you don't see that channel, your OpenShift is probably not at 4.19 yet!
+  
+
+
+
+   1. Create a DataScienceCluster to deploy OpenShift AI, or check the configuration of your installation. The DSC config we used as below:
+
+
+kind: DataScienceCluster
+apiVersion: datasciencecluster.opendatahub.io/v2
+metadata:
+ name: default-dsc
+ labels:
+   app.kubernetes.io/name: datasciencecluster
+spec:
+ components:
+   dashboard:
+     managementState: Managed
+   aipipelines:
+     managementState: Managed
+   feastoperator:
+     managementState: Managed ## 👈👈 Removed by default, enabled by us
+   kserve:
+     managementState: Managed
+   llamastackoperator:
+     managementState: Managed ## 👈👈 Removed by default, enabled by us
+   kueue:
+     defaultClusterQueueName: default
+     defaultLocalQueueName: default
+     managementState: Unmanaged ## 👈👈 Should be Removed or Unmanaged
+   modelregistry:
+     managementState: Managed
+     registriesNamespace: rhoai-model-registries
+   ray:
+     managementState: Managed
+   workbenches:
+     managementState: Managed
+   trainingoperator:
+     managementState: Managed
+   trustyai:
+     managementState: Managed
+
+
+
+Section 2 - Enabling Features
+🖼️ Section 2: Enabling Features (GenAIOps Playground, AI Assets Endpoints, etc)
+
+
+Known Issues
+Installation
+
+
+   1. Updating odh-dashboard-config as below. You will find it using the API Explorer of the OpenShift Console, looking for instances of type OdhDashboardConfig in the namespace redhat-ods-applications.
+
+
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+ annotations:
+   internal.config.kubernetes.io/previousKinds: OdhDashboardConfig
+   internal.config.kubernetes.io/previousNames: odh-dashboard-config
+   internal.config.kubernetes.io/previousNamespaces: default
+   platform.opendatahub.io/instance.generation: '1'
+   platform.opendatahub.io/instance.name: default-dashboard
+   platform.opendatahub.io/instance.uid: ef261927-1e5e-4410-a906-746029c4436e
+   platform.opendatahub.io/type: OpenShift AI Self-Managed
+ name: odh-dashboard-config
+ namespace: redhat-ods-applications
+ labels:
+   app: rhods-dashboard
+   app.kubernetes.io/part-of: rhods-dashboard
+   app.opendatahub.io/rhods-dashboard: 'true'
+   platform.opendatahub.io/part-of: dashboard
+spec:
+ dashboardConfig:
+   disableTracking: false
+   disableModelRegistry: false  ## 👈👈 Enabled by us
+   disableModelCatalog: false  ## 👈👈 Enabled by us
+   disableKServeMetrics: false  ## 👈👈 Enabled by us
+   genAiStudio: true  ## 👈👈 Enabled by us
+   modelAsService: true  ## 👈👈 Enabled by us
+   disableLMEval: false  ## 👈👈 Enabled by us
+ hardwareProfileOrder: []
+ notebookController:
+   enabled: true
+   notebookNamespace: rhods-notebooks
+   pvcSize: 20Gi
+ templateDisablement: []
+ templateOrder: []
+
+
+
+
+
+   2. Create a Hardware Profile for GPU (this is an example for the SNO deployment of RHOAI in the demo environment, you may have to adapt it to your own environment, especially if you need to add tolerations in case your GPU Nodes are tainted):
+
+
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+ annotations:
+   opendatahub.io/dashboard-feature-visibility: '[]'
+   opendatahub.io/disabled: 'false'
+   opendatahub.io/display-name: gpu-profile
+ name: gpu-profile
+ namespace: redhat-ods-applications
+spec:
+ identifiers:
+   - defaultCount: '1'
+     displayName: CPU
+     identifier: cpu
+     maxCount: '8'
+     minCount: 1
+     resourceType: CPU
+   - defaultCount: 12Gi
+     displayName: Memory
+     identifier: memory
+     maxCount: 24Gi
+     minCount: 1Gi
+     resourceType: Memory
+   - defaultCount: 1
+     displayName: GPU
+     identifier: nvidia.com/gpu
+     maxCount: 4
+     minCount: 1
+     resourceType: Accelerator
+
+
+
+
+
+   3. Deploy a model with the AI Assets (copy and paste in the import yaml button[a][b][c][d][e]):
+
+
+kind: Secret
+apiVersion: v1
+metadata:
+  name: llama-32-3b-instruct
+  namespace: ai-bu-shared
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/connection-type-protocol: uri
+    opendatahub.io/connection-type-ref: uri-v1
+    openshift.io/description: ''
+    openshift.io/display-name: llama-3.2-3b-instruct
+data:
+  URI: b2NpOi8vcXVheS5pby9yZWRoYXQtYWktc2VydmljZXMvbW9kZWxjYXItY2F0YWxvZzpsbGFtYS0zLjItM2ItaW5zdHJ1Y3Q=
+type: Opaque
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v0.9.1.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: llama-32-3b-instruct
+  namespace: ai-bu-shared
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9@sha256:ad756c01ec99a99cc7d93401c41b8d92ca96fb1ab7c5262919d818f2be4f3768'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    openshift.io/description: ''
+    openshift.io/display-name: llama-32-3b-instruct
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu-profile
+    opendatahub.io/connections: llama-32-3b-instruct
+    opendatahub.io/model-type: generative
+  name: llama-32-3b-instruct
+  namespace: ai-bu-shared
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--dtype=half'
+        - '--max-model-len=20000'
+        - '--gpu-memory-utilization=0.95'
+        - '--enable-auto-tool-choice'
+        - '--tool-call-parser=llama3_json'
+        - '--chat-template=/opt/app-root/template/tool_chat_template_llama3.2_json.jinja'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '4'
+          memory: 16Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '1'
+          memory: 6Gi
+          nvidia.com/gpu: '1'
+      runtime: llama-32-3b-instruct
+      storageUri: 'oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct'
+Important: This guide utilizes the default ai-bu-shared namespace. If you are operating in a different namespace (e.g., my-first-model), ensure you modify the instructions as necessary.
+
+
+In a couple of minutes, the Llama 3.2-3B LLM will be available in the Models catalog. Its status must be Started and Running for the Playground to function.
+
+
+
+
+  
+
+
+
+
+
+   4. Gen AI Studio Playground Integration: To enable your running and active AI Model for the Gen AI Studio Playground, navigate to AI Asset Endpoints and click the Add to Playground button.
+
+
+  
+
+  
+
+
+
+Select the AI Model that you want to configure in the playground (we only have one model but we can have more than one):
+
+
+  
+
+
+
+Will start to create the playground, so wait a couple of minutes:
+  
+
+
+
+A LlamaStackDistribution instance will be automatically created in that namespace. This instance will include a specific run.yaml configmap:
+
+
+  
+
+
+
+A llama-stack pod called lsd-genai-playground pod will be created, being the backend for the GenAI Playground:
+  
+
+
+
+After that the playground will be ready and you can go to playground:
+
+
+  
+
+
+
+In the playground you can select the Model, change the System Instructions, among others:
+  
+
+
+
+   5. Enable MCP servers by creating the below configmap (you can add more to the list by deploying MCP servers and point to their endpoints https://github.com/opendatahub-io/agents/tree/main/examples)
+
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+ name: gen-ai-aa-mcp-servers
+ namespace: redhat-ods-applications
+data:
+ GitHub-MCP-Server: |
+   {
+     "url": "https://api.githubcopilot.com/mcp",
+     "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows. With this service, developers can query repositories, discover project metadata, and streamline code-related tasks through MCP-compatible tools."
+   }
+
+
+
+
+   6. To use an MCP server - you need to Login to it using the 🔒 symbol - even if they dont have auth enabled.
+
+
+   7. (Optional) Using an Authenticated Model in the Playground. Edit the LlamaStackDistribution and add the API KEY for your LLM to the env var VLLM_API_TOKEN_1
+
+
+     env:
+      - name: VLLM_TLS_VERIFY
+        value: "false"
+      - name: MILVUS_DB_PATH
+        value: ~/.llama/milvus.db
+      - name: FMS_ORCHESTRATOR_URL
+        value: http://localhost
+      - name: VLLM_MAX_TOKENS
+        value: "4096"
+      - name: VLLM_API_TOKEN_1
+        value: fake                             # <========= 👈👈 CHANGE ME TO YOUR TOKEN
+      - name: LLAMA_STACK_CONFIG_DIR
+        value: /opt/app-root/src/.llama/distributions/rh/
+      name: llama-stack
+
+
+
+
+
+Section 3 - llm-d
+🌿 Section 3: LLMd
+
+
+Known Issues
+Installation/Configuration
+
+
+NOTE: the order of those operations is very important, otherwise authentication won’t work or you simply won’t get any access, even without authentication enabled for the models.
+
+
+   1. Cluster administrator must create a GatewayClass and a Gateway for the inference service. Important:
+   1. Replace the cluster domain placeholder before proceeding
+   2. Add the namespaces you want to be able to use the Gateway in the allowedRoutes section. You can allow all by default, but this can potentially be a security issue (“rogue” actors could create HTTPRoutes in their namespace to hijack/deny traffic to other namespaces)
+
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-ai-inference
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/rev: openshift-gateway
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - user1
+                  - <other-namespace>[f][g][h][i][j][k]
+      hostname: inference-gateway.apps.<cluster-domain>
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: default-gateway-tls
+        mode: Terminate
+---
+
+   2. Cluster administrator must install the LeaderWorkerSet[l] Operator and create an operator instance
+
+
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata:
+  name: cluster
+  namespace: openshift-lws-operator
+spec:
+  managementState: Managed
+  logLevel: Normal
+  operatorLogLevel: Normal
+
+  
+
+
+
+   3. Cluster administrator must create the namespace kuadrant-system
+   4. Cluster administrator must install Red Hat Connectivity Link (RHCL) Operator in the kuadrant-system namespace (not any other one!). It will install all the other needed operators in this namespace
+  
+
+
+
+   5. Cluster administrator must create an instance of kuadrant
+
+
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+  
+
+
+   6. Cluster administrator must annotate the Authorino service (only one annotation has to be created, two other ones will be created automatically)[m]
+
+
+oc annotate svc/authorino-authorino-authorization  service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert -n kuadrant-system
+
+OR 
+
+
+  
+
+
+
+   7. Cluster administrator must update Authorino object to enable SSL (modifying the listener/tls part)
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: kuadrant-system
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
+
+You can now deploy models using LLMd with or without authentication. Even if you don’t use authentication, those steps have to be properly executed, otherwise issues may arise.
+
+
+Usage
+Deploying a model through the UI
+Simply deploy models using llm-d as the “serving runtime”, and check the “Require authentication” checkbox. You can use the default ServiceAccount name, or specify a new one (it will be automatically created, and the Role/RoleBiding assigned).
+
+
+  
+
+
+
+How to Perform Inference Requests with Authentication Enabled
+Using External Hostname (ROSA or MetalLB)
+Test Without Token (Expected to Fail):
+# Expected - HTTP/1.1 401 Unauthorized
+curl -v $(kubectl get llmisvc -n $TEST_NS -o=jsonpath='{.items[0].status.addresses[0].url}')/v1/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "facebook/opt-125m",
+        "prompt": "San Francisco is a"
+    }'
+Test With Valid Token (Expected to Succeed):
+# Expected - HTTP/1.1 200 OK
+curl -v $(kubectl get llmisvc -n $TEST_NS -o=jsonpath='{.items[0].status.addresses[0].url}')/v1/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${TEST_TOKEN}" \
+    -d '{
+        "model": "facebook/opt-125m",
+        "prompt": "San Francisco is a"
+    }'
+Using Internal Hostname
+kubectl run --rm -i curl-test \
+    --namespace "$TEST_NS" \
+    --image=registry.access.redhat.com/ubi9/ubi \
+    --restart=Never -- \
+    curl -v http://openshift-ai-inference-openshift-default.openshift-ingress.svc.cluster.local:80/llm-test/facebook-opt-125m-single/v1/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TEST_TOKEN" \
+    -d '{
+        "model": "facebook/opt-125m",
+        "prompt": "San Francisco is a"
+    }'
+Deploying model with YAML objects/CLI
+Models created through an LLMInferenceService object like the following one are automatically protected by authentication.
+
+
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-sample
+spec:
+  replicas: 1
+  model:
+    uri: hf://RedHatAI/Qwen3-8B-FP8-dynamic
+    name: RedHatAI/Qwen3-8B-FP8-dynamic
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    containers:
+    - name: main
+      resources:
+        limits:
+          cpu: '4'
+          memory: 32Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: '2'
+          memory: 16Gi
+          nvidia.com/gpu: "1"
+
+
+
+Disable Authentication (Optional)
+To allow anonymous access to a specific LLMInferenceService:
+oc annotate llmisvc/facebook-opt-125m-single security.opendatahub.io/enable-auth=false -n $TEST_NS
+Verify Anonymous AuthPolicy is Created:
+oc get authpolicy -n $TEST_NS
+Expected output:
+NAME                                          AGE
+facebook-opt-125m-single-kserve-route-authn   5s
+✅ Your LLMInferenceService now allows anonymous access.
+What Roles are Required for the ServiceAccount
+To access the inference endpoint, the ServiceAccount must have permission to get the corresponding LLMInferenceService.
+Permission Scope:
+   * With resourceNames: Access restricted to specific LLMInferenceService(s)
+   * Without resourceNames: Access to all LLMInferenceServices in the namespace
+Create ServiceAccount with Proper RBAC
+# Set ServiceAccount name
+SA_NAME=right-user
+
+
+# Create ServiceAccount
+oc create sa $SA_NAME -n $TEST_NS
+
+
+# Create Role and RoleBinding
+cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llm-inferenceservice-reader
+  namespace: $TEST_NS
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["llminferenceservices"]
+    verbs: ["get"]
+    # resourceNames: ["facebook-opt-125m-single"] # Uncomment to restrict to specific service
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llm-inferenceservice-reader-binding
+  namespace: $TEST_NS
+subjects:
+  - kind: ServiceAccount
+    name: $SA_NAME
+    namespace: $TEST_NS
+roleRef:
+  kind: Role
+  name: llm-inferenceservice-reader
+  apiGroup: rbac.authorization.k8s.io
+EOF
+Verify Permissions and Generate Token
+# Check if ServiceAccount has proper permissions
+oc auth can-i get llminferenceservices -n $TEST_NS --as=system:serviceaccount:$TEST_NS:$SA_NAME
+
+
+# Generate JWT Token
+export TEST_TOKEN=$(oc create token $SA_NAME -n $TEST_NS)
+Expected output for can-i command: yes
+
+
+Debugging
+If things go wrong:
+   * Check that the kuadrant object is present in the RHCL configuration
+   * Check that the Authorino object is properly configured and the Service authorino-authorino-authorization annotated (the configuration may get deleted if there are some operations done on Kuadrant)
+   * In the namespace redhat-ods-applications, Restart the Pods odh-model-controller-... and kserve-controller-manager-...
+
+
+Notes
+   * If Authorino is not installed before the odh-model-controller and Kserve controller start, authentication will be opted in by default and your inference service requests won’t work. You can restart the odh-model-controller and Kserve controller to enable it once Authorino is available:
+
+
+oc delete pod -n redhat-ods-applications -l app=odh-model-controller
+oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager
+Verify that Global AuthPolicy is Created:
+
+
+oc get authPolicy -n openshift-ingress
+
+Expected output:
+NAME                           AGE
+openshift-ai-inference-authn   10m
+
+
+
+
+
+Example: LLMInferenceService using YAMLs with and without Auth
+Lets run through a CLI based example for auth and unauth llm-d. You should be able to take these YAMLs and automate them using GitOps.
+ 
+Deploy LLMInferenceService using YAML. Note the annotation explicitly disabling auth: security.opendatahub.io/enable-auth: "false"
+
+oc apply -f - <<EOF
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-sample
+  namespace: llama-serving
+  labels:
+    kueue.x-k8s.io/queue-name: default
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    security.opendatahub.io/enable-auth: "false"
+spec:
+  replicas: 1
+  model:
+    uri: oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest
+    name: RedHatAI/Qwen3-8B-FP8-dynamic
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+      resources:
+        limits:
+          cpu: '1'
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: '1'
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+EOF
+
+The kserve operator in conjunction with RHCL will automatically create an AuthPolicy in the local namespace that allows unauthenticated access:
+oc -n llama-serving get authpolicy 
+NAME                              AGE
+qwen3-sample-kserve-route-authn   4m33s
+
+You can test this out unauthenticated
+
+curl -s -X 'GET'   'https://inference-gateway.apps.roadshow-whpnh.sandbox5182.opentlc.com/llama-serving/qwen3-sample/v1/models'   -H 'accept: application/json' | jq .
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen3-sample",
+      "object": "model",
+      "created": 1763600547,
+      "owned_by": "vllm",
+      "root": "/mnt/models",
+      "parent": null,
+      "max_model_len": 40960,
+      "permission": [
+        {
+          "id": "modelperm-ceb8d4e1b6f24242a73affad81e7915a",
+          "object": "model_permission",
+          "created": 1763600547,
+          "allow_create_engine": false,
+          "allow_sampling": true,
+          "allow_logprobs": true,
+          "allow_search_indices": false,
+          "allow_view": true,
+          "allow_fine_tuning": false,
+          "organization": "*",
+          "group": null,
+          "is_blocking": false
+        }
+      ]
+    }
+  ]
+}
+
+Now patch LLMISVC (or use GitOps) the annotation 
+
+oc -n llama-serving patch llmisvc/qwen3-sample --type=merge --patch='{"metadata":{"annotations":{"security.opendatahub.io/enable-auth":"true"}}}'
+
+The AuthPolicy should be removed
+
+
+oc -n llama-serving get authpolicy
+No resources found in llama-serving namespace.
+
+Now we need to create a ServiceAccount SecretRole RoleBinding. This is done automatically when using the UI. Note a long lived token is created. Also the annotations and labels allow the token to appear in the UI.
+
+oc -n llama-serving create -f - <<EOF
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qwen3-sample-sa
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qwen3-sample-sa-qwen3-sample-sa
+  namespace: llama-serving
+  annotations:
+    kubernetes.io/service-account.name: "qwen3-sample-sa"
+    openshift.io/display-name: qwen3-sample-sa
+  labels:
+    opendatahub.io/dashboard: "true"
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    opendatahub.io/dashboard: "true"
+  name: qwen3-sample-view-role
+  namespace: llama-serving
+rules:
+- apiGroups:
+  - serving.kserve.io
+  resourceNames:
+  - qwen3-sample
+  resources:
+  - llminferenceservices
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    opendatahub.io/dashboard: "true"
+  name: qwen3-sample-view
+  namespace: llama-serving
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qwen3-sample-view-role
+subjects:
+- kind: ServiceAccount
+  name: qwen3-sample-sa
+EOF
+
+To test auth - get the TOKEN
+
+
+TOKEN=$(oc -n llama-serving get secret qwen3-sample-sa-qwen3-sample-sa --template='{{.data.token | base64decode}}')
+
+And curl endpoint authenticated
+
+
+
+
+curl -s -X 'GET' 'https://inference-gateway.apps.roadshow-whpnh.sandbox5182.opentlc.com/llama-serving/qwen3-sample/v1/models' -H "Authorization: Bearer $TOKEN" -H 'accept: application/json' | jq .
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen3-sample",
+      "object": "model",
+      "created": 1763600902,
+      "owned_by": "vllm",
+      "root": "/mnt/models",
+      "parent": null,
+      "max_model_len": 40960,
+      "permission": [
+        {
+          "id": "modelperm-c54b47e0fd934285b17b7ddacbff4da9",
+          "object": "model_permission",
+          "created": 1763600902,
+          "allow_create_engine": false,
+          "allow_sampling": true,
+          "allow_logprobs": true,
+          "allow_search_indices": false,
+          "allow_view": true,
+          "allow_fine_tuning": false,
+          "organization": "*",
+          "group": null,
+          "is_blocking": false
+        }
+      ]
+    }
+  ]
+}
+
+And check the UI:
+
+  
+
+
+ 
+Section 4 - MaaS
+🍭 Section 4: MaaS 
+Known Issues
+Installation/Configuration
+Source for install instructions: https://opendatahub-io.github.io/maas-billing/latest/quickstart/
+
+
+   1. Cluster administrator must create the GatewayClass openshift-default
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-default
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+
+   2. Cluster administrator must create the namespace maas-api
+oc create namespace maas-api
+
+   3. Cluster administrator must deploy maas-api objects
+export CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+
+
+oc apply --server-side=true \
+  -f <(kustomize build "https://github.com/opendatahub-io/maas-billing.git/deployment/overlays/openshift?ref=main" | \
+       envsubst '$CLUSTER_DOMAIN')
+
+   4. Cluster administrator must adjust Audience policy
+
+
+AUD="$(oc create token default --duration=10m 2>/dev/null | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.aud[0]' 2>/dev/null)"
+echo $AUD
+
+
+# Output:
+#   https://kubernetes.default.svc
+
+
+oc patch authpolicy maas-api-auth-policy -n maas-api --type=merge --patch-file <(echo "  
+spec:
+  rules:
+    authentication:
+      openshift-identities:
+        kubernetesTokenReview:
+          audiences:
+            - $AUD
+            - maas-default-gateway-sa")
+
+   5. Depending on the order of installations, cluster administrator may have to restart the following Pod:
+   1. In the namespace redhat-ods-application: odh-model-controller-...
+   2. In the namespace kuadrant-system: kuadrant-operator-controller-manager-...
+
+
+   6. Test the configuration (once a model has been deployed):
+CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+
+
+HOST="https://maas.${CLUSTER_DOMAIN}"
+
+
+TOKEN_RESPONSE=$(curl -sSk \
+  -H "Authorization: Bearer $(oc whoami -t)" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"expiration": "10m"}' \
+  "${HOST}/maas-api/v1/tokens")
+
+
+TOKEN=$(echo $TOKEN_RESPONSE | jq -r .token)
+
+
+MODELS=$(curl -sSk ${HOST}/maas-api/v1/models \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" | jq -r .)
+
+
+echo $MODELS | jq .
+
+Usage
+Through the UI
+   1. Deploy a model, checking the MaaS checkbox:
+  
+
+
+
+   2. Navigate to AI assets endpoints -> Models as a Service
+  
+
+
+
+   3. Click on View to get the endpoint URL and generate a token:
+  
+
+
+
+Notes
+   * URL is displayed as “http”, but “https” access works
+   * All the tokens you create are active (don’t know yet how to revoke one…)
+   * When you enable MaaS for a model served using llm-d (only type available through the UI), the direct HTTPRoute to the model stays valid. This has several impacts:
+   * Calling https://maas.apps<domain>/maas-api/v1/models leads to the MaaS Gateway Pod.
+   * Calling https://maas.apps<domain>/<namespace>/<model-id>/v1/models leads to the LLM-D instance directly, bypassing MaaS.
+   * This is very important, because if you checked the MaaS checkbox, but did not check the “Require authentication” one (if you thought MaaS would protect access anyway), your endpoint is freely accessible, bypassing other Authentication, Policies,... you may have in place on MaaS.
+   * Even with both checkboxes set, direct access to the model is possible if you have the right token.
+Through CLI
+You can follow the documentation here: https://opendatahub-io.github.io/maas-billing/install/validation/
+
+
+
+
+Section 5 - TrustyAI & Safety
+🕵️ Section 5: TrustyAI & Safety
+
+
+To be implemented[n][o][p]
+Section 6 - Llamastack
+🦙 Section 6 - Llamastack[q][r][s][t][u][v][w]
+
+
+   * Assuming that you have a project with the AI Playground enabled …
+   * start a vscode workbench (regular Data Science image is enough=.
+   * you will want to git clone this project:
+   * git clone https://github.com/rh-ai-quickstart/byo-agentic-framework/ 
+   * Your .env file should look like (adapt values to your environment):
+# Llama Stack Configuration
+LLAMA_STACK_BASE_URL=http://lsd-genai-playground-service.ai-bu-shared.svc.cluster.local:8321
+LLAMA_STACK_OPENAI_ENDPOINT=http://lsd-genai-playground-service.ai-bu-shared.svc.cluster.local:8321/v1/openai/v1
+#INFERENCE_MODEL=vllm-inference-1/llama-32-3b-instruct
+INFERENCE_MODEL=vllm-inference-2/llama-32-3b-instruct
+API_KEY=fake
+
+
+
+
+# MCP Server Configuration
+MCP_WEATHER_SERVER_URL=https://weather-mcp-ai-bu-shared.apps.test-rc3.rhoai.rh-aiservices-bu.com/sse
+MCP_OCP_SERVER_URL=https://ocp-mcp-ai-bu-shared.apps.test-rc3.rhoai.rh-aiservices-bu.com/sse
+
+
+
+   *  then, adapt and run these examples:
+  
+
+
+
+ 
+
+
+Section 7 - Observability
+👀 Section 7: Observability & Tracing
+
+
+Docs in https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0/html/managing_openshift_ai/managing-observability_managing-rhoai#enabling-the-observability-stack_managing-rhoai 
+
+
+Configuration Steps for DSCInitialization Monitoring
+
+
+Prerequisites: Ensure the Cluster Observability Operator, Red Hat build of OpenTelemetry, and the Tempo Operator are installed.
+
+
+DSCInitialization: Enable the monitoring specification within the DSCInitialization configuration. Inside the monitoring block, define both metrics (including storage configuration) and traces (including storage configuration).
+
+
+
+
+apiVersion: dscinitialization.opendatahub.io/v2
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    alerting: {}
+    managementState: Managed
+    metrics:
+      replicas: 1
+      storage:
+        retention: 90d
+        size: 5Gi
+    namespace: redhat-ods-monitoring
+    traces:
+      sampleRatio: '0.1'
+      storage:
+        backend: pv
+        retention: 2160h0m0s
+  trustedCABundle:
+    customCABundle: ''
+    managementState: Managed
+ 
+There is a bug with RHOAI Observability Stack and UIPlugin that prevent to review / inspect the Traces - https://issues.redhat.com/browse/RHOAIENG-38891
+
+
+Section 8 - Feature Store
+👀 Section 8: Feature Store
+
+
+Based on Feast Demo
+
+
+Deploy and Configure Feast  
+
+
+   1. Enable the feastoperator in DataScienceCluster:
+    feastoperator:
+      managementState: Managed
+
+
+   2. Create a project in OpenShift AI
+
+
+   3. Fork this repo: https://github.com/RHRolun/banking-feature-store, and make sure to include all branches when you fork it
+ 
+   4. Inside the rbac branch and feature_repo/permissions.py, change line 47 to reflect your project name
+Here are the upstream docs if you are interested in how it’s working: https://github.com/feast-dev/feast/blob/master/docs/reference/auth/kubernetes_auth_setup.md 
+
+
+      5. Back in OpenShift, inside your project, replace the url with your forked repo and apply this FeatureStore CR:
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+    feature-store-ui: enabled
+  name: banking
+spec:
+  feastProject: banking
+  feastProjectDir:
+    git:
+      ref: rbac
+      url: '<YOUR_REPO>'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: false
+Keep the FeatureStore CR page open after you create it, you will need it in a second
+
+      6. In your repo, you should see a pod called feast-banking-<random-digits> spin up, wait until it’s running [might not be needed but not taking any chances]
+
+      7. Go back to your FeatureStore CR called “banking” and change spec.registry.local.server.restAPI to true, it should look like this:
+    registry:
+      local:
+        server:
+          restAPI: true
+ 
+         8. Verify that in your OpenShift Services (under Networking in the left tab) you have both feast-banking-registry and feast-banking-registry-rest
+
+
+         9. Go to your pods in your namespace and open up the new feast-banking pod and go to the Terminal tab.
+ 
+         10. Inside the terminal run: feast apply
+You should see a bunch of features being applied with green text
+This step will also apply your permissions, this might take a few minutes though (sometimes it’s very slow for some reason), but no need to wait for it, you can go to the next step as soon as feast apply has finished
+ 
+            11. Now in the same terminal, run: feast materialize 2025-01-01T00:00:00 $(date -u +''%Y-%m-%dT%H:%M:%S'')
+ 
+            12. Now you should be all set. To verify that everything was set up properly, go to OpenShift AI -> your project -> Feature Store Integration and see if you can select the “feast-banking-client” Feature repository.
+If you can’t, you likely have to wait longer (really, it took almost half an hour for me one time)
+ 
+               13. The only other step that was prepared for the demo was to create a Workbench based on Jupyter | Data Science | CPU | Python 3.12 with no special settings
+Deploy the Feast Demo
+
+
+
+
+               * Show the ui 
+               * Show the python workbench
+
+
+               1. Go to OpenShift AI -> Develop & train -> Feature Store -> Overview
+  
+
+These are the current features available inside the Banking Feature Store repository
+If you have more available to you, you would be able to browse them in the dropdown “Feature store repository” at the top
+
+                  2. Go to the Lineage tab
+  
+Here we can track how all features are created: what data source the come from, what entity they are connected to, and what feature service they bundle into.
+Entities are the keys you can use to find your features. One entity can point to multiple features.
+Feature service is grouping of features, often used to say “these features are used for this model”.
+Zoom in to see the names and get better details. Click on a Batch Feature View to get even more information.
+
+                  3. Let’s try to query some of these features, to do that, we will need some instructions for how our code can connect to our Feature repository.
+Go to Projects -> banking -> Feature store integration -> select feast-banking-client -> copy the code for later
+  
+This python code will let us create a yaml file that contains the details for how to connect to our Feature repository
+
+                  4. Now we can go to our workbench: Projects -> banking -> workbenches -> banking
+  
+                  5. Inside the workbench, you already have the a repo with example code in it cloned (https://github.com/RHRolun/banking-feature-store), if not go ahead and clone it.
+Open up the folder “banking feature store” and create a new notebook file.
+Paste your copied code inside it, press ctrl+S to save it, and then ctrl+Enter to run it.
+
+  
+
+You should now have a new yaml file inside your folder. Open it up to see the connection details.
+
+  
+
+                  6. Open up the online_retrieval.ipynb notebook file and run the two cells
+  
+This will retrieve features for you that have been prepared to be fetched quickly, so they can be used together with a served model with minimal (<10ms) latency.
+
+                  7. Now that we know how to retrieve data, let’s go back to our Feature Store dashboard and explore some more. Let’s take a look at the features we just used
+Go to OpenShift AI -> Develop & train -> Feature Store -> Feature Views and search for transaction_7d_aggregations
+  
+
+If you click on the “5 features” in the features column you can see what features this feature view contains.
+
+Then click on the feature view itself (transaction_7d_aggregations).
+In here you can see plenty of information about this feature view, such as:
+- what entity maps to it
+- its individual lineage
+- the feature services it’s part of
+- what materializations (moving data to be ready to be fast served) it’s been a part of and when (how fresh the data is)
+etc.
+
+We can also easily control who gets access to these features by giving access to our banking project, or by setting up access to individual users.
+
+Section 9 - AI Pipelines
+Section 9 - [x][y][z][aa]AI Pipelines
+Section 10 - Model Registry
+Section 10 - Model Registry[ab][ac]
+Section 11 - Kueue / GPUaaS
+Section 11 - Kueue / GPUaaS
+RHOAI Kueue Installation and Configuration
+
+
+Followed managing-workloads-with-kueue.pdf and https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0/html/managing_openshift_ai/managing-workloads-with-kueue 
+
+
+                     1. Install Red Hat Build of Kueue Operator due to: https://issues.redhat.com/browse/RHOAIENG-35557 
+
+
+Need to observe an error letting the user know that the Kueue Managed mode is not supported anymore in RHOAI 3.0. The user needs to change it to Unmanaged in the 2.25 version, installing Kueue and cert-manager operators
+
+
+  
+
+
+
+                     2. In the DSC set the Kueue managementState to Unmanaged:
+
+
+   kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+
+Also with the following command the DSC can be patched:
+
+
+
+
+oc patch datasciencecluster default-dsc --type='merge' -p '{"spec":{"components":{"kueue":{"managementState":"Unmanaged"}}}}' -n redhat-ods-applications
+
+
+
+                     3. Automatically RHOAI generates a ClusterQueue and LocalQueue:
+
+
+  
+
+                     4. Enable Kueue in the dashboard by setting disableKueue to false in the OdhDashboardConfig custom resource, as described in Enabling Kueue in the dashboard.
+
+
+
+
+oc patch odhdashboardconfig odh-dashboard-config \
+  -n redhat-ods-applications \
+  --type merge \
+  -p {"spec":{"dashboardConfig":{"disableHardwareProfiles":false,"disableKueue":false}}}
+
+In the Observe and Monitor we have the workload metrics: 
+  
+
+
+
+                     5. For existing projects, or for projects created by using the command-line interface,
+you must enable Kueue management manually by applying the
+kueue.openshift.io/managed=true label to the project namespace.
+
+
+oc label namespace test-rcarrata kueue.openshift.io/managed=true
+--overwrite
+
+  
+
+
+
+
+
+
+
+When you enable Kueue in the dashboard, Open Data Hub automatically enables Kueue
+management for all new projects created from the dashboard. For these projects, Open Data Hub applies the kueue.openshift.io/managed=true label to the namespace and creates a LocalQueue object if one does not already exist. The LocalQueue object is created with the opendatahub.io/managed=false annotation, so it is not managed after creation. Cluster administrators can modify or delete it as needed. A validating webhook then enforces that any new or updated workload resource in a Kueue-enabled project includes the kueue.x-k8s.io/queue-name label.
+
+
+                     6. Create new DS Project called test-kueue to test all in a brand new project
+
+
+  
+
+
+
+  
+
+
+
+                     7. Install NFS CSI driver (we need RWX volume type)
+                     1. Note that while this is fine in a "sandbox" environment, this quick way of enabling RWX storage is not recommended  at customers. 
+                     2. curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/v4.9.0/deploy/install-driver.sh | bash -s v4.9.0 --
+
+
+oc new-project nfs
+
+
+oc create -f https://raw.githubusercontent.com/opendatahub-io/distributed-workloads/refs/heads/main/workshops/kueue/nfs/nfs_deployment.yaml
+
+
+oc create -f https://raw.githubusercontent.com/opendatahub-io/distributed-workloads/refs/heads/main/workshops/kueue/nfs/nfs_storage_class.yaml
+
+                     8. Test the NFS PVC that’s working
+kind: PersistentVolumeClaim
+apiVersion: v1
+  annotations:
+    volume.beta.kubernetes.io/storage-provisioner: nfs.csi.k8s.io
+    volume.kubernetes.io/storage-provisioner: nfs.csi.k8s.io
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: nfs-csi
+  volumeMode: Filesystem
+
+  
+
+
+
+Testing Kueue: PyTorchJobs on CPU using the MNist Example
+
+
+                     9. Deploy the following ConfigMap and PVC (nfs) to test Kueue. Based on this example 
+
+
+
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mnist-storage-v1
+  labels:
+    app.kubernetes.io/name: "mnist-demo-v1"
+    app.kubernetes.io/component: "storage"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: nfs-csi
+  volumeMode: Filesystem
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mnist-script-v1
+data:
+  train.py: |
+    import torch
+    import logging
+    import torch.nn as nn
+    import torch.nn.functional as F
+    import torch.distributed as dist
+
+
+    from torch.utils.data import DataLoader, Dataset
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    from torch.utils.data.distributed import DistributedSampler
+    import torchvision.transforms as transforms
+    from torchvision.datasets import MNIST
+    import os
+
+
+    # Configure logger.
+    log_formatter = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(message)s", "%Y-%m-%dT%H:%M:%SZ"
+    )
+    logger = logging.getLogger(__file__)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    logger.addHandler(console_handler)
+    logger.setLevel(logging.INFO)
+        
+    def ddp_setup(backend="nccl"):
+        """Setup for Distributed Data Parallel with specified backend."""
+        # PyTorchJob v1 sets these environment variables
+        master_addr = os.environ.get("MASTER_ADDR", "localhost")
+        master_port = os.environ.get("MASTER_PORT", "23456")
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        rank = int(os.environ.get("RANK", "0"))
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        
+        logger.info(f"Distributed setup: rank={rank}, world_size={world_size}, master_addr={master_addr}:{master_port}")
+        
+        # If CUDA is not available, use CPU as the fallback
+        if torch.cuda.is_available() and backend=="nccl":
+            # Check GPU availability
+            num_devices = torch.cuda.device_count()
+            if local_rank >= num_devices:
+                logger.warning(f"Warning: Invalid device ordinal {local_rank}. Defaulting to device 0.")
+                local_rank = 0
+            torch.cuda.set_device(local_rank)
+        else:
+            # If no GPU is available, use Gloo backend (for CPU-only environments)
+            logger.info("No GPU available, falling back to CPU.")
+            backend="gloo"
+        
+        # Initialize process group
+        dist.init_process_group(
+            backend=backend,
+            init_method=f"tcp://{master_addr}:{master_port}",
+            world_size=world_size,
+            rank=rank
+        )
+
+
+    class Net(nn.Module):
+        def __init__(self):
+            super(Net, self).__init__()
+            self.conv1 = nn.Conv2d(1, 20, 5, 1)
+            self.conv2 = nn.Conv2d(20, 50, 5, 1)
+            self.fc1 = nn.Linear(4 * 4 * 50, 500)
+            self.fc2 = nn.Linear(500, 10)
+
+
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.max_pool2d(x, 2, 2)
+            x = F.relu(self.conv2(x))
+            x = F.max_pool2d(x, 2, 2)
+            x = x.view(-1, 4 * 4 * 50)
+            x = F.relu(self.fc1(x))
+            x = self.fc2(x)
+            return F.log_softmax(x, dim=1)
+
+
+    class Trainer:
+        def __init__(
+            self,
+            model: torch.nn.Module,
+            train_data: DataLoader,
+            optimizer: torch.optim.Optimizer,
+            save_every: int,
+            snapshot_path: str,
+            backend: str,
+        ) -> None:
+            self.local_rank = int(os.environ.get("LOCAL_RANK", -1))  # Ensure fallback if LOCAL_RANK isn't set
+            self.global_rank = int(os.environ["RANK"])
+
+
+
+
+            self.model=model
+            self.train_data = train_data
+            self.optimizer = optimizer
+            self.save_every = save_every
+            self.epochs_run = 0
+            self.snapshot_path = snapshot_path
+            self.backend = backend
+
+
+            if os.path.exists(snapshot_path):
+                logger.info("Loading snapshot")
+                self._load_snapshot(snapshot_path)
+
+
+            # Move model to the appropriate device (GPU/CPU)
+            if torch.cuda.is_available() and self.backend=="nccl":
+                self.device = torch.device(f'cuda:{self.local_rank}')
+                self.model = DDP(self.model.to(self.device), device_ids=[self.local_rank])
+            else:
+                self.device=torch.device('cpu')
+                self.model = DDP(self.model.to(self.device))
+            logger.info(f"Using device: {self.device}")
+
+
+        def _run_batch(self, source, targets):
+            self.optimizer.zero_grad()
+            output = self.model(source)
+            loss = F.cross_entropy(output, targets)
+            loss.backward()
+            self.optimizer.step()
+
+
+        def _run_epoch(self, epoch, backend):
+            b_sz = len(next(iter(self.train_data))[0])
+            if torch.cuda.is_available() and backend=="nccl":
+                logger.info(f"[GPU{self.global_rank}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.train_data)}")
+            else:
+                logger.info(f"[CPU{self.global_rank}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.train_data)}")
+            if isinstance(self.train_data.sampler, DistributedSampler):
+                self.train_data.sampler.set_epoch(epoch)
+            for source, targets in self.train_data:
+                source = source.to(self.device)
+                targets = targets.to(self.device)
+                self._run_batch(source, targets)
+
+
+        def _save_snapshot(self, epoch):
+            snapshot = {
+                "MODEL_STATE": self.model.module.state_dict() if torch.cuda.is_available() else self.model.state_dict(),
+                "EPOCHS_RUN": epoch,
+            }
+            torch.save(snapshot, self.snapshot_path)
+            logger.info(f"Epoch {epoch} | Training snapshot saved at {self.snapshot_path}")
+
+
+        def train(self, max_epochs: int, backend: str):
+            for epoch in range(self.epochs_run, max_epochs):
+                self._run_epoch(epoch, backend)
+                if self.global_rank == 0 and epoch % self.save_every == 0:
+                    self._save_snapshot(epoch)
+
+
+
+
+    def load_train_objs(dataset_path: str,lr: float):
+        """Load dataset, model, and optimizer."""
+        train_set = MNIST(dataset_path,
+            train=True,         # Use training set, not test set
+            download=True,      # Download if not present
+            transform=transforms.Compose([transforms.ToTensor()]))
+        model = Net()
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        return train_set, model, optimizer
+
+
+
+
+    def prepare_dataloader(dataset: Dataset, batch_size: int, useGpu: bool):
+        """Prepare DataLoader with DistributedSampler."""
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            pin_memory=useGpu,
+            shuffle=False,
+            sampler=DistributedSampler(dataset)
+        )
+
+
+
+
+    def main(epochs: int, save_every: int, batch_size: int, lr: float, dataset_path: str, snapshot_path: str, backend: str):
+        ddp_setup(backend)
+        dataset, model, optimizer = load_train_objs(dataset_path, lr)
+        train_loader = prepare_dataloader(dataset, batch_size, torch.cuda.is_available() and backend=="nccl")
+        trainer = Trainer(model, train_loader, optimizer, save_every, snapshot_path, backend)
+        trainer.train(epochs, backend)
+        dist.destroy_process_group()
+
+
+    if __name__ == "__main__":
+        import argparse
+        parser = argparse.ArgumentParser(description="Distributed MNIST Training")
+        parser.add_argument('--epochs', type=int, required=True, help='Total epochs to train the model')
+        parser.add_argument('--save_every', type=int, required=True, help='How often to save a snapshot')
+        parser.add_argument('--batch_size', type=int, default=64, help='Input batch size on each device (default: 64)')
+        parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
+        parser.add_argument('--dataset_path', type=str, default="../data", help='Path to MNIST datasets (default: ../data)')
+        parser.add_argument('--snapshot_path', type=str, default="snapshot_mnist.pt", help='Path to save snapshots (default: snapshot_mnist.pt)')
+        parser.add_argument('--backend', type=str, choices=['gloo', 'nccl'], default='nccl', help='Distributed backend type (default: nccl)')
+        args = parser.parse_args()
+
+
+        main(
+            epochs=args.epochs,
+            save_every=args.save_every,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            dataset_path=args.dataset_path,
+            snapshot_path=args.snapshot_path,
+            backend=args.backend
+        )
+
+                     10. Deploy the PyTorchJob using the default localqueue:
+
+
+
+
+apiVersion: "kubeflow.org/v1"
+kind: "PyTorchJob"
+metadata:
+  name: "mnist-demo-v1"
+  labels:
+    app.kubernetes.io/name: "mnist-demo-v1"
+    app.kubernetes.io/component: "training"
+    kueue.x-k8s.io/queue-name: "default" ## Use the default LocalQueue
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: "mnist-demo-v1"
+            app.kubernetes.io/component: "master"
+        spec:
+          containers:
+          - name: pytorch
+            image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+            command: ["python", "/workspace/train.py"]
+            args:
+            - "--epochs"
+            - "2"
+            - "--save_every"
+            - "1"
+            - "--batch_size"
+            - "64"
+            - "--lr"
+            - "1e-3"
+            - "--dataset_path"
+            - "/tmp/data"
+            - "--snapshot_path"
+            - "/tmp/checkpoints/snapshot_mnist.pt"
+            - "--backend"
+            - "gloo"
+            env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            volumeMounts:
+            - name: training-script
+              mountPath: /workspace/train.py
+              subPath: train.py
+            - name: shared-storage
+              mountPath: /tmp/checkpoints
+            - name: data-volume
+              mountPath: /tmp/data
+            resources:
+              requests:
+                cpu: "1"
+                memory: "2Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+          volumes:
+          - name: training-script
+            configMap:
+              name: mnist-script-v1
+              defaultMode: 0755
+          - name: shared-storage
+            persistentVolumeClaim:
+              claimName: mnist-storage-v1
+          - name: data-volume
+            emptyDir: {}
+    
+    Worker:
+      replicas: 2
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: "mnist-demo-v1"
+            app.kubernetes.io/component: "worker"
+        spec:
+          containers:
+          - name: pytorch
+            image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+            command: ["python", "/workspace/train.py"]
+            args:
+            - "--epochs"
+            - "2"
+            - "--save_every"
+            - "1"
+            - "--batch_size"
+            - "64"
+            - "--lr"
+            - "1e-3"
+            - "--dataset_path"
+            - "/tmp/data"
+            - "--snapshot_path"
+            - "/tmp/checkpoints/snapshot_mnist.pt"
+            - "--backend"
+            - "gloo"
+            env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            volumeMounts:
+            - name: training-script
+              mountPath: /workspace/train.py
+              subPath: train.py
+            - name: shared-storage
+              mountPath: /tmp/checkpoints
+            - name: data-volume
+              mountPath: /tmp/data
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "1"
+                memory: "2Gi"
+          volumes:
+          - name: training-script
+            configMap:
+              name: mnist-script-v1
+              defaultMode: 0755
+          - name: shared-storage
+            persistentVolumeClaim:
+              claimName: mnist-storage-v1
+          - name: data-volume
+            emptyDir: {}
+
+
+ 
+                     11. The PyTorchJob will start spinning pods (1 master, 2 workers) distributed by Kueue
+  
+
+
+
+  
+
+
+
+                     12. The master will show the world_size=3 because the cluster in total is 3 nodes (1 master + 2 workers):
+  
+
+
+
+13 . Check the Workload Metrics to see the Workload admitted and running:
+
+
+  
+
+
+
+14. Check the Project Metrics to see the requested resources:
+  
+
+
+
+
+
+Launching WB within a namespace with Kueue enabled
+
+
+  
+
+
+
+After enabling Kueue, the previous non-kueue Hardware Profiles are no longer active. A new hardware profile must be created, and it needs to specify the LocalQueue.
+https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0/html/managing_openshift_ai/managing-workloads-with-kueue#restrictions_for_managing_workloads_with_kueue
+
+
+
+
+
+
+
+
+  
+
+
+
+After that you can deploy your WB selecting the new HW Profiles
+
+
+  
+  
+
+
+
+Model Catalog Hacking
+<placeholder> 
+
+
+                     * By default, the model catalog contains all the RH-Provided Models. 
+                     * Customers might want to:
+                     * remove some of the models so users can't deploy them
+                     * add alternative models, and make them show up in the catalog
+                     * mirror some or all of the modelcar images, and have the catalog reference the mirrored models instead of the Red Hat ones. 
+                     * In this section we show how this can currently be achieved in RHOAI 3.0. [ad][ae][af]
+                     * 
+
+Here be 🐲🐲🐲
+Here be dragons
+Generic lists of issues
+
+
+Let's talk about all the rough edges, so that you're aware of these traps. 
+
+
+This is the list of all the Jiras that were opened by the CAI team.
+Some were blocker and were fixed by the time 3.0 went GA. 
+
+
+                     * Browsable version
+                     * https://issues.redhat.com/browse/RHOAIENG-38972?jql=labels%20%3D%20BU_EarlyAccess_Feedback 
+                     * Printable
+                     * https://issues.redhat.com/sr/jira.issueviews:searchrequest-printable/temp/SearchRequest.html?jqlQuery=labels+%3D+BU_EarlyAccess_Feedback+ORDER+BY+priority+DESC&tempMax=1000 
+
+
+Link to Release Notes (and Known Issues): https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0/html/release_notes/upgrade_to_openshift_ai_3_0_not_supported 
+
+
+
+
+pre-requisistes
+
+
+                     * RHCL … "kuadrant-system namespace" is REQUIRED for RHOAI 3.0
+                     * is there a jira for that? 
+
+
+ai hub
+                     * AI hub Deployments screen differs from Project Deployments screen RHOAIENG-39043
+llm-d
+                     * Models served with LLM-D and authentication don’t work in the playground (RHOAIENG-36372). (Note: you can manually add in the token to make this work)
+                     * llm-d models should be stoppable, just like for any other runtime RHOAIENG-38579
+                     * user need to migrate serverless ISVC to rawDeployment ISVC before RHOAI 3.0 RHOAIENG-31645
+
+
+metallb 
+                     * in on-prem environments, you will have to configure something like metalLB for the gateways to function properly. 
+
+
+workbenches
+                     * custom wb may no longer work 
+                     * progress tab no longer displays anything when starting/stopping workbench
+                     * unable to stop WB from main screen. can do it from sub screen. 
+observability
+                     * Traces can't be viewed / inspected in UIPlugin with the RHOAI Observability stack RHOAIENG-38891
+[a]It looks like it is not possible to do this - designate a model as deployment available as an AI asset through the 3.0 UI?
+@egranger@redhat.com
+_Assigned to egranger@redhat.com_
+[b]If you start from the catalog, that is right. 
+If you start from the "deployment" screen instead, you can. 
+
+
+Which is why this YAML helps you cheat.
+[c]exactly that, from model Catalog don't but we provided this specifically to WA and to have a model to power the playground.
+[d]Who is WA? A customer?
+[e]WA = workaround :) too many acronyms... :D
+[f]You can also just use a label selector if you wish:
+
+
+- allowedRoutes:
+namespaces:
+from: Selector
+selector:
+matchLabels:
+opendatahub.io/dashboard: "true"
+[g]Thanks Mike. 
+
+
+@gmoutier@redhat.com , security-wise, WDYT?
+[h]Either way you're vulnerable to https://issues.redhat.com/browse/RHOAIENG-37997
+At this point there is no good way to avoid this because the HTTPRoutes are still created in namespaces users have access to. So it comes down to who you can trust, specific namespaces, all RHOAI users' projects, all namespaces...
+[i]+1 saw that one you raised. looks like it was closed/fixed - cherry pick code looks like it limits to namespaced resources ? so am assuming that RBAC is your friend here. would need to test leakage across namespaces again i think ...
+
+
+given we are creating one gateway here .. for all ingress - what is the *right* pattern here ? one per team, one per namespace ?
+[j]Issue was fixed for workbenches by putting HTTPRoutea for them in a protected namespace and authorizing the Gateway only from there.
+Same pattern should be done for llmd and MaaS, but at the moment was discarded because we don't create the Gateway, customers do. So it's on them to protect it... As customers cannot control where HTTPRoutes are created (at least through the dashboard), only solution is this one, assigning specific namespaces. But even then it's not fulproof, original issue is there, you have to trust all your namespaces.
+And it would be hard to create multiple gateways, many things are hardcoded in the dashboard.
+[k]messy. secure multi-tenancy - problematic when some resources (HTTPRoute, AuthPolicy) are created by the operators so it becomes unclear on roles/responsibility.
+
+
+great discussion, lets leave it open as i suspect in the field this will immediately become a concern!
+[l]this operator was not needed for the demo I setup. would be nice to add here that it might be required but when doing the MoE path. I sent this message this morning in the call, perhaps was not the right place to share it.
+[m]When was the authorino instance created?
+[n]To be implemented based on:
+
+
+https://docs.google.com/document/d/15Cbr4aGzFRy2tVC7W1vHWhvsbdDEXucBHPL9sydBsy4/edit?tab=t.0
+
+
+And https://rhoai-genaiops.github.io/lab-instructions/#/6-honor-code/2-guardrails_orchestrator
+[o]I walked through it based on this: https://rhoai-mlops.github.io/lab-instructions/#/4-the-sound-check/README
+If we want to have TrustyAI predictive metrics in here as well (spoilers, the metrics part didn't work)
+[p]that’s fantastic, thank you so much Robert!
+[q]@rcarrata@redhat.com do we want to have two versions here. One for the playground, another for serious deployments (outside of the playground?
+[r]Also I don't see steps for using/enabling TrustyAI. 
+
+
+Basically can we show the stuff here: https://docs.google.com/document/d/15Cbr4aGzFRy2tVC7W1vHWhvsbdDEXucBHPL9sydBsy4/edit?tab=t.0
+[s]We might need a separate space for "Safety"? 
+
+
+
+
+Happy to brainstorm
+[t]yeah, good callout. Safety tab needs to be included (Trusty, Guardrails and Shields) tackling that part. Lemme create it
+[u]Thank you! Let me know if you have questions, need help
+[v]yes, we will use another namespace, beside the one that is provided with the playground. For demo purposes we reused the same, but for "production" we will need to create another LlamaStackDistribution CR and wire it up with everything we need (including the Shields)
+[w]👍
+[x]@egranger@redhat.com do we want to add this to the doc or should we remove it?
+[y]Keep for now. I think there are some new things in Pipelines in V3.0, so this can act as a placeholder
+1 total reaction
+Roberto Carratalá reacted with 👌 at 2025-11-21 18:54 PM
+[z]In case this helps: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0/html/installing_and_uninstalling_openshift_ai_self-managed/configuring-pipelines-with-your-own-argo-workflows-instance_install
+[aa]thanks!
+[ab]do we need that section @egranger@redhat.com ?
+_Assigned to egranger@redhat.com_
+[ac]yes, as a placeholder.
+1 total reaction
+Roberto Carratalá reacted with 👌 at 2025-11-21 18:54 PM
+[ad]@rogreenb@redhat.com , do you have any instructions (even if hacky) on how to achieve this? Thanks.
+_Assigned to rogreenb@redhat.com_
+[ae]@abellusc@redhat.com @yyi@redhat.com we have some of these steps right? but not all of them for 3.0?
+[af]I found this one in the preview docs -that could be useful to add and configure alternative model-catalog-sources: https://opendatahub-documentation--1067.org.readthedocs.build/en/1067/working-with-model-registries/index.html#configuring-model-catalog-sources-in-openshift_model-registry

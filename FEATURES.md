@@ -35,7 +35,7 @@ Without this, profiles won't appear in the RHOAI dashboard!
 - **Project profiles**: Specific project namespace (visible only in that project)
 
 ### Full Documentation
-📖 [HARDWARE-PROFILE-FINAL-SOLUTION.md](HARDWARE-PROFILE-FINAL-SOLUTION.md)
+📖 [docs/guides/HARDWARE-PROFILE-SETUP.md](docs/guides/HARDWARE-PROFILE-SETUP.md)
 
 ---
 
@@ -70,7 +70,6 @@ Do you want to taint GPU nodes now? (y/N):
 3. **Predictable scheduling**: GPU models always land on GPU nodes
 
 ### Full Documentation
-📖 [INTERACTIVE-TAINT-FEATURE.md](INTERACTIVE-TAINT-FEATURE.md)  
 📖 [docs/guides/GPU-TAINTS-RHOAI3.md](docs/guides/GPU-TAINTS-RHOAI3.md)
 
 ---
@@ -361,7 +360,7 @@ oc get resourceflavor nvidia-gpu-flavor -o yaml
 
 ---
 
-**Last Updated**: November 2025  
+**Last Updated**: January 2026  
 **RHOAI Version**: 3.0  
 **OpenShift Version**: 4.19
 

@@ -1,74 +1,88 @@
-# Archive - Legacy Scripts
+# Archive - Legacy and Historical Files
 
-This folder contains scripts that are no longer needed for fresh installations but may be useful for troubleshooting or fixing existing installations.
+This folder contains scripts and documentation that are no longer needed for fresh installations but are kept for historical reference or troubleshooting existing installations.
+
+## Why Files Are Archived
+
+1. **Superseded**: Functionality integrated into `complete-setup.sh`
+2. **Implementation Notes**: Development summaries not needed by end users
+3. **Historical**: Documentation from feature development
+4. **Troubleshooting**: May help fix issues in older installations
+
+---
 
 ## Scripts
 
 ### fix-macos-security.sh
 **Status**: ❌ Deprecated
 
-**Purpose**: Removed macOS quarantine attribute from downloaded `openshift-install` binary.
-
-**Why Deprecated**: This functionality is now built into `openshift-installer-master.sh`. The main script automatically handles the quarantine attribute removal, so this standalone script is no longer needed.
-
-**Use Case**: None for fresh installations. Kept for historical reference.
-
----
+Removed macOS quarantine attribute from `openshift-install` binary. This functionality is now built into the main installer.
 
 ### fix-rhcl-operator.sh
-**Status**: ⚠️ Legacy (may be useful for troubleshooting)
+**Status**: ⚠️ Legacy
 
-**Purpose**: Fixes RHCL operator installations that used the incorrect OperatorGroup configuration (OwnNamespace instead of AllNamespaces).
+Fixes RHCL operator installations with incorrect OperatorGroup. Only needed for existing broken installations.
 
-**Why Legacy**: 
-- All main scripts now use the correct OperatorGroup configuration
-- Fresh installations won't have this issue
-- Only needed if you have an existing broken RHCL installation from old scripts
+### integrated-workflow-v2.sh
+**Status**: ❌ Superseded
 
-**When to Use**:
-- If you have an existing cluster with RHCL operator that shows:
-  ```
-  Warning: UnsupportedOperatorGroup - OwnNamespace InstallModeType not supported
-  ```
-- If RHCL operator CSV shows "Failed" status
-- If Authorino service is not being created
+Previous version of the workflow script. Use `complete-setup.sh` instead.
 
-**How to Use**:
-```bash
-./archive/fix-rhcl-operator.sh
-```
+### quick-deploy-model.sh
+**Status**: ❌ Superseded
 
-This will:
-1. Clean up the broken RHCL installation
-2. Recreate with correct AllNamespaces OperatorGroup
-3. Wait for operator to be ready
-4. Create Kuadrant and Authorino instances
+Quick model deployment script. Use `complete-setup.sh` → Model Deployment instead.
 
 ---
 
-## Why These Are Archived
+## Documentation
 
-These scripts represent fixes for issues that have been resolved in the main installation scripts:
+### Implementation Summaries
+These document what was implemented during development:
 
-1. **Integrated Fixes**: The fixes are now part of the main scripts
-2. **Prevention**: New installations won't encounter these issues
-3. **Historical Value**: Kept for reference and troubleshooting existing installations
-4. **Clean Root**: Keeps the main directory focused on current, actively-used scripts
+- `CONFIGURATION-REUSE-FEATURE.md` - Config reuse implementation details
+- `RHOAI-3.0-FEATURES-SUMMARY.md` - RHOAI 3.0 feature implementation
+- `REFACTOR-README.md`, `REFACTOR-SUMMARY.md`, `REFACTORING-COMPLETE.md` - Refactoring notes
+
+### Hardware Profile Documentation
+Historical documentation about hardware profile fixes:
+
+- `HARDWARE-PROFILE-FINAL-FIX.md`
+- `HARDWARE-PROFILE-GLOBAL-FIX.md`
+- `HARDWARE-PROFILE-TROUBLESHOOTING.md`
+- `HARDWARE-PROFILE-USAGE.md`
+- `RHOAI-3.0-HARDWARE-PROFILE-FIX.md`
+
+### Other Historical Docs
+- `CHANGELOG-VPC-EARLY-DETECTION.md` - VPC detection changelog
+- `CHANGES-NEEDED.md` - Historical change notes
+- `INTERACTIVE-TAINT-FEATURE.md` - Taint feature implementation
+- `LLMD-SETUP-COMPLETE.md` - llm-d setup notes
+- `VERIFICATION-CHECKLIST.md` - Historical verification checklist
+
+---
 
 ## For Fresh Installations
 
-**Don't use these scripts!** Instead, use:
-- `./integrated-workflow.sh` - Includes correct RHCL setup
-- `./openshift-installer-master.sh` - Includes macOS security handling
+**Don't use archived scripts!** Instead, use:
 
-## For Existing Installations
+```bash
+./complete-setup.sh
+```
 
-If you have an existing installation with issues:
-1. Check `docs/TROUBLESHOOTING.md` first
-2. Run diagnostics: `./diagnostics/diagnose-authorino.sh`
-3. If you have the specific issues mentioned above, these scripts may help
+This provides all functionality through an interactive menu.
 
 ---
 
-**Last Updated**: November 2025
+## For Troubleshooting
 
+If you have an existing installation with issues:
+
+1. Check [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md) first
+2. Run diagnostics: `./diagnostics/diagnose-authorino.sh`
+3. Check [docs/fixes/](../docs/fixes/) for specific issues
+4. These archived files may provide additional context
+
+---
+
+**Last Updated**: January 2026

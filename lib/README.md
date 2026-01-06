@@ -1,27 +1,35 @@
 # Library Directory
 
-This directory contains modular functions and manifests used by the installation scripts.
+This directory contains modular functions, manifests, and utilities used by the installation scripts.
 
-## 📂 Structure
+## Structure
 
 ```
 lib/
 ├── functions/          # Reusable function modules
-│   ├── operators.sh    # Operator installation (NFD, GPU, RHCL, LWS, Kueue)
-│   └── rhoai.sh        # RHOAI-specific functions
+│   ├── model-deployment.sh  # Model deployment functions
+│   ├── operators.sh         # Operator installation
+│   └── rhoai.sh             # RHOAI-specific functions
+│
 ├── manifests/          # YAML manifest files
 │   ├── operators/      # NFD, GPU operator manifests
 │   ├── rhcl/           # RHCL/Kuadrant manifests
-│   └── rhoai/          # RHOAI manifests (future)
-└── utils/              # Utility functions
+│   └── rhoai/          # RHOAI manifests
+│
+└── utils/              # Utility libraries
+    ├── aws-checks.sh   # AWS validation functions
     ├── colors.sh       # Color definitions and print functions
-    └── common.sh       # Common helper functions
+    ├── common.sh       # Common helper functions
+    ├── config-manager.sh  # Configuration management
+    └── os-compat.sh    # OS compatibility layer (macOS/Linux)
 ```
 
-## 🔧 Functions
+---
+
+## Functions
 
 ### operators.sh
-Provides functions for installing operators:
+Operator installation functions:
 - `install_nfd_operator()` - Node Feature Discovery
 - `install_gpu_operator()` - NVIDIA GPU Operator
 - `install_rhcl_operator()` - Red Hat Connectivity Link (Kuadrant)
@@ -29,37 +37,74 @@ Provides functions for installing operators:
 - `install_kueue_operator()` - Kueue
 
 ### rhoai.sh
-Provides RHOAI-specific functions:
+RHOAI-specific functions:
 - `get_rhoai_channel(version)` - Get OLM channel for RHOAI version
 - `install_rhoai_operator(version)` - Install RHOAI operator
 - `initialize_rhoai()` - Create DSCInitialization
 - `create_datasciencecluster_v1()` - Create DSC for RHOAI 2.x
-- `create_datasciencecluster_v2()` - Create DSC for RHOAI 3.x with GenAI/MaaS
-- `configure_rhoai_dashboard()` - Enable GenAI Studio and Dashboard features
+- `create_datasciencecluster_v2()` - Create DSC for RHOAI 3.x
+- `configure_rhoai_dashboard()` - Enable dashboard features
 - `create_gpu_hardware_profile()` - Create GPU hardware profile
 - `enable_user_workload_monitoring()` - Enable monitoring
 
-### utils/colors.sh
-Provides color definitions and print functions:
-- `print_header(message)` - Print section header
-- `print_step(message)` - Print step message
-- `print_success(message)` - Print success message
-- `print_error(message)` - Print error message
-- `print_warning(message)` - Print warning message
-- `print_info(message)` - Print info message
+### model-deployment.sh
+Model deployment functions:
+- Model deployment with vLLM/llm-d
+- Resource calculation
+- InferenceService creation
 
-### utils/common.sh
-Provides common utility functions:
-- `get_script_dir()` - Get script directory
+---
+
+## Utilities
+
+### colors.sh
+Print functions with colors:
+- `print_header(message)` - Section header
+- `print_step(message)` - Step message
+- `print_success(message)` - Success message
+- `print_error(message)` - Error message
+- `print_warning(message)` - Warning message
+- `print_info(message)` - Info message
+
+### common.sh
+Common helper functions:
 - `apply_manifest(file, description)` - Apply YAML manifest
 - `wait_for_resource(type, name, namespace, timeout)` - Wait for resource
-- `check_operator_installed(name, namespace)` - Check if operator exists
+- `check_operator_installed(name, namespace)` - Check operator exists
 - `wait_for_operator_ready(name, namespace, timeout)` - Wait for operator
 - `ensure_namespace(name)` - Create namespace if not exists
 
-## 📝 Usage
+### os-compat.sh
+Cross-platform compatibility (macOS/Linux):
+- `grep_perl()`, `grep_extract()` - Portable grep
+- `base64_encode()`, `base64_decode()` - Portable base64
+- `sed_inplace()` - Portable sed -i
+- `calc_half()`, `parse_memory_gi()`, `parse_cpu()` - Resource calculations
 
-To use these functions in your script:
+### config-manager.sh
+Configuration persistence:
+- `save_configuration()` - Save settings
+- `load_configuration()` - Load settings
+- `clear_saved_configuration()` - Clear saved config
+
+---
+
+## Manifests
+
+### operators/
+Operator subscription and configuration manifests.
+
+### rhcl/
+RHCL/Kuadrant manifests for MaaS authentication.
+
+### rhoai/
+RHOAI DataScienceCluster and related manifests.
+
+**Note**: GPU MachineSet YAMLs are generated dynamically by `scripts/create-gpu-machineset.sh` and contain cluster-specific data.
+
+---
+
+## Usage
 
 ```bash
 #!/bin/bash
@@ -70,10 +115,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source required libraries
 source "$SCRIPT_DIR/lib/utils/colors.sh"
 source "$SCRIPT_DIR/lib/utils/common.sh"
+source "$SCRIPT_DIR/lib/utils/os-compat.sh"
 source "$SCRIPT_DIR/lib/functions/operators.sh"
 source "$SCRIPT_DIR/lib/functions/rhoai.sh"
 
-# Now you can use the functions
+# Use functions
 print_header "Installing NFD"
 install_nfd_operator
 
@@ -81,24 +127,11 @@ print_header "Installing RHOAI"
 install_rhoai_operator "3.0"
 ```
 
-## 🎯 Benefits
+---
 
-1. **Code Reusability**: Functions can be used across multiple scripts
-2. **Maintainability**: Changes in one place affect all scripts
-3. **Testability**: Functions can be tested independently
-4. **Readability**: Main scripts are cleaner and easier to understand
-5. **Consistency**: Same behavior across all scripts
+## See Also
 
-## 🔄 Migration
-
-Scripts are being gradually migrated to use these modular functions:
-- ✅ `integrated-workflow-v2.sh` - Fully modular
-- 🔄 `scripts/integrated-workflow.sh` - Original (still works)
-- 🔄 `scripts/enable-genai-maas.sh` - To be updated
-- 🔄 `scripts/setup-maas.sh` - To be updated
-
-## 📚 See Also
-
-- Main README: `../README.md`
-- Scripts README: `../scripts/README.md`
-- Documentation: `../docs/README.md`
+- [Main README](../README.md)
+- [Scripts README](../scripts/README.md)
+- [Documentation](../docs/README.md)
+- [OS Compatibility Reference](../docs/reference/OS-COMPATIBILITY.md)
