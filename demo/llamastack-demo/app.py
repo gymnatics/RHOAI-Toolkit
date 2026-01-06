@@ -1,18 +1,20 @@
 """
-LlamaStack + MCP Demo UI
-A demonstration interface showing how LlamaStack orchestrates LLM + MCP tools
+LlamaStack + MCP + Guardrails Demo UI
+A demonstration interface showing how LlamaStack orchestrates LLM + MCP tools + AI Safety
 """
 import streamlit as st
 import requests
 import json
 import os
+import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # Configuration from environment or defaults
 LLAMASTACK_URL = os.getenv("LLAMASTACK_URL", "http://localhost:8321")
 MODEL_ID = os.getenv("MODEL_ID", "llama3")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+GUARDRAILS_URL = os.getenv("GUARDRAILS_URL", "")  # TrustyAI GuardrailsOrchestrator URL
 
 # UI Customization (optional environment variables)
 APP_TITLE = os.getenv("APP_TITLE", "LlamaStack + MCP Demo")
@@ -24,9 +26,13 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", """You are an intelligent assistant w
 Use the available tools to fetch real data when answering user questions.
 Always explain the data in a user-friendly way after retrieving it.""")
 
+# Guardrails configuration
+ENABLE_GUARDRAILS = os.getenv("ENABLE_GUARDRAILS", "false").lower() == "true"
+GUARDRAILS_MODE = os.getenv("GUARDRAILS_MODE", "warn")  # "warn" or "block"
+
 # Page config
 st.set_page_config(
-    page_title="LlamaStack + MCP Demo",
+    page_title="LlamaStack + MCP + Guardrails Demo",
     page_icon="🦙",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -48,6 +54,8 @@ st.markdown("""
         --text-muted: #94a3b8;
         --border: #475569;
         --accent: #f59e0b;
+        --danger: #ef4444;
+        --warning: #f59e0b;
     }
     
     .stApp {
@@ -116,6 +124,11 @@ st.markdown("""
         background: linear-gradient(135deg, #451a03, #0f172a);
     }
     
+    .flow-box.guardrails {
+        border-color: #ef4444;
+        background: linear-gradient(135deg, #7f1d1d, #0f172a);
+    }
+    
     .flow-arrow {
         color: #6366f1;
         font-size: 1.5rem;
@@ -171,6 +184,60 @@ st.markdown("""
         overflow-x: auto;
         max-height: 300px;
         overflow-y: auto;
+    }
+    
+    /* Guardrails styling */
+    .guardrails-box {
+        background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%);
+        border: 1px solid #ef4444;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 0.75rem 0;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.8rem;
+    }
+    
+    .guardrails-box.safe {
+        background: linear-gradient(135deg, #064e3b 0%, #022c22 100%);
+        border-color: #10b981;
+    }
+    
+    .guardrails-box.warning {
+        background: linear-gradient(135deg, #78350f 0%, #451a03 100%);
+        border-color: #f59e0b;
+    }
+    
+    .guardrails-header {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .guardrails-header.blocked {
+        color: #ef4444;
+    }
+    
+    .guardrails-header.safe {
+        color: #10b981;
+    }
+    
+    .guardrails-header.warning {
+        color: #f59e0b;
+    }
+    
+    .guardrails-content {
+        color: #fecaca;
+        white-space: pre-wrap;
+    }
+    
+    .guardrails-content.safe {
+        color: #a7f3d0;
+    }
+    
+    .guardrails-content.warning {
+        color: #fde68a;
     }
     
     /* Status indicators */
@@ -293,10 +360,18 @@ if "llamastack_status" not in st.session_state:
     st.session_state.llamastack_status = "unknown"
 if "mcp_status" not in st.session_state:
     st.session_state.mcp_status = "unknown"
+if "guardrails_status" not in st.session_state:
+    st.session_state.guardrails_status = "unknown"
 if "tool_calls_count" not in st.session_state:
     st.session_state.tool_calls_count = 0
+if "guardrails_blocks" not in st.session_state:
+    st.session_state.guardrails_blocks = 0
 if "show_architecture" not in st.session_state:
     st.session_state.show_architecture = True
+if "enable_guardrails" not in st.session_state:
+    st.session_state.enable_guardrails = ENABLE_GUARDRAILS
+if "guardrails_mode" not in st.session_state:
+    st.session_state.guardrails_mode = GUARDRAILS_MODE
 
 
 def check_llamastack_health() -> bool:
@@ -332,6 +407,56 @@ def check_mcp_health() -> bool:
         return response.status_code == 200
     except:
         return False
+
+
+def check_guardrails_health() -> bool:
+    """Check if GuardrailsOrchestrator is healthy."""
+    if not GUARDRAILS_URL:
+        return False
+    try:
+        response = requests.get(f"{GUARDRAILS_URL}/health", timeout=5, verify=False)
+        return response.status_code == 200
+    except:
+        return False
+
+
+def check_guardrails(text: str, check_type: str = "input") -> Tuple[bool, str, List[Dict]]:
+    """
+    Check text against guardrails.
+    
+    Returns:
+        Tuple of (is_safe, message, detections)
+    """
+    if not st.session_state.enable_guardrails:
+        return True, "Guardrails disabled", []
+    
+    if not GUARDRAILS_URL:
+        return True, "No guardrails URL configured", []
+    
+    try:
+        # Call TrustyAI GuardrailsOrchestrator API
+        response = requests.post(
+            f"{GUARDRAILS_URL}/api/v1/text/contents",
+            json={"content": text},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+            verify=False
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            detections = result.get("detections", [])
+            
+            if detections:
+                detection_msgs = [f"- {d.get('type', 'unknown')}: {d.get('text', '')}" for d in detections]
+                return False, f"Detected issues:\n" + "\n".join(detection_msgs), detections
+            else:
+                return True, "Content passed safety checks", []
+        else:
+            return True, f"Guardrails API error: {response.status_code}", []
+            
+    except Exception as e:
+        return True, f"Guardrails check failed: {str(e)}", []
 
 
 def get_available_tools() -> List[Dict]:
@@ -431,11 +556,33 @@ def execute_tool_call(tool_name: str, tool_args: Dict) -> str:
         return f"Tool execution error: {str(e)}"
 
 
+def render_guardrails_result(is_safe: bool, message: str, check_type: str):
+    """Render guardrails check result."""
+    if is_safe:
+        st.markdown(f"""
+        <div class="guardrails-box safe">
+            <div class="guardrails-header safe">✅ {check_type.title()} Safety Check: PASSED</div>
+            <div class="guardrails-content safe">{message}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        status_class = "warning" if st.session_state.guardrails_mode == "warn" else "blocked"
+        icon = "⚠️" if st.session_state.guardrails_mode == "warn" else "🚫"
+        status_text = "WARNING" if st.session_state.guardrails_mode == "warn" else "BLOCKED"
+        
+        st.markdown(f"""
+        <div class="guardrails-box {status_class}">
+            <div class="guardrails-header {status_class}">{icon} {check_type.title()} Safety Check: {status_text}</div>
+            <div class="guardrails-content {status_class}">{message}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
 # ============== HEADER ==============
-st.markdown("""
+st.markdown(f"""
 <div class="main-header">
-    <h1>🦙 LlamaStack + MCP Demo</h1>
-    <p>Demonstrating AI Agent orchestration with Model Context Protocol tools</p>
+    <h1>🦙 {APP_TITLE}</h1>
+    <p>{APP_SUBTITLE}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -458,7 +605,12 @@ with st.sidebar:
         new_mcp_url = st.text_input(
             "MCP Server URL",
             value=MCP_SERVER_URL,
-            help="METAR MCP Server endpoint"
+            help="MCP Server endpoint"
+        )
+        new_guardrails_url = st.text_input(
+            "Guardrails URL",
+            value=GUARDRAILS_URL,
+            help="TrustyAI GuardrailsOrchestrator endpoint"
         )
         
         # Update globals if changed
@@ -468,6 +620,27 @@ with st.sidebar:
             MODEL_ID = new_model_id
         if new_mcp_url != MCP_SERVER_URL:
             MCP_SERVER_URL = new_mcp_url
+        if new_guardrails_url != GUARDRAILS_URL:
+            GUARDRAILS_URL = new_guardrails_url
+    
+    st.markdown("---")
+    
+    # Guardrails settings
+    st.markdown("### 🛡️ Guardrails")
+    
+    st.session_state.enable_guardrails = st.checkbox(
+        "Enable Guardrails",
+        value=st.session_state.enable_guardrails,
+        help="Enable AI safety checks on inputs and outputs"
+    )
+    
+    if st.session_state.enable_guardrails:
+        st.session_state.guardrails_mode = st.radio(
+            "Mode",
+            options=["warn", "block"],
+            index=0 if st.session_state.guardrails_mode == "warn" else 1,
+            help="Warn: Show warning but allow. Block: Prevent unsafe content."
+        )
     
     st.markdown("---")
     
@@ -480,6 +653,7 @@ with st.sidebar:
         if st.button("🔄 Check", key="check_status"):
             st.session_state.llamastack_status = "online" if check_llamastack_health() else "offline"
             st.session_state.mcp_status = "online" if check_mcp_health() else "offline"
+            st.session_state.guardrails_status = "online" if check_guardrails_health() else "offline"
     
     # LlamaStack status
     ls_status = st.session_state.llamastack_status
@@ -498,6 +672,16 @@ with st.sidebar:
     <div class="status-badge {mcp_class}">
         <span class="status-dot {mcp_class}"></span>
         MCP Server: {mcp_status.upper()}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Guardrails status
+    gr_status = st.session_state.guardrails_status
+    gr_class = "online" if gr_status == "online" else "offline"
+    st.markdown(f"""
+    <div class="status-badge {gr_class}">
+        <span class="status-dot {gr_class}"></span>
+        Guardrails: {gr_status.upper()}
     </div>
     """, unsafe_allow_html=True)
     
@@ -529,6 +713,7 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.tool_calls_count = 0
+        st.session_state.guardrails_blocks = 0
         st.rerun()
     
     st.checkbox("Show Architecture", value=True, key="show_architecture")
@@ -538,66 +723,109 @@ with st.sidebar:
 # Architecture diagram (collapsible)
 if st.session_state.show_architecture:
     with st.expander("🏗️ Architecture Overview", expanded=True):
-        st.markdown("""
-        <div class="architecture-box">
-            <div class="flow-diagram">
-                <div class="flow-box">👤 User Query</div>
-                <span class="flow-arrow">→</span>
-                <div class="flow-box">🦙 LlamaStack</div>
-                <span class="flow-arrow">→</span>
-                <div class="flow-box llm">🤖 {MODEL_ID}<br/>(vLLM)</div>
-                <span class="flow-arrow">→</span>
-                <div class="flow-box mcp">🔧 {MCP_SERVER_NAME}</div>
-                <span class="flow-arrow">→</span>
-                <div class="flow-box">📊 MongoDB</div>
+        # Show different architecture based on guardrails status
+        if st.session_state.enable_guardrails:
+            st.markdown(f"""
+            <div class="architecture-box">
+                <div class="flow-diagram">
+                    <div class="flow-box">👤 User Query</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box guardrails">🛡️ Input<br/>Guardrails</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box">🦙 LlamaStack</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box llm">🤖 {MODEL_ID}</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box mcp">🔧 {MCP_SERVER_NAME}</div>
+                </div>
+                <div class="flow-diagram">
+                    <div class="flow-box mcp">📊 Data Source</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box llm">🤖 Response</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box guardrails">🛡️ Output<br/>Guardrails</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box">👤 User</div>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="architecture-box">
+                <div class="flow-diagram">
+                    <div class="flow-box">👤 User Query</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box">🦙 LlamaStack</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box llm">🤖 {MODEL_ID}</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box mcp">🔧 {MCP_SERVER_NAME}</div>
+                    <span class="flow-arrow">→</span>
+                    <div class="flow-box">📊 Data Source</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         
-        col1, col2, col3 = st.columns(3)
+        cols = st.columns(4 if st.session_state.enable_guardrails else 3)
         
-        with col1:
+        with cols[0]:
             st.markdown("""
             <div class="info-card">
                 <h4>🦙 LlamaStack</h4>
-                <p>Orchestrates the AI agent, manages tool calls, and routes requests between the LLM and MCP servers.</p>
+                <p>Orchestrates the AI agent, manages tool calls, and routes requests.</p>
             </div>
             """, unsafe_allow_html=True)
         
-        with col2:
-            st.markdown("""
+        with cols[1]:
+            st.markdown(f"""
             <div class="info-card">
-                <h4>🔧 MCP Server</h4>
-                <p>{MCP_SERVER_DESCRIPTION}</p>
+                <h4>🔧 {MCP_SERVER_NAME}</h4>
+                <p>{MCP_SERVER_DESCRIPTION[:100]}...</p>
             </div>
             """, unsafe_allow_html=True)
         
-        with col3:
-            st.markdown("""
+        with cols[2]:
+            st.markdown(f"""
             <div class="info-card">
                 <h4>🤖 {MODEL_ID}</h4>
-                <p>Large Language Model served via vLLM with tool-calling support (hermes parser). Decides when to use tools.</p>
+                <p>LLM with tool-calling support. Decides when to use tools.</p>
             </div>
             """, unsafe_allow_html=True)
+        
+        if st.session_state.enable_guardrails:
+            with cols[3]:
+                st.markdown("""
+                <div class="info-card">
+                    <h4>🛡️ Guardrails</h4>
+                    <p>TrustyAI safety checks for PII, toxicity, and harmful content.</p>
+                </div>
+                """, unsafe_allow_html=True)
 
 # Metrics
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("💬 Messages", len(st.session_state.messages))
 with col2:
     st.metric("🔧 Tool Calls", st.session_state.tool_calls_count)
 with col3:
     st.metric("🛠️ Available Tools", len(st.session_state.mcp_tools))
+with col4:
+    st.metric("🛡️ Blocked", st.session_state.guardrails_blocks)
 
 st.markdown("---")
 
-# System message for the model (uses environment variable SYSTEM_PROMPT if set)
+# System message for the model
 SYSTEM_MESSAGE = SYSTEM_PROMPT
 
 # Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        
+        # Show guardrails check if present
+        if "guardrails_check" in message:
+            gc = message["guardrails_check"]
+            render_guardrails_result(gc["is_safe"], gc["message"], gc["type"])
         
         # Show tool calls if present
         if "tool_calls" in message and message["tool_calls"]:
@@ -621,10 +849,42 @@ for message in st.session_state.messages:
 
 # Chat input
 if prompt := st.chat_input(CHAT_PLACEHOLDER):
+    # Check input with guardrails
+    input_safe = True
+    input_message = ""
+    
+    if st.session_state.enable_guardrails:
+        input_safe, input_message, input_detections = check_guardrails(prompt, "input")
+        
+        if not input_safe and st.session_state.guardrails_mode == "block":
+            st.session_state.guardrails_blocks += 1
+            st.session_state.messages.append({
+                "role": "user",
+                "content": prompt,
+                "guardrails_check": {"is_safe": False, "message": input_message, "type": "input"}
+            })
+            with st.chat_message("user"):
+                st.markdown(prompt)
+                render_guardrails_result(False, input_message, "input")
+            
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "🚫 Your message was blocked by safety guardrails. Please rephrase your question without sensitive information."
+            })
+            with st.chat_message("assistant"):
+                st.markdown("🚫 Your message was blocked by safety guardrails. Please rephrase your question without sensitive information.")
+            st.rerun()
+    
     # Add user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    user_msg = {"role": "user", "content": prompt}
+    if st.session_state.enable_guardrails:
+        user_msg["guardrails_check"] = {"is_safe": input_safe, "message": input_message, "type": "input"}
+    st.session_state.messages.append(user_msg)
+    
     with st.chat_message("user"):
         st.markdown(prompt)
+        if st.session_state.enable_guardrails:
+            render_guardrails_result(input_safe, input_message, "input")
     
     # Build messages for API
     api_messages = [{"role": "system", "content": SYSTEM_MESSAGE}]
@@ -716,28 +976,55 @@ if prompt := st.chat_input(CHAT_PLACEHOLDER):
                 
                 if "error" not in final_response:
                     final_content = final_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    
+                    # Check output with guardrails
+                    output_safe = True
+                    output_message = ""
+                    if st.session_state.enable_guardrails:
+                        output_safe, output_message, output_detections = check_guardrails(final_content, "output")
+                        
+                        if not output_safe and st.session_state.guardrails_mode == "block":
+                            st.session_state.guardrails_blocks += 1
+                            final_content = "🚫 The response was blocked by safety guardrails due to potentially sensitive content."
+                    
                     st.markdown(final_content)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": final_content
-                    })
+                    if st.session_state.enable_guardrails:
+                        render_guardrails_result(output_safe, output_message, "output")
+                    
+                    final_msg = {"role": "assistant", "content": final_content}
+                    if st.session_state.enable_guardrails:
+                        final_msg["guardrails_check"] = {"is_safe": output_safe, "message": output_message, "type": "output"}
+                    st.session_state.messages.append(final_msg)
                 else:
                     st.error(f"Error generating final response: {final_response['error']}")
             else:
                 # No tool calls, just display the response
                 content = message.get("content", "")
+                
+                # Check output with guardrails
+                output_safe = True
+                output_message = ""
+                if st.session_state.enable_guardrails:
+                    output_safe, output_message, output_detections = check_guardrails(content, "output")
+                    
+                    if not output_safe and st.session_state.guardrails_mode == "block":
+                        st.session_state.guardrails_blocks += 1
+                        content = "🚫 The response was blocked by safety guardrails due to potentially sensitive content."
+                
                 st.markdown(content)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": content
-                })
+                if st.session_state.enable_guardrails:
+                    render_guardrails_result(output_safe, output_message, "output")
+                
+                assistant_msg = {"role": "assistant", "content": content}
+                if st.session_state.enable_guardrails:
+                    assistant_msg["guardrails_check"] = {"is_safe": output_safe, "message": output_message, "type": "output"}
+                st.session_state.messages.append(assistant_msg)
 
 # Footer
 st.markdown("---")
-st.markdown("""
+st.markdown(f"""
 <div style="text-align: center; color: #64748b; font-size: 0.8rem;">
-    <p>🦙 LlamaStack + 🔧 MCP Demo | Powered by {MODEL_ID}</p>
-    <p>For App Development Team - IndiGO PoC</p>
+    <p>🦙 LlamaStack + 🔧 MCP + 🛡️ Guardrails Demo | Powered by {MODEL_ID}</p>
+    <p>AI Safety powered by TrustyAI</p>
 </div>
 """, unsafe_allow_html=True)
-

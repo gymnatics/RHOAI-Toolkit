@@ -1,0 +1,98 @@
+# TrustyAI GuardrailsOrchestrator Deployment
+# This sets up the guardrails infrastructure for AI safety
+---
+# ConfigMap for detector configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardrails-config
+data:
+  config.yaml: |
+    # Chunker configurations
+    chunkers:
+      whole_doc_chunker:
+        type: whole_doc
+      
+      sentence_chunker:
+        type: sentence
+        
+    # Detector configurations
+    detectors:
+      # Built-in regex detector for PII (emails, phone numbers, SSN, credit cards)
+      pii_detector:
+        type: text_contents
+        service:
+          hostname: "127.0.0.1"
+          port: 8080
+        chunker_id: whole_doc_chunker
+        default_threshold: 0.5
+        
+    # Generation detectors (for output checking)
+    generation_detectors:
+      output_pii_detector:
+        type: text_contents
+        service:
+          hostname: "127.0.0.1"
+          port: 8080
+        chunker_id: whole_doc_chunker
+        default_threshold: 0.5
+---
+# GuardrailsOrchestrator Custom Resource
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: GuardrailsOrchestrator
+metadata:
+  name: guardrails-orchestrator
+spec:
+  # Reference to the ConfigMap above
+  orchestratorConfig: "guardrails-config"
+  
+  # Enable built-in detectors (regex for PII, etc.)
+  enableBuiltInDetectors: true
+  
+  # Enable the gateway for routing requests
+  enableGuardrailsGateway: true
+  
+  # Number of replicas
+  replicas: 1
+  
+  # Resource limits (optional, adjust as needed)
+  # resources:
+  #   limits:
+  #     cpu: "1"
+  #     memory: "1Gi"
+  #   requests:
+  #     cpu: "500m"
+  #     memory: "512Mi"
+---
+# Service to expose the orchestrator
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardrails-orchestrator
+spec:
+  selector:
+    app: guardrails-orchestrator
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: health
+      port: 8081
+      targetPort: 8081
+  type: ClusterIP
+---
+# Route to expose externally (optional)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: guardrails-orchestrator
+spec:
+  to:
+    kind: Service
+    name: guardrails-orchestrator
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+

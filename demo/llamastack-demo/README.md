@@ -1,6 +1,6 @@
-# LlamaStack + MCP Demo UI
+# LlamaStack + MCP + Guardrails Demo UI
 
-A **reusable** Streamlit-based demo interface for testing LlamaStack with MCP tools. This UI is fully configurable via environment variables, making it adaptable to different LlamaStack distributions, MCP servers, and use cases.
+A **reusable** Streamlit-based demo interface for testing LlamaStack with MCP tools and AI safety guardrails. This UI is fully configurable via environment variables, making it adaptable to different LlamaStack distributions, MCP servers, and use cases.
 
 ---
 
@@ -9,9 +9,11 @@ A **reusable** Streamlit-based demo interface for testing LlamaStack with MCP to
 - ✅ **Fully Configurable** - All settings via environment variables
 - ✅ **Works with Any MCP Server** - Not tied to specific tools
 - ✅ **Custom System Prompts** - Define LLM behavior per deployment
-- ✅ **Service Health Checks** - Real-time status for LlamaStack and MCP
+- ✅ **Service Health Checks** - Real-time status for LlamaStack, MCP, and Guardrails
 - ✅ **Tool Discovery** - Automatically shows available tools from LlamaStack
 - ✅ **Chat Interface** - Full conversation with tool call visualization
+- ✅ **AI Safety Guardrails** - TrustyAI integration for input/output safety checks
+- ✅ **Warn or Block Mode** - Choose whether to warn about or block unsafe content
 
 ---
 
@@ -24,6 +26,9 @@ All configuration is done via environment variables in the ConfigMap:
 | `LLAMASTACK_URL` | ✅ | `http://localhost:8321` | LlamaStack service endpoint |
 | `MODEL_ID` | ✅ | `llama3` | Model ID registered in LlamaStack |
 | `MCP_SERVER_URL` | ✅ | `http://localhost:8000` | MCP server URL (for health checks) |
+| `GUARDRAILS_URL` | ❌ | (empty) | TrustyAI GuardrailsOrchestrator URL |
+| `ENABLE_GUARDRAILS` | ❌ | `false` | Enable AI safety guardrails |
+| `GUARDRAILS_MODE` | ❌ | `warn` | `warn` (show warning) or `block` (prevent) |
 | `APP_TITLE` | ❌ | `LlamaStack + MCP Demo` | Page title |
 | `APP_SUBTITLE` | ❌ | `Demonstrating AI Agent...` | Subtitle below title |
 | `MCP_SERVER_NAME` | ❌ | `MCP Server` | Name shown in architecture diagram |
