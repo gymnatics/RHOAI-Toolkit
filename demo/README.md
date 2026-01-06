@@ -1,6 +1,53 @@
-# MaaS Demo
+# Demo Applications
 
-This folder contains demo scripts and examples for using Model as a Service (MaaS) with RHOAI.
+This folder contains demo scripts and applications for RHOAI.
+
+## 📁 Contents
+
+| Directory/File | Description |
+|----------------|-------------|
+| `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
+| `setup-demo-model.sh` | Deploy a sample model with MaaS |
+| `test-maas-api.sh` | Test MaaS API endpoints |
+| `generate-maas-token.sh` | Generate MaaS API token |
+
+---
+
+## 🤖 LlamaStack Demo UI
+
+A Streamlit-based chatbot that demonstrates LlamaStack orchestrating LLM + MCP tools.
+
+### Quick Deploy
+
+```bash
+# From the main directory
+./complete-setup.sh
+# Select: 3) RHOAI Management
+# Select: 7) Deploy LlamaStack Demo UI
+```
+
+### Features
+- Real-time MCP tool call visualization
+- Service health checks (LlamaStack, MCP)
+- Automatic tool discovery
+- Configurable via environment variables
+
+### Manual Deploy
+
+```bash
+cd llamastack-demo
+oc apply -f buildconfig.yaml
+oc start-build llamastack-mcp-demo --from-dir=. --follow
+oc apply -f deployment.yaml
+```
+
+See `llamastack-demo/README.md` for full documentation.
+
+---
+
+## 💰 MaaS Demo
+
+Scripts and examples for using Model as a Service (MaaS) with RHOAI.
 
 ## Prerequisites
 

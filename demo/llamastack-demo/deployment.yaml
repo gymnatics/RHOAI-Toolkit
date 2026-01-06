@@ -1,0 +1,110 @@
+---
+# ConfigMap for LlamaStack MCP Demo UI
+# All values are configurable for different environments and use cases
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llamastack-demo-config
+  namespace: demo-test  # Change to your namespace
+data:
+  # Required: LlamaStack endpoint
+  LLAMASTACK_URL: "http://lsd-genai-playground-service.demo-test.svc.cluster.local:8321"
+  
+  # Required: Model ID registered in LlamaStack
+  MODEL_ID: "qwen3-8b"
+  
+  # Required: MCP Server URL (for health checks in sidebar)
+  MCP_SERVER_URL: "http://metar-mcp-server.demo-test.svc.cluster.local:8000"
+  
+  # Optional: UI Customization
+  # APP_TITLE: "LlamaStack + MCP Demo"
+  # APP_SUBTITLE: "Demonstrating AI Agent orchestration with Model Context Protocol tools"
+  # MCP_SERVER_NAME: "MCP Server"
+  # MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
+  # CHAT_PLACEHOLDER: "Ask a question..."
+  
+  # Optional: Custom system prompt for the LLM
+  # SYSTEM_PROMPT: |
+  #   You are an intelligent assistant with access to external tools.
+  #   Use the available tools to fetch real data when answering user questions.
+  #   Always explain the data in a user-friendly way after retrieving it.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llamastack-mcp-demo
+  namespace: demo-test
+  labels:
+    app: llamastack-mcp-demo
+    app.kubernetes.io/name: llamastack-mcp-demo
+    app.kubernetes.io/part-of: indigo-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llamastack-mcp-demo
+  template:
+    metadata:
+      labels:
+        app: llamastack-mcp-demo
+    spec:
+      containers:
+      - name: streamlit
+        image: image-registry.openshift-image-registry.svc:5000/demo-test/llamastack-mcp-demo:latest
+        ports:
+        - containerPort: 8501
+          name: http
+        envFrom:
+        - configMapRef:
+            name: llamastack-demo-config
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llamastack-mcp-demo
+  namespace: demo-test
+  labels:
+    app: llamastack-mcp-demo
+spec:
+  selector:
+    app: llamastack-mcp-demo
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8501
+    targetPort: 8501
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: llamastack-mcp-demo
+  namespace: demo-test
+spec:
+  to:
+    kind: Service
+    name: llamastack-mcp-demo
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+

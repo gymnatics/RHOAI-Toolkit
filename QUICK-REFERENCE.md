@@ -108,6 +108,8 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 | Script | Purpose |
 |--------|---------|
 | `./complete-setup.sh` | Full setup (OpenShift + RHOAI + GPU + MaaS) |
+| `./complete-setup.sh` → Option 5 | Configure Kubeconfig (login, switch clusters) |
+| `./complete-setup.sh` → 3 → 7 | Deploy LlamaStack Demo UI (chatbot frontend) |
 | `./scripts/fix-hardware-profile.sh` | Fix GPU profile visibility |
 | `./scripts/setup-maas.sh` | Set up MaaS infrastructure |
 | `./scripts/create-gpu-machineset.sh` | Add GPU worker nodes |
@@ -115,6 +117,36 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 | `./demo/setup-demo-model.sh` | Deploy demo model with MaaS |
 | `./demo/generate-maas-token.sh` | Generate MaaS API token |
 | `./demo/test-maas-api.sh` | Test MaaS API |
+
+## 🤖 LlamaStack Demo UI
+
+Deploy a chatbot frontend to test LlamaStack + MCP:
+
+```bash
+./complete-setup.sh
+# Select: 3) RHOAI Management
+# Select: 7) Deploy LlamaStack Demo UI
+```
+
+The script auto-detects LlamaStack and MCP services, builds the container, and deploys with a Route.
+
+See `demo/llamastack-demo/README.md` for configuration options.
+
+## 🔐 Kubeconfig Management
+
+Quickly login or switch clusters:
+
+```bash
+./complete-setup.sh
+# Select: 5) Configure Kubeconfig
+```
+
+Options:
+- Login with token (paste `oc login` command)
+- Login with username/password
+- Set KUBECONFIG from existing file
+- Create new kubeconfig in workspace
+- Test connection
 
 ## 📞 Getting Help
 

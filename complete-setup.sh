@@ -77,8 +77,9 @@ show_main_menu() {
     echo -e "${YELLOW}2)${NC} Minimal RHOAI Setup (choose operators) ${GREEN}[Flexible]${NC}"
     echo -e "${YELLOW}3)${NC} RHOAI Management (configure features, deploy models, etc.)"
     echo -e "${YELLOW}4)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}5)${NC} Help (show scripts and documentation)"
-    echo -e "${YELLOW}6)${NC} Exit"
+    echo -e "${YELLOW}5)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}6)${NC} Help (show scripts and documentation)"
+    echo -e "${YELLOW}7)${NC} Exit"
     echo ""
 }
 
@@ -94,9 +95,10 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
     echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
     echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
-    echo -e "${YELLOW}7)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
-    echo -e "${YELLOW}8)${NC} Approve Pending CSRs (Day 2 node management)"
-    echo -e "${YELLOW}9)${NC} Back to Main Menu"
+    echo -e "${YELLOW}7)${NC} Deploy LlamaStack Demo UI (chatbot frontend) ${GREEN}[Demo]${NC}"
+    echo -e "${YELLOW}8)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
+    echo -e "${YELLOW}9)${NC} Approve Pending CSRs (Day 2 node management)"
+    echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
 
@@ -276,6 +278,342 @@ setup_mcp_servers_interactive() {
     "$SCRIPT_DIR/scripts/setup-mcp-servers.sh"
     
     return $?
+}
+
+################################################################################
+# LlamaStack Demo UI Deployment
+################################################################################
+
+deploy_llamastack_demo_interactive() {
+    print_header "Deploy LlamaStack Demo UI"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    
+    # Check if demo files exist
+    local demo_dir="$SCRIPT_DIR/demo/llamastack-demo"
+    if [ ! -d "$demo_dir" ]; then
+        print_error "LlamaStack demo directory not found"
+        echo ""
+        echo "Expected: $demo_dir"
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           LlamaStack + MCP Demo UI                             ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}This will deploy a Streamlit-based chatbot frontend that:${NC}"
+    echo "  • Connects to your LlamaStack distribution"
+    echo "  • Shows MCP tool calls in real-time"
+    echo "  • Provides a chat interface for testing AI agents"
+    echo "  • Is fully configurable via environment variables"
+    echo ""
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check if namespace exists
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    # Switch to target namespace
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}LlamaStack Configuration:${NC}"
+    echo ""
+    
+    # Try to auto-detect LlamaStack service
+    local detected_llamastack=""
+    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd" | head -1)
+    
+    if [ -n "$detected_llamastack" ]; then
+        local default_llamastack_url="http://${detected_llamastack}.${target_ns}.svc.cluster.local:8321"
+        echo "Detected LlamaStack service: $detected_llamastack"
+    else
+        local default_llamastack_url="http://lsd-genai-playground-service.${target_ns}.svc.cluster.local:8321"
+        echo "No LlamaStack service auto-detected"
+    fi
+    
+    read -p "LlamaStack URL [$default_llamastack_url]: " llamastack_url
+    llamastack_url="${llamastack_url:-$default_llamastack_url}"
+    
+    # Model ID
+    read -p "Model ID [qwen3-8b]: " model_id
+    model_id="${model_id:-qwen3-8b}"
+    
+    # MCP Server URL
+    local detected_mcp=""
+    detected_mcp=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -i mcp | head -1)
+    
+    if [ -n "$detected_mcp" ]; then
+        local default_mcp_url="http://${detected_mcp}.${target_ns}.svc.cluster.local:8000"
+        echo "Detected MCP service: $detected_mcp"
+    else
+        local default_mcp_url="http://mcp-server.${target_ns}.svc.cluster.local:8000"
+    fi
+    
+    read -p "MCP Server URL [$default_mcp_url]: " mcp_url
+    mcp_url="${mcp_url:-$default_mcp_url}"
+    
+    echo ""
+    echo -e "${CYAN}UI Customization (optional, press Enter to use defaults):${NC}"
+    echo ""
+    
+    read -p "App Title [LlamaStack + MCP Demo]: " app_title
+    app_title="${app_title:-LlamaStack + MCP Demo}"
+    
+    read -p "MCP Server Name [MCP Server]: " mcp_name
+    mcp_name="${mcp_name:-MCP Server}"
+    
+    echo ""
+    echo -e "${CYAN}Deployment Summary:${NC}"
+    echo "  Namespace: $target_ns"
+    echo "  LlamaStack URL: $llamastack_url"
+    echo "  Model ID: $model_id"
+    echo "  MCP Server URL: $mcp_url"
+    echo "  App Title: $app_title"
+    echo ""
+    
+    read -p "Proceed with deployment? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Deployment cancelled"
+        return 0
+    fi
+    
+    echo ""
+    print_step "Creating temporary deployment manifests..."
+    
+    # Create a temp directory for modified manifests
+    local temp_dir=$(mktemp -d)
+    
+    # Create ConfigMap
+    cat > "$temp_dir/configmap.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llamastack-demo-config
+  namespace: $target_ns
+data:
+  LLAMASTACK_URL: "$llamastack_url"
+  MODEL_ID: "$model_id"
+  MCP_SERVER_URL: "$mcp_url"
+  APP_TITLE: "$app_title"
+  MCP_SERVER_NAME: "$mcp_name"
+  MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
+  CHAT_PLACEHOLDER: "Ask a question..."
+EOF
+    
+    # Create Deployment (using pre-built image from quay.io or build locally)
+    cat > "$temp_dir/deployment.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llamastack-mcp-demo
+  namespace: $target_ns
+  labels:
+    app: llamastack-mcp-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llamastack-mcp-demo
+  template:
+    metadata:
+      labels:
+        app: llamastack-mcp-demo
+    spec:
+      containers:
+      - name: streamlit
+        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/llamastack-mcp-demo:latest
+        ports:
+        - containerPort: 8501
+          name: http
+        envFrom:
+        - configMapRef:
+            name: llamastack-demo-config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llamastack-mcp-demo
+  namespace: $target_ns
+  labels:
+    app: llamastack-mcp-demo
+spec:
+  selector:
+    app: llamastack-mcp-demo
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8501
+    targetPort: 8501
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: llamastack-mcp-demo
+  namespace: $target_ns
+spec:
+  to:
+    kind: Service
+    name: llamastack-mcp-demo
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+EOF
+    
+    # Create BuildConfig and ImageStream
+    cat > "$temp_dir/buildconfig.yaml" <<EOF
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: llamastack-mcp-demo
+  namespace: $target_ns
+  labels:
+    app: llamastack-mcp-demo
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: llamastack-mcp-demo:latest
+  source:
+    binary: {}
+    type: Binary
+  strategy:
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+    type: Docker
+  successfulBuildsHistoryLimit: 3
+  failedBuildsHistoryLimit: 3
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: llamastack-mcp-demo
+  namespace: $target_ns
+  labels:
+    app: llamastack-mcp-demo
+EOF
+    
+    echo ""
+    print_step "Applying ConfigMap..."
+    oc apply -f "$temp_dir/configmap.yaml"
+    
+    print_step "Creating BuildConfig and ImageStream..."
+    oc apply -f "$temp_dir/buildconfig.yaml"
+    
+    echo ""
+    print_step "Building container image (this may take 1-2 minutes)..."
+    echo ""
+    
+    # Start the build from the demo directory
+    if oc start-build llamastack-mcp-demo --from-dir="$demo_dir" --follow -n "$target_ns"; then
+        print_success "Build completed successfully"
+    else
+        print_error "Build failed"
+        echo ""
+        echo "You can check build logs with:"
+        echo "  oc logs -f bc/llamastack-mcp-demo -n $target_ns"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    echo ""
+    print_step "Deploying application..."
+    oc apply -f "$temp_dir/deployment.yaml"
+    
+    echo ""
+    print_step "Waiting for deployment to be ready..."
+    if oc rollout status deployment/llamastack-mcp-demo -n "$target_ns" --timeout=120s; then
+        print_success "Deployment ready"
+    else
+        print_warning "Deployment may still be starting"
+    fi
+    
+    # Clean up temp files
+    rm -rf "$temp_dir"
+    
+    echo ""
+    print_step "Getting application URL..."
+    local route_url=$(oc get route llamastack-mcp-demo -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    if [ -n "$route_url" ]; then
+        echo ""
+        echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  ✅ LlamaStack Demo UI Deployed Successfully!                  ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${CYAN}📌 Application URL:${NC}"
+        echo -e "   ${GREEN}https://$route_url${NC}"
+        echo ""
+        echo -e "${CYAN}📋 Configuration:${NC}"
+        echo "   • Namespace: $target_ns"
+        echo "   • LlamaStack: $llamastack_url"
+        echo "   • Model: $model_id"
+        echo "   • MCP Server: $mcp_url"
+        echo ""
+        echo -e "${YELLOW}📝 Next Steps:${NC}"
+        echo "   1. Open the URL in your browser"
+        echo "   2. Click '🔄 Check' in the sidebar to verify service status"
+        echo "   3. Click '🔄 Refresh Tools' to load MCP tools"
+        echo "   4. Start chatting!"
+        echo ""
+        echo -e "${CYAN}📚 To update configuration later:${NC}"
+        echo "   oc edit configmap llamastack-demo-config -n $target_ns"
+        echo "   oc rollout restart deployment/llamastack-mcp-demo -n $target_ns"
+        echo ""
+    else
+        print_warning "Could not get route URL"
+        echo "Check with: oc get route llamastack-mcp-demo -n $target_ns"
+    fi
+    
+    return 0
 }
 
 ################################################################################
@@ -607,7 +945,7 @@ show_help() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-9): " rhoai_choice
+        read -p "Select an option (1-9, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -642,21 +980,26 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
-                quick_start_wizard
+                deploy_llamastack_demo_interactive
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             8)
-                approve_pending_csrs
+                quick_start_wizard
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             9)
+                approve_pending_csrs
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            0)
                 print_info "Returning to main menu..."
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9."
+                print_error "Invalid option. Please select 1-9 or 0."
                 sleep 2
                 ;;
         esac
@@ -888,6 +1231,439 @@ EOF
         print_error "Failed to create hardware profile"
         return 1
     fi
+}
+
+################################################################################
+# Kubeconfig Management
+################################################################################
+
+configure_kubeconfig_interactive() {
+    print_header "Configure Kubeconfig"
+    
+    # Show current status
+    echo -e "${CYAN}Current Kubeconfig Status:${NC}"
+    echo ""
+    
+    if [ -n "$KUBECONFIG" ]; then
+        echo -e "  KUBECONFIG env: ${GREEN}$KUBECONFIG${NC}"
+        if [ -f "$KUBECONFIG" ]; then
+            echo -e "  File exists: ${GREEN}Yes${NC}"
+        else
+            echo -e "  File exists: ${RED}No${NC}"
+        fi
+    else
+        echo -e "  KUBECONFIG env: ${YELLOW}Not set${NC}"
+        if [ -f "$HOME/.kube/config" ]; then
+            echo -e "  Default (~/.kube/config): ${GREEN}Exists${NC}"
+        else
+            echo -e "  Default (~/.kube/config): ${YELLOW}Not found${NC}"
+        fi
+    fi
+    
+    echo ""
+    
+    # Check if logged in
+    if oc whoami &>/dev/null; then
+        local cluster_url=$(oc whoami --show-server 2>/dev/null)
+        local cluster_user=$(oc whoami 2>/dev/null)
+        echo -e "  Connected: ${GREEN}Yes${NC}"
+        echo -e "  Cluster: ${GREEN}$cluster_url${NC}"
+        echo -e "  User: ${GREEN}$cluster_user${NC}"
+    else
+        echo -e "  Connected: ${RED}No${NC}"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║               Kubeconfig Options                               ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Login with token (oc login --token=...)"
+    echo -e "${YELLOW}2)${NC} Login with username/password"
+    echo -e "${YELLOW}3)${NC} Set KUBECONFIG from existing file"
+    echo -e "${YELLOW}4)${NC} Create new kubeconfig in workspace"
+    echo -e "${YELLOW}5)${NC} View current kubeconfig"
+    echo -e "${YELLOW}6)${NC} Test connection"
+    echo -e "${YELLOW}7)${NC} Back to Main Menu"
+    echo ""
+    
+    read -p "Select an option (1-7): " kube_choice
+    
+    case $kube_choice in
+        1)
+            login_with_token
+            ;;
+        2)
+            login_with_credentials
+            ;;
+        3)
+            set_kubeconfig_from_file
+            ;;
+        4)
+            create_workspace_kubeconfig
+            ;;
+        5)
+            view_kubeconfig
+            ;;
+        6)
+            test_connection
+            ;;
+        7)
+            return 0
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+    
+    echo ""
+    read -p "Press Enter to continue..."
+    
+    # Recursive call to show menu again
+    configure_kubeconfig_interactive
+}
+
+login_with_token() {
+    echo ""
+    print_step "Login with Token"
+    echo ""
+    echo -e "${CYAN}Enter your OpenShift login command or provide the details:${NC}"
+    echo ""
+    echo "You can paste the full command like:"
+    echo "  oc login --token=sha256~xxx --server=https://api.cluster.example.com:6443"
+    echo ""
+    echo "Or enter the details separately."
+    echo ""
+    
+    read -p "Paste full oc login command (or press Enter to enter details separately): " full_command
+    
+    if [ -n "$full_command" ]; then
+        # Extract token and server from the command
+        local token=$(echo "$full_command" | grep -oE '\-\-token=[^ ]+' | sed 's/--token=//')
+        local server=$(echo "$full_command" | grep -oE '\-\-server=[^ ]+' | sed 's/--server=//')
+        
+        if [ -z "$token" ] || [ -z "$server" ]; then
+            print_error "Could not parse token and server from command"
+            echo "Please enter details separately:"
+            read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+            read -p "Token: " token
+        fi
+    else
+        read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+        read -p "Token: " token
+    fi
+    
+    if [ -z "$token" ] || [ -z "$server" ]; then
+        print_error "Token and server are required"
+        return 1
+    fi
+    
+    # Ask about kubeconfig location
+    echo ""
+    echo -e "${CYAN}Where should the kubeconfig be saved?${NC}"
+    echo "  1) Workspace (./kubeconfig) - recommended for this project"
+    echo "  2) Default (~/.kube/config)"
+    echo "  3) Custom path"
+    echo ""
+    read -p "Select option [1-3] (default: 1): " save_choice
+    save_choice=${save_choice:-1}
+    
+    local kubeconfig_path
+    case $save_choice in
+        1)
+            kubeconfig_path="$SCRIPT_DIR/kubeconfig"
+            ;;
+        2)
+            kubeconfig_path="$HOME/.kube/config"
+            ;;
+        3)
+            read -p "Enter path: " kubeconfig_path
+            ;;
+        *)
+            kubeconfig_path="$SCRIPT_DIR/kubeconfig"
+            ;;
+    esac
+    
+    # Ensure directory exists
+    mkdir -p "$(dirname "$kubeconfig_path")"
+    
+    # Export and login
+    export KUBECONFIG="$kubeconfig_path"
+    
+    echo ""
+    print_step "Logging in..."
+    
+    if oc login --token="$token" --server="$server" --insecure-skip-tls-verify 2>&1; then
+        echo ""
+        print_success "Login successful!"
+        print_success "KUBECONFIG set to: $kubeconfig_path"
+        echo ""
+        echo -e "${YELLOW}To use this kubeconfig in your shell, run:${NC}"
+        echo -e "  ${GREEN}export KUBECONFIG=\"$kubeconfig_path\"${NC}"
+        echo ""
+        
+        # Ask if user wants to add to shell profile
+        read -p "Add KUBECONFIG export to your shell profile? (y/N): " add_to_profile
+        if [[ "$add_to_profile" =~ ^[Yy]$ ]]; then
+            add_kubeconfig_to_profile "$kubeconfig_path"
+        fi
+    else
+        print_error "Login failed"
+        return 1
+    fi
+}
+
+login_with_credentials() {
+    echo ""
+    print_step "Login with Username/Password"
+    echo ""
+    
+    read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+    read -p "Username: " username
+    read -s -p "Password: " password
+    echo ""
+    
+    if [ -z "$server" ] || [ -z "$username" ] || [ -z "$password" ]; then
+        print_error "Server, username, and password are required"
+        return 1
+    fi
+    
+    # Ask about kubeconfig location
+    echo ""
+    echo -e "${CYAN}Where should the kubeconfig be saved?${NC}"
+    echo "  1) Workspace (./kubeconfig)"
+    echo "  2) Default (~/.kube/config)"
+    echo ""
+    read -p "Select option [1-2] (default: 1): " save_choice
+    save_choice=${save_choice:-1}
+    
+    local kubeconfig_path
+    if [ "$save_choice" = "2" ]; then
+        kubeconfig_path="$HOME/.kube/config"
+    else
+        kubeconfig_path="$SCRIPT_DIR/kubeconfig"
+    fi
+    
+    mkdir -p "$(dirname "$kubeconfig_path")"
+    export KUBECONFIG="$kubeconfig_path"
+    
+    echo ""
+    print_step "Logging in..."
+    
+    if oc login --username="$username" --password="$password" --server="$server" --insecure-skip-tls-verify 2>&1; then
+        echo ""
+        print_success "Login successful!"
+        print_success "KUBECONFIG set to: $kubeconfig_path"
+    else
+        print_error "Login failed"
+        return 1
+    fi
+}
+
+set_kubeconfig_from_file() {
+    echo ""
+    print_step "Set KUBECONFIG from Existing File"
+    echo ""
+    
+    # Show common locations
+    echo -e "${CYAN}Common kubeconfig locations:${NC}"
+    local found_configs=()
+    
+    if [ -f "$SCRIPT_DIR/kubeconfig" ]; then
+        found_configs+=("$SCRIPT_DIR/kubeconfig")
+        echo "  1) $SCRIPT_DIR/kubeconfig"
+    fi
+    if [ -f "$SCRIPT_DIR/openshift-cluster-install/auth/kubeconfig" ]; then
+        found_configs+=("$SCRIPT_DIR/openshift-cluster-install/auth/kubeconfig")
+        echo "  2) $SCRIPT_DIR/openshift-cluster-install/auth/kubeconfig"
+    fi
+    if [ -f "$HOME/.kube/config" ]; then
+        found_configs+=("$HOME/.kube/config")
+        echo "  3) $HOME/.kube/config"
+    fi
+    
+    echo "  c) Enter custom path"
+    echo ""
+    
+    read -p "Select option: " file_choice
+    
+    local selected_path
+    case $file_choice in
+        1)
+            selected_path="${found_configs[0]:-}"
+            ;;
+        2)
+            selected_path="${found_configs[1]:-}"
+            ;;
+        3)
+            selected_path="${found_configs[2]:-}"
+            ;;
+        c|C)
+            read -p "Enter kubeconfig path: " selected_path
+            ;;
+        *)
+            print_error "Invalid option"
+            return 1
+            ;;
+    esac
+    
+    if [ -z "$selected_path" ]; then
+        print_error "No path selected"
+        return 1
+    fi
+    
+    if [ ! -f "$selected_path" ]; then
+        print_error "File does not exist: $selected_path"
+        return 1
+    fi
+    
+    export KUBECONFIG="$selected_path"
+    print_success "KUBECONFIG set to: $selected_path"
+    
+    # Test connection
+    echo ""
+    print_step "Testing connection..."
+    if oc whoami &>/dev/null; then
+        print_success "Connected as: $(oc whoami)"
+        print_success "Cluster: $(oc whoami --show-server)"
+    else
+        print_warning "Could not connect to cluster - token may be expired"
+        echo ""
+        read -p "Would you like to login again? (y/N): " relogin
+        if [[ "$relogin" =~ ^[Yy]$ ]]; then
+            login_with_token
+        fi
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}To persist this setting, run:${NC}"
+    echo -e "  ${GREEN}export KUBECONFIG=\"$selected_path\"${NC}"
+}
+
+create_workspace_kubeconfig() {
+    echo ""
+    print_step "Create New Kubeconfig in Workspace"
+    echo ""
+    
+    local kubeconfig_path="$SCRIPT_DIR/kubeconfig"
+    
+    if [ -f "$kubeconfig_path" ]; then
+        print_warning "Kubeconfig already exists at: $kubeconfig_path"
+        read -p "Overwrite? (y/N): " overwrite
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            print_info "Cancelled"
+            return 0
+        fi
+    fi
+    
+    export KUBECONFIG="$kubeconfig_path"
+    print_success "KUBECONFIG set to: $kubeconfig_path"
+    echo ""
+    
+    # Now login
+    login_with_token
+}
+
+view_kubeconfig() {
+    echo ""
+    print_step "Current Kubeconfig Contents"
+    echo ""
+    
+    local config_path="${KUBECONFIG:-$HOME/.kube/config}"
+    
+    if [ ! -f "$config_path" ]; then
+        print_error "Kubeconfig not found at: $config_path"
+        return 1
+    fi
+    
+    echo -e "${CYAN}File: $config_path${NC}"
+    echo ""
+    
+    # Show sanitized version (hide tokens)
+    cat "$config_path" | sed 's/token: .*/token: <REDACTED>/' | head -50
+    
+    local total_lines=$(wc -l < "$config_path")
+    if [ "$total_lines" -gt 50 ]; then
+        echo ""
+        echo -e "${YELLOW}... (showing first 50 of $total_lines lines)${NC}"
+    fi
+}
+
+test_connection() {
+    echo ""
+    print_step "Testing OpenShift Connection"
+    echo ""
+    
+    if [ -n "$KUBECONFIG" ]; then
+        echo "KUBECONFIG: $KUBECONFIG"
+    else
+        echo "KUBECONFIG: (not set, using default)"
+    fi
+    echo ""
+    
+    if oc whoami &>/dev/null; then
+        print_success "Connection successful!"
+        echo ""
+        echo "  User: $(oc whoami)"
+        echo "  Server: $(oc whoami --show-server)"
+        echo ""
+        
+        print_step "Cluster nodes:"
+        oc get nodes 2>/dev/null || echo "  (unable to list nodes)"
+        
+        echo ""
+        print_step "OpenShift version:"
+        oc version 2>/dev/null | head -5 || echo "  (unable to get version)"
+    else
+        print_error "Connection failed"
+        echo ""
+        echo "Possible issues:"
+        echo "  • Token expired (demo environments expire after ~24 hours)"
+        echo "  • KUBECONFIG not set or pointing to wrong file"
+        echo "  • Network connectivity issues"
+        echo ""
+        echo "Try logging in again with option 1 (Login with token)"
+    fi
+}
+
+add_kubeconfig_to_profile() {
+    local kubeconfig_path="$1"
+    local shell_profile=""
+    
+    # Detect shell
+    if [ -n "$ZSH_VERSION" ] || [ "$SHELL" = "/bin/zsh" ]; then
+        shell_profile="$HOME/.zshrc"
+    elif [ -n "$BASH_VERSION" ] || [ "$SHELL" = "/bin/bash" ]; then
+        shell_profile="$HOME/.bashrc"
+    else
+        shell_profile="$HOME/.profile"
+    fi
+    
+    echo ""
+    print_step "Adding KUBECONFIG to $shell_profile"
+    
+    # Check if already in profile
+    if grep -q "export KUBECONFIG=" "$shell_profile" 2>/dev/null; then
+        print_warning "KUBECONFIG export already exists in $shell_profile"
+        echo "Current line:"
+        grep "export KUBECONFIG=" "$shell_profile"
+        echo ""
+        read -p "Replace it? (y/N): " replace
+        if [[ "$replace" =~ ^[Yy]$ ]]; then
+            # Remove old line and add new
+            sed -i.bak '/export KUBECONFIG=/d' "$shell_profile"
+            echo "export KUBECONFIG=\"$kubeconfig_path\"" >> "$shell_profile"
+            print_success "Updated KUBECONFIG in $shell_profile"
+        fi
+    else
+        echo "" >> "$shell_profile"
+        echo "# OpenShift kubeconfig" >> "$shell_profile"
+        echo "export KUBECONFIG=\"$kubeconfig_path\"" >> "$shell_profile"
+        print_success "Added KUBECONFIG to $shell_profile"
+    fi
+    
+    echo ""
+    print_info "Run 'source $shell_profile' to apply changes to current shell"
 }
 
 ################################################################################
@@ -1556,7 +2332,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-6): " choice
+        read -p "Select an option (1-7): " choice
         
         case $choice in
             1)
@@ -1574,16 +2350,19 @@ main() {
                 read -p "Press Enter to return to main menu..."
                 ;;
             5)
+                configure_kubeconfig_interactive
+                ;;
+            6)
                 show_help
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            6)
+            7)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6."
+                print_error "Invalid option. Please select 1-7."
                 sleep 2
                 ;;
         esac

@@ -1,0 +1,31 @@
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: llamastack-mcp-demo
+  namespace: demo-test
+  labels:
+    app: llamastack-mcp-demo
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: llamastack-mcp-demo:latest
+  source:
+    binary: {}
+    type: Binary
+  strategy:
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+    type: Docker
+  successfulBuildsHistoryLimit: 3
+  failedBuildsHistoryLimit: 3
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: llamastack-mcp-demo
+  namespace: demo-test
+  labels:
+    app: llamastack-mcp-demo
+

@@ -169,19 +169,38 @@ Master script with interactive menu for:
 1. Complete OpenShift + RHOAI installation
 2. GPU hardware profile creation
 3. MaaS setup
-4. Automatic detection of existing resources
+4. Kubeconfig management
+5. LlamaStack Demo UI deployment
+6. Automatic detection of existing resources
 
 ### How to Use
 ```bash
 ./complete-setup.sh
 ```
 
-### Menu Options
+### Main Menu Options
 ```
-1) Complete Setup - Full installation
-2) Create GPU Hardware Profile - For existing clusters
-3) Setup MaaS Only - Assumes RHOAI exists
-4) Exit
+1) Complete Setup (OpenShift + RHOAI + GPU + MaaS) [Full]
+2) Minimal RHOAI Setup (choose operators) [Flexible]
+3) RHOAI Management (configure features, deploy models, etc.)
+4) Create GPU MachineSet (add GPU nodes to existing cluster)
+5) Configure Kubeconfig (login, set, or create kubeconfig) [Connection]
+6) Help (show scripts and documentation)
+7) Exit
+```
+
+### RHOAI Management Submenu
+```
+1) Enable Dashboard Features (Model Registry, GenAI Studio, etc.)
+2) Deploy Model (interactive model deployment)
+3) Add Model to Playground (test models interactively)
+4) Setup MCP Servers (Model Context Protocol for tool calling)
+5) Create GPU Hardware Profile (for model deployments)
+6) Setup MaaS (Model as a Service API gateway)
+7) Deploy LlamaStack Demo UI (chatbot frontend) [Demo]
+8) Quick Start Wizard (run typical post-install workflow)
+9) Approve Pending CSRs (Day 2 node management)
+0) Back to Main Menu
 ```
 
 ### Features
@@ -191,6 +210,76 @@ Master script with interactive menu for:
 - ✅ Interactive prompts with clear explanations
 - ✅ Skip flags for advanced users
 - ✅ Configuration reuse for faster reinstalls
+- ✅ Kubeconfig management (login with token, switch configs)
+- ✅ LlamaStack Demo UI deployment (chatbot frontend)
+
+---
+
+## 🤖 LlamaStack Demo UI
+
+### What It Is
+A Streamlit-based chatbot frontend that connects to LlamaStack and demonstrates MCP tool calling in real-time.
+
+### Features
+- ✅ **Fully Configurable** - All settings via environment variables
+- ✅ **Works with Any MCP Server** - Not tied to specific tools
+- ✅ **Custom System Prompts** - Define LLM behavior per deployment
+- ✅ **Service Health Checks** - Real-time status for LlamaStack and MCP
+- ✅ **Tool Discovery** - Automatically shows available tools from LlamaStack
+- ✅ **Chat Interface** - Full conversation with tool call visualization
+
+### How to Deploy
+```bash
+./complete-setup.sh
+# Select: 3) RHOAI Management
+# Select: 7) Deploy LlamaStack Demo UI
+```
+
+The script will:
+1. Prompt for namespace, LlamaStack URL, Model ID, MCP Server URL
+2. Auto-detect existing LlamaStack and MCP services
+3. Build the container using OpenShift BuildConfig
+4. Deploy the application with Route
+
+### Configuration Options
+| Variable | Description |
+|----------|-------------|
+| `LLAMASTACK_URL` | LlamaStack service endpoint |
+| `MODEL_ID` | Model ID registered in LlamaStack |
+| `MCP_SERVER_URL` | MCP server URL (for health checks) |
+| `APP_TITLE` | Page title |
+| `MCP_SERVER_NAME` | Name shown in architecture diagram |
+| `SYSTEM_PROMPT` | Custom system prompt for the LLM |
+
+### Full Documentation
+📖 [demo/llamastack-demo/README.md](demo/llamastack-demo/README.md)
+
+---
+
+## 🔐 Kubeconfig Management
+
+### What It Does
+Interactive menu for managing OpenShift cluster connections without leaving the setup script.
+
+### Options
+1. **Login with token** - Paste `oc login --token=... --server=...` command
+2. **Login with username/password** - For environments with password auth
+3. **Set KUBECONFIG from existing file** - Pick from common locations
+4. **Create new kubeconfig in workspace** - Creates `./kubeconfig`
+5. **View current kubeconfig** - Shows config (tokens redacted)
+6. **Test connection** - Verify connection and cluster info
+
+### How to Use
+```bash
+./complete-setup.sh
+# Select: 5) Configure Kubeconfig
+```
+
+### Why Use This?
+- Quickly switch between clusters
+- Save kubeconfig to workspace (portable)
+- Add KUBECONFIG export to shell profile
+- Test connection without leaving the menu
 
 ---
 
