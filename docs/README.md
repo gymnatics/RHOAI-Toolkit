@@ -94,7 +94,7 @@ Detailed documentation for specific fixes:
 ## Scripts Reference
 
 ### Main Script
-- `./complete-setup.sh` - Full installation (interactive menu)
+- `./rhoai-toolkit.sh` - Full installation (interactive menu)
 
 ### Installation Scripts
 - `./scripts/openshift-installer-master.sh` - OpenShift only

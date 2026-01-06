@@ -70,7 +70,7 @@ This will:
 # Installation failed early, no cluster was created
 ./scripts/cleanup-all.sh -l
 # Quick cleanup, ready to retry immediately
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ### Example 2: Decommissioning Cluster
@@ -86,7 +86,7 @@ This will:
 # Cluster might still be running in AWS, just want fresh local install
 ./scripts/cleanup-all.sh --local-only
 # Then install fresh
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ## What Gets Deleted
@@ -150,6 +150,6 @@ Press Ctrl+C, then run:
 ## See Also
 
 - `./scripts/manage-kubeconfig.sh` - Manage kubeconfig files
-- `./complete-setup.sh` - Fresh installation
+- `./rhoai-toolkit.sh` - Fresh installation
 - `docs/TROUBLESHOOTING.md` - General troubleshooting
 

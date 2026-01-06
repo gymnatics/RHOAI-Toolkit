@@ -45,7 +45,7 @@ echo ""
 # Check if RHOAI is installed
 if ! oc get namespace redhat-ods-applications &>/dev/null; then
     print_error "RHOAI namespace not found"
-    print_info "Please install RHOAI first: ./complete-setup.sh"
+    print_info "Please install RHOAI first: ./rhoai-toolkit.sh"
     exit 1
 fi
 

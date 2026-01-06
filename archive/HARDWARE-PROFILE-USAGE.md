@@ -5,7 +5,7 @@
 ### Method 1: Interactive Menu (Recommended)
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 Select **Option 2: Create GPU Hardware Profile**
@@ -59,7 +59,7 @@ This fixes profiles that aren't visible in the UI.
 ## 📋 Example Walkthrough
 
 ```bash
-$ ./complete-setup.sh
+$ ./rhoai-toolkit.sh
 
 ╔════════════════════════════════════════════════════════════════╗
 ║                    Main Menu                                   ║
@@ -154,7 +154,7 @@ GPU: Default 8, Min 2, Max 8
 
 ```bash
 # Method 1: Interactive (recommended)
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select option 2, repeat for each namespace
 
 # Method 2: Script (faster for multiple namespaces)
@@ -181,7 +181,7 @@ oc get hardwareprofile gpu-profile -n my-namespace -o jsonpath='{.metadata.label
 Just run the creation again - it will update the existing profile:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select option 2
 # Enter same namespace and profile name
 # Provide new resource values

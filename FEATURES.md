@@ -26,7 +26,7 @@ Without this, profiles won't appear in the RHOAI dashboard!
 ./scripts/create-hardware-profile.sh <namespace>
 
 # Or use the complete setup menu
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 2) Create GPU Hardware Profile
 ```
 
@@ -174,7 +174,7 @@ Master script with interactive menu for:
 
 ### How to Use
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ### Main Menu Options
@@ -229,7 +229,7 @@ A Streamlit-based chatbot frontend that connects to LlamaStack and demonstrates 
 
 ### How to Deploy
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 3) RHOAI Management
 # Select: 7) Deploy LlamaStack Demo UI
 ```
@@ -270,7 +270,7 @@ Interactive menu for managing OpenShift cluster connections without leaving the 
 
 ### How to Use
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 5) Configure Kubeconfig
 ```
 
@@ -313,7 +313,7 @@ Comprehensive cleanup of all AWS resources created during installation.
 ### Common Commands
 ```bash
 # Full installation
-./complete-setup.sh
+./rhoai-toolkit.sh
 
 # Add GPU nodes
 ./scripts/create-gpu-machineset.sh

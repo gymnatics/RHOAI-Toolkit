@@ -55,7 +55,7 @@ A fully functional modular version that:
 
 ### 4. Updated Complete Setup Script ✅
 
-#### `complete-setup.sh`
+#### `rhoai-toolkit.sh`
 - Added `--modular` flag to use `integrated-workflow-v2.sh`
 - Maintains backward compatibility with original `scripts/integrated-workflow.sh`
 - Users can choose between original and modular versions
@@ -77,7 +77,7 @@ A fully functional modular version that:
 
 ```
 .
-├── complete-setup.sh                    # Main entry point (supports --modular)
+├── rhoai-toolkit.sh                    # Main entry point (supports --modular)
 ├── integrated-workflow-v2.sh            # ⭐ Modular RHOAI workflow
 │
 ├── scripts/                             # Original working scripts
@@ -134,12 +134,12 @@ A fully functional modular version that:
 
 ### Use via Complete Setup
 ```bash
-./complete-setup.sh --modular
+./rhoai-toolkit.sh --modular
 ```
 
 ### Use Original Version
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # or
 ./scripts/integrated-workflow.sh
 ```

@@ -153,7 +153,7 @@ approve_pending_installplans() {
 install_openshift() {
     print_header "PHASE 1: OpenShift Installation"
     
-    # Check if user explicitly cleared kubeconfig in complete-setup.sh
+    # Check if user explicitly cleared kubeconfig in rhoai-toolkit.sh
     if [ "${FORCE_NEW_CLUSTER}" = "true" ]; then
         print_info "Kubeconfig was cleared - proceeding with fresh installation"
         # Skip the existing cluster check

@@ -33,7 +33,7 @@ make setup-llmd (for llm-d/distributed inference):
 ### Our Installation Flow
 
 ```bash
-complete-setup.sh → integrated-workflow-v2.sh:
+rhoai-toolkit.sh → integrated-workflow-v2.sh:
   1. Install NFD operator
   2. Install GPU Operator
   3. Install cert-manager operator

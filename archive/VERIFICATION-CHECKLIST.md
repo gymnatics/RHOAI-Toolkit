@@ -211,7 +211,7 @@ The following scripts now include cert-manager, LWS, and Kueue installation:
 
 ## Future Installations
 
-When you run `./complete-setup.sh` in the future, it will:
+When you run `./rhoai-toolkit.sh` in the future, it will:
 1. ✅ Install cert-manager automatically
 2. ✅ Install LWS operator in dedicated namespace
 3. ✅ Install Kueue operator with correct channel

@@ -130,7 +130,7 @@ quick_local_cleanup() {
     echo "  ${GREEN}./scripts/cleanup-all.sh${NC}  (and select option 2)"
     echo ""
     echo "Ready for fresh installation:"
-    echo "  ${GREEN}./complete-setup.sh${NC}"
+    echo "  ${GREEN}./rhoai-toolkit.sh${NC}"
     echo ""
     
     return 0

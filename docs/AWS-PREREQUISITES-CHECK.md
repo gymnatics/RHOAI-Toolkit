@@ -64,10 +64,10 @@ Run the checker independently before installation:
 
 ### Integrated with Installation
 
-The checker runs automatically when you use `complete-setup.sh`:
+The checker runs automatically when you use `rhoai-toolkit.sh`:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 You'll be prompted:
@@ -227,14 +227,14 @@ ssh-add ~/.ssh/id_rsa
 
 The AWS prerequisites check is integrated into:
 
-1. **complete-setup.sh** - Runs automatically before installation
+1. **rhoai-toolkit.sh** - Runs automatically before installation
 2. **Standalone script** - Can be run independently for troubleshooting
 
 ## Files
 
 - `lib/utils/aws-checks.sh` - Core checking functions
 - `scripts/check-aws-prerequisites.sh` - Standalone wrapper script
-- `complete-setup.sh` - Integrated into main setup flow
+- `rhoai-toolkit.sh` - Integrated into main setup flow
 
 ## Benefits
 
@@ -256,7 +256,7 @@ The AWS prerequisites check is integrated into:
 If you're confident your environment is correct:
 
 ```bash
-# In complete-setup.sh, when prompted:
+# In rhoai-toolkit.sh, when prompted:
 Run AWS checks? [Y/n]: n
 ```
 

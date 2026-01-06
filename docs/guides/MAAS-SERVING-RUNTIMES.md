@@ -99,7 +99,7 @@ When MaaS is enabled for an `llm-d` model:
 4. ✅ Authorino (authentication)
 5. ✅ MaaS API infrastructure deployed
 
-All of these are automatically installed by our `complete-setup.sh` script.
+All of these are automatically installed by our `rhoai-toolkit.sh` script.
 
 ## Verification
 

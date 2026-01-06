@@ -29,7 +29,7 @@ This is **timing-related** and only affects:
 
 ### Automatic Fix (Integrated in Scripts)
 
-The `complete-setup.sh` and `integrated-workflow-v2.sh` scripts now **automatically apply this fix**.
+The `rhoai-toolkit.sh` and `integrated-workflow-v2.sh` scripts now **automatically apply this fix**.
 
 When the Authorino service doesn't appear within 2 minutes, the script will:
 1. Restart the Kuadrant operator pod

@@ -1259,7 +1259,7 @@ print_summary() {
         if [ "$INSTALL_LWS" = false ] || [ "$INSTALL_RHCL" = false ]; then
             echo "  • llm-d support: $0 --with-llmd"
         fi
-        echo "  • Full installation: ./complete-setup.sh --skip-openshift"
+        echo "  • Full installation: ./rhoai-toolkit.sh --skip-openshift"
         echo ""
     fi
 }

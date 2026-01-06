@@ -75,7 +75,7 @@ Your subnets must meet these requirements:
 ```bash
 ./scripts/openshift-installer-master.sh
 # or
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ### Step 2: Select "Use Existing VPC"

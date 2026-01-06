@@ -583,7 +583,7 @@ main() {
         echo "Deploy a model first using:"
         echo "  ./scripts/quick-deploy-model.sh"
         echo "Or:"
-        echo "  ./complete-setup.sh (select option 3: Deploy Model)"
+        echo "  ./rhoai-toolkit.sh (select option 3: Deploy Model)"
         exit 1
     fi
     

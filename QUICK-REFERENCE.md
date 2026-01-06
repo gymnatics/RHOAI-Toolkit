@@ -107,9 +107,9 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 
 | Script | Purpose |
 |--------|---------|
-| `./complete-setup.sh` | Full setup (OpenShift + RHOAI + GPU + MaaS) |
-| `./complete-setup.sh` → Option 5 | Configure Kubeconfig (login, switch clusters) |
-| `./complete-setup.sh` → 3 → 7 | Deploy LlamaStack Demo UI (chatbot frontend) |
+| `./rhoai-toolkit.sh` | Full setup (OpenShift + RHOAI + GPU + MaaS) |
+| `./rhoai-toolkit.sh` → Option 5 | Configure Kubeconfig (login, switch clusters) |
+| `./rhoai-toolkit.sh` → 3 → 7 | Deploy LlamaStack Demo UI (chatbot frontend) |
 | `./scripts/fix-hardware-profile.sh` | Fix GPU profile visibility |
 | `./scripts/setup-maas.sh` | Set up MaaS infrastructure |
 | `./scripts/create-gpu-machineset.sh` | Add GPU worker nodes |
@@ -123,7 +123,7 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 Deploy a chatbot frontend to test LlamaStack + MCP:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 3) RHOAI Management
 # Select: 7) Deploy LlamaStack Demo UI
 ```
@@ -137,7 +137,7 @@ See `demo/llamastack-demo/README.md` for configuration options.
 Quickly login or switch clusters:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 5) Configure Kubeconfig
 ```
 

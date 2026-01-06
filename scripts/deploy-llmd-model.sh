@@ -50,7 +50,7 @@ main() {
     # Check if RHOAI is installed
     if ! oc get datasciencecluster default-dsc &>/dev/null; then
         print_error "RHOAI does not appear to be installed."
-        print_info "Please run ./complete-setup.sh first."
+        print_info "Please run ./rhoai-toolkit.sh first."
         exit 1
     fi
     print_success "RHOAI is installed"

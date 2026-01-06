@@ -169,7 +169,7 @@ This implementation adds comprehensive documentation and automation scripts for 
    - Updated documentation structure
    - Added new scripts to Scripts section
 
-2. **`complete-setup.sh`** (Future Enhancement)
+2. **`rhoai-toolkit.sh`** (Future Enhancement)
    - Could add menu options for:
      * Enable dashboard features
      * Add model to playground
@@ -234,7 +234,7 @@ Users can now learn about:
 
 ```
 User Journey:
-1. Install RHOAI (complete-setup.sh)
+1. Install RHOAI (rhoai-toolkit.sh)
 2. Enable features (enable-dashboard-features.sh)
 3. Deploy model (quick-deploy-model.sh)
 4. Add to playground (add-model-to-playground.sh)

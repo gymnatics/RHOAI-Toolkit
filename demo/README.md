@@ -21,7 +21,7 @@ A Streamlit-based chatbot that demonstrates LlamaStack orchestrating LLM + MCP t
 
 ```bash
 # From the main directory
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 3) RHOAI Management
 # Select: 7) Deploy LlamaStack Demo UI
 ```

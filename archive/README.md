@@ -4,7 +4,7 @@ This folder contains scripts and documentation that are no longer needed for fre
 
 ## Why Files Are Archived
 
-1. **Superseded**: Functionality integrated into `complete-setup.sh`
+1. **Superseded**: Functionality integrated into `rhoai-toolkit.sh`
 2. **Implementation Notes**: Development summaries not needed by end users
 3. **Historical**: Documentation from feature development
 4. **Troubleshooting**: May help fix issues in older installations
@@ -26,12 +26,12 @@ Fixes RHCL operator installations with incorrect OperatorGroup. Only needed for 
 ### integrated-workflow-v2.sh
 **Status**: ❌ Superseded
 
-Previous version of the workflow script. Use `complete-setup.sh` instead.
+Previous version of the workflow script. Use `rhoai-toolkit.sh` instead.
 
 ### quick-deploy-model.sh
 **Status**: ❌ Superseded
 
-Quick model deployment script. Use `complete-setup.sh` → Model Deployment instead.
+Quick model deployment script. Use `rhoai-toolkit.sh` → Model Deployment instead.
 
 ---
 
@@ -67,7 +67,7 @@ Historical documentation about hardware profile fixes:
 **Don't use archived scripts!** Instead, use:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 This provides all functionality through an interactive menu.

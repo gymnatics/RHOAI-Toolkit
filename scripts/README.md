@@ -14,7 +14,7 @@ This folder contains utility scripts that support the main installation workflow
 # Run standalone check
 ./scripts/check-aws-prerequisites.sh
 
-# Or it runs automatically in complete-setup.sh
+# Or it runs automatically in rhoai-toolkit.sh
 ```
 
 **What it checks**:
@@ -252,7 +252,7 @@ cat scripts/CLEANUP-USAGE.md
 
 ## See Also
 
-- **Main Scripts** (in root): `openshift-installer-master.sh`, `integrated-workflow.sh`, `complete-setup.sh`
+- **Main Scripts** (in root): `openshift-installer-master.sh`, `integrated-workflow.sh`, `rhoai-toolkit.sh`
 - **Diagnostics** (in diagnostics/): Tools for troubleshooting
 - **Tests** (in tests/): Test scripts for validation
 - **Documentation** (in docs/): Detailed guides and troubleshooting

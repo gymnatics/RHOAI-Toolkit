@@ -174,7 +174,7 @@ This script will:
 The llm-d setup is automatically included when you run:
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 Or:

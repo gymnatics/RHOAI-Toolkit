@@ -690,7 +690,7 @@ EOF
 
 For automated setup, use:
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ---

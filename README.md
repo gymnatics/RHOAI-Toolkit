@@ -6,7 +6,7 @@ A comprehensive toolkit for installing and configuring **OpenShift** with **Red 
 
 ```bash
 # Run the interactive setup
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 This single command provides an interactive menu to:
@@ -45,7 +45,7 @@ This single command provides an interactive menu to:
 ## Repository Structure
 
 ```
-├── complete-setup.sh           # Main interactive setup script
+├── rhoai-toolkit.sh            # Main interactive setup script
 ├── FEATURES.md                 # Feature quick reference
 ├── QUICK-REFERENCE.md          # Common commands cheat sheet
 │
@@ -80,7 +80,7 @@ This single command provides an interactive menu to:
 ### Full Installation
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 Select from the menu:
@@ -133,28 +133,28 @@ Select from the menu:
 ### 1. Install OpenShift Cluster
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 1) OpenShift Installation → 1) Install New Cluster
 ```
 
 ### 2. Install RHOAI
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 2) RHOAI Management → 1) Install RHOAI
 ```
 
 ### 3. Add GPU Nodes
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 3) GPU Management → 1) Create GPU MachineSet
 ```
 
 ### 4. Deploy a Model
 
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 4) Model Deployment → 1) Deploy Model
 ```
 
@@ -185,7 +185,7 @@ Select from the menu:
 
 **Cluster connection issues:**
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # Select: 5) Configure Kubeconfig
 ```
 

@@ -35,7 +35,7 @@ rm -f ~/.kube/config
 
 #### Option 3: Via Complete Setup
 ```bash
-./complete-setup.sh
+./rhoai-toolkit.sh
 # When it detects existing cluster:
 # Select: 3) Clear kubeconfig and install a new cluster
 ```
@@ -102,7 +102,7 @@ oc whoami
 # Select option 2
 
 # Then set new cluster
-./complete-setup.sh
+./rhoai-toolkit.sh
 ```
 
 ### Scenario 3: Multiple Clusters
@@ -127,7 +127,7 @@ oc get nodes
 # Then: 4) Clear KUBECONFIG and remove from shell profile
 
 # Option 2: Via complete-setup
-./complete-setup.sh
+./rhoai-toolkit.sh
 # It will detect and offer to clear
 ```
 
@@ -201,7 +201,7 @@ export KUBECONFIG=/path/to/new-cluster-install/auth/kubeconfig
 
 ## Integration with Other Scripts
 
-### complete-setup.sh
+### rhoai-toolkit.sh
 Automatically detects kubeconfig and offers management options
 
 ### openshift-installer-master.sh

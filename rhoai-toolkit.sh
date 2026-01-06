@@ -11,11 +11,11 @@
 # 5. GPU Hardware Profile creation (interactive)
 #
 # Usage:
-#   ./complete-setup.sh                    # Interactive menu mode
-#   ./complete-setup.sh --with-maas        # Auto-enable MaaS (non-interactive)
-#   ./complete-setup.sh --skip-maas        # Skip MaaS setup (non-interactive)
-#   ./complete-setup.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
-#   ./complete-setup.sh --legacy           # Use legacy version (scripts/integrated-workflow.sh)
+#   ./rhoai-toolkit.sh                    # Interactive menu mode
+#   ./rhoai-toolkit.sh --with-maas        # Auto-enable MaaS (non-interactive)
+#   ./rhoai-toolkit.sh --skip-maas        # Skip MaaS setup (non-interactive)
+#   ./rhoai-toolkit.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
+#   ./rhoai-toolkit.sh --legacy           # Use legacy version (scripts/integrated-workflow.sh)
 #
 # Interactive Menu Options:
 #   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
@@ -881,7 +881,7 @@ show_help() {
     echo -e "${CYAN}Command-Line Flags${NC}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "${YELLOW}Run complete-setup.sh with options:${NC}"
+    echo -e "${YELLOW}Run rhoai-toolkit.sh with options:${NC}"
     echo ""
     echo "  --with-maas          Auto-enable MaaS (non-interactive)"
     echo "  --skip-maas          Skip MaaS setup"
@@ -891,8 +891,8 @@ show_help() {
     echo "  --skip-rhoai         Skip RHOAI installation"
     echo ""
     echo -e "${GREEN}Examples:${NC}"
-    echo "  ./complete-setup.sh --skip-openshift --with-maas"
-    echo "  ./complete-setup.sh --maas-only"
+    echo "  ./rhoai-toolkit.sh --skip-openshift --with-maas"
+    echo "  ./rhoai-toolkit.sh --maas-only"
     echo ""
     
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
