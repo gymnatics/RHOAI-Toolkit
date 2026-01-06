@@ -7,6 +7,7 @@ This folder contains demo scripts and applications for RHOAI.
 | Directory/File | Description |
 |----------------|-------------|
 | `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
+| `guardrails-demo/` | **Guardrails Demo** - Learn AI safety concepts (mock, runs locally) |
 | `setup-demo-model.sh` | Deploy a sample model with MaaS |
 | `test-maas-api.sh` | Test MaaS API endpoints |
 | `generate-maas-token.sh` | Generate MaaS API token |
@@ -42,6 +43,30 @@ oc apply -f deployment.yaml
 ```
 
 See `llamastack-demo/README.md` for full documentation.
+
+---
+
+## 🛡️ Guardrails Demo
+
+A standalone demo to help you understand AI safety concepts without requiring any external services.
+
+### Quick Start
+
+```bash
+pip install streamlit
+cd guardrails-demo
+streamlit run app.py
+```
+
+### Features
+- Mock PII detection (emails, phone numbers, SSN, credit cards)
+- Prompt injection detection
+- Toxicity detection
+- Interactive examples and explanations
+
+This is a **learning tool** - for production, use TrustyAI GuardrailsOrchestrator (see `feature/trustyai-guardrails` branch).
+
+See `guardrails-demo/README.md` for full documentation.
 
 ---
 
