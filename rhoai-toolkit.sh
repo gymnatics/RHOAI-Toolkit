@@ -95,9 +95,10 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
     echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
     echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
-    echo -e "${YELLOW}7)${NC} Deploy LlamaStack Demo (UI + MCP Server + MongoDB) ${GREEN}[Demo]${NC}"
-    echo -e "${YELLOW}8)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
-    echo -e "${YELLOW}9)${NC} Approve Pending CSRs (Day 2 node management)"
+    echo -e "${YELLOW}7)${NC} Setup LlamaStack (deploy with vLLM, Azure, OpenAI, etc.) ${GREEN}[NEW]${NC}"
+    echo -e "${YELLOW}8)${NC} Deploy LlamaStack Demo (UI + MCP Server + MongoDB) ${CYAN}[Demo]${NC}"
+    echo -e "${YELLOW}9)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
+    echo -e "${YELLOW}10)${NC} Approve Pending CSRs (Day 2 node management)"
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
@@ -689,7 +690,241 @@ deploy_llamastack_demo_menu() {
 }
 
 ################################################################################
-# LlamaStack Deployment with Provider Selection
+# LlamaStack Setup (Generic, without Demo)
+################################################################################
+
+setup_llamastack_interactive() {
+    print_header "Setup LlamaStack"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    
+    # Check if LlamaStack CRD exists
+    if ! oc get crd llamastackdistributions.llamastack.io &>/dev/null; then
+        print_error "LlamaStackDistribution CRD not found!"
+        echo ""
+        echo -e "${YELLOW}LlamaStack operator is not enabled in your RHOAI installation.${NC}"
+        echo ""
+        echo "To enable LlamaStack:"
+        echo ""
+        echo "  1. Ensure you have RHOAI 3.0+ installed"
+        echo ""
+        echo "  2. Enable LlamaStack in your DataScienceCluster:"
+        echo "     oc patch datasciencecluster default-dsc --type merge \\"
+        echo "       -p '{\"spec\":{\"components\":{\"llamastackoperator\":{\"managementState\":\"Managed\"}}}}'"
+        echo ""
+        echo "  3. Wait for the operator to be ready (~2-3 minutes)"
+        echo ""
+        read -p "Would you like to enable LlamaStack now? (y/N): " enable_llamastack
+        if [[ "$enable_llamastack" =~ ^[Yy]$ ]]; then
+            print_step "Enabling LlamaStack operator..."
+            if oc patch datasciencecluster default-dsc --type merge \
+                -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}' 2>/dev/null; then
+                print_success "LlamaStack operator enabled"
+                echo ""
+                print_step "Waiting for CRD to be available..."
+                local max_wait=180
+                local waited=0
+                while [ $waited -lt $max_wait ]; do
+                    if oc get crd llamastackdistributions.llamastack.io &>/dev/null; then
+                        print_success "LlamaStack CRD is now available"
+                        break
+                    fi
+                    sleep 5
+                    waited=$((waited + 5))
+                    echo "  Waiting... ($waited/$max_wait seconds)"
+                done
+                
+                if [ $waited -ge $max_wait ]; then
+                    print_warning "Timeout waiting for CRD. Please try again in a few minutes."
+                    return 1
+                fi
+            else
+                print_error "Failed to enable LlamaStack operator"
+                return 1
+            fi
+        else
+            return 1
+        fi
+    fi
+    
+    print_success "LlamaStack CRD found"
+    echo ""
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}LlamaStack will be deployed with:${NC}"
+    echo "  • Your chosen LLM provider (vLLM, Azure, OpenAI, Ollama, Bedrock)"
+    echo "  • RAG capabilities (Milvus vector DB)"
+    echo "  • MCP tool runtime support"
+    echo "  • Agent orchestration"
+    echo ""
+    
+    read -p "Proceed? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+    
+    # Deploy LlamaStack (reuse existing function but with custom MCP URL prompt)
+    deploy_llamastack_distribution_generic "$target_ns"
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  ✅ LlamaStack Deployed Successfully!                          ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${CYAN}📦 LlamaStack Service:${NC}"
+        echo "   • URL: http://llamastack-demo-service.$target_ns.svc.cluster.local:8321"
+        echo "   • Provider: $LLM_PROVIDER"
+        echo "   • Model: $MODEL_ID"
+        echo ""
+        echo -e "${CYAN}💡 Next Steps:${NC}"
+        echo "   1. Test the connection:"
+        echo "      curl http://llamastack-demo-service.$target_ns.svc.cluster.local:8321/v1/models"
+        echo ""
+        echo "   2. Add MCP servers (optional):"
+        echo "      Edit the ConfigMap to add tool_groups with mcp_endpoint"
+        echo ""
+        echo "   3. Use from your application:"
+        echo "      from llama_stack_client import LlamaStackClient"
+        echo "      client = LlamaStackClient(base_url='http://llamastack-demo-service.$target_ns.svc.cluster.local:8321')"
+        echo ""
+    fi
+    
+    return 0
+}
+
+deploy_llamastack_distribution_generic() {
+    local target_ns="$1"
+    
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Deploying LlamaStack Distribution${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    # Select and configure provider
+    show_llm_provider_menu
+    read -p "Enter your choice [1]: " provider_choice
+    provider_choice="${provider_choice:-1}"
+    
+    case $provider_choice in
+        1) configure_vllm_provider "$target_ns" || return 1 ;;
+        2) configure_azure_provider "$target_ns" || return 1 ;;
+        3) configure_openai_provider "$target_ns" || return 1 ;;
+        4) configure_ollama_provider "$target_ns" || return 1 ;;
+        5) configure_bedrock_provider "$target_ns" || return 1 ;;
+        *) print_error "Invalid choice"; return 1 ;;
+    esac
+    
+    # Ask about MCP server (optional)
+    echo ""
+    read -p "Do you want to configure an MCP server? (y/N): " configure_mcp
+    local mcp_config=""
+    if [[ "$configure_mcp" =~ ^[Yy]$ ]]; then
+        read -p "MCP Server Name (e.g., weather-data): " mcp_name
+        mcp_name="${mcp_name:-custom-mcp}"
+        read -p "MCP Server URL (e.g., http://my-mcp-server.ns.svc.cluster.local:8000/mcp): " mcp_url
+        if [ -n "$mcp_url" ]; then
+            mcp_config="    - toolgroup_id: mcp::$mcp_name
+      provider_id: model-context-protocol
+      mcp_endpoint:
+        uri: $mcp_url"
+        fi
+    fi
+    
+    # Apply ConfigMap (modified to not include weather MCP by default)
+    print_step "Creating LlamaStack ConfigMap..."
+    
+    # Use sed to modify the config file, optionally adding MCP
+    if [ -n "$mcp_config" ]; then
+        sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" \
+            -e "s/MODEL_ID_PLACEHOLDER/$MODEL_ID/g" \
+            -e "s|uri: http://weather-mcp-server.*|# Custom MCP configured below|g" \
+            "$CONFIG_FILE" | \
+        awk -v mcp="$mcp_config" '
+            /toolgroup_id: mcp::weather-data/ { 
+                # Replace weather MCP with custom MCP
+                print mcp
+                # Skip the next 3 lines (provider_id and mcp_endpoint)
+                getline; getline; getline
+                next
+            }
+            { print }
+        ' | oc apply -f -
+    else
+        # No MCP - remove the weather MCP section
+        sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" \
+            -e "s/MODEL_ID_PLACEHOLDER/$MODEL_ID/g" \
+            "$CONFIG_FILE" | \
+        awk '
+            /toolgroup_id: mcp::weather-data/,/uri:.*mcp$/ { next }
+            { print }
+        ' | oc apply -f -
+    fi
+    
+    # Apply Distribution with env vars
+    print_step "Creating LlamaStackDistribution..."
+    
+    local dist_file="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-distribution.yaml"
+    
+    # Read base distribution and inject env vars
+    sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file" | \
+    awk -v env_vars="$DISTRIBUTION_ENV_VARS" '
+        /env:/ && !done {
+            print
+            print env_vars
+            done=1
+            next
+        }
+        { print }
+    ' | oc apply -f -
+    
+    print_step "Waiting for LlamaStack pod to be ready..."
+    sleep 5
+    
+    if oc wait --for=condition=available deployment -l llamastack.io/distribution=llamastack-demo -n "$target_ns" --timeout=180s 2>/dev/null; then
+        print_success "LlamaStack is ready"
+    else
+        print_warning "LlamaStack may still be starting. Check with: oc get pods -n $target_ns"
+    fi
+    
+    return 0
+}
+
+################################################################################
+# LlamaStack Deployment with Provider Selection (for Demo)
 ################################################################################
 
 show_llm_provider_menu() {
@@ -1759,7 +1994,7 @@ show_help() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-9, 0): " rhoai_choice
+        read -p "Select an option (1-10, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -1794,16 +2029,21 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
-                deploy_llamastack_demo_menu
+                setup_llamastack_interactive
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             8)
-                quick_start_wizard
+                deploy_llamastack_demo_menu
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             9)
+                quick_start_wizard
+                echo ""
+                read -p "Press Enter to return to RHOAI Management menu..."
+                ;;
+            10)
                 approve_pending_csrs
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
@@ -1813,7 +2053,7 @@ rhoai_management_menu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9 or 0."
+                print_error "Invalid option. Please select 1-10 or 0."
                 sleep 2
                 ;;
         esac
