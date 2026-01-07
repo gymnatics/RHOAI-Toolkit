@@ -1,0 +1,31 @@
+---
+# ImageStream for Weather MCP Server
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: weather-mcp-server
+  namespace: demo-test  # Change to your namespace
+spec:
+  lookupPolicy:
+    local: true
+---
+# BuildConfig for binary builds
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: weather-mcp-server
+  namespace: demo-test  # Change to your namespace
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: weather-mcp-server:latest
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  triggers: []
+

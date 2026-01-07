@@ -1,0 +1,80 @@
+---
+# ConfigMap for Weather MCP Server
+# Update these values for your environment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weather-mcp-config
+  namespace: demo-test  # Change to your namespace
+data:
+  MCP_SERVER_NAME: "weather-data"
+  MONGODB_URL: "mongodb://mongodb:27017"
+  DATABASE_NAME: "weather"
+  COLLECTION_NAME: "observations"
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-mcp-server
+  namespace: demo-test  # Change to your namespace
+  labels:
+    app: weather-mcp-server
+    app.kubernetes.io/name: weather-mcp-server
+    app.kubernetes.io/component: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: weather-mcp-server
+  template:
+    metadata:
+      labels:
+        app: weather-mcp-server
+    spec:
+      containers:
+      - name: mcp-server
+        image: image-registry.openshift-image-registry.svc:5000/demo-test/weather-mcp-server:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        envFrom:
+        - configMapRef:
+            name: weather-mcp-config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-mcp-server
+  namespace: demo-test  # Change to your namespace
+  labels:
+    app: weather-mcp-server
+spec:
+  selector:
+    app: weather-mcp-server
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8000
+    targetPort: 8000
+

@@ -1,0 +1,121 @@
+---
+# Job to initialize MongoDB with sample weather data
+# Run this after MongoDB is deployed and ready
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-weather-data
+  namespace: demo-test  # Change to your namespace
+spec:
+  ttlSecondsAfterFinished: 300  # Auto-cleanup after 5 minutes
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: data-loader
+        image: python:3.12-slim
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "📦 Installing dependencies..."
+          pip install --quiet pymongo
+          
+          echo "🌤️ Generating and inserting weather data..."
+          python3 << 'PYTHON_SCRIPT'
+          import random
+          from datetime import datetime, timedelta
+          from pymongo import MongoClient
+
+          # Weather stations
+          STATIONS = [
+              {"station": "VIDP", "name": "Delhi - Indira Gandhi International", "city": "New Delhi", "country": "India", "lat": 28.5665, "lon": 77.1031},
+              {"station": "VABB", "name": "Mumbai - Chhatrapati Shivaji", "city": "Mumbai", "country": "India", "lat": 19.0896, "lon": 72.8656},
+              {"station": "VOBL", "name": "Bangalore - Kempegowda International", "city": "Bangalore", "country": "India", "lat": 13.1986, "lon": 77.7066},
+              {"station": "VOMM", "name": "Chennai International", "city": "Chennai", "country": "India", "lat": 12.9941, "lon": 80.1709},
+              {"station": "VECC", "name": "Kolkata - Netaji Subhas Chandra Bose", "city": "Kolkata", "country": "India", "lat": 22.6547, "lon": 88.4467},
+              {"station": "WSSS", "name": "Singapore Changi", "city": "Singapore", "country": "Singapore", "lat": 1.3644, "lon": 103.9915},
+              {"station": "VHHH", "name": "Hong Kong International", "city": "Hong Kong", "country": "China", "lat": 22.3080, "lon": 113.9185},
+              {"station": "RJTT", "name": "Tokyo Haneda", "city": "Tokyo", "country": "Japan", "lat": 35.5494, "lon": 139.7798},
+              {"station": "EGLL", "name": "London Heathrow", "city": "London", "country": "United Kingdom", "lat": 51.4700, "lon": -0.4543},
+              {"station": "LFPG", "name": "Paris Charles de Gaulle", "city": "Paris", "country": "France", "lat": 49.0097, "lon": 2.5479},
+              {"station": "KJFK", "name": "New York JFK", "city": "New York", "country": "USA", "lat": 40.6413, "lon": -73.7781},
+              {"station": "KLAX", "name": "Los Angeles International", "city": "Los Angeles", "country": "USA", "lat": 33.9416, "lon": -118.4085},
+              {"station": "OMDB", "name": "Dubai International", "city": "Dubai", "country": "UAE", "lat": 25.2532, "lon": 55.3657},
+              {"station": "YSSY", "name": "Sydney Kingsford Smith", "city": "Sydney", "country": "Australia", "lat": -33.9399, "lon": 151.1753},
+          ]
+
+          CONDITIONS = ["Clear", "Partly Cloudy", "Cloudy", "Light Rain", "Rain", "Fog", "Haze", "Thunderstorm"]
+
+          def generate_observation(station, timestamp):
+              is_tropical = abs(station["lat"]) < 25
+              base_temp = 28 if is_tropical else 15
+              temp = round(random.uniform(base_temp - 10, base_temp + 15), 1)
+              
+              condition = random.choice(CONDITIONS)
+              humidity = random.randint(40, 95)
+              
+              if condition in ["Rain", "Fog", "Thunderstorm"]:
+                  visibility = random.randint(500, 5000)
+              else:
+                  visibility = random.randint(8000, 20000)
+              
+              return {
+                  "station": station["station"],
+                  "station_name": station["name"],
+                  "city": station["city"],
+                  "country": station["country"],
+                  "location": {"lat": station["lat"], "lon": station["lon"]},
+                  "timestamp": timestamp.isoformat() + "Z",
+                  "temperature": temp,
+                  "dewpoint": round(temp - (100 - humidity) / 5, 1),
+                  "humidity": humidity,
+                  "wind_speed": random.randint(0, 25),
+                  "wind_direction": random.choice([0, 45, 90, 135, 180, 225, 270, 315]),
+                  "visibility": visibility,
+                  "pressure": round(random.uniform(1005, 1025), 1),
+                  "conditions": condition,
+                  "source": "demo-data"
+              }
+
+          # Connect to MongoDB
+          print("📡 Connecting to MongoDB...")
+          client = MongoClient("mongodb://mongodb:27017")
+          db = client["weather"]
+          collection = db["observations"]
+
+          # Clear existing data
+          deleted = collection.delete_many({})
+          print(f"🗑️  Deleted {deleted.deleted_count} existing documents")
+
+          # Generate data
+          observations = []
+          now = datetime.utcnow()
+          
+          for station in STATIONS:
+              current_time = now
+              for _ in range(48):  # 48 hours of data
+                  obs = generate_observation(station, current_time)
+                  observations.append(obs)
+                  current_time -= timedelta(hours=1)
+
+          # Insert data
+          result = collection.insert_many(observations)
+          print(f"✅ Inserted {len(result.inserted_ids)} documents")
+
+          # Create indexes
+          collection.create_index("station")
+          collection.create_index("timestamp")
+          collection.create_index("city")
+          collection.create_index("country")
+          collection.create_index("conditions")
+          print("📇 Created indexes")
+
+          # Verify
+          count = collection.count_documents({})
+          stations = len(collection.distinct("station"))
+          print(f"\n🎉 Done! {count} observations for {stations} stations")
+          PYTHON_SCRIPT
+          
+          echo "✅ Data initialization complete!"
+

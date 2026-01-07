@@ -95,7 +95,7 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
     echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
     echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
-    echo -e "${YELLOW}7)${NC} Deploy LlamaStack Demo UI (chatbot frontend) ${GREEN}[Demo]${NC}"
+    echo -e "${YELLOW}7)${NC} Deploy LlamaStack Demo (UI + MCP Server + MongoDB) ${GREEN}[Demo]${NC}"
     echo -e "${YELLOW}8)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
     echo -e "${YELLOW}9)${NC} Approve Pending CSRs (Day 2 node management)"
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
@@ -406,147 +406,21 @@ deploy_llamastack_demo_interactive() {
     fi
     
     echo ""
-    print_step "Creating temporary deployment manifests..."
+    print_step "Applying ConfigMap and Deployment manifests..."
     
-    # Create a temp directory for modified manifests
-    local temp_dir=$(mktemp -d)
-    
-    # Create ConfigMap
-    cat > "$temp_dir/configmap.yaml" <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: llamastack-demo-config
-  namespace: $target_ns
-data:
-  LLAMASTACK_URL: "$llamastack_url"
-  MODEL_ID: "$model_id"
-  MCP_SERVER_URL: "$mcp_url"
-  APP_TITLE: "$app_title"
-  MCP_SERVER_NAME: "$mcp_name"
-  MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
-  CHAT_PLACEHOLDER: "Ask a question..."
-EOF
-    
-    # Create Deployment (using pre-built image from quay.io or build locally)
-    cat > "$temp_dir/deployment.yaml" <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: llamastack-mcp-demo
-  namespace: $target_ns
-  labels:
-    app: llamastack-mcp-demo
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: llamastack-mcp-demo
-  template:
-    metadata:
-      labels:
-        app: llamastack-mcp-demo
-    spec:
-      containers:
-      - name: streamlit
-        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/llamastack-mcp-demo:latest
-        ports:
-        - containerPort: 8501
-          name: http
-        envFrom:
-        - configMapRef:
-            name: llamastack-demo-config
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "50m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8501
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8501
-          initialDelaySeconds: 10
-          periodSeconds: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: llamastack-mcp-demo
-  namespace: $target_ns
-  labels:
-    app: llamastack-mcp-demo
-spec:
-  selector:
-    app: llamastack-mcp-demo
-  ports:
-  - name: http
-    protocol: TCP
-    port: 8501
-    targetPort: 8501
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: llamastack-mcp-demo
-  namespace: $target_ns
-spec:
-  to:
-    kind: Service
-    name: llamastack-mcp-demo
-  port:
-    targetPort: http
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
-EOF
-    
-    # Create BuildConfig and ImageStream
-    cat > "$temp_dir/buildconfig.yaml" <<EOF
-apiVersion: build.openshift.io/v1
-kind: BuildConfig
-metadata:
-  name: llamastack-mcp-demo
-  namespace: $target_ns
-  labels:
-    app: llamastack-mcp-demo
-spec:
-  output:
-    to:
-      kind: ImageStreamTag
-      name: llamastack-mcp-demo:latest
-  source:
-    binary: {}
-    type: Binary
-  strategy:
-    dockerStrategy:
-      dockerfilePath: Dockerfile
-    type: Docker
-  successfulBuildsHistoryLimit: 3
-  failedBuildsHistoryLimit: 3
----
-apiVersion: image.openshift.io/v1
-kind: ImageStream
-metadata:
-  name: llamastack-mcp-demo
-  namespace: $target_ns
-  labels:
-    app: llamastack-mcp-demo
-EOF
-    
-    echo ""
-    print_step "Applying ConfigMap..."
-    oc apply -f "$temp_dir/configmap.yaml"
+    # Apply deployment.yaml with namespace and config values substituted
+    # The deployment.yaml contains ConfigMap, Deployment, Service, and Route
+    sed -e "s/namespace: demo-test/namespace: $target_ns/g" \
+        -e "s|demo-test/|$target_ns/|g" \
+        -e "s|LLAMASTACK_URL:.*|LLAMASTACK_URL: \"$llamastack_url\"|g" \
+        -e "s|MODEL_ID:.*|MODEL_ID: \"$model_id\"|g" \
+        -e "s|MCP_SERVER_URL:.*|MCP_SERVER_URL: \"$mcp_url\"|g" \
+        -e "s|APP_TITLE:.*|APP_TITLE: \"$app_title\"|g" \
+        -e "s|MCP_SERVER_NAME:.*|MCP_SERVER_NAME: \"$mcp_name\"|g" \
+        "$demo_dir/deployment.yaml" | oc apply -f -
     
     print_step "Creating BuildConfig and ImageStream..."
-    oc apply -f "$temp_dir/buildconfig.yaml"
+    apply_manifest "$demo_dir/buildconfig.yaml" "$target_ns"
     
     echo ""
     print_step "Building container image (this may take 1-2 minutes)..."
@@ -560,13 +434,8 @@ EOF
         echo ""
         echo "You can check build logs with:"
         echo "  oc logs -f bc/llamastack-mcp-demo -n $target_ns"
-        rm -rf "$temp_dir"
         return 1
     fi
-    
-    echo ""
-    print_step "Deploying application..."
-    oc apply -f "$temp_dir/deployment.yaml"
     
     echo ""
     print_step "Waiting for deployment to be ready..."
@@ -575,9 +444,6 @@ EOF
     else
         print_warning "Deployment may still be starting"
     fi
-    
-    # Clean up temp files
-    rm -rf "$temp_dir"
     
     echo ""
     print_step "Getting application URL..."
@@ -612,6 +478,400 @@ EOF
         print_warning "Could not get route URL"
         echo "Check with: oc get route llamastack-mcp-demo -n $target_ns"
     fi
+    
+    return 0
+}
+
+################################################################################
+# Weather MCP Server + MongoDB Deployment
+################################################################################
+
+# Helper function to apply manifest with namespace substitution
+apply_manifest() {
+    local manifest_file="$1"
+    local target_ns="$2"
+    
+    if [ ! -f "$manifest_file" ]; then
+        print_error "Manifest not found: $manifest_file"
+        return 1
+    fi
+    
+    # Replace demo-test namespace with target namespace
+    sed -e "s/namespace: demo-test/namespace: $target_ns/g" \
+        -e "s|demo-test/|$target_ns/|g" \
+        "$manifest_file" | oc apply -f -
+}
+
+deploy_weather_mcp_server() {
+    local target_ns="$1"
+    local mcp_dir="$SCRIPT_DIR/demo/llamastack-demo/mcp"
+    
+    if [ ! -d "$mcp_dir" ]; then
+        print_error "Weather MCP server directory not found"
+        echo "Expected: $mcp_dir"
+        return 1
+    fi
+    
+    echo ""
+    print_step "Deploying MongoDB..."
+    
+    # Check if PVC already exists
+    if oc get pvc mongodb-data -n "$target_ns" &>/dev/null; then
+        print_info "MongoDB PVC already exists, skipping PVC creation"
+        # Apply only deployment and service (skip PVC by applying just the deployment part)
+        sed -e "s/namespace: demo-test/namespace: $target_ns/g" "$mcp_dir/mongodb-deployment.yaml" | \
+            awk 'BEGIN{skip=1} /^---$/{skip=0} !skip{print}' | oc apply -f -
+    else
+        # Apply full manifest including PVC
+        apply_manifest "$mcp_dir/mongodb-deployment.yaml" "$target_ns"
+    fi
+    
+    print_step "Waiting for MongoDB to be ready..."
+    if ! oc wait --for=condition=available deployment/mongodb -n "$target_ns" --timeout=180s; then
+        print_warning "MongoDB may still be starting"
+    else
+        print_success "MongoDB is ready"
+    fi
+    
+    echo ""
+    print_step "Initializing sample weather data..."
+    
+    # Delete existing job if present
+    oc delete job init-weather-data -n "$target_ns" 2>/dev/null || true
+    
+    # Apply the init job
+    apply_manifest "$mcp_dir/init-data-job.yaml" "$target_ns"
+    
+    # Wait for job to complete
+    print_step "Waiting for data initialization (this may take 30-60 seconds)..."
+    if oc wait --for=condition=complete job/init-weather-data -n "$target_ns" --timeout=120s 2>/dev/null; then
+        print_success "Sample data loaded"
+    else
+        print_warning "Data initialization may still be running"
+        echo "Check with: oc logs -f job/init-weather-data -n $target_ns"
+    fi
+    
+    echo ""
+    print_step "Building Weather MCP Server container..."
+    
+    # Apply BuildConfig and ImageStream
+    apply_manifest "$mcp_dir/buildconfig.yaml" "$target_ns"
+    
+    # Build from local directory
+    if oc start-build weather-mcp-server --from-dir="$mcp_dir" --follow -n "$target_ns"; then
+        print_success "Build completed"
+    else
+        print_error "Build failed"
+        return 1
+    fi
+    
+    echo ""
+    print_step "Deploying Weather MCP Server..."
+    
+    # Apply deployment
+    apply_manifest "$mcp_dir/deployment.yaml" "$target_ns"
+    
+    print_step "Waiting for MCP server to be ready..."
+    if oc rollout status deployment/weather-mcp-server -n "$target_ns" --timeout=120s; then
+        print_success "Weather MCP Server deployed"
+    else
+        print_warning "MCP server may still be starting"
+    fi
+    
+    return 0
+}
+
+################################################################################
+# LlamaStack Demo Sub-Menu
+################################################################################
+
+show_llamastack_demo_submenu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           LlamaStack Demo Deployment Options                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}This demo includes:${NC}"
+    echo "  • LlamaStack Demo UI - Streamlit chatbot frontend"
+    echo "  • Weather MCP Server - Sample MCP server with weather tools"
+    echo "  • MongoDB - Database with 14 global weather stations"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Deploy Complete Demo Stack (UI + MCP Server + MongoDB)"
+    echo -e "${YELLOW}2)${NC} Deploy Weather MCP Server + MongoDB only (no UI)"
+    echo -e "${YELLOW}3)${NC} Deploy LlamaStack Demo UI only (connects to existing services)"
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
+    echo ""
+}
+
+deploy_llamastack_demo_menu() {
+    print_header "Deploy LlamaStack Demo"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    
+    while true; do
+        show_llamastack_demo_submenu
+        read -p "Enter your choice: " demo_choice
+        
+        case $demo_choice in
+            1)
+                # Complete stack
+                deploy_complete_llamastack_demo
+                return 0
+                ;;
+            2)
+                # MCP + MongoDB only
+                deploy_mcp_mongodb_only
+                return 0
+                ;;
+            3)
+                # UI only
+                deploy_llamastack_demo_interactive
+                return 0
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                print_error "Invalid option"
+                ;;
+        esac
+    done
+}
+
+deploy_mcp_mongodb_only() {
+    print_header "Deploy Weather MCP Server + MongoDB"
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}This will deploy:${NC}"
+    echo "  • MongoDB with 1Gi persistent storage"
+    echo "  • Sample weather data (14 stations, 48 hours of data)"
+    echo "  • Weather MCP Server with 5 tools"
+    echo ""
+    
+    read -p "Proceed? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+    
+    # Deploy
+    deploy_weather_mcp_server "$target_ns"
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  ✅ Weather MCP Server Deployed Successfully!                  ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${CYAN}📋 Deployed Components:${NC}"
+        echo "   • MongoDB: mongodb.$target_ns.svc.cluster.local:27017"
+        echo "   • MCP Server: weather-mcp-server.$target_ns.svc.cluster.local:8000"
+        echo ""
+        echo -e "${CYAN}🔧 Available Tools:${NC}"
+        echo "   • search_weather - Search observations with filters"
+        echo "   • get_current_weather - Get latest observation for a station"
+        echo "   • list_stations - List all weather stations"
+        echo "   • get_statistics - Get database stats"
+        echo "   • health_check - Check server health"
+        echo ""
+        echo -e "${YELLOW}📝 Next Steps:${NC}"
+        echo "   1. Register MCP server with LlamaStack:"
+        echo "      Add to your LlamaStack config under tool_groups:"
+        echo ""
+        echo "      - toolgroup_id: mcp::weather-data"
+        echo "        provider_id: model-context-protocol"
+        echo "        mcp_endpoint:"
+        echo "          uri: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
+        echo ""
+        echo "   2. Restart LlamaStack to pick up the new tools"
+        echo ""
+    fi
+    
+    return 0
+}
+
+deploy_complete_llamastack_demo() {
+    print_header "Deploy Complete LlamaStack Demo Stack"
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}LlamaStack Configuration:${NC}"
+    echo ""
+    
+    # Try to auto-detect LlamaStack service
+    local detected_llamastack=""
+    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd" | head -1)
+    
+    if [ -n "$detected_llamastack" ]; then
+        local default_llamastack_url="http://${detected_llamastack}.${target_ns}.svc.cluster.local:8321"
+        echo "Detected LlamaStack service: $detected_llamastack"
+    else
+        local default_llamastack_url="http://lsd-genai-playground-service.${target_ns}.svc.cluster.local:8321"
+        echo "No LlamaStack service auto-detected"
+    fi
+    
+    read -p "LlamaStack URL [$default_llamastack_url]: " llamastack_url
+    llamastack_url="${llamastack_url:-$default_llamastack_url}"
+    
+    # Model ID
+    read -p "Model ID [qwen3-8b]: " model_id
+    model_id="${model_id:-qwen3-8b}"
+    
+    echo ""
+    echo -e "${CYAN}This will deploy:${NC}"
+    echo "  • MongoDB with sample weather data"
+    echo "  • Weather MCP Server (5 weather query tools)"
+    echo "  • LlamaStack Demo UI (Streamlit chatbot)"
+    echo ""
+    echo "  LlamaStack URL: $llamastack_url"
+    echo "  Model ID: $model_id"
+    echo ""
+    
+    read -p "Proceed with deployment? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Deployment cancelled"
+        return 0
+    fi
+    
+    # Step 1: Deploy MCP + MongoDB
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Step 1/2: Deploying Weather MCP Server + MongoDB${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    deploy_weather_mcp_server "$target_ns"
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to deploy MCP server"
+        return 1
+    fi
+    
+    # Step 2: Deploy UI with the Weather MCP server
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Step 2/2: Deploying LlamaStack Demo UI${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    local demo_dir="$SCRIPT_DIR/demo/llamastack-demo"
+    local mcp_url="http://weather-mcp-server.${target_ns}.svc.cluster.local:8000"
+    
+    echo ""
+    print_step "Applying ConfigMap and Deployment manifests..."
+    
+    # Apply deployment.yaml with namespace and config values substituted for Weather demo
+    sed -e "s/namespace: demo-test/namespace: $target_ns/g" \
+        -e "s|demo-test/|$target_ns/|g" \
+        -e "s|LLAMASTACK_URL:.*|LLAMASTACK_URL: \"$llamastack_url\"|g" \
+        -e "s|MODEL_ID:.*|MODEL_ID: \"$model_id\"|g" \
+        -e "s|MCP_SERVER_URL:.*|MCP_SERVER_URL: \"$mcp_url\"|g" \
+        -e "s|APP_TITLE:.*|APP_TITLE: \"LlamaStack + MCP Demo\"|g" \
+        -e "s|APP_SUBTITLE:.*|APP_SUBTITLE: \"AI Agent with Weather Data Tools\"|g" \
+        -e "s|MCP_SERVER_NAME:.*|MCP_SERVER_NAME: \"Weather MCP\"|g" \
+        -e "s|MCP_SERVER_DESCRIPTION:.*|MCP_SERVER_DESCRIPTION: \"Provides weather data queries for 14 global airports\"|g" \
+        -e "s|DATA_SOURCE_NAME:.*|DATA_SOURCE_NAME: \"MongoDB\"|g" \
+        -e "s|CHAT_PLACEHOLDER:.*|CHAT_PLACEHOLDER: \"Ask about weather conditions...\"|g" \
+        "$demo_dir/deployment.yaml" | oc apply -f -
+    
+    print_step "Creating BuildConfig..."
+    apply_manifest "$demo_dir/buildconfig.yaml" "$target_ns"
+    
+    echo ""
+    print_step "Building Demo UI container..."
+    if oc start-build llamastack-mcp-demo --from-dir="$demo_dir" --follow -n "$target_ns"; then
+        print_success "Build completed"
+    else
+        print_error "Build failed"
+        return 1
+    fi
+    
+    echo ""
+    print_step "Waiting for deployment..."
+    if oc rollout status deployment/llamastack-mcp-demo -n "$target_ns" --timeout=120s; then
+        print_success "Demo UI deployed"
+    else
+        print_warning "Deployment may still be starting"
+    fi
+    
+    # Get route
+    local route_url=$(oc get route llamastack-mcp-demo -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✅ Complete LlamaStack Demo Stack Deployed!                   ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}📋 Deployed Components:${NC}"
+    echo "   • MongoDB: mongodb.$target_ns.svc.cluster.local:27017"
+    echo "   • Weather MCP Server: weather-mcp-server.$target_ns.svc.cluster.local:8000"
+    echo "   • Demo UI: https://$route_url"
+    echo ""
+    echo -e "${CYAN}📌 Application URL:${NC}"
+    echo -e "   ${GREEN}https://$route_url${NC}"
+    echo ""
+    echo -e "${YELLOW}⚠️  Important: Register MCP with LlamaStack${NC}"
+    echo "   Add to your LlamaStack config under tool_groups:"
+    echo ""
+    echo "   - toolgroup_id: mcp::weather-data"
+    echo "     provider_id: model-context-protocol"
+    echo "     mcp_endpoint:"
+    echo "       uri: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
+    echo ""
+    echo "   Then restart LlamaStack to load the new tools."
+    echo ""
     
     return 0
 }
@@ -979,7 +1239,7 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
-                deploy_llamastack_demo_interactive
+                deploy_llamastack_demo_menu
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
