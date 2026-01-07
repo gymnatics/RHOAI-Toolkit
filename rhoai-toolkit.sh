@@ -89,17 +89,65 @@ show_rhoai_management_menu() {
     echo -e "${CYAN}║                 RHOAI Management Menu                          ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${YELLOW}1)${NC} Enable Dashboard Features (Model Registry, GenAI Studio, etc.)"
-    echo -e "${YELLOW}2)${NC} Deploy Model (interactive model deployment)"
-    echo -e "${YELLOW}3)${NC} Add Model to Playground (test models interactively)"
-    echo -e "${YELLOW}4)${NC} Setup MCP Servers (Model Context Protocol for tool calling)"
-    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (for model deployments)"
-    echo -e "${YELLOW}6)${NC} Setup MaaS (Model as a Service API gateway)"
-    echo -e "${YELLOW}7)${NC} Setup LlamaStack (deploy with vLLM, Azure, OpenAI, etc.) ${GREEN}[NEW]${NC}"
-    echo -e "${YELLOW}8)${NC} Deploy LlamaStack Demo (UI + MCP Server + MongoDB) ${CYAN}[Demo]${NC}"
-    echo -e "${YELLOW}9)${NC} Quick Start Wizard (run typical post-install workflow) ${MAGENTA}✨${NC}"
-    echo -e "${YELLOW}10)${NC} Approve Pending CSRs (Day 2 node management)"
+    echo -e "${YELLOW}1)${NC} Model Management ${BLUE}→${NC}"
+    echo "    Deploy models, test in Playground, create GPU profiles"
+    echo ""
+    echo -e "${YELLOW}2)${NC} AI Services ${BLUE}→${NC}"
+    echo "    LlamaStack, MCP Servers, Model as a Service (MaaS)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Dashboard & Configuration"
+    echo "    Enable features like Model Registry, GenAI Studio"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Quick Start Wizard ${MAGENTA}✨${NC}"
+    echo "    Run typical post-install workflow"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Day 2 Operations"
+    echo "    Approve CSRs, cluster maintenance"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
+    echo ""
+}
+
+show_model_management_submenu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                 Model Management                               ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Deploy Model"
+    echo "    Interactive model deployment to OpenShift AI"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Add Model to Playground"
+    echo "    Test models interactively in GenAI Studio"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile"
+    echo "    Define GPU resources for model deployments"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
+    echo ""
+}
+
+show_ai_services_submenu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                 AI Services                                    ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${MAGENTA}LlamaStack:${NC}"
+    echo -e "${YELLOW}1)${NC} Setup LlamaStack ${GREEN}[Recommended]${NC}"
+    echo "    Deploy LlamaStack with vLLM, Azure, OpenAI, Ollama, or Bedrock"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Deploy LlamaStack Demo ${CYAN}[Demo]${NC}"
+    echo "    Full demo with Weather MCP Server, MongoDB, and UI"
+    echo ""
+    echo -e "${MAGENTA}Other Services:${NC}"
+    echo -e "${YELLOW}3)${NC} Setup MCP Servers"
+    echo "    Model Context Protocol servers for tool calling"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Setup MaaS (Model as a Service)"
+    echo "    API gateway for model serving"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
 }
 
@@ -1991,59 +2039,99 @@ show_help() {
     echo ""
 }
 
+model_management_submenu() {
+    while true; do
+        show_model_management_submenu
+        read -p "Select an option (1-3, 0): " model_choice
+        
+        case $model_choice in
+            1)
+                deploy_model_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                add_model_to_playground_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-3 or 0."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+ai_services_submenu() {
+    while true; do
+        show_ai_services_submenu
+        read -p "Select an option (1-4, 0): " ai_choice
+        
+        case $ai_choice in
+            1)
+                setup_llamastack_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                deploy_llamastack_demo_menu
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                setup_mcp_servers_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                MAAS_ONLY=true
+                run_maas_only_setup
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-4 or 0."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-10, 0): " rhoai_choice
+        read -p "Select an option (1-5, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
+                model_management_submenu
+                ;;
+            2)
+                ai_services_submenu
+                ;;
+            3)
                 enable_dashboard_features_interactive
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
-            2)
-                deploy_model_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            3)
-                add_model_to_playground_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
             4)
-                setup_mcp_servers_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            5)
-                create_hardware_profile_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            6)
-                MAAS_ONLY=true
-                run_maas_only_setup
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            7)
-                setup_llamastack_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            8)
-                deploy_llamastack_demo_menu
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
-                ;;
-            9)
                 quick_start_wizard
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
-            10)
+            5)
                 approve_pending_csrs
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
@@ -2053,7 +2141,7 @@ rhoai_management_menu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-10 or 0."
+                print_error "Invalid option. Please select 1-5 or 0."
                 sleep 2
                 ;;
         esac
