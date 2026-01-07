@@ -24,11 +24,13 @@ All configuration is done via environment variables in the ConfigMap:
 | `LLAMASTACK_URL` | ✅ | `http://localhost:8321` | LlamaStack service endpoint |
 | `MODEL_ID` | ✅ | `llama3` | Model ID registered in LlamaStack |
 | `MCP_SERVER_URL` | ✅ | `http://localhost:8000` | MCP server URL (for health checks) |
-| `APP_TITLE` | ❌ | `LlamaStack + MCP Demo` | Page title |
+| `APP_TITLE` | ❌ | `LlamaStack + MCP Demo` | Page title shown in header |
 | `APP_SUBTITLE` | ❌ | `Demonstrating AI Agent...` | Subtitle below title |
 | `MCP_SERVER_NAME` | ❌ | `MCP Server` | Name shown in architecture diagram |
 | `MCP_SERVER_DESCRIPTION` | ❌ | `Model Context Protocol...` | Description in architecture section |
+| `DATA_SOURCE_NAME` | ❌ | `Data Source` | Data source name in architecture diagram |
 | `CHAT_PLACEHOLDER` | ❌ | `Ask a question...` | Placeholder text in chat input |
+| `FOOTER_TEXT` | ❌ | (empty) | Optional footer text below the chat |
 | `SYSTEM_PROMPT` | ❌ | (generic assistant) | Custom system prompt for the LLM |
 
 ---

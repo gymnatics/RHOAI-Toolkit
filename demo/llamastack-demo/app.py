@@ -19,6 +19,8 @@ APP_TITLE = os.getenv("APP_TITLE", "LlamaStack + MCP Demo")
 APP_SUBTITLE = os.getenv("APP_SUBTITLE", "Demonstrating AI Agent orchestration with Model Context Protocol tools")
 MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "MCP Server")
 MCP_SERVER_DESCRIPTION = os.getenv("MCP_SERVER_DESCRIPTION", "Model Context Protocol server exposing tools to the LLM")
+DATA_SOURCE_NAME = os.getenv("DATA_SOURCE_NAME", "Data Source")
+FOOTER_TEXT = os.getenv("FOOTER_TEXT", "")
 CHAT_PLACEHOLDER = os.getenv("CHAT_PLACEHOLDER", "Ask a question...")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", """You are an intelligent assistant with access to external tools.
 Use the available tools to fetch real data when answering user questions.
@@ -432,10 +434,10 @@ def execute_tool_call(tool_name: str, tool_args: Dict) -> str:
 
 
 # ============== HEADER ==============
-st.markdown("""
+st.markdown(f"""
 <div class="main-header">
-    <h1>🦙 LlamaStack + MCP Demo</h1>
-    <p>Demonstrating AI Agent orchestration with Model Context Protocol tools</p>
+    <h1>🦙 {APP_TITLE}</h1>
+    <p>{APP_SUBTITLE}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -538,7 +540,7 @@ with st.sidebar:
 # Architecture diagram (collapsible)
 if st.session_state.show_architecture:
     with st.expander("🏗️ Architecture Overview", expanded=True):
-        st.markdown("""
+        st.markdown(f"""
         <div class="architecture-box">
             <div class="flow-diagram">
                 <div class="flow-box">👤 User Query</div>
@@ -549,7 +551,7 @@ if st.session_state.show_architecture:
                 <span class="flow-arrow">→</span>
                 <div class="flow-box mcp">🔧 {MCP_SERVER_NAME}</div>
                 <span class="flow-arrow">→</span>
-                <div class="flow-box">📊 MongoDB</div>
+                <div class="flow-box">📊 {DATA_SOURCE_NAME}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -565,18 +567,18 @@ if st.session_state.show_architecture:
             """, unsafe_allow_html=True)
         
         with col2:
-            st.markdown("""
+            st.markdown(f"""
             <div class="info-card">
-                <h4>🔧 MCP Server</h4>
+                <h4>🔧 {MCP_SERVER_NAME}</h4>
                 <p>{MCP_SERVER_DESCRIPTION}</p>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
-            st.markdown("""
+            st.markdown(f"""
             <div class="info-card">
                 <h4>🤖 {MODEL_ID}</h4>
-                <p>Large Language Model served via vLLM with tool-calling support (hermes parser). Decides when to use tools.</p>
+                <p>Large Language Model served via vLLM with tool-calling support. Decides when to use tools.</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -734,10 +736,12 @@ if prompt := st.chat_input(CHAT_PLACEHOLDER):
 
 # Footer
 st.markdown("---")
-st.markdown("""
+footer_html = f"""
 <div style="text-align: center; color: #64748b; font-size: 0.8rem;">
     <p>🦙 LlamaStack + 🔧 MCP Demo | Powered by {MODEL_ID}</p>
-    <p>For App Development Team - IndiGO PoC</p>
-</div>
-""", unsafe_allow_html=True)
+"""
+if FOOTER_TEXT:
+    footer_html += f"    <p>{FOOTER_TEXT}</p>\n"
+footer_html += "</div>"
+st.markdown(footer_html, unsafe_allow_html=True)
 

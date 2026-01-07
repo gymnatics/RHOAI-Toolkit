@@ -17,11 +17,13 @@ data:
   MCP_SERVER_URL: "http://metar-mcp-server.demo-test.svc.cluster.local:8000"
   
   # Optional: UI Customization
-  # APP_TITLE: "LlamaStack + MCP Demo"
-  # APP_SUBTITLE: "Demonstrating AI Agent orchestration with Model Context Protocol tools"
-  # MCP_SERVER_NAME: "MCP Server"
-  # MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
-  # CHAT_PLACEHOLDER: "Ask a question..."
+  APP_TITLE: "LlamaStack + MCP Demo"
+  APP_SUBTITLE: "Demonstrating AI Agent orchestration with Model Context Protocol tools"
+  MCP_SERVER_NAME: "MCP Server"
+  MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
+  DATA_SOURCE_NAME: "Data Source"
+  CHAT_PLACEHOLDER: "Ask a question..."
+  # FOOTER_TEXT: ""  # Optional footer text (leave empty or omit for no footer text)
   
   # Optional: Custom system prompt for the LLM
   # SYSTEM_PROMPT: |
