@@ -265,19 +265,47 @@ setup_mcp_servers_interactive() {
     
     print_success "Connected to cluster: $(oc whoami --show-server)"
     
-    # Check if MCP setup script exists
-    if [ ! -f "$SCRIPT_DIR/scripts/setup-mcp-servers.sh" ]; then
-        print_error "MCP server setup script not found"
-        echo ""
-        echo "Expected: $SCRIPT_DIR/scripts/setup-mcp-servers.sh"
-        return 1
-    fi
-    
-    # Run the MCP setup script
     echo ""
-    "$SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           MCP Server Options                                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}MCP (Model Context Protocol) enables AI agents to use external tools.${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Deploy Weather MCP Server + MongoDB"
+    echo "   └─ Sample MCP server with weather data tools (14 airports)"
+    echo -e "${YELLOW}2)${NC} Configure LlamaStack MCP Toolgroups"
+    echo "   └─ Add GitHub, Filesystem, Brave Search, and other MCP servers"
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
+    echo ""
     
-    return $?
+    read -p "Enter your choice: " mcp_choice
+    
+    case $mcp_choice in
+        1)
+            # Deploy Weather MCP Server
+            deploy_mcp_mongodb_only
+            ;;
+        2)
+            # Run the original MCP configuration script
+            if [ -f "$SCRIPT_DIR/scripts/setup-mcp-servers.sh" ]; then
+                echo ""
+                "$SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+            else
+                print_error "MCP configuration script not found"
+                echo "Expected: $SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+                return 1
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+    
+    return 0
 }
 
 ################################################################################
