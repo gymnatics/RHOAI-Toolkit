@@ -29,6 +29,7 @@ All configuration is done via environment variables in the ConfigMap:
 | `MCP_SERVER_NAME` | ❌ | `MCP Server` | Name shown in architecture diagram |
 | `MCP_SERVER_DESCRIPTION` | ❌ | `Model Context Protocol...` | Description in architecture section |
 | `DATA_SOURCE_NAME` | ❌ | `Data Source` | Data source name in architecture diagram |
+| `LLM_DESCRIPTION` | ❌ | `Large Language Model...` | Description of the LLM in architecture section |
 | `CHAT_PLACEHOLDER` | ❌ | `Ask a question...` | Placeholder text in chat input |
 | `FOOTER_TEXT` | ❌ | (empty) | Optional footer text below the chat |
 | `SYSTEM_PROMPT` | ❌ | (generic assistant) | Custom system prompt for the LLM |

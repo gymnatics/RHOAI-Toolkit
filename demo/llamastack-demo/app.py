@@ -20,6 +20,7 @@ APP_SUBTITLE = os.getenv("APP_SUBTITLE", "Demonstrating AI Agent orchestration w
 MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "MCP Server")
 MCP_SERVER_DESCRIPTION = os.getenv("MCP_SERVER_DESCRIPTION", "Model Context Protocol server exposing tools to the LLM")
 DATA_SOURCE_NAME = os.getenv("DATA_SOURCE_NAME", "Data Source")
+LLM_DESCRIPTION = os.getenv("LLM_DESCRIPTION", "Large Language Model with tool-calling support. Decides when to use tools.")
 FOOTER_TEXT = os.getenv("FOOTER_TEXT", "")
 CHAT_PLACEHOLDER = os.getenv("CHAT_PLACEHOLDER", "Ask a question...")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", """You are an intelligent assistant with access to external tools.
@@ -547,7 +548,7 @@ if st.session_state.show_architecture:
                 <span class="flow-arrow">→</span>
                 <div class="flow-box">🦙 LlamaStack</div>
                 <span class="flow-arrow">→</span>
-                <div class="flow-box llm">🤖 {MODEL_ID}<br/>(vLLM)</div>
+                <div class="flow-box llm">🤖 LLM<br/>({MODEL_ID})</div>
                 <span class="flow-arrow">→</span>
                 <div class="flow-box mcp">🔧 {MCP_SERVER_NAME}</div>
                 <span class="flow-arrow">→</span>
@@ -577,8 +578,8 @@ if st.session_state.show_architecture:
         with col3:
             st.markdown(f"""
             <div class="info-card">
-                <h4>🤖 {MODEL_ID}</h4>
-                <p>Large Language Model served via vLLM with tool-calling support. Decides when to use tools.</p>
+                <h4>🤖 LLM ({MODEL_ID})</h4>
+                <p>{LLM_DESCRIPTION}</p>
             </div>
             """, unsafe_allow_html=True)
 

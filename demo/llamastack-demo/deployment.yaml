@@ -22,6 +22,7 @@ data:
   MCP_SERVER_NAME: "MCP Server"
   MCP_SERVER_DESCRIPTION: "Model Context Protocol server exposing tools to the LLM"
   DATA_SOURCE_NAME: "Data Source"
+  LLM_DESCRIPTION: "Large Language Model with tool-calling support. Decides when to use tools."
   CHAT_PLACEHOLDER: "Ask a question..."
   # FOOTER_TEXT: ""  # Optional footer text (leave empty or omit for no footer text)
   
