@@ -624,9 +624,17 @@ show_llamastack_demo_submenu() {
     echo "  • Weather MCP Server - Sample MCP server with weather tools"
     echo "  • MongoDB - Database with 14 global weather stations"
     echo ""
-    echo -e "${YELLOW}1)${NC} Deploy Complete Demo Stack (UI + MCP Server + MongoDB)"
-    echo -e "${YELLOW}2)${NC} Deploy Weather MCP Server + MongoDB only (no UI)"
-    echo -e "${YELLOW}3)${NC} Deploy LlamaStack Demo UI only (connects to existing services)"
+    echo -e "${MAGENTA}Full Stack (includes LlamaStack):${NC}"
+    echo -e "${YELLOW}1)${NC} Deploy Everything with LlamaStack ${GREEN}[NEW]${NC}"
+    echo "    → Deploys LlamaStack + MCP + MongoDB + UI (choose your LLM provider)"
+    echo ""
+    echo -e "${MAGENTA}Partial Deployment (existing LlamaStack):${NC}"
+    echo -e "${YELLOW}2)${NC} Deploy Demo Stack (UI + MCP + MongoDB)"
+    echo "    → Connects to your existing LlamaStack"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Deploy Weather MCP Server + MongoDB only"
+    echo -e "${YELLOW}4)${NC} Deploy Demo UI only"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
 }
@@ -651,16 +659,21 @@ deploy_llamastack_demo_menu() {
         
         case $demo_choice in
             1)
-                # Complete stack
-                deploy_complete_llamastack_demo
+                # Full stack with LlamaStack
+                deploy_full_stack_with_llamastack
                 return 0
                 ;;
             2)
+                # Complete demo stack (existing LlamaStack)
+                deploy_complete_llamastack_demo
+                return 0
+                ;;
+            3)
                 # MCP + MongoDB only
                 deploy_mcp_mongodb_only
                 return 0
                 ;;
-            3)
+            4)
                 # UI only
                 deploy_llamastack_demo_interactive
                 return 0
@@ -674,6 +687,520 @@ deploy_llamastack_demo_menu() {
         esac
     done
 }
+
+################################################################################
+# LlamaStack Deployment with Provider Selection
+################################################################################
+
+show_llm_provider_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                 Select LLM Provider                            ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Choose your LLM backend:${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} vLLM (RHOAI Model Serving / KServe)"
+    echo "    → Use a model deployed via OpenShift AI Model Serving"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Azure OpenAI"
+    echo "    → Connect to Azure OpenAI Service (GPT-4, GPT-4o, etc.)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} OpenAI"
+    echo "    → Connect to OpenAI API (GPT-4, GPT-4o, etc.)"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Ollama"
+    echo "    → Connect to an Ollama server"
+    echo ""
+    echo -e "${YELLOW}5)${NC} AWS Bedrock"
+    echo "    → Connect to AWS Bedrock (Claude, Llama, etc.)"
+    echo ""
+}
+
+configure_vllm_provider() {
+    local target_ns="$1"
+    
+    echo ""
+    print_step "Configuring vLLM provider..."
+    echo ""
+    
+    # Try to detect existing inference services
+    local detected_is=""
+    detected_is=$(oc get inferenceservice -n "$target_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    
+    if [ -n "$detected_is" ]; then
+        local detected_url=$(oc get inferenceservice "$detected_is" -n "$target_ns" -o jsonpath='{.status.url}' 2>/dev/null || true)
+        print_info "Detected InferenceService: $detected_is"
+        if [ -n "$detected_url" ]; then
+            print_info "URL: $detected_url"
+        fi
+        echo ""
+    fi
+    
+    read -p "vLLM/Model Serving URL (e.g., https://model-name.apps.cluster.example.com): " VLLM_URL
+    if [ -z "$VLLM_URL" ]; then
+        print_error "vLLM URL is required"
+        return 1
+    fi
+    
+    read -p "Model ID (e.g., qwen3-8b, llama-3-8b): " MODEL_ID
+    MODEL_ID="${MODEL_ID:-qwen3-8b}"
+    
+    read -p "API Token (leave empty if not required): " VLLM_API_TOKEN
+    
+    # Create secret for vLLM
+    print_step "Creating vLLM secret..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vllm-secret
+  namespace: $target_ns
+type: Opaque
+stringData:
+  url: "$VLLM_URL"
+  api-token: "${VLLM_API_TOKEN:-}"
+EOF
+    
+    # Set env vars for distribution
+    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
+      - name: VLLM_URL
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: url
+      - name: VLLM_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: api-token
+      - name: VLLM_TLS_VERIFY
+        value: "false"
+      - name: VLLM_MAX_TOKENS
+        value: "4096"
+ENVEOF
+    )
+    
+    LLM_PROVIDER="vllm"
+    CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-vllm.yaml"
+}
+
+configure_azure_provider() {
+    local target_ns="$1"
+    
+    echo ""
+    print_step "Configuring Azure OpenAI provider..."
+    echo ""
+    
+    read -p "Azure OpenAI Endpoint (e.g., https://your-resource.openai.azure.com): " AZURE_ENDPOINT
+    if [ -z "$AZURE_ENDPOINT" ]; then
+        print_error "Azure endpoint is required"
+        return 1
+    fi
+    
+    read -p "Deployment Name (e.g., gpt-4o): " AZURE_DEPLOYMENT
+    AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4o}"
+    MODEL_ID="$AZURE_DEPLOYMENT"
+    
+    read -p "API Key: " AZURE_API_KEY
+    if [ -z "$AZURE_API_KEY" ]; then
+        print_error "API key is required"
+        return 1
+    fi
+    
+    read -p "API Version [2024-08-01-preview]: " AZURE_API_VERSION
+    AZURE_API_VERSION="${AZURE_API_VERSION:-2024-08-01-preview}"
+    
+    # Create secret
+    print_step "Creating Azure OpenAI secret..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-openai-secret
+  namespace: $target_ns
+type: Opaque
+stringData:
+  endpoint: "$AZURE_ENDPOINT"
+  deployment: "$AZURE_DEPLOYMENT"
+  api-key: "$AZURE_API_KEY"
+  api-version: "$AZURE_API_VERSION"
+EOF
+    
+    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
+      - name: AZURE_OPENAI_ENDPOINT
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: endpoint
+      - name: AZURE_OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: api-key
+      - name: AZURE_OPENAI_DEPLOYMENT
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: deployment
+      - name: AZURE_OPENAI_API_VERSION
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: api-version
+ENVEOF
+    )
+    
+    LLM_PROVIDER="azure"
+    CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-azure.yaml"
+}
+
+configure_openai_provider() {
+    local target_ns="$1"
+    
+    echo ""
+    print_step "Configuring OpenAI provider..."
+    echo ""
+    
+    read -p "OpenAI API Key: " OPENAI_API_KEY
+    if [ -z "$OPENAI_API_KEY" ]; then
+        print_error "API key is required"
+        return 1
+    fi
+    
+    read -p "Model ID [gpt-4o]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-gpt-4o}"
+    
+    # Create secret
+    print_step "Creating OpenAI secret..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openai-secret
+  namespace: $target_ns
+type: Opaque
+stringData:
+  api-key: "$OPENAI_API_KEY"
+EOF
+    
+    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: openai-secret
+            key: api-key
+ENVEOF
+    )
+    
+    LLM_PROVIDER="openai"
+    CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-openai.yaml"
+}
+
+configure_ollama_provider() {
+    local target_ns="$1"
+    
+    echo ""
+    print_step "Configuring Ollama provider..."
+    echo ""
+    
+    read -p "Ollama URL [http://ollama.${target_ns}.svc.cluster.local:11434]: " OLLAMA_URL
+    OLLAMA_URL="${OLLAMA_URL:-http://ollama.${target_ns}.svc.cluster.local:11434}"
+    
+    read -p "Model ID [llama3.2]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-llama3.2}"
+    
+    DISTRIBUTION_ENV_VARS=$(cat <<ENVEOF
+      - name: OLLAMA_URL
+        value: "$OLLAMA_URL"
+ENVEOF
+    )
+    
+    LLM_PROVIDER="ollama"
+    CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-ollama.yaml"
+}
+
+configure_bedrock_provider() {
+    local target_ns="$1"
+    
+    echo ""
+    print_step "Configuring AWS Bedrock provider..."
+    echo ""
+    
+    read -p "AWS Access Key ID: " AWS_ACCESS_KEY_ID
+    if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+        print_error "AWS Access Key ID is required"
+        return 1
+    fi
+    
+    read -p "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        print_error "AWS Secret Access Key is required"
+        return 1
+    fi
+    
+    read -p "AWS Region [us-east-1]: " AWS_REGION
+    AWS_REGION="${AWS_REGION:-us-east-1}"
+    
+    read -p "Model ID [anthropic.claude-3-sonnet-20240229-v1:0]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}"
+    
+    # Create secret
+    print_step "Creating Bedrock secret..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bedrock-secret
+  namespace: $target_ns
+type: Opaque
+stringData:
+  aws-access-key-id: "$AWS_ACCESS_KEY_ID"
+  aws-secret-access-key: "$AWS_SECRET_ACCESS_KEY"
+  aws-region: "$AWS_REGION"
+EOF
+    
+    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: bedrock-secret
+            key: aws-access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: bedrock-secret
+            key: aws-secret-access-key
+      - name: AWS_REGION
+        valueFrom:
+          secretKeyRef:
+            name: bedrock-secret
+            key: aws-region
+ENVEOF
+    )
+    
+    LLM_PROVIDER="bedrock"
+    CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-bedrock.yaml"
+}
+
+deploy_llamastack_distribution() {
+    local target_ns="$1"
+    
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Deploying LlamaStack Distribution${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    # Check if LlamaStack CRD exists
+    if ! oc get crd llamastackdistributions.llamastack.io &>/dev/null; then
+        print_error "LlamaStackDistribution CRD not found!"
+        echo ""
+        echo "Please ensure:"
+        echo "  1. Red Hat OpenShift AI 3.0+ is installed"
+        echo "  2. LlamaStack operator is enabled in DataScienceCluster"
+        echo ""
+        echo "To enable LlamaStack in your DSC:"
+        echo "  oc patch datasciencecluster default-dsc --type merge \\"
+        echo "    -p '{\"spec\":{\"components\":{\"llamastackoperator\":{\"managementState\":\"Managed\"}}}}'"
+        echo ""
+        return 1
+    fi
+    
+    print_success "LlamaStack CRD found"
+    
+    # Select and configure provider
+    show_llm_provider_menu
+    read -p "Enter your choice [1]: " provider_choice
+    provider_choice="${provider_choice:-1}"
+    
+    case $provider_choice in
+        1) configure_vllm_provider "$target_ns" || return 1 ;;
+        2) configure_azure_provider "$target_ns" || return 1 ;;
+        3) configure_openai_provider "$target_ns" || return 1 ;;
+        4) configure_ollama_provider "$target_ns" || return 1 ;;
+        5) configure_bedrock_provider "$target_ns" || return 1 ;;
+        *) print_error "Invalid choice"; return 1 ;;
+    esac
+    
+    # Apply ConfigMap
+    print_step "Creating LlamaStack ConfigMap..."
+    sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" \
+        -e "s/MODEL_ID_PLACEHOLDER/$MODEL_ID/g" \
+        "$CONFIG_FILE" | oc apply -f -
+    
+    # Apply Distribution with env vars
+    print_step "Creating LlamaStackDistribution..."
+    
+    local dist_file="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-distribution.yaml"
+    
+    # Read base distribution and inject env vars
+    sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file" | \
+    awk -v env_vars="$DISTRIBUTION_ENV_VARS" '
+        /env:/ && !done {
+            print
+            print env_vars
+            done=1
+            next
+        }
+        { print }
+    ' | oc apply -f -
+    
+    print_step "Waiting for LlamaStack pod to be ready..."
+    sleep 5
+    
+    if oc wait --for=condition=available deployment -l llamastack.io/distribution=llamastack-demo -n "$target_ns" --timeout=180s 2>/dev/null; then
+        print_success "LlamaStack is ready"
+    else
+        print_warning "LlamaStack may still be starting. Check with: oc get pods -n $target_ns"
+    fi
+    
+    # Store LlamaStack URL for Demo UI
+    LLAMASTACK_URL="http://llamastack-demo-service.${target_ns}.svc.cluster.local:8321"
+    
+    return 0
+}
+
+deploy_full_stack_with_llamastack() {
+    print_header "Deploy Full Stack with LlamaStack"
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}This will deploy:${NC}"
+    echo "  • LlamaStack Distribution (with your chosen LLM provider)"
+    echo "  • Weather MCP Server (5 weather query tools)"
+    echo "  • MongoDB with sample weather data"
+    echo "  • Demo UI (Streamlit chatbot)"
+    echo ""
+    echo -e "${YELLOW}Requirements:${NC}"
+    echo "  • RHOAI 3.0+ with LlamaStack operator enabled"
+    echo "  • Access to your chosen LLM provider"
+    echo ""
+    
+    read -p "Proceed? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+    
+    # Step 1: Deploy LlamaStack
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Step 1/3: Deploying LlamaStack${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    if ! deploy_llamastack_distribution "$target_ns"; then
+        print_error "Failed to deploy LlamaStack"
+        return 1
+    fi
+    
+    # Step 2: Deploy MCP + MongoDB
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Step 2/3: Deploying Weather MCP Server + MongoDB${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    deploy_weather_mcp_server "$target_ns"
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to deploy MCP server"
+        return 1
+    fi
+    
+    # Step 3: Deploy UI
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Step 3/3: Deploying LlamaStack Demo UI${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    
+    local demo_dir="$SCRIPT_DIR/demo/llamastack-demo"
+    local mcp_url="http://weather-mcp-server.${target_ns}.svc.cluster.local:8000"
+    
+    print_step "Applying ConfigMap and Deployment manifests..."
+    
+    # Apply deployment.yaml with namespace and config values substituted
+    sed -e "s/namespace: demo-test/namespace: $target_ns/g" \
+        -e "s|demo-test/|$target_ns/|g" \
+        -e "s|LLAMASTACK_URL:.*|LLAMASTACK_URL: \"$LLAMASTACK_URL\"|g" \
+        -e "s|MODEL_ID:.*|MODEL_ID: \"$MODEL_ID\"|g" \
+        -e "s|MCP_SERVER_URL:.*|MCP_SERVER_URL: \"$mcp_url\"|g" \
+        -e "s|APP_TITLE:.*|APP_TITLE: \"LlamaStack + MCP Demo\"|g" \
+        -e "s|APP_SUBTITLE:.*|APP_SUBTITLE: \"AI Agent with Weather Data Tools\"|g" \
+        -e "s|MCP_SERVER_NAME:.*|MCP_SERVER_NAME: \"Weather MCP\"|g" \
+        -e "s|MCP_SERVER_DESCRIPTION:.*|MCP_SERVER_DESCRIPTION: \"Provides weather data queries for 14 global airports\"|g" \
+        -e "s|DATA_SOURCE_NAME:.*|DATA_SOURCE_NAME: \"MongoDB\"|g" \
+        -e "s|CHAT_PLACEHOLDER:.*|CHAT_PLACEHOLDER: \"Ask about weather conditions...\"|g" \
+        "$demo_dir/deployment.yaml" | oc apply -f -
+    
+    print_step "Creating BuildConfig..."
+    apply_manifest "$demo_dir/buildconfig.yaml" "$target_ns"
+    
+    echo ""
+    print_step "Building Demo UI container..."
+    if oc start-build llamastack-mcp-demo --from-dir="$demo_dir" --follow -n "$target_ns"; then
+        print_success "Build completed"
+    else
+        print_error "Build failed"
+        return 1
+    fi
+    
+    echo ""
+    print_step "Waiting for deployment..."
+    if oc rollout status deployment/llamastack-mcp-demo -n "$target_ns" --timeout=120s; then
+        print_success "Demo UI deployed"
+    else
+        print_warning "Deployment may still be starting"
+    fi
+    
+    # Get route
+    local route_url=$(oc get route llamastack-mcp-demo -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✅ Full LlamaStack Demo Stack Deployed!                       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}📦 Deployed Components:${NC}"
+    echo "   • LlamaStack: llamastack-demo-service.$target_ns.svc.cluster.local:8321"
+    echo "   • Provider: $LLM_PROVIDER"
+    echo "   • Model: $MODEL_ID"
+    echo "   • MongoDB: mongodb.$target_ns.svc.cluster.local:27017"
+    echo "   • Weather MCP: weather-mcp-server.$target_ns.svc.cluster.local:8000"
+    echo ""
+    echo -e "${CYAN}📌 Application URL:${NC}"
+    echo -e "   ${GREEN}https://$route_url${NC}"
+    echo ""
+    echo -e "${CYAN}💡 MCP tools are pre-registered in LlamaStack config.${NC}"
+    echo "   The Weather MCP tools should be available immediately."
+    echo ""
+    
+    return 0
+}
+
+################################################################################
+# MCP + MongoDB Deployment
+################################################################################
 
 deploy_mcp_mongodb_only() {
     print_header "Deploy Weather MCP Server + MongoDB"

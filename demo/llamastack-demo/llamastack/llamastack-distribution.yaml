@@ -1,0 +1,42 @@
+---
+# LlamaStackDistribution - Deploys LlamaStack with the configured provider
+# This CR is managed by the RHOAI LlamaStack Operator
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  annotations:
+    openshift.io/display-name: LlamaStack Demo
+  labels:
+    opendatahub.io/dashboard: "true"
+  name: llamastack-demo
+  namespace: NAMESPACE_PLACEHOLDER
+spec:
+  replicas: 1
+  server:
+    containerSpec:
+      command:
+      - /bin/sh
+      - -c
+      - llama stack run /etc/llama-stack/run.yaml
+      env:
+      # Provider-specific env vars will be added by the deploy script
+      - name: MILVUS_DB_PATH
+        value: ~/.llama/milvus.db
+      - name: FMS_ORCHESTRATOR_URL
+        value: http://localhost
+      - name: LLAMA_STACK_CONFIG_DIR
+        value: /opt/app-root/src/.llama/distributions/rh/
+      name: llama-stack
+      port: 8321
+      resources:
+        limits:
+          cpu: "4"
+          memory: 12Gi
+        requests:
+          cpu: 250m
+          memory: 500Mi
+    distribution:
+      name: rh-dev
+    userConfig:
+      configMapName: llamastack-demo-llm-config
+
