@@ -686,6 +686,11 @@ show_llamastack_demo_submenu() {
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}💡 Not using OpenShift?${NC}"
+    echo "   For Kubernetes or Docker deployment, see:"
+    echo -e "   ${YELLOW}https://github.com/gymnatics/llamastack-demo${NC}"
+    echo ""
 }
 
 deploy_llamastack_demo_menu() {
