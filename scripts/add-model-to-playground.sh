@@ -287,12 +287,12 @@ configure_playground_settings() {
         sa|SA)
             # Try to auto-fetch token from ServiceAccount
             echo ""
-            local sa_name="${MODEL_NAME}-sa"
-            local secret_name="${MODEL_NAME}-sa-token"
-            echo "Looking for ServiceAccount token: $secret_name"
+            # Use CURRENT_MODEL_NAME and CURRENT_NAMESPACE set by main function
+            local sa_secret_name="${CURRENT_MODEL_NAME}-sa-token"
+            echo "Looking for ServiceAccount token: $sa_secret_name in namespace: $CURRENT_NAMESPACE"
             
-            if oc get secret "$secret_name" -n "$NAMESPACE" &>/dev/null; then
-                API_TOKEN=$(oc get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.token}' | base64 -d)
+            if oc get secret "$sa_secret_name" -n "$CURRENT_NAMESPACE" &>/dev/null; then
+                API_TOKEN=$(oc get secret "$sa_secret_name" -n "$CURRENT_NAMESPACE" -o jsonpath='{.data.token}' | base64 -d)
                 if [ -n "$API_TOKEN" ]; then
                     print_success "Token fetched from ServiceAccount secret"
                 else
@@ -300,8 +300,22 @@ configure_playground_settings() {
                     API_TOKEN="fake"
                 fi
             else
-                print_warning "ServiceAccount secret '$secret_name' not found, using 'fake'"
-                API_TOKEN="fake"
+                # Try alternative naming patterns
+                local alt_secret_name="${CURRENT_MODEL_NAME}-token"
+                echo "Trying alternative: $alt_secret_name"
+                if oc get secret "$alt_secret_name" -n "$CURRENT_NAMESPACE" &>/dev/null; then
+                    API_TOKEN=$(oc get secret "$alt_secret_name" -n "$CURRENT_NAMESPACE" -o jsonpath='{.data.token}' | base64 -d)
+                    if [ -n "$API_TOKEN" ]; then
+                        print_success "Token fetched from secret: $alt_secret_name"
+                    else
+                        print_warning "Could not extract token, using 'fake'"
+                        API_TOKEN="fake"
+                    fi
+                else
+                    print_warning "ServiceAccount secret not found, using 'fake'"
+                    echo "  Tried: $sa_secret_name, $alt_secret_name"
+                    API_TOKEN="fake"
+                fi
             fi
             ;;
         *)
@@ -720,7 +734,9 @@ main() {
     print_success "Model type: $model_type"
     echo ""
     
-    # Configure playground settings
+    # Configure playground settings (pass model_name and namespace for SA token lookup)
+    CURRENT_MODEL_NAME="$model_name"
+    CURRENT_NAMESPACE="$namespace"
     configure_playground_settings
     
     # Confirm
