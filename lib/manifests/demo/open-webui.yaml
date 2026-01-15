@@ -1,0 +1,117 @@
+# Open WebUI Deployment
+# A user-friendly web interface for interacting with LLMs
+#
+# Usage: 
+#   export NAMESPACE=demo MODEL_URL=http://model-predictor.ns.svc:8080/v1
+#   envsubst < open-webui.yaml | oc apply -f -
+#
+# Or apply directly and configure via environment variables
+#
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-config
+data:
+  ENABLE_OLLAMA_API: "False"
+  OPENAI_API_BASE_URLS: "${MODEL_URL:-http://localhost:8080/v1}"
+  OPENAI_API_KEYS: ""
+  WEBUI_AUTH: "False"
+  WEBUI_SECRET_KEY: "rhoai-workshop-secret-key"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:main
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: openwebui-config
+          env:
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "False"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  to:
+    kind: Service
+    name: open-webui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

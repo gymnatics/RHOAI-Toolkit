@@ -136,18 +136,22 @@ show_ai_services_submenu() {
     echo -e "${CYAN}║                 AI Services                                    ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${MAGENTA}LlamaStack:${NC}"
-    echo -e "${YELLOW}1)${NC} Setup LlamaStack ${GREEN}[Recommended]${NC}"
-    echo "    Deploy LlamaStack with vLLM, Azure, OpenAI, Ollama, or Bedrock"
+    echo -e "${MAGENTA}Demo UIs:${NC}"
+    echo -e "${YELLOW}1)${NC} Deploy Open WebUI ${GREEN}[Recommended]${NC}"
+    echo "    Web interface for chatting with models (OpenAI-compatible)"
     echo ""
     echo -e "${YELLOW}2)${NC} Deploy LlamaStack Demo ${CYAN}[Demo]${NC}"
     echo "    Full demo with Weather MCP Server, MongoDB, and UI"
     echo ""
-    echo -e "${MAGENTA}Other Services:${NC}"
+    echo -e "${MAGENTA}MCP Servers (Tool Calling):${NC}"
     echo -e "${YELLOW}3)${NC} Setup MCP Servers"
-    echo "    Model Context Protocol servers for tool calling"
+    echo "    Weather MCP, Kubernetes MCP, and other tool servers"
     echo ""
-    echo -e "${YELLOW}4)${NC} Setup MaaS (Model as a Service)"
+    echo -e "${MAGENTA}Other Services:${NC}"
+    echo -e "${YELLOW}4)${NC} Setup LlamaStack (Generic)"
+    echo "    Deploy LlamaStack with vLLM, Azure, OpenAI, Ollama, or Bedrock"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Setup MaaS (Model as a Service)"
     echo "    API gateway for model serving"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
@@ -324,9 +328,13 @@ setup_mcp_servers_interactive() {
     echo ""
     echo -e "${YELLOW}MCP (Model Context Protocol) enables AI agents to use external tools.${NC}"
     echo ""
-    echo -e "${YELLOW}1)${NC} Deploy Weather MCP Server + MongoDB"
+    echo -e "${YELLOW}1)${NC} Deploy Kubernetes MCP Server ${GREEN}[Recommended]${NC}"
+    echo "   └─ Query pods, deployments, services, logs via natural language"
+    echo -e "${YELLOW}2)${NC} Deploy Weather MCP Server + MongoDB"
     echo "   └─ Sample MCP server with weather data tools (14 airports)"
-    echo -e "${YELLOW}2)${NC} Configure LlamaStack MCP Toolgroups"
+    echo -e "${YELLOW}3)${NC} Deploy All MCP Servers"
+    echo "   └─ Kubernetes + Weather MCP servers"
+    echo -e "${YELLOW}4)${NC} Configure LlamaStack MCP Toolgroups"
     echo "   └─ Add GitHub, Filesystem, Brave Search, and other MCP servers"
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
@@ -335,10 +343,19 @@ setup_mcp_servers_interactive() {
     
     case $mcp_choice in
         1)
+            # Deploy Kubernetes MCP Server
+            deploy_kubernetes_mcp_server
+            ;;
+        2)
             # Deploy Weather MCP Server
             deploy_mcp_mongodb_only
             ;;
-        2)
+        3)
+            # Deploy all MCP servers
+            deploy_kubernetes_mcp_server
+            deploy_mcp_mongodb_only
+            ;;
+        4)
             # Run the original MCP configuration script
             if [ -f "$SCRIPT_DIR/scripts/setup-mcp-servers.sh" ]; then
                 echo ""
@@ -1490,6 +1507,259 @@ deploy_full_stack_with_llamastack() {
 }
 
 ################################################################################
+# Open WebUI Deployment
+################################################################################
+
+deploy_open_webui() {
+    print_header "Deploy Open WebUI"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    # Detect available models
+    echo ""
+    echo -e "${CYAN}Detecting deployed models...${NC}"
+    local models=$(oc get inferenceservice -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    local model_urls=""
+    
+    if [ -n "$models" ]; then
+        echo "Found models in $target_ns:"
+        for model in $models; do
+            local url="http://${model}-predictor.${target_ns}.svc.cluster.local:8080/v1"
+            echo "  • $model → $url"
+            if [ -z "$model_urls" ]; then
+                model_urls="$url"
+            else
+                model_urls="${model_urls};${url}"
+            fi
+        done
+    else
+        echo "No models found in $target_ns"
+        # Check other namespaces
+        local all_models=$(oc get inferenceservice -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {end}' 2>/dev/null)
+        if [ -n "$all_models" ]; then
+            echo ""
+            echo "Models in other namespaces:"
+            for m in $all_models; do
+                local ns=$(echo "$m" | cut -d'/' -f1)
+                local name=$(echo "$m" | cut -d'/' -f2)
+                echo "  • $name (namespace: $ns)"
+            done
+        fi
+    fi
+    
+    echo ""
+    read -p "Enter model URL(s) [semicolon-separated, or press Enter for detected]: " custom_urls
+    if [ -n "$custom_urls" ]; then
+        model_urls="$custom_urls"
+    fi
+    
+    if [ -z "$model_urls" ]; then
+        print_warning "No model URLs configured. You can add them later via ConfigMap."
+        model_urls="http://localhost:8080/v1"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}This will deploy:${NC}"
+    echo "  • Open WebUI (web interface for chatting with models)"
+    echo "  • 2Gi persistent storage for data"
+    echo "  • Route for external access"
+    echo ""
+    echo "Model URL(s): $model_urls"
+    echo ""
+    
+    read -p "Proceed? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+    
+    # Deploy Open WebUI
+    print_step "Deploying Open WebUI..."
+    
+    local manifest_file="$SCRIPT_DIR/lib/manifests/demo/open-webui.yaml"
+    
+    if [ -f "$manifest_file" ]; then
+        # Use local manifest with variable substitution
+        export MODEL_URL="$model_urls"
+        sed -e "s|\${MODEL_URL:-http://localhost:8080/v1}|$model_urls|g" \
+            "$manifest_file" | oc apply -n "$target_ns" -f -
+        unset MODEL_URL
+    else
+        # Fallback to external manifest
+        print_info "Using external Open WebUI manifest..."
+        oc apply -f https://raw.githubusercontent.com/tsailiming/openshift-open-webui/refs/heads/main/open-webui.yaml -n "$target_ns"
+        
+        # Configure model URLs
+        oc patch configmap openwebui-config -n "$target_ns" --type merge \
+            -p "{\"data\":{\"OPENAI_API_BASE_URLS\":\"$model_urls\",\"OPENAI_API_KEYS\":\"\"}}" 2>/dev/null || true
+    fi
+    
+    # Disable persistent config so ConfigMap changes take effect
+    oc set env deploy/open-webui ENABLE_PERSISTENT_CONFIG=False -n "$target_ns" 2>/dev/null || true
+    
+    print_step "Waiting for Open WebUI to be ready..."
+    if oc rollout status deployment/open-webui -n "$target_ns" --timeout=180s; then
+        print_success "Open WebUI deployed"
+    else
+        print_warning "Open WebUI may still be starting"
+    fi
+    
+    # Get route
+    local route_url=$(oc get route open-webui -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✅ Open WebUI Deployed Successfully!                          ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    if [ -n "$route_url" ]; then
+        echo -e "${CYAN}🌐 Access URL:${NC} https://$route_url"
+    fi
+    echo ""
+    echo -e "${CYAN}📋 Configuration:${NC}"
+    echo "   • Model URLs: $model_urls"
+    echo "   • Auth disabled (workshop mode)"
+    echo ""
+    echo -e "${YELLOW}📝 To add more models later:${NC}"
+    echo "   oc patch configmap openwebui-config -n $target_ns --type merge \\"
+    echo "     -p '{\"data\":{\"OPENAI_API_BASE_URLS\":\"url1;url2\"}}'"
+    echo "   oc rollout restart deployment/open-webui -n $target_ns"
+    echo ""
+    
+    return 0
+}
+
+################################################################################
+# Kubernetes MCP Server Deployment
+################################################################################
+
+deploy_kubernetes_mcp_server() {
+    print_header "Deploy Kubernetes MCP Server"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    # Get target namespace
+    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    local current_project=$(oc project -q 2>/dev/null)
+    echo "Current project: $current_project"
+    echo ""
+    read -p "Enter target namespace [default: $current_project]: " target_ns
+    target_ns="${target_ns:-$current_project}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            print_success "Namespace created"
+        else
+            print_error "Namespace required"
+            return 1
+        fi
+    fi
+    
+    oc project "$target_ns" &>/dev/null
+    
+    echo ""
+    echo -e "${CYAN}This will deploy:${NC}"
+    echo "  • Kubernetes MCP Server"
+    echo "  • ServiceAccount with read-only cluster access"
+    echo "  • Enables querying pods, deployments, services, logs via LLM"
+    echo ""
+    echo -e "${YELLOW}Available tools after deployment:${NC}"
+    echo "  • List/describe pods, deployments, services"
+    echo "  • Get pod logs"
+    echo "  • Query InferenceServices"
+    echo "  • Check namespace resources"
+    echo ""
+    
+    read -p "Proceed? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+    
+    # Deploy Kubernetes MCP Server
+    print_step "Deploying Kubernetes MCP Server..."
+    
+    local manifest_file="$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml"
+    
+    if [ -f "$manifest_file" ]; then
+        oc apply -f "$manifest_file" -n "$target_ns"
+    else
+        print_error "Kubernetes MCP manifest not found: $manifest_file"
+        return 1
+    fi
+    
+    print_step "Waiting for Kubernetes MCP Server to be ready..."
+    if oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s; then
+        print_success "Kubernetes MCP Server deployed"
+    else
+        print_warning "MCP server may still be starting"
+    fi
+    
+    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
+    
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✅ Kubernetes MCP Server Deployed Successfully!               ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}📋 MCP Endpoint:${NC}"
+    echo "   $mcp_url"
+    echo ""
+    echo -e "${CYAN}🔧 Available Tools:${NC}"
+    echo "   • list_pods - List pods in namespace"
+    echo "   • describe_pod - Get pod details"
+    echo "   • get_pod_logs - Get container logs"
+    echo "   • list_deployments - List deployments"
+    echo "   • list_services - List services"
+    echo "   • list_inferenceservices - List RHOAI models"
+    echo ""
+    echo -e "${YELLOW}📝 To use with LlamaStack, add to config:${NC}"
+    echo "   tool_groups:"
+    echo "   - toolgroup_id: mcp::kubernetes"
+    echo "     provider_id: model-context-protocol"
+    echo "     mcp_endpoint:"
+    echo "       uri: $mcp_url"
+    echo ""
+    
+    return 0
+}
+
+################################################################################
 # MCP + MongoDB Deployment
 ################################################################################
 
@@ -2087,11 +2357,11 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -p "Select an option (1-4, 0): " ai_choice
+        read -p "Select an option (1-5, 0): " ai_choice
         
         case $ai_choice in
             1)
-                setup_llamastack_interactive
+                deploy_open_webui
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
@@ -2106,6 +2376,11 @@ ai_services_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             4)
+                setup_llamastack_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
                 MAAS_ONLY=true
                 run_maas_only_setup
                 echo ""
@@ -2115,7 +2390,7 @@ ai_services_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-4 or 0."
+                print_error "Invalid option. Please select 1-5 or 0."
                 sleep 1
                 ;;
         esac
