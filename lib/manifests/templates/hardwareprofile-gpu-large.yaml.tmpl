@@ -1,0 +1,47 @@
+# GPU Hardware Profile - Large (p5.48xlarge / Multi-GPU)
+# Optimized for: Large models (70B+ parameters), multi-GPU inference, training
+# Instance types: p5.48xlarge (8x H100), g6e.48xlarge (8x L40S)
+#
+# Usage: export NAMESPACE=demo && envsubst < hardwareprofile-gpu-large.yaml.tmpl | oc apply -f -
+#
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: gpu-large
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/display-name: 'GPU Large (70B+ models, Multi-GPU)'
+    opendatahub.io/description: 'For large models like Llama-3-70B, Mixtral-8x7B. Requires multi-GPU instances.'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+spec:
+  identifiers:
+    - defaultCount: '16'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '96'
+      minCount: 8
+      resourceType: CPU
+    - defaultCount: 128Gi
+      displayName: Memory
+      identifier: memory
+      maxCount: 512Gi
+      minCount: 64Gi
+      resourceType: Memory
+    - defaultCount: 4
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: 8
+      minCount: 2
+      resourceType: Accelerator
+  nodeSelector:
+    nvidia.com/gpu.present: 'true'
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue

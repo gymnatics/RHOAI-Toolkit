@@ -1,0 +1,47 @@
+# GPU Hardware Profile - Medium (g6e.4xlarge / g6e.8xlarge)
+# Optimized for: Medium models (8B-30B parameters), production inference
+# Instance types: g6e.4xlarge (16 vCPU, 64GB), g6e.8xlarge (32 vCPU, 128GB)
+#
+# Usage: export NAMESPACE=demo && envsubst < hardwareprofile-gpu-medium.yaml.tmpl | oc apply -f -
+#
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: gpu-medium
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/display-name: 'GPU Medium (8B-30B models)'
+    opendatahub.io/description: 'For medium models like Llama-3-70B (quantized), Qwen-14B. Fits g6e.4xlarge/8xlarge.'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+spec:
+  identifiers:
+    - defaultCount: '4'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '16'
+      minCount: 2
+      resourceType: CPU
+    - defaultCount: 32Gi
+      displayName: Memory
+      identifier: memory
+      maxCount: 64Gi
+      minCount: 16Gi
+      resourceType: Memory
+    - defaultCount: 1
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: 1
+      minCount: 1
+      resourceType: Accelerator
+  nodeSelector:
+    nvidia.com/gpu.present: 'true'
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue

@@ -1,0 +1,47 @@
+# GPU Hardware Profile - Small (g6e.xlarge / g6e.2xlarge)
+# Optimized for: Small models (4B-8B parameters), development, testing
+# Instance types: g6e.xlarge (4 vCPU, 16GB), g6e.2xlarge (8 vCPU, 32GB)
+#
+# Usage: export NAMESPACE=demo && envsubst < hardwareprofile-gpu-small.yaml.tmpl | oc apply -f -
+#
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: gpu-small
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/display-name: 'GPU Small (4B-8B models)'
+    opendatahub.io/description: 'For small models like Qwen3-4B, Llama-3-8B. Fits g6e.xlarge/2xlarge.'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+spec:
+  identifiers:
+    - defaultCount: '2'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '8'
+      minCount: 1
+      resourceType: CPU
+    - defaultCount: 8Gi
+      displayName: Memory
+      identifier: memory
+      maxCount: 24Gi
+      minCount: 4Gi
+      resourceType: Memory
+    - defaultCount: 1
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: 1
+      minCount: 1
+      resourceType: Accelerator
+  nodeSelector:
+    nvidia.com/gpu.present: 'true'
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue

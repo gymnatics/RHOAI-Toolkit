@@ -120,8 +120,11 @@ show_model_management_submenu() {
     echo -e "${YELLOW}2)${NC} Add Model to Playground"
     echo "    Test models interactively in GenAI Studio"
     echo ""
-    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile"
-    echo "    Define GPU resources for model deployments"
+    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile (Custom)"
+    echo "    Define custom GPU resources for model deployments"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
+    echo "    Create pre-configured profiles (Small/Medium/Large)"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -2047,7 +2050,7 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -p "Select an option (1-3, 0): " model_choice
+        read -p "Select an option (1-4, 0): " model_choice
         
         case $model_choice in
             1)
@@ -2065,11 +2068,16 @@ model_management_submenu() {
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
+            4)
+                create_hardware_profile_quick
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
             0)
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-3 or 0."
+                print_error "Invalid option. Please select 1-4 or 0."
                 sleep 1
                 ;;
         esac
@@ -2378,6 +2386,111 @@ EOF
         print_error "Failed to create hardware profile"
         return 1
     fi
+}
+
+# Quick GPU Hardware Profile Creation with pre-configured defaults
+create_hardware_profile_quick() {
+    print_header "Quick GPU Hardware Profile Setup"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift"
+        return 1
+    fi
+    
+    local template_dir="$SCRIPT_DIR/lib/manifests/templates"
+    
+    # Get namespace
+    echo -e "${CYAN}Enter the namespace for hardware profiles${NC}"
+    echo -e "${YELLOW}Default: redhat-ods-applications (global - visible in all projects)${NC}"
+    echo ""
+    read -p "Namespace [redhat-ods-applications]: " input_ns
+    local target_ns="${input_ns:-redhat-ods-applications}"
+    
+    # Validate namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_error "Namespace '$target_ns' does not exist"
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Select GPU Hardware Profile Size:${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Small  - For 4B-8B models (Qwen3-4B, Llama-3-8B)"
+    echo "         CPU: 2 (max 8) | Memory: 8Gi (max 24Gi) | GPU: 1"
+    echo "         Best for: g6e.xlarge, g6e.2xlarge"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Medium - For 8B-30B models (Qwen-14B, quantized 70B)"
+    echo "         CPU: 4 (max 16) | Memory: 32Gi (max 64Gi) | GPU: 1"
+    echo "         Best for: g6e.4xlarge, g6e.8xlarge"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Large  - For 70B+ models, multi-GPU"
+    echo "         CPU: 16 (max 96) | Memory: 128Gi (max 512Gi) | GPU: 4-8"
+    echo "         Best for: p5.48xlarge, g6e.48xlarge"
+    echo ""
+    echo -e "${YELLOW}4)${NC} All    - Create all three profiles ${GREEN}[Recommended]${NC}"
+    echo ""
+    
+    read -p "Select option (1-4): " choice
+    
+    export NAMESPACE="$target_ns"
+    
+    case $choice in
+        1)
+            if [ -f "$template_dir/hardwareprofile-gpu-small.yaml.tmpl" ]; then
+                envsubst < "$template_dir/hardwareprofile-gpu-small.yaml.tmpl" | oc apply -f -
+                print_success "Created gpu-small profile"
+            else
+                print_error "Template not found"
+                return 1
+            fi
+            ;;
+        2)
+            if [ -f "$template_dir/hardwareprofile-gpu-medium.yaml.tmpl" ]; then
+                envsubst < "$template_dir/hardwareprofile-gpu-medium.yaml.tmpl" | oc apply -f -
+                print_success "Created gpu-medium profile"
+            else
+                print_error "Template not found"
+                return 1
+            fi
+            ;;
+        3)
+            if [ -f "$template_dir/hardwareprofile-gpu-large.yaml.tmpl" ]; then
+                envsubst < "$template_dir/hardwareprofile-gpu-large.yaml.tmpl" | oc apply -f -
+                print_success "Created gpu-large profile"
+            else
+                print_error "Template not found"
+                return 1
+            fi
+            ;;
+        4)
+            for size in small medium large; do
+                local template="$template_dir/hardwareprofile-gpu-${size}.yaml.tmpl"
+                if [ -f "$template" ]; then
+                    envsubst < "$template" | oc apply -f -
+                    print_success "Created gpu-${size} profile"
+                fi
+            done
+            ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
+    unset NAMESPACE
+    
+    echo ""
+    print_header "Hardware Profiles in $target_ns"
+    oc get hardwareprofile -n "$target_ns" 2>/dev/null || echo "No profiles found"
+    
+    echo ""
+    print_info "These profiles include:"
+    print_info "  • Node selector: nvidia.com/gpu.present=true"
+    print_info "  • Toleration: nvidia.com/gpu:NoSchedule"
+    print_info "  • Kueue scheduling with default queue"
+    echo ""
+    print_info "Use these when deploying models in the RHOAI dashboard"
 }
 
 ################################################################################
