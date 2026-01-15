@@ -59,21 +59,8 @@ def format_weather_observation(doc: Dict) -> str:
         result += f" ({station_name})"
     result += f"\n🕐 Observed: {timestamp}\n"
     
-    # Handle various data formats
-    # Format 1: METAR-style nested data
-    if doc.get('hasMetarData') and 'metar' in doc:
-        metar = doc['metar']
-        raw_data = metar.get('rawData', '')
-        if raw_data:
-            result += f"📋 Raw Data: {raw_data}\n"
-        
-        if 'decodedData' in metar and 'observation' in metar['decodedData']:
-            obs = metar['decodedData']['observation']
-            result += format_conditions(obs)
-    
-    # Format 2: Flat structure
-    else:
-        result += format_conditions(doc)
+    # Handle various data formats - flat structure
+    result += format_conditions(doc)
     
     return result
 
@@ -194,29 +181,25 @@ async def search_weather(
         # Temperature filters
         if min_temperature is not None:
             query["$or"] = query.get("$or", []) + [
-                {"temperature": {"$gte": min_temperature}},
-                {"metar.decodedData.observation.airTemperature": {"$gte": str(min_temperature)}}
+                {"temperature": {"$gte": min_temperature}}
             ]
         
         if max_temperature is not None:
             query["$or"] = query.get("$or", []) + [
-                {"temperature": {"$lte": max_temperature}},
-                {"metar.decodedData.observation.airTemperature": {"$lte": str(max_temperature)}}
+                {"temperature": {"$lte": max_temperature}}
             ]
         
         # Visibility filters
         if min_visibility is not None:
             query["$or"] = query.get("$or", []) + [
-                {"visibility": {"$gte": min_visibility}},
-                {"metar.decodedData.observation.horizontalVisibility": {"$gte": str(min_visibility)}}
+                {"visibility": {"$gte": min_visibility}}
             ]
         
-        # Conditions filter - search in raw data or conditions fields
+        # Conditions filter
         if conditions:
             query["$or"] = query.get("$or", []) + [
                 {"conditions": {"$regex": conditions, "$options": "i"}},
-                {"weather": {"$regex": conditions, "$options": "i"}},
-                {"metar.rawData": {"$regex": conditions, "$options": "i"}}
+                {"weather": {"$regex": conditions, "$options": "i"}}
             ]
         
         # Limit results

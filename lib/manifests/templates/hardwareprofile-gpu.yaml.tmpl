@@ -11,7 +11,6 @@
 #   MAX_MEM       - Max memory (default: 64Gi)
 #   DEFAULT_GPU   - Default GPU count (default: 1)
 #   MAX_GPU       - Max GPU count (default: 8)
-#   LOCAL_QUEUE   - Kueue local queue name (default: default)
 #
 apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
@@ -47,14 +46,12 @@ spec:
       maxCount: ${MAX_GPU:-8}
       minCount: 1
       resourceType: Accelerator
-  nodeSelector:
-    nvidia.com/gpu.present: 'true'
-  tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
   scheduling:
-    kueue:
-      localQueueName: ${LOCAL_QUEUE:-default}
-      priorityClass: None
-    type: Queue
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

@@ -461,7 +461,7 @@ with st.sidebar:
         new_mcp_url = st.text_input(
             "MCP Server URL",
             value=MCP_SERVER_URL,
-            help="METAR MCP Server endpoint"
+            help="MCP Server endpoint"
         )
         
         # Update globals if changed

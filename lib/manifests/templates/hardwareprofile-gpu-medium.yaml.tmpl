@@ -34,14 +34,12 @@ spec:
       maxCount: 1
       minCount: 1
       resourceType: Accelerator
-  nodeSelector:
-    nvidia.com/gpu.present: 'true'
-  tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
   scheduling:
-    kueue:
-      localQueueName: default
-      priorityClass: None
-    type: Queue
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

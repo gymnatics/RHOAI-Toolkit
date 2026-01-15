@@ -108,10 +108,10 @@ Also update the namespace in the Deployment, Service, and Route sections.
    tool_groups:
    - toolgroup_id: builtin::rag
      provider_id: rag-runtime
-   - toolgroup_id: mcp::metar-weather              # <-- Add this block
+   - toolgroup_id: mcp::weather-data               # <-- Add this block
      provider_id: model-context-protocol
      mcp_endpoint:
-       uri: http://metar-mcp-server.demo-test.svc.cluster.local:8000/mcp
+       uri: http://weather-mcp-server.demo-test.svc.cluster.local:8000/mcp
    ```
 
 4. **Apply the updated config:**
@@ -131,7 +131,7 @@ Also update the namespace in the Deployment, Service, and Route sections.
 
 6. **Verify tools are registered:**
    ```bash
-   curl -s http://<llamastack-service>:8321/v1/tools | grep metar
+   curl -s http://<llamastack-service>:8321/v1/tools | grep weather
    ```
 
 > **Note:** There may be multiple ConfigMaps with similar names (e.g., `llama-stack-config` vs `lsd-genai-playground-config`). Make sure you update the one that's actually mounted by the deployment.
@@ -223,21 +223,20 @@ You can also temporarily change URLs in the sidebar under "🌐 Endpoints" (thes
 
 ## Example Configurations
 
-### Example 1: METAR Weather Data (Aviation)
+### Example 1: Weather Data
 
 ```yaml
 data:
   LLAMASTACK_URL: "http://lsd-genai-playground-service.demo-test.svc.cluster.local:8321"
   MODEL_ID: "qwen3-8b"
-  MCP_SERVER_URL: "http://metar-mcp-server.demo-test.svc.cluster.local:8000"
-  APP_TITLE: "Aviation Weather Assistant"
-  MCP_SERVER_NAME: "METAR Weather"
-  MCP_SERVER_DESCRIPTION: "METAR aviation weather data from MongoDB"
-  CHAT_PLACEHOLDER: "Ask about airport weather (e.g., 'What's the weather in Delhi?')"
+  MCP_SERVER_URL: "http://weather-mcp-server.demo-test.svc.cluster.local:8000"
+  APP_TITLE: "Weather Assistant"
+  MCP_SERVER_NAME: "Weather Data"
+  MCP_SERVER_DESCRIPTION: "Weather observation data from MongoDB"
+  CHAT_PLACEHOLDER: "Ask about weather (e.g., 'What's the weather in Delhi?')"
   SYSTEM_PROMPT: |
-    You are an aviation weather assistant with access to METAR data.
-    Use the search_metar_data tool to fetch real weather data.
-    Common ICAO codes: VIDP (Delhi), VABB (Mumbai), VOBL (Bangalore).
+    You are a weather assistant with access to weather data.
+    Use the search_weather tool to fetch real weather data.
     Explain weather data in a user-friendly way.
 ```
 
@@ -297,11 +296,11 @@ oc logs deployment/llamastack-mcp-demo
 1. Click "🔄 Check" to refresh status
 2. If still offline, verify the services exist:
    ```bash
-   oc get svc | grep -E "lsd-genai|metar-mcp"
+   oc get svc | grep -E "lsd-genai|weather-mcp"
    ```
 3. Check if pods are running:
    ```bash
-   oc get pods | grep -E "lsd-genai|metar-mcp"
+   oc get pods | grep -E "lsd-genai|weather-mcp"
    ```
 
 ### No tools found (or only RAG tools showing)
@@ -323,8 +322,8 @@ This usually means the MCP server is not registered in LlamaStack's config.
 
 3. **Ensure MCP server is running:**
    ```bash
-   oc get pods | grep metar-mcp
-   oc logs deployment/metar-mcp-server --tail=50
+   oc get pods | grep weather-mcp
+   oc logs deployment/weather-mcp-server --tail=50
    ```
 
 4. **Restart LlamaStack after config changes:**

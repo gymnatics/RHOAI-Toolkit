@@ -273,6 +273,7 @@ create_gpu_hardware_profile() {
         else
             print_warning "Template not found at $template_file, using inline YAML"
             # Fallback to inline YAML if template not found
+            # IMPORTANT: nodeSelector and tolerations must be inside scheduling.node
             cat <<EOF | oc apply -f -
 apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
@@ -304,17 +305,15 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
-  nodeSelector:
-    nvidia.com/gpu.present: 'true'
-  tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
   scheduling:
-    kueue:
-      localQueueName: default
-      priorityClass: None
-    type: Queue
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
 EOF
         fi
         print_success "GPU hardware profile created in $namespace"

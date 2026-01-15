@@ -14,7 +14,7 @@ data:
   MODEL_ID: "qwen3-8b"
   
   # Required: MCP Server URL (for health checks in sidebar)
-  MCP_SERVER_URL: "http://metar-mcp-server.demo-test.svc.cluster.local:8000"
+  MCP_SERVER_URL: "http://weather-mcp-server.demo-test.svc.cluster.local:8000"
   
   # Optional: UI Customization
   APP_TITLE: "LlamaStack + MCP Demo"
@@ -40,7 +40,7 @@ metadata:
   labels:
     app: llamastack-mcp-demo
     app.kubernetes.io/name: llamastack-mcp-demo
-    app.kubernetes.io/part-of: indigo-poc
+    app.kubernetes.io/part-of: llamastack-demo
 spec:
   replicas: 1
   selector:
