@@ -422,29 +422,100 @@ deploy_model_interactive() {
             memory_limit="${input_memory:-$default_memory}"
         fi
     else
-        # No hardware profiles found, ask for manual or default
+        # No hardware profiles found - offer to create one
         echo -e "${YELLOW}No GPU hardware profiles found.${NC}"
         echo ""
-        echo "Default resources:"
-        echo "  GPU limit: $default_gpu"
-        echo "  CPU limit: $default_cpu"
-        echo "  Memory limit: $default_memory"
+        echo -e "${BLUE}Options:${NC}"
+        echo ""
+        echo -e "${YELLOW}1)${NC} Create GPU hardware profile (recommended)"
+        echo "   Creates a profile with tolerations for GPU nodes"
+        echo ""
+        echo -e "${YELLOW}2)${NC} Use default resources without profile"
+        echo "   GPU: $default_gpu, CPU: $default_cpu, Memory: $default_memory"
+        echo ""
+        echo -e "${YELLOW}3)${NC} Custom configuration (enter manually)"
         echo ""
         
-        read -p "Use default resources? (Y/n): " use_defaults
-        use_defaults=$(echo "$use_defaults" | tr -d '[:space:]')
+        read -p "Select option (1-3): " no_profile_choice
+        no_profile_choice=$(echo "$no_profile_choice" | tr -d '[:space:]')
         
-        if [[ "$use_defaults" =~ ^[Nn]$ ]]; then
-            echo ""
-            read -p "GPU limit (default: $default_gpu): " input_gpu
-            gpu_limit="${input_gpu:-$default_gpu}"
-            
-            read -p "CPU limit (default: $default_cpu): " input_cpu
-            cpu_limit="${input_cpu:-$default_cpu}"
-            
-            read -p "Memory limit (default: $default_memory): " input_memory
-            memory_limit="${input_memory:-$default_memory}"
-        fi
+        case "$no_profile_choice" in
+            1)
+                # Create hardware profile using quick setup
+                echo ""
+                print_step "Creating GPU hardware profile..."
+                
+                local template_dir="${_MODEL_DEPLOY_DIR}/../../lib/manifests/templates"
+                
+                echo ""
+                echo -e "${CYAN}Select profile size:${NC}"
+                echo "  1) Small  - 4B-8B models (CPU: 2-8, Mem: 8-24Gi, GPU: 1)"
+                echo "  2) Medium - 8B-30B models (CPU: 4-16, Mem: 32-64Gi, GPU: 1)"
+                echo "  3) Large  - 70B+ models (CPU: 16-96, Mem: 128-512Gi, GPU: 4-8)"
+                echo ""
+                read -p "Select size (1-3) [1]: " size_choice
+                size_choice="${size_choice:-1}"
+                
+                local profile_size="small"
+                case "$size_choice" in
+                    2) profile_size="medium" ;;
+                    3) profile_size="large" ;;
+                    *) profile_size="small" ;;
+                esac
+                
+                local template_file="$template_dir/hardwareprofile-gpu-${profile_size}.yaml.tmpl"
+                
+                if [ -f "$template_file" ]; then
+                    export NAMESPACE="$target_namespace"
+                    envsubst < "$template_file" | oc apply -f -
+                    unset NAMESPACE
+                    
+                    selected_profile_name="gpu-${profile_size}"
+                    selected_profile_namespace="$target_namespace"
+                    print_success "Created hardware profile: gpu-${profile_size}"
+                    
+                    # Get the profile's default values
+                    case "$profile_size" in
+                        small)
+                            gpu_limit="1"
+                            cpu_limit="2"
+                            memory_limit="8Gi"
+                            ;;
+                        medium)
+                            gpu_limit="1"
+                            cpu_limit="4"
+                            memory_limit="32Gi"
+                            ;;
+                        large)
+                            gpu_limit="4"
+                            cpu_limit="16"
+                            memory_limit="128Gi"
+                            ;;
+                    esac
+                else
+                    print_warning "Template not found, using default resources"
+                fi
+                ;;
+            2)
+                # Use defaults
+                print_success "Using default resources"
+                ;;
+            3)
+                # Custom configuration
+                echo ""
+                read -p "GPU limit (default: $default_gpu): " input_gpu
+                gpu_limit="${input_gpu:-$default_gpu}"
+                
+                read -p "CPU limit (default: $default_cpu): " input_cpu
+                cpu_limit="${input_cpu:-$default_cpu}"
+                
+                read -p "Memory limit (default: $default_memory): " input_memory
+                memory_limit="${input_memory:-$default_memory}"
+                ;;
+            *)
+                print_info "Using default resources"
+                ;;
+        esac
     fi
     
     echo ""
