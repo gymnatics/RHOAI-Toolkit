@@ -304,7 +304,310 @@ approve_pending_csrs() {
 }
 
 ################################################################################
-# MCP Server Setup
+# MCP Server Functions
+################################################################################
+
+# Deploy Kubernetes MCP Server
+deploy_kubernetes_mcp_server() {
+    print_header "Deploy Kubernetes MCP Server"
+    
+    local namespace=$(oc project -q 2>/dev/null)
+    echo "Current namespace: $namespace"
+    read -p "Deploy to namespace [$namespace]: " target_ns
+    target_ns="${target_ns:-$namespace}"
+    
+    # Check/create namespace
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+        else
+            return 1
+        fi
+    fi
+    
+    print_step "Deploying Kubernetes MCP Server..."
+    oc apply -f "$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml" -n "$target_ns"
+    
+    print_step "Waiting for deployment..."
+    oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s || true
+    
+    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
+    
+    print_success "Kubernetes MCP Server deployed"
+    echo ""
+    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
+    echo ""
+    
+    # Ask to register in AI Assets
+    read -p "Register in AI Asset endpoints (shows in UI)? (Y/n): " register_ai
+    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes cluster operations - list pods, deployments, services, get logs." \
+            "streamable-http"
+    fi
+    
+    # Ask to register in LlamaStack
+    read -p "Register in LlamaStack config (enables tool calling)? (Y/n): " register_ls
+    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
+        register_mcp_llamastack "mcp::kubernetes" "$mcp_url" "$target_ns"
+    fi
+}
+
+# Deploy Weather MCP Server with MongoDB
+deploy_mcp_mongodb_only() {
+    print_header "Deploy Weather MCP Server + MongoDB"
+    
+    local namespace=$(oc project -q 2>/dev/null)
+    echo "Current namespace: $namespace"
+    read -p "Deploy to namespace [$namespace]: " target_ns
+    target_ns="${target_ns:-$namespace}"
+    
+    local mcp_dir="$SCRIPT_DIR/demo/llamastack-demo/mcp"
+    
+    if [ ! -d "$mcp_dir" ]; then
+        print_error "Weather MCP directory not found: $mcp_dir"
+        return 1
+    fi
+    
+    print_step "Deploying MongoDB..."
+    sed "s/namespace: demo-test/namespace: $target_ns/g" "$mcp_dir/mongodb-deployment.yaml" | oc apply -f - 2>/dev/null || \
+        oc apply -f "$mcp_dir/mongodb-deployment.yaml" -n "$target_ns"
+    
+    oc rollout status deployment/mongodb -n "$target_ns" --timeout=120s || true
+    
+    print_step "Initializing weather data..."
+    oc apply -f "$mcp_dir/init-data-job.yaml" -n "$target_ns" 2>/dev/null || true
+    
+    print_step "Building Weather MCP Server..."
+    oc apply -f "$mcp_dir/buildconfig.yaml" -n "$target_ns"
+    oc start-build weather-mcp-server --from-dir="$mcp_dir" --follow -n "$target_ns" 2>/dev/null || true
+    
+    print_step "Deploying Weather MCP Server..."
+    oc apply -f "$mcp_dir/deployment.yaml" -n "$target_ns"
+    oc rollout status deployment/weather-mcp-server -n "$target_ns" --timeout=120s || true
+    
+    local mcp_url="http://weather-mcp-server.${target_ns}.svc.cluster.local:8000/mcp"
+    
+    print_success "Weather MCP Server deployed"
+    echo ""
+    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
+    echo ""
+    
+    # Ask to register
+    read -p "Register in AI Asset endpoints? (Y/n): " register_ai
+    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
+        register_mcp_ai_asset "Weather-MCP-Server" "$mcp_url" \
+            "Weather data with MongoDB backend. Tools: search_weather, get_current_weather, list_stations." \
+            "streamable-http"
+    fi
+    
+    read -p "Register in LlamaStack config? (Y/n): " register_ls
+    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
+        register_mcp_llamastack "mcp::weather-data" "$mcp_url" "$target_ns"
+    fi
+}
+
+# Register MCP in AI Asset endpoints (gen-ai-aa-mcp-servers ConfigMap)
+register_mcp_ai_asset() {
+    local mcp_name="$1"
+    local mcp_url="$2"
+    local description="$3"
+    local transport="${4:-streamable-http}"
+    
+    print_step "Registering '$mcp_name' in AI Asset endpoints..."
+    
+    local entry_key=$(echo "$mcp_name" | sed 's/ /-/g')
+    
+    # Check if ConfigMap exists
+    if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null; then
+        # Patch existing ConfigMap
+        oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications --type merge \
+            -p "{\"data\":{\"$entry_key\":\"{\\\"url\\\": \\\"$mcp_url\\\", \\\"description\\\": \\\"$description\\\", \\\"transport\\\": \\\"$transport\\\"}\"}}"
+    else
+        # Create new ConfigMap
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: rhoai-mcp-servers
+data:
+  $entry_key: |
+    {
+      "url": "$mcp_url",
+      "description": "$description",
+      "transport": "$transport"
+    }
+EOF
+    fi
+    
+    print_success "Registered '$mcp_name' in AI Asset endpoints"
+    print_info "View in: OpenShift AI Dashboard → Settings → AI asset endpoints"
+}
+
+# Register MCP in LlamaStack config
+register_mcp_llamastack() {
+    local toolgroup_id="$1"
+    local mcp_url="$2"
+    local namespace="$3"
+    
+    print_step "Adding toolgroup '$toolgroup_id' to LlamaStack config..."
+    
+    # Check if llama-stack-config exists
+    if ! oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
+        print_warning "LlamaStack config not found in namespace '$namespace'"
+        print_info "Deploy LlamaStack first, or the playground will create it"
+        return 1
+    fi
+    
+    # Get current config
+    local current_config=$(oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}')
+    
+    # Check if toolgroup already exists
+    if echo "$current_config" | grep -q "toolgroup_id: $toolgroup_id"; then
+        print_info "Toolgroup '$toolgroup_id' already registered"
+        return 0
+    fi
+    
+    print_info "Adding MCP toolgroup to LlamaStack config..."
+    print_warning "Manual step required: Edit the ConfigMap to add:"
+    echo ""
+    echo "    - toolgroup_id: $toolgroup_id"
+    echo "      provider_id: model-context-protocol"
+    echo "      mcp_endpoint:"
+    echo "        uri: $mcp_url"
+    echo ""
+    print_info "Then restart LlamaStack: oc delete pod -l app=lsd-genai-playground -n $namespace"
+}
+
+# Interactive registration for AI Asset endpoints
+register_mcp_ai_asset_interactive() {
+    print_header "Register MCP in AI Asset Endpoints"
+    
+    echo "This registers an MCP server in the OpenShift AI Dashboard"
+    echo "Location: Settings → AI asset endpoints"
+    echo ""
+    
+    read -p "MCP Server Name (e.g., My-MCP-Server): " mcp_name
+    if [ -z "$mcp_name" ]; then
+        print_error "Name is required"
+        return 1
+    fi
+    
+    read -p "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
+    if [ -z "$mcp_url" ]; then
+        print_error "URL is required"
+        return 1
+    fi
+    
+    read -p "Description: " description
+    echo "Transport options: sse, streamable-http"
+    read -p "Transport [streamable-http]: " transport
+    transport="${transport:-streamable-http}"
+    
+    register_mcp_ai_asset "$mcp_name" "$mcp_url" "$description" "$transport"
+}
+
+# Interactive registration for LlamaStack
+register_mcp_llamastack_interactive() {
+    print_header "Register MCP in LlamaStack Config"
+    
+    local namespace=$(oc project -q 2>/dev/null)
+    echo "This adds an MCP toolgroup to LlamaStack for tool calling"
+    echo "Current namespace: $namespace"
+    echo ""
+    
+    read -p "Toolgroup ID (e.g., mcp::my-tools): " toolgroup_id
+    if [ -z "$toolgroup_id" ]; then
+        print_error "Toolgroup ID is required"
+        return 1
+    fi
+    
+    read -p "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
+    if [ -z "$mcp_url" ]; then
+        print_error "URL is required"
+        return 1
+    fi
+    
+    read -p "Namespace for LlamaStack config [$namespace]: " ls_namespace
+    ls_namespace="${ls_namespace:-$namespace}"
+    
+    register_mcp_llamastack "$toolgroup_id" "$mcp_url" "$ls_namespace"
+}
+
+# Show MCP server status
+show_mcp_status() {
+    print_header "MCP Server Status"
+    
+    local namespace=$(oc project -q 2>/dev/null)
+    echo -e "${CYAN}Current Namespace:${NC} $namespace"
+    echo ""
+    
+    echo -e "${CYAN}MCP Server Pods:${NC}"
+    oc get pods -n "$namespace" 2>/dev/null | grep -E "NAME|mcp|weather|kubernetes" || echo "  No MCP pods found in $namespace"
+    echo ""
+    
+    echo -e "${CYAN}AI Asset Endpoints (gen-ai-aa-mcp-servers):${NC}"
+    if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null; then
+        oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o yaml 2>/dev/null | \
+            grep -E "^  [A-Za-z].*-.*:" | sed 's/://' | sed 's/^/  - /' || echo "  No entries"
+    else
+        echo "  ConfigMap not found (no MCP servers registered)"
+    fi
+    echo ""
+    
+    echo -e "${CYAN}LlamaStack Toolgroups:${NC}"
+    if oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
+        oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}' 2>/dev/null | \
+            grep "toolgroup_id: mcp::" | sed 's/.*toolgroup_id: /  - /' || echo "  No MCP toolgroups in $namespace"
+    else
+        echo "  LlamaStack config not found in $namespace"
+    fi
+}
+
+# Show available MCP tools from LlamaStack
+show_mcp_tools() {
+    print_header "Available MCP Tools"
+    
+    local namespace=$(oc project -q 2>/dev/null)
+    echo -e "${CYAN}Querying LlamaStack in namespace: $namespace${NC}"
+    echo ""
+    
+    oc exec deployment/lsd-genai-playground -n "$namespace" -- \
+        curl -s http://localhost:8321/v1/tools 2>/dev/null | python3 -c "
+import sys,json
+try:
+    data=json.load(sys.stdin)
+    tools = data if isinstance(data, list) else data.get('data', [])
+    groups = {}
+    for t in tools:
+        g = t.get('toolgroup_id', 'builtin')
+        if g not in groups:
+            groups[g] = []
+        groups[g].append(t.get('name', 'unknown'))
+    
+    print(f'Total: {len(tools)} tools')
+    print('')
+    for g, tlist in sorted(groups.items()):
+        if g.startswith('mcp::'):
+            print(f'\033[0;36m{g}:\033[0m')
+        else:
+            print(f'{g}:')
+        for tool in sorted(tlist):
+            print(f'  - {tool}')
+        print('')
+except Exception as e:
+    print(f'Error: {e}')
+    print('Is LlamaStack (lsd-genai-playground) running?')
+" 2>/dev/null || print_error "Could not connect to LlamaStack. Is it deployed in $namespace?"
+}
+
+################################################################################
+# MCP Server Setup Menu
 ################################################################################
 
 setup_mcp_servers_interactive() {
@@ -328,14 +631,26 @@ setup_mcp_servers_interactive() {
     echo ""
     echo -e "${YELLOW}MCP (Model Context Protocol) enables AI agents to use external tools.${NC}"
     echo ""
+    echo -e "${MAGENTA}Deploy MCP Servers:${NC}"
     echo -e "${YELLOW}1)${NC} Deploy Kubernetes MCP Server ${GREEN}[Recommended]${NC}"
     echo "   └─ Query pods, deployments, services, logs via natural language"
     echo -e "${YELLOW}2)${NC} Deploy Weather MCP Server + MongoDB"
     echo "   └─ Sample MCP server with weather data tools (14 airports)"
     echo -e "${YELLOW}3)${NC} Deploy All MCP Servers"
     echo "   └─ Kubernetes + Weather MCP servers"
-    echo -e "${YELLOW}4)${NC} Configure LlamaStack MCP Toolgroups"
-    echo "   └─ Add GitHub, Filesystem, Brave Search, and other MCP servers"
+    echo ""
+    echo -e "${MAGENTA}Register MCP Servers:${NC}"
+    echo -e "${YELLOW}4)${NC} Register MCP in AI Asset Endpoints ${CYAN}[UI]${NC}"
+    echo "   └─ Shows in OpenShift AI Dashboard → Settings → AI asset endpoints"
+    echo -e "${YELLOW}5)${NC} Register MCP in LlamaStack Config ${CYAN}[Tool Calling]${NC}"
+    echo "   └─ Enables tool calling in LlamaStack/Playground"
+    echo ""
+    echo -e "${MAGENTA}Status:${NC}"
+    echo -e "${YELLOW}6)${NC} Show MCP Server Status"
+    echo -e "${YELLOW}7)${NC} List Available Tools (from LlamaStack)"
+    echo ""
+    echo -e "${YELLOW}8)${NC} Full MCP Management Menu"
+    echo "   └─ Advanced options via manage-mcp-servers.sh"
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
     
@@ -356,14 +671,27 @@ setup_mcp_servers_interactive() {
             deploy_mcp_mongodb_only
             ;;
         4)
-            # Run the original MCP configuration script
-            if [ -f "$SCRIPT_DIR/scripts/setup-mcp-servers.sh" ]; then
-                echo ""
-                "$SCRIPT_DIR/scripts/setup-mcp-servers.sh"
+            # Register in AI Asset endpoints
+            register_mcp_ai_asset_interactive
+            ;;
+        5)
+            # Register in LlamaStack config
+            register_mcp_llamastack_interactive
+            ;;
+        6)
+            # Show status
+            show_mcp_status
+            ;;
+        7)
+            # List tools
+            show_mcp_tools
+            ;;
+        8)
+            # Full management script
+            if [ -f "$SCRIPT_DIR/scripts/manage-mcp-servers.sh" ]; then
+                "$SCRIPT_DIR/scripts/manage-mcp-servers.sh"
             else
-                print_error "MCP configuration script not found"
-                echo "Expected: $SCRIPT_DIR/scripts/setup-mcp-servers.sh"
-                return 1
+                print_error "MCP management script not found"
             fi
             ;;
         0)
