@@ -894,7 +894,7 @@ metadata:
   name: rhods-operator
   namespace: redhat-ods-operator
 spec:
-  channel: fast
+  channel: fast-3.x
   name: rhods-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
