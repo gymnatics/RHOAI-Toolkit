@@ -4,6 +4,20 @@
 # Create GPU MachineSet for OpenShift Cluster
 # This script generates a GPU MachineSet YAML based on existing worker nodes
 #
+# Usage:
+#   ./create-gpu-machineset.sh                    # Interactive mode
+#   ./create-gpu-machineset.sh --spot             # Interactive with spot default
+#   ./create-gpu-machineset.sh --instance-type g6e.4xlarge --spot --apply
+#
+# Options:
+#   --instance-type TYPE   GPU instance type (g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.48xlarge)
+#   --spot                 Use spot instances
+#   --spot-max-price PRICE Maximum spot price per hour
+#   --az ZONE              Availability zone (e.g., us-east-2a)
+#   --replicas N           Number of replicas (default: 0)
+#   --apply                Apply the MachineSet immediately
+#   --help                 Show this help
+#
 # Key Changes from Regular Worker to GPU Worker:
 # 1. machine-role: worker → gpu-worker
 # 2. machine-type: worker → gpu-worker  
@@ -12,6 +26,70 @@
 # 5. Change instanceType to GPU instance (g6e.*, p5.*)
 # 6. Update annotations for GPU count, vCPU, memory
 #############################################################################
+
+# Parse command line arguments
+CLI_INSTANCE_TYPE=""
+CLI_SPOT=false
+CLI_SPOT_MAX_PRICE=""
+CLI_AZ=""
+CLI_REPLICAS=""
+CLI_APPLY=false
+NON_INTERACTIVE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --instance-type)
+            CLI_INSTANCE_TYPE="$2"
+            NON_INTERACTIVE=true
+            shift 2
+            ;;
+        --spot)
+            CLI_SPOT=true
+            shift
+            ;;
+        --spot-max-price)
+            CLI_SPOT_MAX_PRICE="$2"
+            CLI_SPOT=true
+            shift 2
+            ;;
+        --az)
+            CLI_AZ="$2"
+            shift 2
+            ;;
+        --replicas)
+            CLI_REPLICAS="$2"
+            shift 2
+            ;;
+        --apply)
+            CLI_APPLY=true
+            shift
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --instance-type TYPE   GPU instance type"
+            echo "  --spot                 Use spot instances"
+            echo "  --spot-max-price PRICE Maximum spot price per hour"
+            echo "  --az ZONE              Availability zone"
+            echo "  --replicas N           Number of replicas (default: 0)"
+            echo "  --apply                Apply the MachineSet immediately"
+            echo "  --help                 Show this help"
+            echo ""
+            echo "Instance Types:"
+            echo "  g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM"
+            echo "  g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM"
+            echo "  g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM"
+            echo "  p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -146,6 +224,39 @@ esac
 
 echo ""
 print_success "Selected: $INSTANCE_TYPE ($GPU_COUNT GPU, $VCPU vCPU, $((MEMORY_MB/1024))GB RAM)"
+echo ""
+
+# Question 1.5: Spot Instance Option
+echo "1.5️⃣  Use Spot Instances? (up to 90% cost savings, but can be interrupted)"
+echo ""
+echo "  1) On-Demand (default) - Guaranteed capacity, full price"
+echo "  2) Spot Instance - Up to 90% cheaper, may be interrupted"
+echo ""
+read -p "Enter choice [1-2, default: 1]: " spot_choice
+
+USE_SPOT=false
+SPOT_MAX_PRICE=""
+case ${spot_choice:-1} in
+    2)
+        USE_SPOT=true
+        echo ""
+        print_info "Spot Instance selected"
+        echo ""
+        echo "Spot instances can save 60-90% but may be terminated with 2-min warning."
+        echo "Recommended for: development, testing, fault-tolerant workloads"
+        echo "Not recommended for: production serving, long-running training"
+        echo ""
+        read -p "Set max price per hour (leave empty for on-demand price cap): " SPOT_MAX_PRICE
+        if [ -n "$SPOT_MAX_PRICE" ]; then
+            print_success "Spot max price: \$${SPOT_MAX_PRICE}/hr"
+        else
+            print_success "Spot max price: On-demand price (default)"
+        fi
+        ;;
+    *)
+        print_success "On-Demand instance selected"
+        ;;
+esac
 echo ""
 
 # Question 2: Availability Zone and Subnet Selection
@@ -319,6 +430,17 @@ else
             id: ${SUBNET_ID}"
 fi
 
+# Generate spot market options if enabled
+SPOT_CONFIG=""
+if [ "$USE_SPOT" = true ]; then
+    if [ -n "$SPOT_MAX_PRICE" ]; then
+        SPOT_CONFIG="          spotMarketOptions:
+            maxPrice: '${SPOT_MAX_PRICE}'"
+    else
+        SPOT_CONFIG="          spotMarketOptions: {}"
+    fi
+fi
+
 cat > "$OUTPUT_FILE" << EOF
 apiVersion: machine.openshift.io/v1beta1
 kind: MachineSet
@@ -391,6 +513,7 @@ spec:
                   values:
                     - ${CLUSTER_ID}-lb
 ${SUBNET_CONFIG}
+${SPOT_CONFIG}
           tags:
             - name: kubernetes.io/cluster/${CLUSTER_ID}
               value: owned
@@ -418,6 +541,15 @@ else
     echo "🔗 Subnet:             $SUBNET_ID"
 fi
 echo "💿 Storage:            ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
+if [ "$USE_SPOT" = true ]; then
+    if [ -n "$SPOT_MAX_PRICE" ]; then
+        echo "💰 Pricing:            Spot Instance (max: \$${SPOT_MAX_PRICE}/hr)"
+    else
+        echo "💰 Pricing:            Spot Instance (on-demand price cap)"
+    fi
+else
+    echo "💰 Pricing:            On-Demand"
+fi
 echo "📊 Replicas:           $REPLICAS"
 echo ""
 echo "📄 File:               $OUTPUT_FILE"

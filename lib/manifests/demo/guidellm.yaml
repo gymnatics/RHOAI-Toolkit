@@ -1,0 +1,65 @@
+# GuideLLM - LLM Benchmarking Tool
+# 
+# Usage: oc apply -f guidellm.yaml -n <namespace>
+#
+# After deployment, run benchmarks:
+#   GUIDELLM=$(oc get pod -l app=guidellm -o name)
+#   oc rsh $GUIDELLM
+#   
+#   export TARGET=http://model-predictor.namespace.svc.cluster.local:8080
+#   export MODEL=model-name
+#   
+#   guidellm benchmark run \
+#     --target $TARGET \
+#     --model $MODEL \
+#     --rate-type throughput \
+#     --max-requests 100 \
+#     --data "prompt_tokens=768,output_tokens=768"
+#
+# Key Metrics:
+#   - TTFT (Time to First Token)
+#   - ITL (Inter-Token Latency)
+#   - Request Latency
+#   - Throughput (tokens/sec)
+#
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guidellm
+  labels:
+    app: guidellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guidellm
+  template:
+    metadata:
+      labels:
+        app: guidellm
+    spec:
+      containers:
+        - name: guidellm
+          image: quay.io/ltsai/guidellm:0.3.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - tail
+          args:
+            - '-f'
+            - /dev/null
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 2Gi
+          volumeMounts:
+            - name: models-pvc
+              readOnly: true
+              mountPath: /mnt/models
+      volumes:
+        - name: models-pvc
+          persistentVolumeClaim:
+            claimName: models-pvc

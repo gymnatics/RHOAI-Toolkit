@@ -1,43 +1,76 @@
+# DataScienceCluster v2 for RHOAI 3.0
+# 
+# This configuration:
+# - Enables all core components for GenAI workloads
+# - Includes NIM support for NVIDIA models
+# - Uses RawDeployment mode (Headless) for llm-d compatibility
+# - Sets Kueue to Unmanaged (installed separately for better control)
+# - Removes unused components (feastoperator, codeflare) to reduce overhead
+#
 apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
   name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
 spec:
   components:
+    # AI Pipelines for ML workflows
     aipipelines:
       managementState: Managed
-    codeflare:
-      managementState: Managed
+    
+    # Dashboard for RHOAI UI
     dashboard:
       managementState: Managed
-    datasciencepipelines:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
+    
+    # KServe for model serving (with NIM support)
     kserve:
       managementState: Managed
-      serving:
-        ingressGateway:
-          certificate:
-            type: SelfSigned
+      nim:
         managementState: Managed
-        name: knative-serving
+      rawDeploymentServiceConfig: Headless
+    
+    # Kueue for job queuing (Unmanaged - installed separately)
     kueue:
       defaultClusterQueueName: default
       defaultLocalQueueName: default
       managementState: Unmanaged
+    
+    # LlamaStack for AI orchestration
     llamastackoperator:
       managementState: Managed
-    modelmeshserving:
-      managementState: Managed
+    
+    # Model Registry for model versioning
     modelregistry:
       managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    
+    # Ray for distributed computing
     ray:
       managementState: Managed
+    
+    # Training Operator for model training
     trainingoperator:
       managementState: Managed
+    
+    # TrustyAI for model evaluation and safety
     trustyai:
+      eval:
+        lmeval:
+          permitCodeExecution: deny
+          permitOnline: deny
       managementState: Managed
+    
+    # Workbenches for Jupyter notebooks
     workbenches:
       managementState: Managed
+      workbenchNamespace: rhods-notebooks
+    
+    # Removed/Disabled components:
+    # - feastoperator: Feature store (not needed for inference)
+    # - codeflare: Distributed training framework (use ray instead)
+    # - modelmeshserving: Legacy serving (use kserve instead)
+    # - datasciencepipelines: Deprecated (use aipipelines)
+    feastoperator:
+      managementState: Removed
 

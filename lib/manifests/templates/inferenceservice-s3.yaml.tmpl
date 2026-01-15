@@ -1,0 +1,47 @@
+# InferenceService template for S3 storage
+# Usage: export NAME=model-name MODEL_PATH=path/to/model && envsubst < inferenceservice-s3.yaml.tmpl | oc apply -f -
+#
+# Variables:
+#   NAME       - Name of the InferenceService (k8s-safe, lowercase)
+#   MODEL_PATH - Path to model in S3 bucket (e.g., Qwen/Qwen3-8B)
+#   NAMESPACE  - Target namespace (optional, defaults to current)
+#
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    opendatahub.io/hardware-profile-name: nvidia-gpu
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    openshift.io/display-name: ${NAME}
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+  name: ${NAME}
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: "true"
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--max-model-len'
+        - '${MAX_MODEL_LEN:-4096}'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '${CPU_LIMIT:-4}'
+          memory: ${MEMORY_LIMIT:-32Gi}
+          nvidia.com/gpu: '${GPU_COUNT:-1}'
+        requests:
+          cpu: '${CPU_REQUEST:-2}'
+          memory: ${MEMORY_REQUEST:-8Gi}
+          nvidia.com/gpu: '${GPU_COUNT:-1}'
+      runtime: ${NAME}
+      storage:
+        key: aws-connection-my-storage
+        path: ${MODEL_PATH}

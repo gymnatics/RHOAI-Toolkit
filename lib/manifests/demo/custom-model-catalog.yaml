@@ -1,0 +1,82 @@
+# Custom Model Catalog Configuration
+# 
+# Usage: oc apply -f custom-model-catalog.yaml
+#        oc delete pods -l app.kubernetes.io/name=model-catalog -n rhoai-model-registries
+#
+# This adds custom models to the RHOAI Model Catalog, making them available
+# for deployment directly from the dashboard.
+#
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: model-catalog-sources
+  namespace: rhoai-model-registries
+  labels:
+    app: model-catalog
+    app.kubernetes.io/component: model-catalog
+    app.kubernetes.io/name: model-catalog
+    app.kubernetes.io/part-of: model-catalog
+    component: model-catalog
+data:
+  sample-catalog.yaml: |-
+    source: Custom Catalog
+    models:
+    - name: openai/gpt-oss-20b
+      description: OpenAI's gpt-oss models offer fast, low-cost, open-weight reasoning performance with strong tool use.
+      readme: |-
+        # gpt-oss-20b
+        
+        OpenAI's open-weight model for reasoning and agentic tasks.
+        
+        - Apache 2.0 license
+        - Configurable reasoning effort
+        - Function calling support
+        - ~16GB GPU memory (quantized)
+      provider: OpenAI
+      license: apache-2.0
+      licenseLink: https://www.apache.org/licenses/LICENSE-2.0.txt
+      libraryName: transformers
+      artifacts:
+        - uri: oci://registry.redhat.io/rhelai1/modelcar-gpt-oss-20b:1.5
+    - name: mistralai/Mistral-7B-Instruct-v0.3
+      description: Mistral 7B Instruct with extended vocabulary, v3 tokenizer, and function calling support.
+      readme: |-
+        # Mistral-7B-Instruct-v0.3
+        
+        Instruct fine-tuned version of Mistral-7B-v0.3.
+        
+        - Extended vocabulary to 32768
+        - Supports v3 Tokenizer
+        - Supports function calling
+      provider: Mistral AI
+      license: apache-2.0
+      licenseLink: https://www.apache.org/licenses/LICENSE-2.0.txt
+      libraryName: transformers
+      artifacts:
+        - uri: hf://mistralai/Mistral-7B-Instruct-v0.3
+    - name: Qwen/Qwen3-8B-Instruct
+      description: Qwen3 8B parameter instruction-tuned model with strong multilingual and coding capabilities.
+      readme: |-
+        # Qwen3-8B-Instruct
+        
+        Alibaba's Qwen3 instruction-tuned model.
+        
+        - 8B parameters
+        - Strong multilingual support
+        - Excellent coding capabilities
+        - Tool calling with hermes parser
+      provider: Alibaba Qwen
+      license: apache-2.0
+      licenseLink: https://www.apache.org/licenses/LICENSE-2.0.txt
+      libraryName: transformers
+      artifacts:
+        - uri: hf://Qwen/Qwen3-8B-Instruct
+  sources.yaml: |-
+    catalogs:
+    - name: Custom Catalog
+      id: custom_catalog
+      type: yaml
+      enabled: true
+      properties:
+        yamlCatalogPath: sample-catalog.yaml
