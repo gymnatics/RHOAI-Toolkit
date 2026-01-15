@@ -271,10 +271,43 @@ configure_playground_settings() {
     
     # API Token (for authenticated models)
     echo -e "${CYAN}API Token${NC} - Token for authenticated model endpoints"
-    echo "  For internal models: just press Enter (uses 'fake')"
-    echo "  For MaaS/external: paste your token"
-    read -p "API token [fake]: " input_api_token
-    API_TOKEN="${input_api_token:-fake}"
+    echo "  For internal models without auth: just press Enter (uses 'fake')"
+    echo "  For authenticated models: enter 'token' to paste, or 'sa' to auto-fetch from ServiceAccount"
+    echo ""
+    read -p "API token option [fake/token/sa]: " token_option
+    
+    case "$token_option" in
+        token|t)
+            echo ""
+            echo "Paste your token below (it can be long, press Enter when done):"
+            # Use read without -p to handle long tokens better
+            IFS= read -r input_api_token
+            API_TOKEN="${input_api_token:-fake}"
+            ;;
+        sa|SA)
+            # Try to auto-fetch token from ServiceAccount
+            echo ""
+            local sa_name="${MODEL_NAME}-sa"
+            local secret_name="${MODEL_NAME}-sa-token"
+            echo "Looking for ServiceAccount token: $secret_name"
+            
+            if oc get secret "$secret_name" -n "$NAMESPACE" &>/dev/null; then
+                API_TOKEN=$(oc get secret "$secret_name" -n "$NAMESPACE" -o jsonpath='{.data.token}' | base64 -d)
+                if [ -n "$API_TOKEN" ]; then
+                    print_success "Token fetched from ServiceAccount secret"
+                else
+                    print_warning "Could not extract token, using 'fake'"
+                    API_TOKEN="fake"
+                fi
+            else
+                print_warning "ServiceAccount secret '$secret_name' not found, using 'fake'"
+                API_TOKEN="fake"
+            fi
+            ;;
+        *)
+            API_TOKEN="fake"
+            ;;
+    esac
     
     echo ""
     
