@@ -251,6 +251,9 @@ create_gpu_hardware_profile() {
     # Get current namespace or use default
     local current_ns=$(oc project -q 2>/dev/null || echo "default")
     
+    # Template file location
+    local template_file="$_RHOAI_LIB_DIR/lib/manifests/templates/hardwareprofile-gpu.yaml.tmpl"
+    
     # Function to create hardware profile in a namespace
     create_profile_in_namespace() {
         local namespace=$1
@@ -262,23 +265,25 @@ create_gpu_hardware_profile() {
         
         print_step "Creating GPU hardware profile in $namespace..."
         
-        # Create hardware profile WITHOUT scheduling constraints
-        # This makes it visible in the UI regardless of GPU node availability
-        cat <<EOF | oc apply -f -
+        # Apply template with namespace substitution
+        if [ -f "$template_file" ]; then
+            export NAMESPACE="$namespace"
+            envsubst < "$template_file" | oc apply -f -
+            unset NAMESPACE
+        else
+            print_warning "Template not found at $template_file, using inline YAML"
+            # Fallback to inline YAML if template not found
+            cat <<EOF | oc apply -f -
 apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
 metadata:
   name: gpu-profile
   namespace: $namespace
   annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: GPU Profile
     opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
-    opendatahub.io/managed: 'false'
   labels:
     app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
 spec:
   identifiers:
     - defaultCount: '2'
@@ -299,12 +304,19 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
+  nodeSelector:
+    nvidia.com/gpu.present: 'true'
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
   scheduling:
     kueue:
       localQueueName: default
       priorityClass: None
     type: Queue
 EOF
+        fi
         print_success "GPU hardware profile created in $namespace"
     }
     

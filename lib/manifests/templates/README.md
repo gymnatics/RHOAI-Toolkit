@@ -41,6 +41,12 @@ yq eval '
 |----------|-------------|
 | `servingruntime-vllm.yaml.tmpl` | vLLM runtime with NVIDIA GPU support |
 
+### Hardware Profile Templates
+
+| Template | Description |
+|----------|-------------|
+| `hardwareprofile-gpu.yaml.tmpl` | GPU hardware profile with tolerations and node selector |
+
 ## Variables Reference
 
 ### Common Variables
@@ -67,6 +73,21 @@ yq eval '
 | Variable | Template | Default | Description |
 |----------|----------|---------|-------------|
 | `PVC_NAME` | pvc | models-pvc | PVC name for model storage |
+
+### Hardware Profile Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NAMESPACE` | (required) | Target namespace |
+| `PROFILE_NAME` | gpu-profile | Hardware profile name |
+| `DISPLAY_NAME` | GPU Profile | Display name in UI |
+| `DEFAULT_CPU` | 2 | Default CPU count |
+| `MAX_CPU` | 16 | Maximum CPU count |
+| `DEFAULT_MEM` | 16Gi | Default memory |
+| `MAX_MEM` | 64Gi | Maximum memory |
+| `DEFAULT_GPU` | 1 | Default GPU count |
+| `MAX_GPU` | 8 | Maximum GPU count |
+| `LOCAL_QUEUE` | default | Kueue local queue name |
 
 ## Examples
 
@@ -104,6 +125,17 @@ export PVC_NAME="models-pvc"
 
 envsubst < servingruntime-vllm.yaml.tmpl | oc apply -n demo -f -
 envsubst < inferenceservice-pvc.yaml.tmpl | oc apply -n demo -f -
+```
+
+### Create GPU Hardware Profile
+
+```bash
+export NAMESPACE="demo"
+export PROFILE_NAME="gpu-profile"
+export DEFAULT_GPU="1"
+export MAX_GPU="4"
+
+envsubst < hardwareprofile-gpu.yaml.tmpl | oc apply -f -
 ```
 
 ## Helper Function

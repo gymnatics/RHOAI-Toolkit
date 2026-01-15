@@ -1,0 +1,60 @@
+# GPU Hardware Profile Template
+# Usage: export NAMESPACE=demo && envsubst < hardwareprofile-gpu.yaml.tmpl | oc apply -f -
+#
+# Variables:
+#   NAMESPACE     - Target namespace (required)
+#   PROFILE_NAME  - Profile name (default: gpu-profile)
+#   DISPLAY_NAME  - Display name (default: GPU Profile)
+#   DEFAULT_CPU   - Default CPU count (default: 2)
+#   MAX_CPU       - Max CPU count (default: 16)
+#   DEFAULT_MEM   - Default memory (default: 16Gi)
+#   MAX_MEM       - Max memory (default: 64Gi)
+#   DEFAULT_GPU   - Default GPU count (default: 1)
+#   MAX_GPU       - Max GPU count (default: 8)
+#   LOCAL_QUEUE   - Kueue local queue name (default: default)
+#
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: ${PROFILE_NAME:-gpu-profile}
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: ${DISPLAY_NAME:-GPU Profile}
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
+spec:
+  identifiers:
+    - defaultCount: '${DEFAULT_CPU:-2}'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '${MAX_CPU:-16}'
+      minCount: 1
+      resourceType: CPU
+    - defaultCount: ${DEFAULT_MEM:-16Gi}
+      displayName: Memory
+      identifier: memory
+      maxCount: ${MAX_MEM:-64Gi}
+      minCount: 1Gi
+      resourceType: Memory
+    - defaultCount: ${DEFAULT_GPU:-1}
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: ${MAX_GPU:-8}
+      minCount: 1
+      resourceType: Accelerator
+  nodeSelector:
+    nvidia.com/gpu.present: 'true'
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  scheduling:
+    kueue:
+      localQueueName: ${LOCAL_QUEUE:-default}
+      priorityClass: None
+    type: Queue
