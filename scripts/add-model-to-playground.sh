@@ -222,7 +222,26 @@ configure_playground_settings() {
     print_header "Playground Configuration"
     
     echo "Configure LlamaStack Playground settings:"
-    echo "(Press Enter to accept defaults)"
+    echo ""
+    echo -e "${YELLOW}Quick Setup:${NC}"
+    echo "  Press Enter at each prompt to use recommended defaults"
+    echo "  (Most internal models work with defaults - no token needed)"
+    echo ""
+    
+    read -p "Use all defaults? (Y/n): " use_defaults
+    if [[ ! "$use_defaults" =~ ^[Nn]$ ]]; then
+        # Use sensible defaults
+        MAX_TOKENS="8192"
+        TLS_VERIFY="false"
+        API_TOKEN="fake"
+        print_success "Using default configuration:"
+        echo "  Max Tokens: $MAX_TOKENS"
+        echo "  TLS Verify: $TLS_VERIFY"
+        echo "  API Token: fake (no auth)"
+        echo ""
+        return 0
+    fi
+    
     echo ""
     
     # Max tokens
@@ -252,16 +271,21 @@ configure_playground_settings() {
     
     # API Token (for authenticated models)
     echo -e "${CYAN}API Token${NC} - Token for authenticated model endpoints"
-    echo "  Leave as 'fake' for unauthenticated models"
-    read -p "API token [${API_TOKEN}]: " input_api_token
-    API_TOKEN="${input_api_token:-$API_TOKEN}"
+    echo "  For internal models: just press Enter (uses 'fake')"
+    echo "  For MaaS/external: paste your token"
+    read -p "API token [fake]: " input_api_token
+    API_TOKEN="${input_api_token:-fake}"
     
     echo ""
     
     print_success "Configuration:"
     echo "  Max Tokens: $MAX_TOKENS"
     echo "  TLS Verify: $TLS_VERIFY"
-    echo "  API Token: ${API_TOKEN:0:10}..."
+    if [ "$API_TOKEN" = "fake" ]; then
+        echo "  API Token: fake (no auth)"
+    else
+        echo "  API Token: ${API_TOKEN:0:20}..."
+    fi
     echo ""
 }
 
