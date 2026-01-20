@@ -267,9 +267,22 @@ create_gpu_hardware_profile() {
         
         # Apply template with namespace substitution
         if [ -f "$template_file" ]; then
+            # Export all variables with defaults (envsubst doesn't support bash default syntax)
             export NAMESPACE="$namespace"
-            envsubst < "$template_file" | oc apply -f -
-            unset NAMESPACE
+            export PROFILE_NAME="gpu-profile"
+            export DISPLAY_NAME="GPU Profile"
+            export DEFAULT_CPU="2"
+            export MAX_CPU="16"
+            export DEFAULT_MEM="16Gi"
+            export MAX_MEM="64Gi"
+            export DEFAULT_GPU="1"
+            export MAX_GPU="8"
+            
+            # Use envsubst with explicit variable list to avoid issues
+            envsubst '${NAMESPACE} ${PROFILE_NAME} ${DISPLAY_NAME} ${DEFAULT_CPU} ${MAX_CPU} ${DEFAULT_MEM} ${MAX_MEM} ${DEFAULT_GPU} ${MAX_GPU}' < "$template_file" | oc apply -f -
+            
+            # Unset variables
+            unset NAMESPACE PROFILE_NAME DISPLAY_NAME DEFAULT_CPU MAX_CPU DEFAULT_MEM MAX_MEM DEFAULT_GPU MAX_GPU
         else
             print_warning "Template not found at $template_file, using inline YAML"
             # Fallback to inline YAML if template not found

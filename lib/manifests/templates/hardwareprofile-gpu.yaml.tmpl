@@ -1,26 +1,28 @@
 # GPU Hardware Profile Template
-# Usage: export NAMESPACE=demo && envsubst < hardwareprofile-gpu.yaml.tmpl | oc apply -f -
+# Usage: 
+#   export NAMESPACE=demo PROFILE_NAME=gpu-profile
+#   envsubst '${NAMESPACE} ${PROFILE_NAME} ${DISPLAY_NAME} ${DEFAULT_CPU} ${MAX_CPU} ${DEFAULT_MEM} ${MAX_MEM} ${DEFAULT_GPU} ${MAX_GPU}' < hardwareprofile-gpu.yaml.tmpl | oc apply -f -
 #
-# Variables:
-#   NAMESPACE     - Target namespace (required)
-#   PROFILE_NAME  - Profile name (default: gpu-profile)
-#   DISPLAY_NAME  - Display name (default: GPU Profile)
-#   DEFAULT_CPU   - Default CPU count (default: 2)
-#   MAX_CPU       - Max CPU count (default: 16)
-#   DEFAULT_MEM   - Default memory (default: 16Gi)
-#   MAX_MEM       - Max memory (default: 64Gi)
-#   DEFAULT_GPU   - Default GPU count (default: 1)
-#   MAX_GPU       - Max GPU count (default: 8)
+# Variables (all required - set defaults before calling envsubst):
+#   NAMESPACE     - Target namespace
+#   PROFILE_NAME  - Profile name (e.g., gpu-profile)
+#   DISPLAY_NAME  - Display name (e.g., GPU Profile)
+#   DEFAULT_CPU   - Default CPU count (e.g., 2)
+#   MAX_CPU       - Max CPU count (e.g., 16)
+#   DEFAULT_MEM   - Default memory (e.g., 16Gi)
+#   MAX_MEM       - Max memory (e.g., 64Gi)
+#   DEFAULT_GPU   - Default GPU count (e.g., 1)
+#   MAX_GPU       - Max GPU count (e.g., 8)
 #
 apiVersion: infrastructure.opendatahub.io/v1
 kind: HardwareProfile
 metadata:
-  name: ${PROFILE_NAME:-gpu-profile}
+  name: ${PROFILE_NAME}
   namespace: ${NAMESPACE}
   annotations:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: ${DISPLAY_NAME:-GPU Profile}
+    opendatahub.io/display-name: ${DISPLAY_NAME}
     opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
     opendatahub.io/managed: 'false'
   labels:
@@ -28,22 +30,22 @@ metadata:
     app.kubernetes.io/part-of: hardwareprofile
 spec:
   identifiers:
-    - defaultCount: '${DEFAULT_CPU:-2}'
+    - defaultCount: '${DEFAULT_CPU}'
       displayName: CPU
       identifier: cpu
-      maxCount: '${MAX_CPU:-16}'
+      maxCount: '${MAX_CPU}'
       minCount: 1
       resourceType: CPU
-    - defaultCount: ${DEFAULT_MEM:-16Gi}
+    - defaultCount: ${DEFAULT_MEM}
       displayName: Memory
       identifier: memory
-      maxCount: ${MAX_MEM:-64Gi}
+      maxCount: ${MAX_MEM}
       minCount: 1Gi
       resourceType: Memory
-    - defaultCount: ${DEFAULT_GPU:-1}
+    - defaultCount: ${DEFAULT_GPU}
       displayName: GPU
       identifier: nvidia.com/gpu
-      maxCount: ${MAX_GPU:-8}
+      maxCount: ${MAX_GPU}
       minCount: 1
       resourceType: Accelerator
   scheduling:

@@ -108,25 +108,28 @@ deploy_model_interactive() {
     # See: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags
     echo -e "${BLUE}Available models (from Red Hat AI Services Modelcar Catalog):${NC}"
     echo ""
-    echo "  1) Llama 3.2-3B Instruct - 3B params, tool calling support"
+    echo "  1) Qwen3-4B - 4B params, tool calling support ${GREEN}[Recommended for demos]${NC}"
+    echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
+    echo ""
+    echo "  2) Llama 3.2-3B Instruct - 3B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
     echo ""
-    echo "  2) Llama 3.1-8B Instruct - 8B params, tool calling support"
+    echo "  3) Llama 3.1-8B Instruct - 8B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
     echo ""
-    echo "  3) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
+    echo "  4) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
     echo ""
-    echo "  4) Granite 3.1-8B Instruct - 8B params, latest Granite"
+    echo "  5) Granite 3.1-8B Instruct - 8B params, latest Granite"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
     echo ""
-    echo "  5) Mistral 7B Instruct v0.3 - 7B params"
+    echo "  6) Mistral 7B Instruct v0.3 - 7B params"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
     echo ""
-    echo "  6) Custom model URI (enter your own)"
+    echo "  7) Custom model URI (enter your own)"
     echo ""
     
-    read -p "Select a model (1-6): " model_choice
+    read -p "Select a model (1-7): " model_choice
     
     local model_uri=""
     local model_name=""
@@ -138,6 +141,15 @@ deploy_model_interactive() {
     
     case "$model_choice" in
         1)
+            model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
+            model_name="qwen3-4b"
+            default_gpu="1"
+            default_cpu="4"
+            default_memory="16Gi"
+            tool_calling_enabled=true
+            tool_parser="hermes"
+            ;;
+        2)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
             model_name="llama-32-3b-instruct"
             default_gpu="1"
@@ -146,7 +158,7 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        2)
+        3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
             model_name="llama-31-8b-instruct"
             default_gpu="1"
@@ -155,28 +167,28 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        3)
+        4)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
             model_name="granite-30-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        4)
+        5)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
             model_name="granite-31-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        5)
+        6)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
             model_name="mistral-7b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        6)
+        7)
             echo ""
             print_info "Enter custom model URI"
             echo "  Examples:"
