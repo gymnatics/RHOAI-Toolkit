@@ -358,7 +358,7 @@ metadata:
   name: leader-worker-set-operator
   namespace: openshift-lws-operator
 spec:
-  channel: stable
+  channel: stable-v1.0
   installPlanApproval: Automatic
   name: leader-worker-set-operator
   source: redhat-operators
@@ -397,7 +397,7 @@ metadata:
   name: kueue-operator
   namespace: openshift-kueue-system
 spec:
-  channel: stable
+  channel: stable-v1.2
   installPlanApproval: Automatic
   name: kueue-operator
   source: redhat-operators

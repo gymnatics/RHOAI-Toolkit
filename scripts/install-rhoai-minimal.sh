@@ -58,6 +58,67 @@ INSTALL_CERTMANAGER=false
 INSTALLATION_MODE="interactive"  # interactive, minimal, full
 
 ################################################################################
+# Operator Channel Configuration
+# These are the CORRECT channels for each operator - do NOT use generic "stable"
+# for operators that require versioned channels
+################################################################################
+CHANNEL_NFD="stable"
+CHANNEL_GPU="stable"
+CHANNEL_RHCL="stable"
+CHANNEL_RHOAI="fast-3.x"
+CHANNEL_KUEUE="stable-v1.2"
+CHANNEL_LWS="stable-v1.0"
+CHANNEL_CERTMANAGER="stable-v1"
+CHANNEL_AUTHORINO="stable"
+
+# Validate and auto-detect operator channels from cluster
+# This ensures we use the correct channel even if defaults change
+validate_operator_channels() {
+    print_step "Validating operator channels from cluster catalog..."
+    
+    # Kueue - requires versioned channel (no generic "stable")
+    local kueue_channels=$(oc get packagemanifest kueue-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+    if [ -n "$kueue_channels" ]; then
+        # Find the latest stable-v1.x channel
+        local latest_kueue=$(echo "$kueue_channels" | tr ' ' '\n' | grep "^stable-v1" | sort -V | tail -1)
+        if [ -n "$latest_kueue" ]; then
+            CHANNEL_KUEUE="$latest_kueue"
+        fi
+    fi
+    
+    # LWS - requires versioned channel (no generic "stable")
+    local lws_channels=$(oc get packagemanifest leader-worker-set -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+    if [ -n "$lws_channels" ]; then
+        # Find the latest stable-v1.x channel
+        local latest_lws=$(echo "$lws_channels" | tr ' ' '\n' | grep "^stable-v1" | sort -V | tail -1)
+        if [ -n "$latest_lws" ]; then
+            CHANNEL_LWS="$latest_lws"
+        fi
+    fi
+    
+    # cert-manager - requires versioned channel
+    local cm_channels=$(oc get packagemanifest openshift-cert-manager-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+    if [ -n "$cm_channels" ]; then
+        # Prefer stable-v1 (general) over specific versions
+        if echo "$cm_channels" | grep -q "stable-v1 "; then
+            CHANNEL_CERTMANAGER="stable-v1"
+        else
+            local latest_cm=$(echo "$cm_channels" | tr ' ' '\n' | grep "^stable-v1" | sort -V | tail -1)
+            if [ -n "$latest_cm" ]; then
+                CHANNEL_CERTMANAGER="$latest_cm"
+            fi
+        fi
+    fi
+    
+    print_info "  Kueue channel: $CHANNEL_KUEUE"
+    print_info "  LWS channel: $CHANNEL_LWS"
+    print_info "  cert-manager channel: $CHANNEL_CERTMANAGER"
+}
+
+################################################################################
 # Parse command line arguments
 ################################################################################
 
@@ -334,7 +395,7 @@ install_nfd() {
             return 0
         fi
     else
-        print_step "Creating NFD namespace and operator..."
+        print_step "Creating NFD namespace and operator (channel: $CHANNEL_NFD)..."
         
         cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -357,13 +418,14 @@ metadata:
   name: nfd
   namespace: openshift-nfd
 spec:
-  channel: stable
+  channel: $CHANNEL_NFD
+  installPlanApproval: Automatic
   name: nfd
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
         
-        # Wait for operator
+        # Wait for operator with InstallPlan approval handling
         print_step "Waiting for NFD operator to be ready..."
         local timeout=180
         local elapsed=0
@@ -372,6 +434,8 @@ EOF
                 print_warning "NFD operator not ready yet (continuing anyway)"
                 break
             fi
+            # Check for and approve any pending InstallPlans
+            approve_installplan "nfd" "openshift-nfd" 2>/dev/null || true
             sleep 10
             elapsed=$((elapsed + 10))
         done
@@ -411,7 +475,7 @@ install_gpu_operator() {
     if oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -q "gpu-operator.*Succeeded"; then
         print_success "GPU Operator already installed"
     else
-        print_step "Creating GPU operator namespace and subscription..."
+        print_step "Creating GPU operator namespace and subscription (channel: $CHANNEL_GPU)..."
         
         cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -434,13 +498,14 @@ metadata:
   name: gpu-operator-certified
   namespace: nvidia-gpu-operator
 spec:
-  channel: v24.9
+  channel: $CHANNEL_GPU
+  installPlanApproval: Automatic
   name: gpu-operator-certified
   source: certified-operators
   sourceNamespace: openshift-marketplace
 EOF
         
-        # Wait for operator
+        # Wait for operator with InstallPlan approval handling
         print_step "Waiting for GPU operator to be ready..."
         local timeout=180
         local elapsed=0
@@ -449,6 +514,8 @@ EOF
                 print_warning "GPU operator CRD not ready yet (continuing anyway)"
                 break
             fi
+            # Check for and approve any pending InstallPlans
+            approve_installplan "gpu-operator-certified" "nvidia-gpu-operator" 2>/dev/null || true
             sleep 10
             elapsed=$((elapsed + 10))
         done
@@ -516,7 +583,7 @@ install_certmanager() {
         return 0
     fi
     
-    print_step "Creating cert-manager namespace and subscription..."
+    print_step "Creating cert-manager namespace and subscription (channel: $CHANNEL_CERTMANAGER)..."
     
     cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -539,13 +606,14 @@ metadata:
   name: cert-manager-operator
   namespace: cert-manager-operator
 spec:
-  channel: stable-v1
+  channel: $CHANNEL_CERTMANAGER
+  installPlanApproval: Automatic
   name: openshift-cert-manager-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
     
-    # Wait for operator
+    # Wait for operator with InstallPlan approval handling
     print_step "Waiting for cert-manager operator to be ready..."
     local timeout=180
     local elapsed=0
@@ -554,6 +622,8 @@ EOF
             print_warning "cert-manager not ready yet (continuing anyway)"
             break
         fi
+        # Check for and approve any pending InstallPlans
+        approve_installplan "cert-manager-operator" "$ns" 2>/dev/null || true
         sleep 10
         elapsed=$((elapsed + 10))
     done
@@ -573,7 +643,7 @@ install_kueue() {
     # Install cert-manager first (dependency)
     install_certmanager
     
-    print_step "Installing Kueue subscription..."
+    print_step "Installing Kueue subscription (channel: $CHANNEL_KUEUE)..."
     
     cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
@@ -582,13 +652,14 @@ metadata:
   name: kueue-operator
   namespace: openshift-operators
 spec:
-  channel: stable
+  channel: $CHANNEL_KUEUE
+  installPlanApproval: Automatic
   name: kueue-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
     
-    # Wait for operator
+    # Wait for operator with InstallPlan approval handling
     print_step "Waiting for Kueue operator to be ready..."
     local timeout=180
     local elapsed=0
@@ -597,6 +668,8 @@ EOF
             print_warning "Kueue not ready yet (continuing anyway)"
             break
         fi
+        # Check for and approve any pending InstallPlans
+        approve_installplan "kueue-operator" "openshift-operators" 2>/dev/null || true
         sleep 10
         elapsed=$((elapsed + 10))
     done
@@ -615,7 +688,7 @@ install_lws() {
         return 0
     fi
     
-    print_step "Creating LWS namespace and subscription..."
+    print_step "Creating LWS namespace and subscription (channel: $CHANNEL_LWS)..."
     
     cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -638,13 +711,14 @@ metadata:
   name: leader-worker-set
   namespace: openshift-lws-operator
 spec:
-  channel: stable
+  channel: $CHANNEL_LWS
+  installPlanApproval: Automatic
   name: leader-worker-set
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
     
-    # Wait for operator
+    # Wait for operator with InstallPlan approval handling
     print_step "Waiting for LWS operator to be ready..."
     local timeout=180
     local elapsed=0
@@ -653,6 +727,8 @@ EOF
             print_warning "LWS not ready yet (continuing anyway)"
             break
         fi
+        # Check for and approve any pending InstallPlans
+        approve_installplan "leader-worker-set" "$ns" 2>/dev/null || true
         sleep 10
         elapsed=$((elapsed + 10))
     done
@@ -669,7 +745,7 @@ install_rhcl() {
     if oc get csv -n "$ns" 2>/dev/null | grep -q "rhcl.*Succeeded\|kuadrant.*Succeeded"; then
         print_success "RHCL Operator already installed"
     else
-        print_step "Creating RHCL namespace and subscription..."
+        print_step "Creating RHCL namespace and subscription (channel: $CHANNEL_RHCL)..."
         
         cat <<EOF | oc apply -f -
 apiVersion: v1
@@ -682,9 +758,7 @@ kind: OperatorGroup
 metadata:
   name: kuadrant-system
   namespace: kuadrant-system
-spec:
-  targetNamespaces:
-    - kuadrant-system
+spec: {}
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -692,13 +766,14 @@ metadata:
   name: rhcl-operator
   namespace: kuadrant-system
 spec:
-  channel: stable
+  channel: $CHANNEL_RHCL
+  installPlanApproval: Automatic
   name: rhcl-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
         
-        # Wait for operator
+        # Wait for operator with InstallPlan approval handling
         print_step "Waiting for RHCL operator to be ready..."
         local timeout=180
         local elapsed=0
@@ -707,6 +782,8 @@ EOF
                 print_warning "RHCL CRD not ready yet (continuing anyway)"
                 break
             fi
+            # Check for and approve any pending InstallPlans
+            approve_installplan "rhcl-operator" "$ns" 2>/dev/null || true
             sleep 10
             elapsed=$((elapsed + 10))
         done
@@ -743,7 +820,7 @@ install_authorino() {
     if oc get csv -n "$ns" 2>/dev/null | grep -q "authorino.*Succeeded"; then
         print_success "Authorino Operator already installed"
     else
-        print_step "Creating Authorino namespace and subscription..."
+        print_step "Creating Authorino namespace and subscription (channel: $CHANNEL_AUTHORINO)..."
         
         # Create namespace
         cat <<EOF | oc apply -f -
@@ -771,13 +848,14 @@ metadata:
   name: authorino-operator
   namespace: authorino
 spec:
-  channel: stable
+  channel: $CHANNEL_AUTHORINO
+  installPlanApproval: Automatic
   name: authorino-operator
   source: community-operators
   sourceNamespace: openshift-marketplace
 EOF
         
-        # Wait for operator
+        # Wait for operator with InstallPlan approval handling
         print_step "Waiting for Authorino operator to be ready..."
         local timeout=180
         local elapsed=0
@@ -786,6 +864,8 @@ EOF
                 print_warning "Authorino CRD not ready yet (continuing anyway)"
                 break
             fi
+            # Check for and approve any pending InstallPlans
+            approve_installplan "authorino-operator" "$ns" 2>/dev/null || true
             sleep 10
             elapsed=$((elapsed + 10))
         done
@@ -1303,6 +1383,9 @@ main() {
     
     # Run installation steps
     check_prerequisites
+    
+    # Validate and auto-detect correct operator channels from cluster
+    validate_operator_channels
     
     # Select optional operators (if interactive mode)
     select_optional_operators
