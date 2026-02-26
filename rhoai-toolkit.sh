@@ -104,6 +104,9 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}5)${NC} Day 2 Operations"
     echo "    Approve CSRs, cluster maintenance"
     echo ""
+    echo -e "${YELLOW}6)${NC} Troubleshooting & Fixes ${RED}[Fixes]${NC}"
+    echo "    GPU operator issues, CUDA compatibility, common problems"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
@@ -153,6 +156,38 @@ show_ai_services_submenu() {
     echo ""
     echo -e "${YELLOW}5)${NC} Setup MaaS (Model as a Service)"
     echo "    API gateway for model serving"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
+    echo ""
+}
+
+show_troubleshooting_submenu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                 Troubleshooting & Fixes                        ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${RED}GPU / CUDA Issues:${NC}"
+    echo -e "${YELLOW}1)${NC} Fix GPU Operator CUDA Compatibility ${GREEN}[Common Fix]${NC}"
+    echo "    Downgrade GPU Operator to v24.6.x for vLLM compatibility"
+    echo "    (Fixes: 'NVIDIA driver too old' error with CUDA 13)"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Check GPU Operator Status"
+    echo "    View current version, driver, and CUDA compatibility"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Uncordon GPU Nodes"
+    echo "    Re-enable scheduling on GPU nodes after maintenance"
+    echo ""
+    echo -e "${RED}Operator Issues:${NC}"
+    echo -e "${YELLOW}4)${NC} Fix Operator Channel Issues"
+    echo "    Re-sync operators with correct channels (Kueue, LWS, etc.)"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Check All Operator Status"
+    echo "    View status of all RHOAI-related operators"
+    echo ""
+    echo -e "${RED}Model Serving Issues:${NC}"
+    echo -e "${YELLOW}6)${NC} Restart Failed Model Pods"
+    echo "    Delete and recreate pods for stuck InferenceServices"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -301,6 +336,400 @@ approve_pending_csrs() {
     oc get nodes 2>/dev/null || echo "  Unable to get node status"
     
     return 0
+}
+
+################################################################################
+# Troubleshooting & Fixes Functions
+################################################################################
+
+# Fix GPU Operator CUDA Compatibility
+# Downgrades GPU Operator to v24.6.x which uses CUDA 12.x (compatible with vLLM)
+fix_gpu_operator_cuda_compatibility() {
+    print_header "Fix GPU Operator CUDA Compatibility"
+    
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}Issue:${NC} GPU Operator v24.9.x ships with CUDA 13, but vLLM in RHOAI"
+    echo "       requires CUDA 12.x. This causes 'NVIDIA driver too old' errors."
+    echo ""
+    echo -e "${GREEN}Solution:${NC} Downgrade GPU Operator to v24.6.x (CUDA 12.x compatible)"
+    echo "          and set InstallPlanApproval to Manual to prevent auto-upgrades."
+    echo ""
+    
+    # Check current version
+    local current_version=$(oc get csv -n nvidia-gpu-operator 2>/dev/null | grep gpu-operator | awk '{print $1}' | sed 's/gpu-operator-certified.//')
+    local current_channel=$(oc get subscription gpu-operator-certified -n nvidia-gpu-operator -o jsonpath='{.spec.channel}' 2>/dev/null)
+    
+    if [ -z "$current_version" ]; then
+        print_error "GPU Operator not found. Please install it first."
+        return 1
+    fi
+    
+    echo -e "${CYAN}Current Status:${NC}"
+    echo "  Version: $current_version"
+    echo "  Channel: $current_channel"
+    echo ""
+    
+    # Check CUDA version
+    local cuda_version=$(oc exec -n nvidia-gpu-operator $(oc get pods -n nvidia-gpu-operator -o name 2>/dev/null | grep driver | head -1) -c nvidia-driver-ctr -- nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}' || echo "unknown")
+    echo "  CUDA Version: $cuda_version"
+    echo ""
+    
+    if [[ "$current_channel" == "v24.6" ]]; then
+        print_success "GPU Operator is already on v24.6 channel (CUDA 12.x compatible)"
+        echo ""
+        read -p "Do you want to check/fix InstallPlanApproval to Manual? (y/N): " fix_approval
+        if [[ "$fix_approval" =~ ^[Yy]$ ]]; then
+            oc patch subscription gpu-operator-certified -n nvidia-gpu-operator --type=merge -p '{"spec":{"installPlanApproval":"Manual"}}'
+            print_success "InstallPlanApproval set to Manual"
+        fi
+        return 0
+    fi
+    
+    echo -e "${YELLOW}Available channels:${NC}"
+    oc get packagemanifest gpu-operator-certified -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null | tr ' ' '\n' | grep -E "^v24\.|^v23\." | sort -V | tail -5
+    echo ""
+    
+    echo -e "${RED}Warning:${NC} This will:"
+    echo "  1. Delete the current GPU Operator subscription and CSV"
+    echo "  2. Install GPU Operator v24.6.x"
+    echo "  3. Set InstallPlanApproval to Manual (prevents auto-upgrades)"
+    echo "  4. The driver pods will be recreated (may take a few minutes)"
+    echo ""
+    
+    read -p "Proceed with downgrade to v24.6? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Operation cancelled"
+        return 0
+    fi
+    
+    echo ""
+    print_step "Deleting current GPU Operator..."
+    oc delete subscription gpu-operator-certified -n nvidia-gpu-operator 2>/dev/null || true
+    oc delete csv -n nvidia-gpu-operator -l operators.coreos.com/gpu-operator-certified.nvidia-gpu-operator 2>/dev/null || true
+    sleep 5
+    
+    print_step "Creating new subscription with v24.6 channel..."
+    cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gpu-operator-certified
+  namespace: nvidia-gpu-operator
+spec:
+  channel: v24.6
+  installPlanApproval: Manual
+  name: gpu-operator-certified
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    print_step "Waiting for InstallPlan..."
+    sleep 10
+    
+    # Find and approve the InstallPlan
+    local installplan=$(oc get installplan -n nvidia-gpu-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -n "$installplan" ]; then
+        print_step "Approving InstallPlan: $installplan"
+        oc patch installplan "$installplan" -n nvidia-gpu-operator --type merge -p '{"spec":{"approved":true}}'
+    else
+        print_warning "InstallPlan not found yet. You may need to approve it manually:"
+        echo "  oc get installplan -n nvidia-gpu-operator"
+        echo "  oc patch installplan <name> -n nvidia-gpu-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
+    fi
+    
+    print_step "Waiting for GPU Operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -q "gpu-operator.*Succeeded"; then
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        echo "  Waiting... (${elapsed}s)"
+    done
+    
+    # Check final status
+    echo ""
+    local new_version=$(oc get csv -n nvidia-gpu-operator 2>/dev/null | grep gpu-operator | awk '{print $1}')
+    if [ -n "$new_version" ]; then
+        print_success "GPU Operator installed: $new_version"
+    else
+        print_warning "GPU Operator installation in progress. Check status with:"
+        echo "  oc get csv -n nvidia-gpu-operator"
+    fi
+    
+    echo ""
+    print_info "Note: Driver pods will be recreated. This may take a few minutes."
+    print_info "Check driver status with: oc get pods -n nvidia-gpu-operator | grep driver"
+    echo ""
+    print_info "After drivers are ready, restart your model pods to use the new CUDA version."
+}
+
+# Check GPU Operator Status
+check_gpu_operator_status() {
+    print_header "GPU Operator Status"
+    
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    echo -e "${CYAN}GPU Operator:${NC}"
+    local csv_info=$(oc get csv -n nvidia-gpu-operator 2>/dev/null | grep gpu-operator)
+    if [ -n "$csv_info" ]; then
+        echo "$csv_info"
+    else
+        print_warning "GPU Operator not installed"
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Subscription:${NC}"
+    oc get subscription gpu-operator-certified -n nvidia-gpu-operator -o custom-columns=NAME:.metadata.name,CHANNEL:.spec.channel,APPROVAL:.spec.installPlanApproval 2>/dev/null || echo "  Not found"
+    
+    echo ""
+    echo -e "${CYAN}ClusterPolicy:${NC}"
+    oc get clusterpolicy gpu-cluster-policy -o custom-columns=NAME:.metadata.name,STATE:.status.state 2>/dev/null || echo "  Not found"
+    
+    echo ""
+    echo -e "${CYAN}Driver Pods:${NC}"
+    oc get pods -n nvidia-gpu-operator 2>/dev/null | grep driver || echo "  No driver pods found"
+    
+    echo ""
+    echo -e "${CYAN}NVIDIA Driver & CUDA Version:${NC}"
+    local driver_pod=$(oc get pods -n nvidia-gpu-operator -o name 2>/dev/null | grep driver | head -1)
+    if [ -n "$driver_pod" ]; then
+        oc exec -n nvidia-gpu-operator $driver_pod -c nvidia-driver-ctr -- nvidia-smi 2>/dev/null | head -10 || echo "  Unable to get nvidia-smi output"
+    else
+        echo "  No driver pod running"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}GPU Nodes:${NC}"
+    oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,SCHEDULABLE:.spec.unschedulable 2>/dev/null || echo "  No GPU nodes found"
+}
+
+# Uncordon GPU Nodes
+uncordon_gpu_nodes() {
+    print_header "Uncordon GPU Nodes"
+    
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    echo -e "${CYAN}Checking for cordoned GPU nodes...${NC}"
+    echo ""
+    
+    local cordoned_nodes=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o json 2>/dev/null | jq -r '.items[] | select(.spec.unschedulable == true) | .metadata.name')
+    
+    if [ -z "$cordoned_nodes" ]; then
+        print_success "No cordoned GPU nodes found. All GPU nodes are schedulable."
+        echo ""
+        echo "GPU Node Status:"
+        oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true 2>/dev/null || echo "  No GPU nodes found"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}Found cordoned GPU nodes:${NC}"
+    echo "$cordoned_nodes"
+    echo ""
+    
+    read -p "Uncordon all these nodes? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Operation cancelled"
+        return 0
+    fi
+    
+    echo ""
+    for node in $cordoned_nodes; do
+        print_step "Uncordoning $node..."
+        if oc adm uncordon "$node"; then
+            print_success "Uncordoned: $node"
+        else
+            print_error "Failed to uncordon: $node"
+        fi
+    done
+    
+    echo ""
+    print_success "Done! GPU nodes are now schedulable."
+    echo ""
+    echo "GPU Node Status:"
+    oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true 2>/dev/null
+}
+
+# Check All Operator Status
+check_all_operator_status() {
+    print_header "RHOAI-Related Operator Status"
+    
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    echo -e "${CYAN}Core Operators:${NC}"
+    echo ""
+    
+    # NFD
+    echo -e "${YELLOW}NFD (Node Feature Discovery):${NC}"
+    oc get csv -n openshift-nfd 2>/dev/null | grep -E "NAME|nfd" || echo "  Not installed"
+    echo ""
+    
+    # GPU Operator
+    echo -e "${YELLOW}NVIDIA GPU Operator:${NC}"
+    oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -E "NAME|gpu" || echo "  Not installed"
+    echo ""
+    
+    # RHOAI
+    echo -e "${YELLOW}Red Hat OpenShift AI:${NC}"
+    oc get csv -n redhat-ods-operator 2>/dev/null | grep -E "NAME|rhods" || echo "  Not installed"
+    echo ""
+    
+    # Kueue
+    echo -e "${YELLOW}Kueue:${NC}"
+    oc get csv -n openshift-operators 2>/dev/null | grep -E "NAME|kueue" || echo "  Not installed"
+    echo ""
+    
+    # LWS
+    echo -e "${YELLOW}Leader Worker Set (LWS):${NC}"
+    oc get csv -n openshift-lws-operator 2>/dev/null | grep -E "NAME|leader-worker" || echo "  Not installed"
+    echo ""
+    
+    # RHCL
+    echo -e "${YELLOW}Red Hat Connectivity Link (RHCL):${NC}"
+    oc get csv -n kuadrant-system 2>/dev/null | grep -E "NAME|rhcl" || echo "  Not installed"
+    echo ""
+    
+    # DataScienceCluster
+    echo -e "${CYAN}DataScienceCluster Status:${NC}"
+    oc get datasciencecluster 2>/dev/null || echo "  Not found"
+}
+
+# Restart Failed Model Pods
+restart_failed_model_pods() {
+    print_header "Restart Failed Model Pods"
+    
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+    
+    echo -e "${CYAN}Checking for InferenceServices...${NC}"
+    echo ""
+    
+    local isvc_list=$(oc get inferenceservice -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.conditions[0].status 2>/dev/null | grep -v "^NAMESPACE")
+    
+    if [ -z "$isvc_list" ]; then
+        print_info "No InferenceServices found"
+        return 0
+    fi
+    
+    echo "InferenceServices:"
+    echo "$isvc_list"
+    echo ""
+    
+    # Find not-ready ones
+    local failed_isvc=$(echo "$isvc_list" | grep -v "True" | awk '{print $1 "/" $2}')
+    
+    if [ -z "$failed_isvc" ]; then
+        print_success "All InferenceServices are ready!"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}Not-ready InferenceServices:${NC}"
+    echo "$failed_isvc"
+    echo ""
+    
+    read -p "Enter namespace/name to restart (or 'all' for all failed, 'q' to quit): " selection
+    
+    if [ "$selection" = "q" ]; then
+        return 0
+    fi
+    
+    if [ "$selection" = "all" ]; then
+        for isvc in $failed_isvc; do
+            local ns=$(echo "$isvc" | cut -d'/' -f1)
+            local name=$(echo "$isvc" | cut -d'/' -f2)
+            print_step "Restarting pods for $name in $ns..."
+            oc delete pod -n "$ns" -l serving.kserve.io/inferenceservice="$name" 2>/dev/null || true
+        done
+    else
+        local ns=$(echo "$selection" | cut -d'/' -f1)
+        local name=$(echo "$selection" | cut -d'/' -f2)
+        print_step "Restarting pods for $name in $ns..."
+        oc delete pod -n "$ns" -l serving.kserve.io/inferenceservice="$name" 2>/dev/null || true
+    fi
+    
+    print_success "Pods deleted. New pods will be created automatically."
+    echo ""
+    print_info "Check status with: oc get pods -n <namespace>"
+}
+
+# Troubleshooting submenu handler
+troubleshooting_submenu() {
+    while true; do
+        show_troubleshooting_submenu
+        read -p "Select an option (1-6, 0): " ts_choice
+        
+        case $ts_choice in
+            1)
+                fix_gpu_operator_cuda_compatibility
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                check_gpu_operator_status
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                uncordon_gpu_nodes
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                print_info "Re-running operator channel validation..."
+                echo ""
+                # Call the validate function from install-rhoai-minimal.sh if available
+                if [ -f "$SCRIPT_DIR/scripts/install-rhoai-minimal.sh" ]; then
+                    source "$SCRIPT_DIR/lib/utils/common.sh" 2>/dev/null || true
+                    echo "Checking operator channels..."
+                    echo ""
+                    echo "Kueue available channels:"
+                    oc get packagemanifest kueue-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null && echo ""
+                    echo ""
+                    echo "LWS available channels:"
+                    oc get packagemanifest leader-worker-set -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null && echo ""
+                    echo ""
+                    print_info "To fix channel issues, re-run: ./scripts/install-rhoai-minimal.sh"
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                check_all_operator_status
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                restart_failed_model_pods
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-6 or 0."
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 ################################################################################
@@ -2728,7 +3157,7 @@ ai_services_submenu() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-5, 0): " rhoai_choice
+        read -p "Select an option (1-6, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -2752,12 +3181,15 @@ rhoai_management_menu() {
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
+            6)
+                troubleshooting_submenu
+                ;;
             0)
                 print_info "Returning to main menu..."
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-5 or 0."
+                print_error "Invalid option. Please select 1-6 or 0."
                 sleep 2
                 ;;
         esac
