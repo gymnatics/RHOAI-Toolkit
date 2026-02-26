@@ -839,6 +839,7 @@ deploy_mcp_mongodb_only() {
 }
 
 # Register MCP in AI Asset endpoints (gen-ai-aa-mcp-servers ConfigMap)
+# Format: mcp-servers.json with mcpServers array
 register_mcp_ai_asset() {
     local mcp_name="$1"
     local mcp_url="$2"
@@ -847,15 +848,27 @@ register_mcp_ai_asset() {
     
     print_step "Registering '$mcp_name' in AI Asset endpoints..."
     
-    local entry_key=$(echo "$mcp_name" | sed 's/ /-/g')
-    
     # Check if ConfigMap exists
     if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null; then
-        # Patch existing ConfigMap
-        oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications --type merge \
-            -p "{\"data\":{\"$entry_key\":\"{\\\"url\\\": \\\"$mcp_url\\\", \\\"description\\\": \\\"$description\\\", \\\"transport\\\": \\\"$transport\\\"}\"}}"
+        # Get existing JSON and add new entry
+        local existing_json=$(oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o jsonpath='{.data.mcp-servers\.json}')
+        
+        # Check if this MCP is already registered
+        if echo "$existing_json" | grep -q "\"url\": \"$mcp_url\""; then
+            print_info "'$mcp_name' is already registered"
+            return 0
+        fi
+        
+        # Add new entry to the mcpServers array using jq
+        local new_json=$(echo "$existing_json" | jq --arg name "$mcp_name" --arg url "$mcp_url" --arg desc "$description" --arg transport "$transport" \
+            '.mcpServers += [{"name": $name, "description": $desc, "url": $url, "transport": $transport}]')
+        
+        # Update ConfigMap
+        oc create configmap gen-ai-aa-mcp-servers -n redhat-ods-applications \
+            --from-literal="mcp-servers.json=$new_json" \
+            --dry-run=client -o yaml | oc apply -f -
     else
-        # Create new ConfigMap
+        # Create new ConfigMap with correct format
         cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -863,13 +876,18 @@ metadata:
   name: gen-ai-aa-mcp-servers
   namespace: redhat-ods-applications
   labels:
-    app.kubernetes.io/part-of: rhoai-mcp-servers
+    app.kubernetes.io/part-of: rhoai
 data:
-  $entry_key: |
+  mcp-servers.json: |
     {
-      "url": "$mcp_url",
-      "description": "$description",
-      "transport": "$transport"
+      "mcpServers": [
+        {
+          "name": "$mcp_name",
+          "description": "$description",
+          "url": "$mcp_url",
+          "transport": "$transport"
+        }
+      ]
     }
 EOF
     fi
