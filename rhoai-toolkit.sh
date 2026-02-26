@@ -839,7 +839,7 @@ deploy_mcp_mongodb_only() {
 }
 
 # Register MCP in AI Asset endpoints (gen-ai-aa-mcp-servers ConfigMap)
-# Format: mcp-servers.json with mcpServers array
+# Format: Each MCP server is a separate key with JSON value containing server_url
 register_mcp_ai_asset() {
     local mcp_name="$1"
     local mcp_url="$2"
@@ -848,27 +848,32 @@ register_mcp_ai_asset() {
     
     print_step "Registering '$mcp_name' in AI Asset endpoints..."
     
+    # Sanitize name for use as ConfigMap key (replace spaces with dashes)
+    local entry_key=$(echo "$mcp_name" | sed 's/ /-/g')
+    
+    # Create JSON value for this MCP server
+    local mcp_json=$(cat <<MCPJSON
+{
+  "server_url": "$mcp_url",
+  "description": "$description",
+  "transport": "$transport"
+}
+MCPJSON
+)
+    
     # Check if ConfigMap exists
     if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null; then
-        # Get existing JSON and add new entry
-        local existing_json=$(oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o jsonpath='{.data.mcp-servers\.json}')
-        
         # Check if this MCP is already registered
-        if echo "$existing_json" | grep -q "\"url\": \"$mcp_url\""; then
+        if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o jsonpath="{.data.$entry_key}" 2>/dev/null | grep -q "server_url"; then
             print_info "'$mcp_name' is already registered"
             return 0
         fi
         
-        # Add new entry to the mcpServers array using jq
-        local new_json=$(echo "$existing_json" | jq --arg name "$mcp_name" --arg url "$mcp_url" --arg desc "$description" --arg transport "$transport" \
-            '.mcpServers += [{"name": $name, "description": $desc, "url": $url, "transport": $transport}]')
-        
-        # Update ConfigMap
-        oc create configmap gen-ai-aa-mcp-servers -n redhat-ods-applications \
-            --from-literal="mcp-servers.json=$new_json" \
-            --dry-run=client -o yaml | oc apply -f -
+        # Patch to add new entry
+        oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications \
+            --type merge -p "{\"data\":{\"$entry_key\": $(echo "$mcp_json" | jq -c .)}}"
     else
-        # Create new ConfigMap with correct format
+        # Create new ConfigMap
         cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -878,16 +883,11 @@ metadata:
   labels:
     app.kubernetes.io/part-of: rhoai
 data:
-  mcp-servers.json: |
+  $entry_key: |
     {
-      "mcpServers": [
-        {
-          "name": "$mcp_name",
-          "description": "$description",
-          "url": "$mcp_url",
-          "transport": "$transport"
-        }
-      ]
+      "server_url": "$mcp_url",
+      "description": "$description",
+      "transport": "$transport"
     }
 EOF
     fi
