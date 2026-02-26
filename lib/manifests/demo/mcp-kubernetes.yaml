@@ -99,15 +99,15 @@ spec:
             limits:
               cpu: 250m
               memory: 512Mi
+          # Note: This MCP server doesn't expose /health endpoint
+          # Using TCP probe instead of HTTP probe
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 30
           readinessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
