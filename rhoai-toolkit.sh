@@ -1491,29 +1491,38 @@ deploy_llamastack_demo_menu() {
         case $demo_choice in
             1)
                 # Full stack with LlamaStack
-                deploy_full_stack_with_llamastack
+                deploy_full_stack_with_llamastack || true
+                echo ""
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             2)
                 # Complete demo stack (existing LlamaStack)
-                deploy_complete_llamastack_demo
+                deploy_complete_llamastack_demo || true
+                echo ""
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             3)
                 # MCP + MongoDB only
-                deploy_mcp_mongodb_only
+                deploy_mcp_mongodb_only || true
+                echo ""
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             4)
                 # UI only
-                deploy_llamastack_demo_interactive
+                deploy_llamastack_demo_interactive || true
+                echo ""
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             0)
                 return 0
                 ;;
             *)
-                print_error "Invalid option"
+                print_error "Invalid option. Please enter 1-4 or 0."
+                sleep 1
                 ;;
         esac
     done
