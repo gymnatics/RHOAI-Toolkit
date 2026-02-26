@@ -839,55 +839,43 @@ deploy_mcp_mongodb_only() {
 }
 
 # Register MCP in AI Asset endpoints (gen-ai-aa-mcp-servers ConfigMap)
-# Format: Each MCP server is a separate key with JSON value containing server_url
+# Format per Red Hat docs: Each MCP server is a key with JSON containing "url" and "description"
+# Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.2/html/experimenting_with_models_in_the_gen_ai_playground/playground-prerequisites_rhoai-user
 register_mcp_ai_asset() {
     local mcp_name="$1"
     local mcp_url="$2"
     local description="$3"
-    local transport="${4:-streamable-http}"
     
     print_step "Registering '$mcp_name' in AI Asset endpoints..."
     
     # Sanitize name for use as ConfigMap key (replace spaces with dashes)
     local entry_key=$(echo "$mcp_name" | sed 's/ /-/g')
     
-    # Create JSON value for this MCP server
-    local mcp_json=$(cat <<MCPJSON
-{
-  "server_url": "$mcp_url",
-  "description": "$description",
-  "transport": "$transport"
-}
-MCPJSON
-)
-    
     # Check if ConfigMap exists
     if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null; then
         # Check if this MCP is already registered
-        if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o jsonpath="{.data.$entry_key}" 2>/dev/null | grep -q "server_url"; then
+        if oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications -o jsonpath="{.data.${entry_key}}" 2>/dev/null | grep -q "url"; then
             print_info "'$mcp_name' is already registered"
             return 0
         fi
         
-        # Patch to add new entry
+        # Patch to add new entry (escape quotes for JSON)
+        local escaped_desc=$(echo "$description" | sed 's/"/\\"/g')
         oc patch configmap gen-ai-aa-mcp-servers -n redhat-ods-applications \
-            --type merge -p "{\"data\":{\"$entry_key\": $(echo "$mcp_json" | jq -c .)}}"
+            --type merge -p "{\"data\":{\"$entry_key\": \"{\\\"url\\\": \\\"$mcp_url\\\", \\\"description\\\": \\\"$escaped_desc\\\"}\"}}"
     else
         # Create new ConfigMap
         cat <<EOF | oc apply -f -
-apiVersion: v1
 kind: ConfigMap
+apiVersion: v1
 metadata:
   name: gen-ai-aa-mcp-servers
   namespace: redhat-ods-applications
-  labels:
-    app.kubernetes.io/part-of: rhoai
 data:
   $entry_key: |
     {
-      "server_url": "$mcp_url",
-      "description": "$description",
-      "transport": "$transport"
+      "url": "$mcp_url",
+      "description": "$description"
     }
 EOF
     fi
