@@ -1,0 +1,43 @@
+# Banking Feature Store Demo
+#
+# This creates a complete banking feature store demo with:
+# - Customer demographics features
+# - Transaction aggregations (7d, 30d, 90d)
+# - ATM usage patterns
+# - Branch performance metrics
+# - Call center analytics
+# - Risk scoring (on-demand)
+#
+# Prerequisites:
+# 1. Fork https://github.com/RHRolun/banking-feature-store
+# 2. Update feature_repo/permissions.py line 47 with your namespace
+# 3. Push changes to your fork
+#
+# After applying:
+# 1. Wait for feast pod to be running
+# 2. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast apply
+# 3. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast materialize 2025-01-01T00:00:00 $(date -u +'%Y-%m-%dT%H:%M:%S')
+#
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+    feature-store-ui: enabled
+  name: banking
+spec:
+  feastProject: banking
+  feastProjectDir:
+    git:
+      ref: rbac
+      url: 'https://github.com/RHRolun/banking-feature-store'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: true

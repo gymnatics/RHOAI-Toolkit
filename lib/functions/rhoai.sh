@@ -20,7 +20,7 @@ get_rhoai_channel() {
         2.22) echo "stable-2.22" ;;
         2.23) echo "stable-2.23" ;;
         2.24|2.25) echo "stable" ;;
-        3.0) echo "fast-3.x" ;;
+        3.0|3.1|3.2|3.3) echo "fast-3.x" ;;
         *) echo "stable" ;;
     esac
 }
@@ -675,6 +675,310 @@ EOF
     echo ""
     print_info "You can now deploy models using llm-d serving runtime"
     print_info "Remember to check 'Require authentication' checkbox in the UI"
+}
+
+################################################################################
+# Feature Store (Feast) Functions
+################################################################################
+
+# Check if Feast operator is enabled
+check_feast_operator() {
+    local feast_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.feastoperator.managementState}' 2>/dev/null || echo "Unknown")
+    
+    if [[ "$feast_state" == "Managed" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Enable Feast operator in DSC
+enable_feast_operator() {
+    print_header "Enabling Feast Operator"
+    
+    if check_feast_operator; then
+        print_success "Feast operator already enabled"
+        return 0
+    fi
+    
+    print_step "Patching DataScienceCluster to enable feastoperator..."
+    oc patch datasciencecluster default-dsc --type='merge' \
+        -p '{"spec":{"components":{"feastoperator":{"managementState":"Managed"}}}}'
+    
+    if [ $? -eq 0 ]; then
+        print_success "Feast operator enabled"
+        
+        # Wait for Feast operator to be ready
+        print_step "Waiting for Feast operator to be ready..."
+        local timeout=120
+        local elapsed=0
+        until oc get crd featurestores.feast.dev &>/dev/null; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Timeout waiting for Feast CRD (continuing anyway)"
+                break
+            fi
+            echo "Waiting for FeatureStore CRD... (${elapsed}s elapsed)"
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+        
+        print_success "Feast operator is ready"
+    else
+        print_error "Failed to enable Feast operator"
+        return 1
+    fi
+}
+
+# Setup Feature Store in a namespace
+setup_feature_store() {
+    local namespace="${1:-}"
+    local git_url="${2:-}"
+    local git_ref="${3:-rbac}"
+    local feast_project="${4:-banking}"
+    
+    print_header "Setting up Feature Store (Feast)"
+    
+    # Check if Feast operator is enabled
+    if ! check_feast_operator; then
+        print_warning "Feast operator is not enabled"
+        read -p "Enable Feast operator now? (Y/n): " enable_feast
+        enable_feast=${enable_feast:-Y}
+        
+        if [[ "$enable_feast" =~ ^[Yy]$ ]]; then
+            enable_feast_operator
+        else
+            print_error "Feast operator must be enabled first"
+            return 1
+        fi
+    fi
+    
+    # Get namespace if not provided
+    if [ -z "$namespace" ]; then
+        local current_ns=$(oc project -q 2>/dev/null || echo "default")
+        read -p "Enter namespace for Feature Store [$current_ns]: " namespace
+        namespace=${namespace:-$current_ns}
+    fi
+    
+    # Check if namespace exists
+    if ! oc get namespace "$namespace" &>/dev/null; then
+        print_step "Creating namespace $namespace..."
+        oc new-project "$namespace" || oc create namespace "$namespace"
+    fi
+    
+    # Label namespace for RHOAI dashboard
+    oc label namespace "$namespace" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+    
+    # Get git URL if not provided
+    if [ -z "$git_url" ]; then
+        echo ""
+        echo -e "${CYAN}Feature Store requires a Git repository with feature definitions.${NC}"
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  1) Use banking demo (https://github.com/RHRolun/banking-feature-store)"
+        echo "  2) Enter custom Git URL"
+        echo ""
+        read -p "Choose option [1]: " git_option
+        git_option=${git_option:-1}
+        
+        if [[ "$git_option" == "1" ]]; then
+            git_url="https://github.com/RHRolun/banking-feature-store"
+            feast_project="banking"
+            
+            echo ""
+            print_warning "For RBAC to work correctly, you should fork this repo and update permissions.py"
+            echo -e "${CYAN}In feature_repo/permissions.py, change line 47 to: prod_namespaces = [\"$namespace\"]${NC}"
+            echo ""
+            read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
+            if [ -n "$custom_url" ]; then
+                git_url="$custom_url"
+            fi
+        else
+            read -p "Enter Git repository URL: " git_url
+            read -p "Enter Feast project name [banking]: " feast_project
+            feast_project=${feast_project:-banking}
+        fi
+    fi
+    
+    # Get git ref
+    read -p "Enter Git branch/ref [$git_ref]: " input_ref
+    git_ref=${input_ref:-$git_ref}
+    
+    # Check if FeatureStore already exists
+    if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
+        print_warning "FeatureStore '$feast_project' already exists in $namespace"
+        read -p "Delete and recreate? (y/N): " recreate
+        if [[ "$recreate" =~ ^[Yy]$ ]]; then
+            oc delete featurestore "$feast_project" -n "$namespace"
+            sleep 5
+        else
+            print_info "Keeping existing FeatureStore"
+            return 0
+        fi
+    fi
+    
+    # Create FeatureStore
+    print_step "Creating FeatureStore '$feast_project' in namespace '$namespace'..."
+    
+    cat <<EOF | oc apply -n "$namespace" -f -
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+    feature-store-ui: enabled
+  name: $feast_project
+spec:
+  feastProject: $feast_project
+  feastProjectDir:
+    git:
+      ref: $git_ref
+      url: '$git_url'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: true
+EOF
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create FeatureStore"
+        return 1
+    fi
+    
+    # Wait for Feast pod to be ready
+    print_step "Waiting for Feast pod to be ready..."
+    local timeout=120
+    local elapsed=0
+    until oc get pods -n "$namespace" -l "app=feast-$feast_project" -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Timeout waiting for Feast pod"
+            break
+        fi
+        echo "Waiting for Feast pod... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    # Get pod name
+    local feast_pod=$(oc get pods -n "$namespace" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null | grep "feast-$feast_project" || oc get pods -n "$namespace" -o name 2>/dev/null | grep "feast-$feast_project" | head -1 | sed 's|pod/||')
+    
+    if [ -z "$feast_pod" ]; then
+        feast_pod=$(oc get pods -n "$namespace" -o name 2>/dev/null | grep feast | head -1 | sed 's|pod/||')
+    fi
+    
+    if [ -n "$feast_pod" ]; then
+        print_success "Feast pod is running: $feast_pod"
+        
+        # Run feast apply
+        echo ""
+        read -p "Run 'feast apply' to register features? (Y/n): " run_apply
+        run_apply=${run_apply:-Y}
+        
+        if [[ "$run_apply" =~ ^[Yy]$ ]]; then
+            print_step "Running feast apply..."
+            oc exec -n "$namespace" "$feast_pod" -c registry -- feast apply
+            
+            if [ $? -eq 0 ]; then
+                print_success "Features registered successfully"
+                
+                # Run feast materialize
+                read -p "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
+                run_materialize=${run_materialize:-Y}
+                
+                if [[ "$run_materialize" =~ ^[Yy]$ ]]; then
+                    print_step "Running feast materialize..."
+                    oc exec -n "$namespace" "$feast_pod" -c registry -- bash -c "feast materialize 2025-01-01T00:00:00 \$(date -u +'%Y-%m-%dT%H:%M:%S')"
+                    
+                    if [ $? -eq 0 ]; then
+                        print_success "Features materialized successfully"
+                    else
+                        print_warning "Materialization had issues (features may still work)"
+                    fi
+                fi
+            else
+                print_warning "feast apply had issues"
+            fi
+        fi
+    else
+        print_warning "Could not find Feast pod"
+        echo ""
+        print_info "You can manually run these commands later:"
+        echo "  oc exec -n $namespace <feast-pod> -c registry -- feast apply"
+        echo "  oc exec -n $namespace <feast-pod> -c registry -- feast materialize 2025-01-01T00:00:00 \$(date -u +'%Y-%m-%dT%H:%M:%S')"
+    fi
+    
+    # Show status
+    echo ""
+    print_header "Feature Store Setup Complete"
+    echo ""
+    oc get featurestore -n "$namespace"
+    echo ""
+    oc get svc -n "$namespace" | grep feast
+    echo ""
+    print_info "Access Feature Store in RHOAI Dashboard:"
+    print_info "  Projects → $namespace → Feature store integration"
+    echo ""
+}
+
+# Show Feature Store status
+show_feast_status() {
+    print_header "Feature Store Status"
+    
+    # Check if Feast operator is enabled
+    local feast_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.feastoperator.managementState}' 2>/dev/null || echo "Unknown")
+    echo ""
+    echo -e "Feast Operator: ${CYAN}$feast_state${NC}"
+    echo ""
+    
+    # List all FeatureStores
+    echo -e "${YELLOW}FeatureStores across all namespaces:${NC}"
+    oc get featurestore -A 2>/dev/null || echo "No FeatureStores found"
+    echo ""
+    
+    # Show Feast pods
+    echo -e "${YELLOW}Feast pods:${NC}"
+    oc get pods -A -l app.kubernetes.io/managed-by=feast-operator 2>/dev/null || \
+    oc get pods -A 2>/dev/null | grep -i feast || echo "No Feast pods found"
+    echo ""
+}
+
+# Delete Feature Store
+delete_feature_store() {
+    local namespace="${1:-}"
+    local feast_project="${2:-}"
+    
+    print_header "Delete Feature Store"
+    
+    # List existing FeatureStores
+    echo ""
+    echo -e "${YELLOW}Existing FeatureStores:${NC}"
+    oc get featurestore -A 2>/dev/null || echo "No FeatureStores found"
+    echo ""
+    
+    if [ -z "$namespace" ]; then
+        read -p "Enter namespace: " namespace
+    fi
+    
+    if [ -z "$feast_project" ]; then
+        read -p "Enter FeatureStore name: " feast_project
+    fi
+    
+    if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
+        read -p "Delete FeatureStore '$feast_project' in namespace '$namespace'? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            oc delete featurestore "$feast_project" -n "$namespace"
+            print_success "FeatureStore deleted"
+        else
+            print_info "Cancelled"
+        fi
+    else
+        print_warning "FeatureStore '$feast_project' not found in namespace '$namespace'"
+    fi
 }
 
 

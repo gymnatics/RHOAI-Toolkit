@@ -1,14 +1,13 @@
-# DataScienceCluster v2 for RHOAI 3.0
+# DataScienceCluster v2 for RHOAI 3.2+
 # 
-# NOTE: For RHOAI 3.2+, use datasciencecluster-v2-32.yaml which includes
-#       feastoperator (Feature Store) enabled by default.
-#
 # This configuration:
 # - Enables all core components for GenAI workloads
 # - Includes NIM support for NVIDIA models
+# - Enables Feast Operator for Feature Store
 # - Uses RawDeployment mode (Headless) for llm-d compatibility
 # - Sets Kueue to Unmanaged (installed separately for better control)
-# - Removes unused components (feastoperator, codeflare) to reduce overhead
+#
+# Based on CAI's guide to RHOAI 3.2
 #
 apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
@@ -26,6 +25,14 @@ spec:
     dashboard:
       managementState: Managed
     
+    # Data Science Pipelines (legacy - use aipipelines instead)
+    datasciencepipelines:
+      managementState: Managed
+    
+    # Feast Operator for Feature Store (NEW in 3.2)
+    feastoperator:
+      managementState: Managed
+    
     # KServe for model serving (with NIM support)
     kserve:
       managementState: Managed
@@ -41,6 +48,10 @@ spec:
     
     # LlamaStack for AI orchestration
     llamastackoperator:
+      managementState: Managed
+    
+    # ModelMesh for multi-model serving (optional)
+    modelmeshserving:
       managementState: Managed
     
     # Model Registry for model versioning
@@ -68,12 +79,3 @@ spec:
     workbenches:
       managementState: Managed
       workbenchNamespace: rhods-notebooks
-    
-    # Removed/Disabled components:
-    # - feastoperator: Feature store (not needed for inference)
-    # - codeflare: Distributed training framework (use ray instead)
-    # - modelmeshserving: Legacy serving (use kserve instead)
-    # - datasciencepipelines: Deprecated (use aipipelines)
-    feastoperator:
-      managementState: Removed
-

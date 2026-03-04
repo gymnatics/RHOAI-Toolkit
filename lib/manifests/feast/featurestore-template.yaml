@@ -1,0 +1,32 @@
+# FeatureStore Template for Feast
+#
+# Variables to substitute:
+#   ${NAMESPACE} - Target namespace for the FeatureStore
+#   ${FEAST_PROJECT} - Feast project name (default: banking)
+#   ${GIT_URL} - Git repository URL containing feature definitions
+#   ${GIT_REF} - Git branch/tag to use (default: rbac)
+#
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+    feature-store-ui: enabled
+  name: ${FEAST_PROJECT}
+  namespace: ${NAMESPACE}
+spec:
+  feastProject: ${FEAST_PROJECT}
+  feastProjectDir:
+    git:
+      ref: ${GIT_REF}
+      url: '${GIT_URL}'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: true
