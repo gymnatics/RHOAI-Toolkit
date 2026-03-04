@@ -77,15 +77,16 @@ show_main_menu() {
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
     echo ""
-    echo -e "${MAGENTA}RHOAI 2.x (Older Versions):${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 2.x ${CYAN}[2.25, 2.23, 2.21]${NC}"
+    echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
+    echo -e "${YELLOW}3)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
+    echo -e "${YELLOW}4)${NC} Install RHOAI 2.x Only ${CYAN}[2.25, 2.22, 2.19]${NC}"
     echo ""
     echo -e "${MAGENTA}Management & Tools:${NC}"
-    echo -e "${YELLOW}4)${NC} RHOAI Management (configure features, deploy models, etc.)"
-    echo -e "${YELLOW}5)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}6)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
-    echo -e "${YELLOW}7)${NC} Help (show scripts and documentation)"
-    echo -e "${YELLOW}8)${NC} Exit"
+    echo -e "${YELLOW}5)${NC} RHOAI Management (configure features, deploy models, etc.)"
+    echo -e "${YELLOW}6)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}7)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}8)${NC} Help (show scripts and documentation)"
+    echo -e "${YELLOW}9)${NC} Exit"
     echo ""
 }
 
@@ -104,16 +105,19 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}3)${NC} Feature Store (Feast) ${GREEN}[NEW]${NC} ${BLUE}→${NC}"
     echo "    Setup and manage Feature Store for ML features"
     echo ""
-    echo -e "${YELLOW}4)${NC} Dashboard & Configuration"
+    echo -e "${YELLOW}4)${NC} RHOAI 3.2+ Features ${GREEN}[NEW]${NC} ${BLUE}→${NC}"
+    echo "    llm-d, MLflow, Observability (per CAI Guide)"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Dashboard & Configuration"
     echo "    Enable features like Model Registry, GenAI Studio"
     echo ""
-    echo -e "${YELLOW}5)${NC} Quick Start Wizard ${MAGENTA}✨${NC}"
+    echo -e "${YELLOW}6)${NC} Quick Start Wizard ${MAGENTA}✨${NC}"
     echo "    Run typical post-install workflow"
     echo ""
-    echo -e "${YELLOW}6)${NC} Day 2 Operations"
+    echo -e "${YELLOW}7)${NC} Day 2 Operations"
     echo "    Approve CSRs, cluster maintenance"
     echo ""
-    echo -e "${YELLOW}7)${NC} Troubleshooting & Fixes ${RED}[Fixes]${NC}"
+    echo -e "${YELLOW}8)${NC} Troubleshooting & Fixes ${RED}[Fixes]${NC}"
     echo "    GPU operator issues, CUDA compatibility, common problems"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
@@ -213,22 +217,63 @@ show_troubleshooting_submenu() {
     echo "    Downgrade GPU Operator to v24.6.x for vLLM compatibility"
     echo "    (Fixes: 'NVIDIA driver too old' error with CUDA 13)"
     echo ""
-    echo -e "${YELLOW}2)${NC} Check GPU Operator Status"
+    echo -e "${YELLOW}2)${NC} Pin NVIDIA Driver Version (CUDA 12.8) ${GREEN}[CAI 3.2 Fix]${NC}"
+    echo "    Pin driver to 570.195.03 for vLLM compatibility"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Check GPU Operator Status"
     echo "    View current version, driver, and CUDA compatibility"
     echo ""
-    echo -e "${YELLOW}3)${NC} Uncordon GPU Nodes"
+    echo -e "${YELLOW}4)${NC} Uncordon GPU Nodes"
     echo "    Re-enable scheduling on GPU nodes after maintenance"
     echo ""
     echo -e "${RED}Operator Issues:${NC}"
-    echo -e "${YELLOW}4)${NC} Fix Operator Channel Issues"
+    echo -e "${YELLOW}5)${NC} Fix Operator Channel Issues"
     echo "    Re-sync operators with correct channels (Kueue, LWS, etc.)"
     echo ""
-    echo -e "${YELLOW}5)${NC} Check All Operator Status"
+    echo -e "${YELLOW}6)${NC} Check All Operator Status"
     echo "    View status of all RHOAI-related operators"
     echo ""
     echo -e "${RED}Model Serving Issues:${NC}"
-    echo -e "${YELLOW}6)${NC} Restart Failed Model Pods"
+    echo -e "${YELLOW}7)${NC} Restart Failed Model Pods"
     echo "    Delete and recreate pods for stuck InferenceServices"
+    echo ""
+    echo -e "${YELLOW}8)${NC} Restart RHOAI Controllers"
+    echo "    Restart odh-model-controller and kserve-controller"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
+    echo ""
+}
+
+show_rhoai32_features_submenu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           RHOAI 3.2+ Features (per CAI Guide)                  ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${MAGENTA}Model Serving (llm-d):${NC}"
+    echo -e "${YELLOW}1)${NC} Setup llm-d Infrastructure ${GREEN}[Required]${NC}"
+    echo "    GatewayClass, Gateway, RHCL/Kuadrant for authentication"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Deploy LLMInferenceService"
+    echo "    Deploy a model using llm-d runtime (new in 3.2)"
+    echo ""
+    echo -e "${MAGENTA}New Operators:${NC}"
+    echo -e "${YELLOW}3)${NC} Enable MLflow Operator ${GREEN}[NEW]${NC}"
+    echo "    Experiment tracking, model versioning, artifact storage"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Enable LlamaStack Operator"
+    echo "    LlamaStack distribution management"
+    echo ""
+    echo -e "${MAGENTA}Observability:${NC}"
+    echo -e "${YELLOW}5)${NC} Enable Cluster Monitoring for KServe"
+    echo "    UserWorkloadMonitoring for KServe metrics"
+    echo ""
+    echo -e "${YELLOW}6)${NC} Configure DSCInitialization Observability"
+    echo "    Metrics storage, distributed tracing with Tempo"
+    echo ""
+    echo -e "${MAGENTA}Configuration:${NC}"
+    echo -e "${YELLOW}7)${NC} Setup MCP Servers ConfigMap (3.2 format)"
+    echo "    New JSON format for MCP server configuration"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -715,7 +760,7 @@ restart_failed_model_pods() {
 troubleshooting_submenu() {
     while true; do
         show_troubleshooting_submenu
-        read -p "Select an option (1-6, 0): " ts_choice
+        read -p "Select an option (1-8, 0): " ts_choice
         
         case $ts_choice in
             1)
@@ -724,16 +769,21 @@ troubleshooting_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             2)
-                check_gpu_operator_status
+                pin_nvidia_driver_version
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                uncordon_gpu_nodes
+                check_gpu_operator_status
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             4)
+                uncordon_gpu_nodes
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
                 print_info "Re-running operator channel validation..."
                 echo ""
                 # Call the validate function from install-rhoai-minimal.sh if available
@@ -752,13 +802,29 @@ troubleshooting_submenu() {
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
-            5)
+            6)
                 check_all_operator_status
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
-            6)
+            7)
                 restart_failed_model_pods
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                print_header "Restart RHOAI Controllers"
+                echo "This will restart odh-model-controller and kserve-controller-manager"
+                echo "Useful when authentication/Authorino changes aren't being picked up"
+                echo ""
+                read -p "Continue? (y/N): " restart_confirm
+                if [[ "$restart_confirm" =~ ^[Yy]$ ]]; then
+                    print_step "Restarting odh-model-controller..."
+                    oc delete pod -n redhat-ods-applications -l app=odh-model-controller 2>/dev/null || true
+                    print_step "Restarting kserve-controller-manager..."
+                    oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager 2>/dev/null || true
+                    print_success "Controllers restarted"
+                fi
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
@@ -766,7 +832,7 @@ troubleshooting_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6 or 0."
+                print_error "Invalid option. Please select 1-8 or 0."
                 sleep 1
                 ;;
         esac
@@ -3213,7 +3279,7 @@ ai_services_submenu() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -p "Select an option (1-7, 0): " rhoai_choice
+        read -p "Select an option (1-8, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -3226,21 +3292,24 @@ rhoai_management_menu() {
                 feast_submenu
                 ;;
             4)
+                rhoai32_features_submenu
+                ;;
+            5)
                 enable_dashboard_features_interactive
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
-            5)
+            6)
                 quick_start_wizard
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
-            6)
+            7)
                 approve_pending_csrs
                 echo ""
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
-            7)
+            8)
                 troubleshooting_submenu
                 ;;
             0)
@@ -3248,8 +3317,75 @@ rhoai_management_menu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-7 or 0."
+                print_error "Invalid option. Please select 1-8 or 0."
                 sleep 2
+                ;;
+        esac
+    done
+}
+
+# RHOAI 3.2+ Features submenu (per CAI Guide)
+rhoai32_features_submenu() {
+    while true; do
+        show_rhoai32_features_submenu
+        read -p "Select an option (1-7, 0): " rhoai32_choice
+        
+        case $rhoai32_choice in
+            1)
+                setup_llmd_infrastructure
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                deploy_llminferenceservice
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                enable_mlflow_operator
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                # Enable LlamaStack operator
+                print_header "Enable LlamaStack Operator"
+                local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null || echo "Unknown")
+                echo "Current LlamaStack state: $llamastack_state"
+                if [[ "$llamastack_state" == "Managed" ]]; then
+                    print_success "LlamaStack operator already enabled"
+                else
+                    read -p "Enable LlamaStack operator? (Y/n): " enable_ls
+                    enable_ls=${enable_ls:-Y}
+                    if [[ "$enable_ls" =~ ^[Yy]$ ]]; then
+                        oc patch datasciencecluster default-dsc --type='merge' \
+                            -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}'
+                        print_success "LlamaStack operator enabled"
+                    fi
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                enable_cluster_monitoring_for_kserve
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                configure_dsci_observability
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                setup_mcp_servers_configmap
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-7 or 0."
+                sleep 1
                 ;;
         esac
     done
@@ -4754,7 +4890,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-8): " choice
+        read -p "Select an option (1-9): " choice
         
         case $choice in
             1)
@@ -4764,30 +4900,33 @@ main() {
                 run_minimal_setup
                 ;;
             3)
-                rhoai_2x_menu
+                workshop_setup_menu
                 ;;
             4)
-                rhoai_management_menu
+                rhoai_2x_menu
                 ;;
             5)
+                rhoai_management_menu
+                ;;
+            6)
                 create_gpu_machineset_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            6)
+            7)
                 configure_kubeconfig_interactive
                 ;;
-            7)
+            8)
                 show_help
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            8)
+            9)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8."
+                print_error "Invalid option. Please select 1-9."
                 sleep 2
                 ;;
         esac
@@ -5045,16 +5184,7 @@ install_rhoai_2x() {
         print_success "GPU Operator already installed"
     else
         oc apply -f "$manifests_dir/nvidia.yaml"
-        print_success "GPU Operator subscription created"
-        
-        # Wait for install plan and approve it (Manual approval)
-        print_step "Waiting for GPU Operator install plan..."
-        sleep 15
-        local install_plan=$(oc get installplan -n nvidia-gpu-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-        if [ -n "$install_plan" ]; then
-            print_step "Approving GPU Operator install plan: $install_plan"
-            oc patch installplan "$install_plan" -n nvidia-gpu-operator --type merge -p '{"spec":{"approved":true}}' || true
-        fi
+        print_success "GPU Operator subscription created (Automatic approval)"
     fi
     
     # Wait for GPU Operator CRD
@@ -5264,6 +5394,893 @@ rhoai_2x_menu() {
                 ;;
             4)
                 check_rhoai_version
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                print_warning "Invalid option. Please try again."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+################################################################################
+# WORKSHOP DEMO SETUP (RHOAI 2.25 + Full Workshop Environment)
+################################################################################
+
+show_workshop_setup_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║         Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop)      ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}This sets up a complete workshop environment including:${NC}"
+    echo "  • RHOAI 2.25 installation (NFD, GPU Operator, dependencies)"
+    echo "  • GPU MachineSet creation"
+    echo "  • Worker node scaling"
+    echo "  • Workshop users (htpasswd authentication)"
+    echo "  • User workload monitoring (Prometheus)"
+    echo "  • Grafana with pre-configured dashboards"
+    echo "  • Admin model deployment (qwen3-4b)"
+    echo "  • LlamaStack and MCP Server"
+    echo "  • AnythingLLM workbench image"
+    echo ""
+    echo -e "${MAGENTA}Workshop Guide:${NC} https://github.com/cbtham/rhoai-genai-workshop"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Complete Workshop Setup ${GREEN}[Full - Recommended]${NC}"
+    echo "    Install everything from scratch"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Workshop Setup (RHOAI already installed)"
+    echo "    Skip RHOAI installation, set up workshop components only"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Add Workshop Users Only"
+    echo "    Create htpasswd users and RBAC"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Deploy Admin Model and MCP Server Only"
+    echo "    Deploy qwen3-4b, LlamaStack, MCP server"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Setup Grafana and Dashboards Only"
+    echo "    Deploy Grafana with vLLM and DCGM dashboards"
+    echo ""
+    echo -e "${YELLOW}6)${NC} Enable User Workload Monitoring Only"
+    echo "    Enable Prometheus UWM and vLLM metrics"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to Main Menu"
+    echo ""
+}
+
+setup_workshop_users() {
+    local user_count="${1:-150}"
+    
+    print_header "Setting Up Workshop Users ($user_count users)"
+    
+    # Create htpasswd file
+    print_step "Creating htpasswd file with $user_count users..."
+    local htpasswd_file="/tmp/workshop-users.htpasswd"
+    rm -f "$htpasswd_file"
+    
+    for i in $(seq 1 $user_count); do
+        if [ $i -eq 1 ]; then
+            htpasswd -c -B -b "$htpasswd_file" "user$i" "openshift" 2>/dev/null
+        else
+            htpasswd -B -b "$htpasswd_file" "user$i" "openshift" 2>/dev/null
+        fi
+        # Progress indicator
+        if [ $((i % 25)) -eq 0 ]; then
+            echo "  Created $i users..."
+        fi
+    done
+    print_success "Created $user_count users in htpasswd file"
+    
+    # Create or update secret
+    print_step "Creating htpasswd secret..."
+    oc create secret generic workshop-htpasswd-secret \
+        --from-file=htpasswd="$htpasswd_file" \
+        -n openshift-config --dry-run=client -o yaml | oc apply -f -
+    print_success "HTPasswd secret created"
+    
+    # Configure OAuth
+    print_step "Configuring OAuth..."
+    cat <<EOF | oc apply -f -
+apiVersion: config.openshift.io/v1
+kind: OAuth
+metadata:
+  name: cluster
+spec:
+  identityProviders:
+  - name: workshop-users
+    mappingMethod: claim
+    type: HTPasswd
+    htpasswd:
+      fileData:
+        name: workshop-htpasswd-secret
+EOF
+    print_success "OAuth configured"
+    
+    # Create workshop users group
+    print_step "Creating workshop-users group..."
+    cat <<EOF | oc apply -f -
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: workshop-users
+users:
+$(for i in $(seq 1 $user_count); do echo "- user$i"; done)
+EOF
+    print_success "Workshop users group created"
+    
+    # Create admin-workshop namespace if not exists
+    print_step "Creating admin-workshop namespace..."
+    oc new-project admin-workshop 2>/dev/null || oc project admin-workshop 2>/dev/null || true
+    print_success "admin-workshop namespace ready"
+    
+    # Create Prometheus token for users
+    print_step "Creating Prometheus token..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-prometheus-token
+  namespace: openshift-monitoring
+  annotations:
+    kubernetes.io/service-account.name: prometheus-k8s
+type: kubernetes.io/service-account-token
+EOF
+    sleep 5
+    
+    local token=$(oc get secret grafana-prometheus-token -n openshift-monitoring -o jsonpath='{.data.token}' 2>/dev/null || true)
+    if [ -n "$token" ]; then
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheus-token
+  namespace: admin-workshop
+type: Opaque
+data:
+  token: ${token}
+EOF
+        print_success "Prometheus token created in admin-workshop"
+    fi
+    
+    # Create RBAC for users
+    print_step "Creating RBAC for workshop users..."
+    cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: admin-workshop
+  name: secret-reader
+  labels:
+    purpose: workshop-prometheus-access
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+EOF
+    
+    for i in $(seq 1 $user_count); do
+        cat <<EOF | oc apply -f - 2>/dev/null
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: admin-workshop
+  name: secret-reader-user$i
+  labels:
+    purpose: workshop-prometheus-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-reader
+subjects:
+- kind: User
+  name: user$i
+  apiGroup: rbac.authorization.k8s.io
+EOF
+        if [ $((i % 25)) -eq 0 ]; then
+            echo "  Created RBAC for $i users..."
+        fi
+    done
+    print_success "RBAC created for $user_count users"
+    
+    print_success "Workshop users setup complete!"
+    echo ""
+    echo -e "${GREEN}Users:${NC} user1 to user$user_count"
+    echo -e "${GREEN}Password:${NC} openshift"
+}
+
+setup_workshop_grafana() {
+    print_header "Setting Up Admin Grafana with Dashboards"
+    
+    echo -e "${YELLOW}Note: This deploys an admin Grafana instance with pre-configured dashboards.${NC}"
+    echo -e "${YELLOW}Workshop users will deploy their own Grafana using: oc apply -f obs/grafana-user-setup.yaml -n <their-namespace>${NC}"
+    echo ""
+    
+    # Clone workshop repo
+    print_step "Cloning workshop repository..."
+    cd /tmp
+    rm -rf rhoai-genai-workshop
+    git clone https://github.com/cbtham/rhoai-genai-workshop.git
+    cd rhoai-genai-workshop
+    print_success "Workshop repository cloned"
+    
+    # Create grafana namespace for admin
+    print_step "Creating Grafana namespace..."
+    oc new-project grafana 2>/dev/null || true
+    
+    # Deploy Grafana (using admin setup with PVC for persistence)
+    print_step "Deploying Admin Grafana..."
+    oc apply -f obs/grafana-setup.yaml -n grafana
+    oc apply -f obs/expose-grafana.yaml -n grafana
+    print_success "Admin Grafana deployed"
+    
+    # Get Prometheus token for datasource
+    print_step "Getting Prometheus token..."
+    local prom_token=$(oc get secret grafana-prometheus-token -n openshift-monitoring -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
+    if [ -z "$prom_token" ]; then
+        # Create token if it doesn't exist
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-prometheus-token
+  namespace: openshift-monitoring
+  annotations:
+    kubernetes.io/service-account.name: prometheus-k8s
+type: kubernetes.io/service-account-token
+EOF
+        sleep 10
+        prom_token=$(oc get secret grafana-prometheus-token -n openshift-monitoring -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
+    fi
+    
+    # Create Prometheus datasource provisioning ConfigMap
+    # IMPORTANT: Name MUST be "Prometheus" (capital P) to match dashboard references
+    print_step "Creating Prometheus datasource provisioning..."
+    cat <<EOF | oc apply -f - -n grafana
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-provisioning
+  namespace: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+      isDefault: true
+      jsonData:
+        httpHeaderName1: Authorization
+        tlsSkipVerify: true
+        timeInterval: "5s"
+      secureJsonData:
+        httpHeaderValue1: "Bearer ${prom_token}"
+      editable: true
+EOF
+    print_success "Prometheus datasource provisioning created"
+    
+    # Wait for Grafana to be ready
+    print_step "Waiting for Grafana to be ready..."
+    sleep 30
+    
+    # Download and fix dashboards
+    print_step "Downloading and configuring dashboards..."
+    curl -sL "https://raw.githubusercontent.com/redhat-et/ai-observability/main/vllm-dashboards/vllm-grafana-openshift.json" -o /tmp/vllm-dashboard.json
+    curl -sL "https://github.com/cbtham/rhoai-genai-workshop/raw/main/obs/grafana-dashboard-llm-performance.json" -o /tmp/llm-performance-dashboard.json
+    curl -sL "https://grafana.com/api/dashboards/12239/revisions/1/download" -o /tmp/nvidia-dcgm-dashboard.json
+    
+    # Fix datasource references - replace ALL variations with "Prometheus" (capital P)
+    # This includes: ${DS_PROMETHEUS}, "prometheus", datasource references
+    print_step "Fixing datasource references in dashboards..."
+    
+    # For vLLM dashboard
+    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/vllm-dashboard.json 2>/dev/null || \
+        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/vllm-dashboard.json
+    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/vllm-dashboard.json 2>/dev/null || \
+        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/vllm-dashboard.json
+    sed -i.bak 's/"uid": *"prometheus"/"uid": "prometheus"/g' /tmp/vllm-dashboard.json 2>/dev/null || \
+        sed -i '' 's/"uid": *"prometheus"/"uid": "prometheus"/g' /tmp/vllm-dashboard.json
+    
+    # For NVIDIA DCGM dashboard  
+    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/nvidia-dcgm-dashboard.json 2>/dev/null || \
+        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/nvidia-dcgm-dashboard.json
+    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/nvidia-dcgm-dashboard.json 2>/dev/null || \
+        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/nvidia-dcgm-dashboard.json
+    
+    # For LLM Performance dashboard
+    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/llm-performance-dashboard.json 2>/dev/null || \
+        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/llm-performance-dashboard.json
+    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/llm-performance-dashboard.json 2>/dev/null || \
+        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/llm-performance-dashboard.json
+    
+    print_success "Datasource references fixed"
+    
+    # Create ConfigMaps for dashboards
+    print_step "Creating dashboard ConfigMaps..."
+    
+    cat <<EOF | oc apply -f - -n grafana
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      editable: true
+      options:
+        path: /var/lib/grafana/dashboards
+EOF
+    
+    oc create configmap grafana-vllm-dashboard -n grafana --from-file=vllm-dashboard.json=/tmp/vllm-dashboard.json --dry-run=client -o yaml | oc apply -f -
+    oc create configmap grafana-llm-performance-dashboard -n grafana --from-file=llm-performance-dashboard.json=/tmp/llm-performance-dashboard.json --dry-run=client -o yaml | oc apply -f -
+    oc create configmap grafana-nvidia-dcgm-dashboard -n grafana --from-file=nvidia-dcgm-dashboard.json=/tmp/nvidia-dcgm-dashboard.json --dry-run=client -o yaml | oc apply -f -
+    
+    print_success "Dashboard ConfigMaps created"
+    
+    # Patch Grafana deployment to mount datasource provisioning and dashboards
+    print_step "Patching Grafana deployment with datasource and dashboards..."
+    
+    # First, patch to add datasource provisioning volume
+    oc patch deployment grafana -n grafana --type='json' -p='[
+      {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "datasource-provisioning", "configMap": {"name": "grafana-datasource-provisioning"}}},
+      {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "datasource-provisioning", "mountPath": "/etc/grafana/provisioning/datasources"}}
+    ]' 2>/dev/null || print_warning "Datasource provisioning may already be mounted"
+    
+    # Then patch to add dashboard provisioning and dashboards
+    oc patch deployment grafana -n grafana --type='json' -p='[
+      {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "dashboard-provider", "configMap": {"name": "grafana-dashboard-provider"}}},
+      {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "vllm-dashboard", "configMap": {"name": "grafana-vllm-dashboard"}}},
+      {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "llm-performance-dashboard", "configMap": {"name": "grafana-llm-performance-dashboard"}}},
+      {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "nvidia-dcgm-dashboard", "configMap": {"name": "grafana-nvidia-dcgm-dashboard"}}},
+      {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "dashboard-provider", "mountPath": "/etc/grafana/provisioning/dashboards"}},
+      {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "vllm-dashboard", "mountPath": "/var/lib/grafana/dashboards/vllm-dashboard.json", "subPath": "vllm-dashboard.json"}},
+      {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "llm-performance-dashboard", "mountPath": "/var/lib/grafana/dashboards/llm-performance-dashboard.json", "subPath": "llm-performance-dashboard.json"}},
+      {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "nvidia-dcgm-dashboard", "mountPath": "/var/lib/grafana/dashboards/nvidia-dcgm-dashboard.json", "subPath": "nvidia-dcgm-dashboard.json"}}
+    ]' 2>/dev/null || print_warning "Dashboard volumes may already be mounted"
+    
+    # Wait for Grafana to restart with new config
+    print_step "Waiting for Grafana to restart..."
+    sleep 20
+    
+    local grafana_url=$(oc get route grafana -n grafana -o jsonpath='https://{.spec.host}' 2>/dev/null || echo "Not available")
+    
+    print_success "Grafana setup complete!"
+    echo ""
+    echo -e "${GREEN}Grafana URL:${NC} $grafana_url"
+    echo -e "${GREEN}Credentials:${NC} admin / admin"
+    echo -e "${GREEN}Dashboards:${NC} vLLM, LLM Performance, NVIDIA DCGM"
+}
+
+setup_workshop_model_and_mcp() {
+    print_header "Deploying Admin Model and MCP Server"
+    
+    # Ensure admin-workshop namespace exists
+    oc new-project admin-workshop 2>/dev/null || oc project admin-workshop 2>/dev/null || true
+    
+    # Clone workshop repo if not already done
+    if [ ! -d "/tmp/rhoai-genai-workshop" ]; then
+        print_step "Cloning workshop repository..."
+        cd /tmp
+        git clone https://github.com/cbtham/rhoai-genai-workshop.git
+    fi
+    cd /tmp/rhoai-genai-workshop
+    
+    # Deploy MinIO
+    print_step "Deploying MinIO..."
+    oc apply -f minio-setup.yaml -n admin-workshop
+    print_success "MinIO deployed"
+    
+    # Register AnythingLLM workbench image
+    print_step "Registering AnythingLLM workbench image..."
+    cat <<EOF | oc apply -f -
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: anythingllm-workbench
+  namespace: redhat-ods-applications
+  labels:
+    opendatahub.io/notebook-image: "true"
+  annotations:
+    opendatahub.io/notebook-image-name: "AnythingLLM"
+    opendatahub.io/notebook-image-desc: "AnythingLLM workbench for RAG and chat"
+spec:
+  lookupPolicy:
+    local: false
+  tags:
+  - name: "1.8.5"
+    from:
+      kind: DockerImage
+      name: quay.io/rh-aiservices-bu/anythingllm-workbench:1.8.5
+    importPolicy:
+      importMode: Legacy
+    referencePolicy:
+      type: Source
+EOF
+    print_success "AnythingLLM workbench image registered"
+    
+    # Check for GPU nodes
+    local gpu_nodes=$(oc get nodes -l nvidia.com/gpu.present=true --no-headers 2>/dev/null | wc -l)
+    if [ "$gpu_nodes" -eq 0 ]; then
+        print_warning "No GPU nodes detected. Model deployment may fail."
+        read -p "Continue anyway? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    else
+        print_success "Found $gpu_nodes GPU node(s)"
+    fi
+    
+    # Deploy ServingRuntime
+    print_step "Deploying ServingRuntime..."
+    cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-nvidia-gpu
+  namespace: admin-workshop
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+  - args:
+    - '--port=8080'
+    - '--model=/mnt/models'
+    - '--served-model-name={{.Name}}'
+    - '--max-model-len=8192'
+    - '--enable-auto-tool-choice'
+    - '--tool-call-parser=hermes'
+    command:
+    - python
+    - '-m'
+    - vllm.entrypoints.openai.api_server
+    env:
+    - name: HF_HOME
+      value: /tmp/hf_home
+    image: 'registry.redhat.io/rhoai/odh-vllm-cuda-rhel9@sha256:751e2359439161babb9ad8e93e16251888a8c07aed895ffa55e4dfaf2a45f89d'
+    name: kserve-container
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+  - autoSelect: true
+    name: vLLM
+EOF
+    print_success "ServingRuntime created"
+    
+    # Deploy InferenceService
+    print_step "Deploying InferenceService (qwen3-4b)..."
+    cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen3-4b
+  namespace: admin-workshop
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.kserve.io/autoscalerClass: external
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+      modelFormat:
+        name: vLLM
+      runtime: vllm-nvidia-gpu
+      storageUri: 'oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b'
+      resources:
+        limits:
+          cpu: '4'
+          memory: 16Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '2'
+          memory: 8Gi
+          nvidia.com/gpu: '1'
+EOF
+    print_success "InferenceService created"
+    
+    # Create external service and route
+    print_step "Creating external route for model..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-4b-external
+  namespace: admin-workshop
+spec:
+  selector:
+    app: isvc.qwen3-4b-predictor
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+EOF
+    oc create route edge qwen3-4b --service=qwen3-4b-external --port=8080 -n admin-workshop 2>/dev/null || true
+    print_success "External route created"
+    
+    # Wait for model to be ready
+    print_step "Waiting for model to be ready (this may take 5-10 minutes)..."
+    local timeout=600
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local status=$(oc get inferenceservice qwen3-4b -n admin-workshop -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$status" == "True" ]; then
+            print_success "Model is READY!"
+            break
+        fi
+        echo "  Waiting for model... (${elapsed}s elapsed)"
+        sleep 30
+        elapsed=$((elapsed + 30))
+    done
+    
+    # Deploy LlamaStack and MCP Server
+    print_step "Deploying LlamaStack and MCP Server..."
+    
+    export MODEL_NAME="qwen3-4b"
+    export MODEL_NAMESPACE="admin-workshop"
+    
+    # Wait for service account token
+    sleep 10
+    local sa_secret=$(oc get secret -n admin-workshop 2>/dev/null | grep "default-name-qwen3-4b-sa" | head -1 | awk '{print $1}')
+    if [ -n "$sa_secret" ]; then
+        export LLM_MODEL_TOKEN=$(oc get secret "$sa_secret" -n admin-workshop -o jsonpath='{.data.token}' | base64 -d)
+    else
+        print_warning "Model service account token not found, LlamaStack may not work correctly"
+        export LLM_MODEL_TOKEN="placeholder"
+    fi
+    export LLM_MODEL_URL="https://${MODEL_NAME}-predictor.${MODEL_NAMESPACE}.svc.cluster.local:8443/v1"
+    
+    # Deploy LlamaStack ConfigMap
+    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/llama-stack/configmap.yaml | oc apply -f - -n admin-workshop
+    
+    # Deploy LlamaStack Server
+    oc apply -f obs/llama-stack/llama-stack-server.yaml -n admin-workshop
+    
+    # Deploy OpenShift MCP Server
+    oc apply -f obs/llama-stack/openshift-mcp.yaml -n admin-workshop
+    
+    # Grant cluster-wide read access
+    export NAMESPACE="admin-workshop"
+    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/experimental/openshift-mcp/cluster-read-serviceaccount.yaml | oc apply -f -
+    
+    print_success "LlamaStack and MCP Server deployed"
+    
+    # Copy MCP config to AnythingLLM (if admin deploys one)
+    print_step "Preparing AnythingLLM MCP config..."
+    export MODEL_NAMESPACE="admin-workshop"
+    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/experimental/anythingllm-mcp-config/anythingllm_mcp_servers.json > /tmp/anythingllm_mcp_servers.json
+    print_success "MCP config prepared at /tmp/anythingllm_mcp_servers.json"
+    echo "  To copy to AnythingLLM workbench, run:"
+    echo "  oc cp /tmp/anythingllm_mcp_servers.json anythingllm-0:/app/server/storage/plugins/anythingllm_mcp_servers.json -c anythingllm -n admin-workshop"
+    
+    local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    
+    print_success "Model and MCP Server deployment complete!"
+    echo ""
+    echo -e "${GREEN}Model Endpoint:${NC} https://qwen3-4b-admin-workshop.${cluster_domain}"
+    echo -e "${GREEN}LlamaStack:${NC} https://llama-stack-admin-workshop.${cluster_domain}"
+}
+
+setup_user_workload_monitoring() {
+    print_header "Setting Up User Workload Monitoring"
+    
+    # Enable User Workload Monitoring
+    print_step "Enabling User Workload Monitoring..."
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+EOF
+    print_success "User Workload Monitoring enabled"
+    
+    # Wait for UWM pods
+    print_step "Waiting for User Workload Monitoring pods..."
+    sleep 30
+    oc get pods -n openshift-user-workload-monitoring 2>/dev/null || print_warning "UWM pods not yet ready"
+    
+    # Create vLLM metrics allowlist in admin-workshop
+    print_step "Creating vLLM metrics allowlist..."
+    cat <<EOF | oc apply -f -
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: observability-metrics-custom-allowlist
+  namespace: admin-workshop
+data:
+  uwl_metrics_list.yaml: |
+    matches:
+      - __name__=~"(vllm:.*)"
+EOF
+    print_success "vLLM metrics allowlist created"
+}
+
+run_complete_workshop_setup() {
+    local user_count="${1:-150}"
+    local gpu_instance="${2:-g6e.xlarge}"
+    local gpu_count="${3:-64}"
+    local worker_count="${4:-12}"
+    
+    print_header "Complete Workshop Setup"
+    
+    echo -e "${YELLOW}This will set up a complete workshop environment:${NC}"
+    echo "  • RHOAI 2.25 installation"
+    echo "  • User Workload Monitoring (Prometheus)"
+    echo "  • GPU MachineSet ($gpu_count x $gpu_instance)"
+    echo "  • Worker nodes ($worker_count)"
+    echo "  • Workshop users ($user_count users)"
+    echo "  • Grafana with dashboards"
+    echo "  • Admin model (qwen3-4b) + MCP Server"
+    echo ""
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "Setup cancelled"
+        return 0
+    fi
+    
+    # Step 1: Install RHOAI 2.25
+    print_header "Step 1/7: Installing RHOAI 2.25"
+    install_rhoai_2x "2.25" "stable-2.25"
+    
+    # Step 2: Enable User Workload Monitoring
+    print_header "Step 2/7: Enabling User Workload Monitoring"
+    setup_user_workload_monitoring
+    
+    # Step 3: Create GPU MachineSet
+    print_header "Step 3/7: Creating GPU MachineSet"
+    create_gpu_machineset_for_workshop "$gpu_instance" "$gpu_count"
+    
+    # Step 4: Scale Worker Nodes
+    print_header "Step 4/7: Scaling Worker Nodes"
+    scale_worker_nodes "$worker_count"
+    
+    # Step 5: Setup Workshop Users
+    print_header "Step 5/7: Setting Up Workshop Users"
+    setup_workshop_users "$user_count"
+    
+    # Step 6: Setup Grafana
+    print_header "Step 6/7: Setting Up Grafana"
+    setup_workshop_grafana
+    
+    # Step 7: Deploy Model and MCP
+    print_header "Step 7/7: Deploying Model and MCP Server"
+    echo -e "${YELLOW}Note: Model deployment requires GPU nodes to be ready.${NC}"
+    echo "Checking GPU node status..."
+    local gpu_ready=$(oc get nodes -l nvidia.com/gpu.present=true --no-headers 2>/dev/null | wc -l)
+    if [ "$gpu_ready" -gt 0 ]; then
+        setup_workshop_model_and_mcp
+    else
+        print_warning "No GPU nodes ready yet. Run 'Deploy Admin Model and MCP Server' later."
+    fi
+    
+    # Summary
+    local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    
+    echo ""
+    print_header "Workshop Setup Complete!"
+    echo ""
+    echo -e "${GREEN}Cluster Domain:${NC} $cluster_domain"
+    echo -e "${GREEN}Users:${NC} user1 to user$user_count (password: openshift)"
+    echo -e "${GREEN}GPU Nodes:${NC} $gpu_count x $gpu_instance (may still be provisioning)"
+    echo -e "${GREEN}Worker Nodes:${NC} $worker_count"
+    echo ""
+    echo -e "${CYAN}URLs:${NC}"
+    echo "  Console: https://console-openshift-console.${cluster_domain}"
+    echo "  RHOAI: https://rhods-dashboard-redhat-ods-applications.${cluster_domain}"
+    echo "  Grafana: https://grafana-grafana.${cluster_domain}"
+    echo "  Model: https://qwen3-4b-admin-workshop.${cluster_domain}"
+    echo ""
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo "1. Wait for GPU nodes: oc get nodes -l nvidia.com/gpu.present=true -w"
+    echo "2. If model not deployed, run option 4 from Workshop Setup menu"
+    echo ""
+}
+
+create_gpu_machineset_for_workshop() {
+    local gpu_instance="${1:-g6e.xlarge}"
+    local gpu_count="${2:-64}"
+    
+    local infra_id=$(oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}')
+    local region=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.aws.region}')
+    local az="${region}c"
+    local ami_id=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.ami.id}')
+    
+    # Determine vCPU and memory based on instance type
+    local vcpu mem
+    case "$gpu_instance" in
+        g6e.xlarge)  vcpu=4;  mem=32768 ;;
+        g6e.2xlarge) vcpu=8;  mem=65536 ;;
+        g6.xlarge)   vcpu=4;  mem=16384 ;;
+        g6.2xlarge)  vcpu=8;  mem=32768 ;;
+        *)           vcpu=4;  mem=32768 ;;
+    esac
+    
+    print_step "Creating GPU MachineSet: $gpu_count x $gpu_instance"
+    
+    cat <<EOF | oc apply -f -
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: ${infra_id}-gpu-worker-${gpu_instance}-${az}
+  namespace: openshift-machine-api
+  labels:
+    machine.openshift.io/cluster-api-cluster: ${infra_id}
+  annotations:
+    machine.openshift.io/GPU: "1"
+    machine.openshift.io/memoryMb: "${mem}"
+    machine.openshift.io/vCPU: "${vcpu}"
+spec:
+  replicas: ${gpu_count}
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: ${infra_id}
+      machine.openshift.io/cluster-api-machineset: ${infra_id}-gpu-worker-${gpu_instance}-${az}
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: ${infra_id}
+        machine.openshift.io/cluster-api-machine-role: gpu-worker
+        machine.openshift.io/cluster-api-machine-type: gpu-worker
+        machine.openshift.io/cluster-api-machineset: ${infra_id}-gpu-worker-${gpu_instance}-${az}
+        node-role.kubernetes.io/gpu-worker: ""
+    spec:
+      metadata:
+        labels:
+          node-role.kubernetes.io/gpu-worker: ""
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1beta1
+          kind: AWSMachineProviderConfig
+          ami:
+            id: ${ami_id}
+          instanceType: ${gpu_instance}
+          placement:
+            availabilityZone: ${az}
+            region: ${region}
+          credentialsSecret:
+            name: aws-cloud-credentials
+          iamInstanceProfile:
+            id: ${infra_id}-worker-profile
+          securityGroups:
+          - filters:
+            - name: tag:Name
+              values:
+              - ${infra_id}-node
+          - filters:
+            - name: tag:Name
+              values:
+              - ${infra_id}-lb
+          subnet:
+            filters:
+            - name: tag:Name
+              values:
+              - ${infra_id}-subnet-private-${az}
+          tags:
+          - name: kubernetes.io/cluster/${infra_id}
+            value: owned
+          blockDevices:
+          - ebs:
+              volumeSize: 100
+              volumeType: gp2
+              encrypted: true
+          userDataSecret:
+            name: worker-user-data
+      taints:
+      - key: nvidia.com/gpu
+        effect: NoSchedule
+EOF
+    
+    print_success "GPU MachineSet created: $gpu_count x $gpu_instance"
+}
+
+scale_worker_nodes() {
+    local worker_count="${1:-12}"
+    
+    local worker_ms=$(oc get machineset -n openshift-machine-api -o name | grep -v gpu | head -1)
+    
+    if [ -n "$worker_ms" ]; then
+        print_step "Scaling worker nodes to $worker_count..."
+        oc scale "$worker_ms" -n openshift-machine-api --replicas="$worker_count"
+        print_success "Worker nodes scaled to $worker_count"
+    else
+        print_warning "No worker MachineSet found"
+    fi
+}
+
+workshop_setup_menu() {
+    while true; do
+        show_workshop_setup_menu
+        read -p "Select an option (0-6): " choice
+        
+        case $choice in
+            1)
+                echo ""
+                read -p "Number of users [150]: " user_count
+                user_count=${user_count:-150}
+                read -p "GPU instance type (g6e.xlarge/g6e.2xlarge) [g6e.xlarge]: " gpu_instance
+                gpu_instance=${gpu_instance:-g6e.xlarge}
+                
+                local max_gpu=64
+                if [ "$gpu_instance" == "g6e.2xlarge" ]; then
+                    max_gpu=32
+                fi
+                read -p "Number of GPU nodes (max $max_gpu) [$max_gpu]: " gpu_count
+                gpu_count=${gpu_count:-$max_gpu}
+                
+                read -p "Number of worker nodes [12]: " worker_count
+                worker_count=${worker_count:-12}
+                
+                run_complete_workshop_setup "$user_count" "$gpu_instance" "$gpu_count" "$worker_count"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                echo ""
+                read -p "Number of users [150]: " user_count
+                user_count=${user_count:-150}
+                
+                setup_user_workload_monitoring
+                setup_workshop_users "$user_count"
+                setup_workshop_grafana
+                setup_workshop_model_and_mcp
+                
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                echo ""
+                read -p "Number of users [150]: " user_count
+                user_count=${user_count:-150}
+                setup_workshop_users "$user_count"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                setup_workshop_model_and_mcp
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                setup_workshop_grafana
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                setup_user_workload_monitoring
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;

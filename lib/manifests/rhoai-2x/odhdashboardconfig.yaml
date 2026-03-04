@@ -1,0 +1,107 @@
+kind: OdhDashboardConfig
+apiVersion: opendatahub.io/v1alpha
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+spec:
+  dashboardConfig:
+    disableAcceleratorProfiles: false
+    disableBYONImageStream: false
+    disableClusterManager: false
+    disableConnectionTypes: false
+    disableCustomServingRuntimes: false
+    disableDistributedWorkloads: false
+    disableFineTuning: false
+    disableHome: false
+    disableHardwareProfiles: false
+    disableInfo: false
+    disableISVBadges: false
+    disableKServe: false
+    disableKServeAuth: false
+    disableKServeMetrics: false
+    disableKueue: false
+    disableLMEval: false
+    disableModelCatalog: false
+    disableModelMesh: true
+    disableModelRegistry: false
+    disableModelServing: false
+    disableNIMModelServing: false
+    disablePipelines: false
+    disableProjects: false
+    disableProjectSharing: false
+    disableStorageClasses: false
+    disableSupport: false
+    disableTracking: true
+    enablement: true
+    genAiStudio: true
+    modelAsService: true
+  groupsConfig:
+    adminGroups: rhods-admins
+    allowedGroups: system:authenticated
+  modelServerSizes:
+    - name: Small
+      resources:
+        limits:
+          cpu: '2'
+          memory: 8Gi
+        requests:
+          cpu: '1'
+          memory: 4Gi
+    - name: Medium
+      resources:
+        limits:
+          cpu: '8'
+          memory: 10Gi
+        requests:
+          cpu: '4'
+          memory: 8Gi
+    - name: Large
+      resources:
+        limits:
+          cpu: '10'
+          memory: 20Gi
+        requests:
+          cpu: '6'
+          memory: 16Gi
+  notebookController:
+    enabled: true
+    notebookNamespace: rhods-notebooks
+    notebookTolerationSettings:
+      enabled: false
+      key: NotebooksOnly
+    pvcSize: 20Gi
+  notebookSizes:
+    - name: Small
+      resources:
+        limits:
+          cpu: '2'
+          memory: 8Gi
+        requests:
+          cpu: '1'
+          memory: 8Gi
+    - name: Medium
+      resources:
+        limits:
+          cpu: '6'
+          memory: 24Gi
+        requests:
+          cpu: '3'
+          memory: 24Gi
+    - name: Large
+      resources:
+        limits:
+          cpu: '14'
+          memory: 56Gi
+        requests:
+          cpu: '7'
+          memory: 56Gi
+    - name: X Large
+      resources:
+        limits:
+          cpu: '30'
+          memory: 120Gi
+        requests:
+          cpu: '15'
+          memory: 120Gi
+  templateDisablement: []
+  templateOrder: []

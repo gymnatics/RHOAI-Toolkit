@@ -43,3 +43,4 @@ openshift-install
 # Reference repositories
 reference-repo/
 kubeconfig
+docs/PRD-rhoai-feature-store-model-registry.md

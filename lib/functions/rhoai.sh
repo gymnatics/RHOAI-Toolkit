@@ -581,9 +581,187 @@ EOF
     print_success "User workload monitoring enabled"
 }
 
-# Setup llm-d infrastructure (per CAI Guide Section 3)
+# Enable Cluster Monitoring for KServe metrics (per CAI Guide 3.2 Section 0)
+# This is different from user-workload-monitoring - it's in openshift-monitoring namespace
+enable_cluster_monitoring_for_kserve() {
+    print_header "Enable Cluster Monitoring for KServe Metrics"
+    
+    echo ""
+    echo -e "${CYAN}This enables UserWorkloadMonitoring to capture KServe metrics${NC}"
+    echo -e "${CYAN}(per CAI Guide Section 0, Step 5)${NC}"
+    echo ""
+    
+    if oc get configmap cluster-monitoring-config -n openshift-monitoring &>/dev/null; then
+        print_info "cluster-monitoring-config already exists, checking settings..."
+        local current=$(oc get configmap cluster-monitoring-config -n openshift-monitoring -o jsonpath='{.data.config\.yaml}' 2>/dev/null)
+        if echo "$current" | grep -q "enableUserWorkload: true"; then
+            print_success "UserWorkload monitoring already enabled"
+            return 0
+        fi
+    fi
+    
+    print_step "Creating/updating cluster-monitoring-config ConfigMap..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+    alertmanagerMain:
+      enableUserAlertmanagerConfig: true
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "Cluster monitoring configured for KServe metrics"
+    else
+        print_error "Failed to configure cluster monitoring"
+    fi
+}
+
+# Configure DSCInitialization with Observability (RHOAI 3.2+)
+# Includes metrics and traces storage configuration per CAI Guide Section 7
+configure_dsci_observability() {
+    print_header "Configure DSCInitialization Observability (RHOAI 3.2+)"
+    
+    echo ""
+    echo -e "${CYAN}This configures (per CAI Guide Section 7):${NC}"
+    echo "  • Metrics collection with persistent storage"
+    echo "  • Distributed tracing with Tempo"
+    echo ""
+    echo -e "${YELLOW}Prerequisites:${NC}"
+    echo "  • Cluster Observability Operator"
+    echo "  • Red Hat build of OpenTelemetry"
+    echo "  • Tempo Operator"
+    echo ""
+    
+    read -p "Continue with observability configuration? (Y/n): " continue_obs
+    continue_obs=${continue_obs:-Y}
+    
+    if [[ ! "$continue_obs" =~ ^[Yy]$ ]]; then
+        print_info "Skipping observability configuration"
+        return 0
+    fi
+    
+    # Get configuration options
+    read -p "Metrics retention period [90d]: " metrics_retention
+    metrics_retention=${metrics_retention:-90d}
+    
+    read -p "Metrics storage size [5Gi]: " metrics_size
+    metrics_size=${metrics_size:-5Gi}
+    
+    read -p "Traces sample ratio (0.0-1.0) [0.1]: " trace_ratio
+    trace_ratio=${trace_ratio:-0.1}
+    
+    read -p "Traces retention period [2160h0m0s]: " trace_retention
+    trace_retention=${trace_retention:-2160h0m0s}
+    
+    print_step "Updating DSCInitialization with observability settings..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: dscinitialization.opendatahub.io/v2
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    alerting: {}
+    managementState: Managed
+    metrics:
+      replicas: 1
+      storage:
+        retention: $metrics_retention
+        size: $metrics_size
+    namespace: redhat-ods-monitoring
+    traces:
+      sampleRatio: '$trace_ratio'
+      storage:
+        backend: pv
+        retention: $trace_retention
+  trustedCABundle:
+    customCABundle: ''
+    managementState: Managed
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "DSCInitialization updated with observability"
+        echo ""
+        print_info "Metrics will be stored with ${metrics_retention} retention"
+        print_info "Traces will sample ${trace_ratio} of requests"
+        print_warning "Note: There may be a bug with UIPlugin for viewing traces (RHOAIENG-38891)"
+    else
+        print_error "Failed to update DSCInitialization"
+    fi
+}
+
+# Setup MCP Servers ConfigMap (per CAI Guide 3.2 Section 2)
+# New JSON format for gen-ai-aa-mcp-servers
+setup_mcp_servers_configmap() {
+    local namespace="${1:-redhat-ods-applications}"
+    
+    print_header "Setup MCP Servers ConfigMap (RHOAI 3.2+)"
+    
+    echo ""
+    echo -e "${CYAN}This creates the MCP servers ConfigMap in the new 3.2 format${NC}"
+    echo -e "${CYAN}(per CAI Guide Section 2, Step 5)${NC}"
+    echo ""
+    
+    # Check if ConfigMap exists
+    if oc get configmap gen-ai-aa-mcp-servers -n "$namespace" &>/dev/null; then
+        print_info "MCP servers ConfigMap already exists"
+        read -p "Replace with default configuration? (y/N): " replace_cm
+        if [[ ! "$replace_cm" =~ ^[Yy]$ ]]; then
+            print_info "Keeping existing configuration"
+            return 0
+        fi
+    fi
+    
+    print_step "Creating MCP servers ConfigMap..."
+    
+    cat <<'EOF' | oc apply -f -
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+data:
+  GitHub-MCP-Server: |
+    {
+      "url": "https://api.githubcopilot.com/mcp",
+      "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows. With this service, developers can query repositories, discover project metadata, and streamline code-related tasks through MCP-compatible tools."
+    }
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "MCP servers ConfigMap created"
+        echo ""
+        print_info "To use an MCP server in the Playground:"
+        echo "  1. Click the lock icon (🔒) next to the MCP server"
+        echo "  2. Login even if auth is not required"
+        echo ""
+        print_info "To add more MCP servers, edit the ConfigMap:"
+        echo "  oc edit configmap gen-ai-aa-mcp-servers -n $namespace"
+    else
+        print_error "Failed to create MCP servers ConfigMap"
+    fi
+}
+
+# Setup llm-d infrastructure (per CAI Guide Section 3 - RHOAI 3.2)
 setup_llmd_infrastructure() {
-    print_header "Setting up llm-d Infrastructure (per CAI Guide)"
+    print_header "Setting up llm-d Infrastructure (per CAI Guide 3.2)"
+    
+    echo ""
+    echo -e "${CYAN}This will set up:${NC}"
+    echo "  1. GatewayClass for inference"
+    echo "  2. Gateway for inference endpoints"
+    echo "  3. LeaderWorkerSet Operator (for multi-GPU/MoE)"
+    echo "  4. RHCL (Kuadrant) for authentication (optional)"
+    echo "  5. Authorino TLS configuration (optional)"
+    echo ""
     
     # Step 1: Create GatewayClass
     print_step "Creating GatewayClass 'openshift-ai-inference'..."
@@ -638,12 +816,14 @@ EOF
         print_info "Gateway hostname: inference-gateway.apps.$cluster_domain"
     fi
     
-    # Step 3: Create LeaderWorkerSetOperator instance
-    print_step "Creating LeaderWorkerSetOperator instance..."
+    # Step 3: Create LeaderWorkerSetOperator instance (optional - for multi-GPU)
+    print_step "Checking LeaderWorkerSet Operator..."
     if oc get leaderworkersetoperator cluster -n openshift-lws-operator &>/dev/null; then
         print_success "LeaderWorkerSetOperator instance already exists"
     else
-        cat <<'EOF' | oc apply -f -
+        if oc get crd leaderworkersetoperators.operator.openshift.io &>/dev/null; then
+            print_step "Creating LeaderWorkerSetOperator instance..."
+            cat <<'EOF' | oc apply -f -
 apiVersion: operator.openshift.io/v1
 kind: LeaderWorkerSetOperator
 metadata:
@@ -654,27 +834,356 @@ spec:
   logLevel: Normal
   operatorLogLevel: Normal
 EOF
-        print_success "LeaderWorkerSetOperator instance created"
-        
-        # Wait for it to be ready
-        print_step "Waiting for LeaderWorkerSetOperator to be ready..."
-        sleep 10
-        local timeout=60
-        local elapsed=0
-        until oc get leaderworkersetoperator cluster -n openshift-lws-operator -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; do
-            if [ $elapsed -ge $timeout ]; then
-                print_warning "Timeout waiting for LeaderWorkerSetOperator"
-                break
-            fi
-            sleep 5
-            elapsed=$((elapsed + 5))
-        done
+            print_success "LeaderWorkerSetOperator instance created"
+        else
+            print_warning "LWS Operator not installed (only needed for multi-GPU/MoE deployments)"
+        fi
+    fi
+    
+    # Step 4: Setup RHCL (Kuadrant) for authentication
+    echo ""
+    read -p "Setup RHCL (Kuadrant) for llm-d authentication? (y/N): " setup_rhcl
+    if [[ "$setup_rhcl" =~ ^[Yy]$ ]]; then
+        setup_rhcl_for_llmd
+    else
+        print_info "Skipping RHCL setup"
+        print_warning "Without RHCL, llm-d authentication will not work properly"
     fi
     
     print_success "llm-d infrastructure setup complete"
     echo ""
     print_info "You can now deploy models using llm-d serving runtime"
     print_info "Remember to check 'Require authentication' checkbox in the UI"
+}
+
+# Setup RHCL (Red Hat Connectivity Link / Kuadrant) for llm-d authentication
+# Per CAI Guide Section 3 - RHOAI 3.2
+setup_rhcl_for_llmd() {
+    print_header "Setting up RHCL (Kuadrant) for llm-d Authentication"
+    
+    # Check if RHCL operator is installed
+    if ! oc get csv -n kuadrant-system 2>/dev/null | grep -q rhcl; then
+        print_warning "RHCL Operator not installed in kuadrant-system namespace"
+        echo ""
+        echo -e "${CYAN}To install RHCL:${NC}"
+        echo "  1. Create namespace: oc create namespace kuadrant-system"
+        echo "  2. Install 'Red Hat Connectivity Link' operator in kuadrant-system namespace"
+        echo "  3. Re-run this setup"
+        echo ""
+        read -p "Create kuadrant-system namespace and continue? (y/N): " create_ns
+        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
+            oc create namespace kuadrant-system 2>/dev/null || true
+            print_info "Namespace created. Please install RHCL operator from OperatorHub"
+            return 1
+        fi
+        return 1
+    fi
+    
+    # Step 1: Create Kuadrant instance
+    print_step "Creating Kuadrant instance..."
+    if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+        print_success "Kuadrant instance already exists"
+    else
+        cat <<'EOF' | oc apply -f -
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+EOF
+        print_success "Kuadrant instance created"
+        sleep 5
+    fi
+    
+    # Step 2: Annotate Authorino service for TLS
+    print_step "Configuring Authorino service for TLS..."
+    if oc get svc authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
+        oc annotate svc/authorino-authorino-authorization \
+            service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+            -n kuadrant-system --overwrite 2>/dev/null || true
+        print_success "Authorino service annotated"
+    else
+        print_warning "Authorino service not found (may take a moment to create)"
+    fi
+    
+    # Step 3: Update Authorino for TLS
+    print_step "Enabling TLS on Authorino..."
+    if oc get authorino authorino -n kuadrant-system &>/dev/null; then
+        cat <<'EOF' | oc apply -f -
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: kuadrant-system
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
+EOF
+        print_success "Authorino TLS enabled"
+    else
+        print_warning "Authorino not found yet (RHCL may still be initializing)"
+    fi
+    
+    # Step 4: Restart controllers to pick up Authorino
+    echo ""
+    read -p "Restart odh-model-controller and kserve-controller? (recommended) (Y/n): " restart_controllers
+    restart_controllers=${restart_controllers:-Y}
+    if [[ "$restart_controllers" =~ ^[Yy]$ ]]; then
+        print_step "Restarting controllers..."
+        oc delete pod -n redhat-ods-applications -l app=odh-model-controller 2>/dev/null || true
+        oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager 2>/dev/null || true
+        print_success "Controllers restarted"
+    fi
+    
+    # Verify AuthPolicy
+    print_step "Checking for global AuthPolicy..."
+    sleep 5
+    if oc get authpolicy -n openshift-ingress 2>/dev/null | grep -q "openshift-ai-inference"; then
+        print_success "Global AuthPolicy created"
+    else
+        print_warning "Global AuthPolicy not found yet (may take a moment)"
+        print_info "Check with: oc get authpolicy -n openshift-ingress"
+    fi
+    
+    print_success "RHCL setup complete"
+    echo ""
+    print_info "llm-d models with 'Require authentication' will now work"
+    print_info "To disable auth on a model: oc annotate llmisvc/<name> security.opendatahub.io/enable-auth=false"
+}
+
+# Pin NVIDIA driver version for CUDA 12.8 compatibility (per CAI Guide)
+# This fixes 'NVIDIA driver too old' errors with vLLM
+pin_nvidia_driver_version() {
+    print_header "Pin NVIDIA Driver Version (CUDA 12.8 Compatibility)"
+    
+    echo ""
+    echo -e "${YELLOW}NOTE: Due to a known error with the latest NVIDIA GPU Operator,${NC}"
+    echo -e "${YELLOW}you should pin the driver version to CUDA 12.8 (570.195.03)${NC}"
+    echo -e "${YELLOW}to get vLLM to run without crashing.${NC}"
+    echo ""
+    
+    # Check if ClusterPolicy exists
+    if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+        print_error "ClusterPolicy 'gpu-cluster-policy' not found"
+        print_info "Install NVIDIA GPU Operator first"
+        return 1
+    fi
+    
+    # Show current driver config
+    local current_driver=$(oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.spec.driver.version}' 2>/dev/null)
+    echo -e "Current driver version: ${CYAN}${current_driver:-default}${NC}"
+    echo ""
+    
+    read -p "Pin driver to version 570.195.03 (CUDA 12.8)? (Y/n): " pin_driver
+    pin_driver=${pin_driver:-Y}
+    
+    if [[ "$pin_driver" =~ ^[Yy]$ ]]; then
+        print_step "Patching ClusterPolicy with driver version 570.195.03..."
+        
+        oc patch clusterpolicy gpu-cluster-policy --type=merge -p '{
+            "spec": {
+                "driver": {
+                    "repository": "nvcr.io/nvidia",
+                    "image": "driver",
+                    "version": "570.195.03"
+                }
+            }
+        }'
+        
+        if [ $? -eq 0 ]; then
+            print_success "ClusterPolicy patched"
+            echo ""
+            print_info "Driver pods will be recreated. This may take several minutes."
+            print_info "Monitor with: oc get pods -n nvidia-gpu-operator | grep driver"
+        else
+            print_error "Failed to patch ClusterPolicy"
+        fi
+    else
+        print_info "Skipping driver version pinning"
+    fi
+}
+
+# Enable MLflow Operator (new in RHOAI 3.2+)
+enable_mlflow_operator() {
+    print_header "Enable MLflow Operator (RHOAI 3.2+)"
+    
+    echo ""
+    echo -e "${CYAN}MLflow provides:${NC}"
+    echo "  • Experiment tracking"
+    echo "  • Model versioning"
+    echo "  • Artifact storage"
+    echo "  • Model registry integration"
+    echo ""
+    
+    # Check current state
+    local mlflow_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.mlflowoperator.managementState}' 2>/dev/null || echo "Unknown")
+    echo -e "Current MLflow state: ${CYAN}$mlflow_state${NC}"
+    
+    if [[ "$mlflow_state" == "Managed" ]]; then
+        print_success "MLflow operator already enabled"
+        return 0
+    fi
+    
+    read -p "Enable MLflow operator? (Y/n): " enable_mlflow
+    enable_mlflow=${enable_mlflow:-Y}
+    
+    if [[ "$enable_mlflow" =~ ^[Yy]$ ]]; then
+        print_step "Patching DataScienceCluster to enable mlflowoperator..."
+        oc patch datasciencecluster default-dsc --type='merge' \
+            -p '{"spec":{"components":{"mlflowoperator":{"managementState":"Managed"}}}}'
+        
+        if [ $? -eq 0 ]; then
+            print_success "MLflow operator enabled"
+            
+            # Wait for CRD
+            print_step "Waiting for MLflow CRD..."
+            local timeout=60
+            local elapsed=0
+            until oc get crd mlflows.mlflow.opendatahub.io &>/dev/null; do
+                if [ $elapsed -ge $timeout ]; then
+                    print_warning "Timeout waiting for MLflow CRD"
+                    break
+                fi
+                sleep 5
+                elapsed=$((elapsed + 5))
+            done
+            
+            echo ""
+            print_info "To deploy MLflow, create an MLflow CR:"
+            echo ""
+            echo "  oc apply -f - <<EOF"
+            echo "  apiVersion: mlflow.opendatahub.io/v1"
+            echo "  kind: MLflow"
+            echo "  metadata:"
+            echo "    name: mlflow"
+            echo "  spec:"
+            echo "    storage:"
+            echo "      accessModes:"
+            echo "        - ReadWriteOnce"
+            echo "      resources:"
+            echo "        requests:"
+            echo "          storage: 10Gi"
+            echo "    backendStoreUri: \"sqlite:////mlflow/mlflow.db\""
+            echo "    artifactsDestination: \"file:///mlflow/artifacts\""
+            echo "    serveArtifacts: true"
+            echo "  EOF"
+        else
+            print_error "Failed to enable MLflow operator"
+        fi
+    fi
+}
+
+# Deploy LLMInferenceService (llm-d model) - RHOAI 3.2+
+deploy_llminferenceservice() {
+    local namespace="${1:-}"
+    local model_name="${2:-}"
+    local model_uri="${3:-}"
+    
+    print_header "Deploy LLMInferenceService (llm-d)"
+    
+    # Get namespace
+    if [ -z "$namespace" ]; then
+        local current_ns=$(oc project -q 2>/dev/null || echo "default")
+        read -p "Enter namespace [$current_ns]: " namespace
+        namespace=${namespace:-$current_ns}
+    fi
+    
+    # Get model name
+    if [ -z "$model_name" ]; then
+        read -p "Enter model name (e.g., qwen3-sample): " model_name
+    fi
+    
+    # Get model URI
+    if [ -z "$model_uri" ]; then
+        echo ""
+        echo -e "${CYAN}Model URI examples:${NC}"
+        echo "  • oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest"
+        echo "  • hf://RedHatAI/Qwen3-8B-FP8-dynamic"
+        echo "  • oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
+        echo ""
+        read -p "Enter model URI: " model_uri
+    fi
+    
+    # Authentication option
+    echo ""
+    read -p "Enable authentication? (Y/n): " enable_auth
+    enable_auth=${enable_auth:-Y}
+    local auth_annotation="true"
+    if [[ ! "$enable_auth" =~ ^[Yy]$ ]]; then
+        auth_annotation="false"
+    fi
+    
+    # GPU resources
+    read -p "Number of GPUs [1]: " gpu_count
+    gpu_count=${gpu_count:-1}
+    
+    read -p "Memory limit [16Gi]: " memory_limit
+    memory_limit=${memory_limit:-16Gi}
+    
+    print_step "Creating LLMInferenceService '$model_name' in namespace '$namespace'..."
+    
+    cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: $model_name
+  namespace: $namespace
+  labels:
+    kueue.x-k8s.io/queue-name: default
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    security.opendatahub.io/enable-auth: "$auth_annotation"
+spec:
+  replicas: 1
+  model:
+    uri: $model_uri
+    name: $model_name
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+      resources:
+        limits:
+          cpu: '4'
+          memory: $memory_limit
+          nvidia.com/gpu: "$gpu_count"
+        requests:
+          cpu: '1'
+          memory: 8Gi
+          nvidia.com/gpu: "$gpu_count"
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "LLMInferenceService created"
+        echo ""
+        print_info "Monitor deployment with:"
+        echo "  oc get llmisvc -n $namespace"
+        echo "  oc get pods -n $namespace"
+        
+        if [[ "$auth_annotation" == "true" ]]; then
+            echo ""
+            print_info "To get inference token:"
+            echo "  TOKEN=\$(oc create token default -n $namespace)"
+            echo "  curl -H \"Authorization: Bearer \$TOKEN\" <endpoint>/v1/models"
+        fi
+    else
+        print_error "Failed to create LLMInferenceService"
+    fi
 }
 
 ################################################################################
