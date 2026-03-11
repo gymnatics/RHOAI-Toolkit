@@ -8,8 +8,13 @@ This folder contains demo scripts and applications for RHOAI.
 
 | Directory/File | Description |
 |----------------|-------------|
+| `banking-demo/` | **Banking Feature Store Demo** - Feast feature store with banking data |
+| `guardrails-demo/` | **Guardrails Demo** - TrustyAI AI safety with PII detection |
+| `guidellm-demo/` | **GuideLLM Demo** - LLM benchmarking (TTFT, ITL, throughput) |
 | `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
-| `guardrails-demo/` | **Guardrails Demo** - Learn AI safety concepts (mock, runs locally) |
+| `maas-demo/` | **MaaS Demo** - Interactive CLI and web demo for Model as a Service |
+| `open-webui-demo/` | **Open WebUI Demo** - Chat interface for multiple models |
+| `lib/` | Shared utilities (version detection) |
 | `setup-demo-model.sh` | Deploy a sample model with MaaS |
 | `test-maas-api.sh` | Test MaaS API endpoints |
 | `generate-maas-token.sh` | Generate MaaS API token |
@@ -50,25 +55,35 @@ See `llamastack-demo/README.md` for full documentation.
 
 ## 🛡️ Guardrails Demo
 
-A standalone demo to help you understand AI safety concepts without requiring any external services.
+Deploy TrustyAI Guardrails Orchestrator to protect LLMs with PII detection and safety filters.
 
 ### Quick Start
 
 ```bash
-pip install streamlit
-cd guardrails-demo
-streamlit run app.py
+# From the main directory
+./rhoai-toolkit.sh
+# Select: RHOAI Management → Demos → Deploy Guardrails Demo
+```
+
+Or via script:
+```bash
+./scripts/deploy-guardrails.sh [namespace]
 ```
 
 ### Features
-- Mock PII detection (emails, phone numbers, SSN, credit cards)
-- Prompt injection detection
-- Toxicity detection
-- Interactive examples and explanations
+- **Built-in detectors**: Email, SSN, credit card, phone, IP address detection
+- **Gateway pipelines**: `/pii`, `/safe`, `/passthrough` endpoints
+- **Model integration**: Connects to your deployed InferenceService
+- **Optional auth**: Enable/disable authentication
 
-This is a **learning tool** - for production, use TrustyAI GuardrailsOrchestrator (see `feature/trustyai-guardrails` branch).
+### Prerequisites
+- TrustyAI component enabled in DataScienceCluster
+- KServe RawDeployment mode configured
+- A deployed model (script will offer to deploy one if none exists)
 
 See `guardrails-demo/README.md` for full documentation.
+
+> **Note**: The `app.py` file is a legacy mock demo for learning concepts locally without OpenShift.
 
 ---
 
