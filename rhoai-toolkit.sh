@@ -83,8 +83,9 @@ show_main_menu() {
     echo -e "${MAGENTA}Management & Tools:${NC}"
     echo -e "${YELLOW}6)${NC} RHOAI Management (configure features, deploy models, etc.)"
     echo -e "${YELLOW}7)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}8)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
-    echo -e "${YELLOW}9)${NC} Help (show scripts and documentation)"
+    echo -e "${YELLOW}8)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
+    echo -e "${YELLOW}9)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
     echo ""
 }
@@ -281,6 +282,46 @@ show_troubleshooting_submenu() {
     echo "    Restart odh-model-controller and kserve-controller"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
+    echo ""
+}
+
+show_gpu_clusterpolicy_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║             GPU & ClusterPolicy Management                     ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${MAGENTA}ClusterPolicy:${NC}"
+    echo -e "${YELLOW}1)${NC} Show ClusterPolicy Status"
+    echo "    View current ClusterPolicy state and configuration"
+    echo ""
+    echo -e "${YELLOW}2)${NC} Create/Apply ClusterPolicy"
+    echo "    Create ClusterPolicy for GPU nodes (required for GPU workloads)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Delete ClusterPolicy"
+    echo "    Remove ClusterPolicy (for troubleshooting/recreation)"
+    echo ""
+    echo -e "${MAGENTA}GPU Operator:${NC}"
+    echo -e "${YELLOW}4)${NC} Check GPU Operator Status"
+    echo "    View operator version, driver, CUDA compatibility"
+    echo ""
+    echo -e "${YELLOW}5)${NC} Downgrade GPU Operator to v24.6"
+    echo "    Fix CUDA compatibility issues with vLLM"
+    echo ""
+    echo -e "${YELLOW}6)${NC} Pin NVIDIA Driver Version"
+    echo "    Pin driver to specific version for stability"
+    echo ""
+    echo -e "${MAGENTA}GPU Nodes:${NC}"
+    echo -e "${YELLOW}7)${NC} Show GPU Nodes"
+    echo "    List all GPU nodes and their status"
+    echo ""
+    echo -e "${YELLOW}8)${NC} Uncordon GPU Nodes"
+    echo "    Re-enable scheduling on cordoned GPU nodes"
+    echo ""
+    echo -e "${YELLOW}9)${NC} Run nvidia-smi on GPU Node"
+    echo "    Check GPU driver and CUDA version on a node"
+    echo ""
+    echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
 
@@ -873,6 +914,189 @@ troubleshooting_submenu() {
                 ;;
             *)
                 print_error "Invalid option. Please select 1-8 or 0."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# GPU & ClusterPolicy Management Menu
+gpu_clusterpolicy_menu() {
+    while true; do
+        show_gpu_clusterpolicy_menu
+        read -p "Select an option (1-9, 0): " gcp_choice
+        
+        case $gcp_choice in
+            1)
+                # Show ClusterPolicy Status
+                print_header "ClusterPolicy Status"
+                echo ""
+                echo -e "${CYAN}ClusterPolicy:${NC}"
+                oc get clusterpolicy -o wide 2>/dev/null || echo "  No ClusterPolicy found"
+                echo ""
+                local cp_status=$(oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null)
+                if [ -n "$cp_status" ]; then
+                    echo -e "${CYAN}State:${NC} $cp_status"
+                    echo ""
+                    echo -e "${CYAN}Component Status:${NC}"
+                    oc get clusterpolicy gpu-cluster-policy -o jsonpath='{range .status.state}{@}{"\n"}{end}' 2>/dev/null
+                    echo ""
+                    echo -e "${CYAN}Driver Version:${NC}"
+                    oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.spec.driver.version}' 2>/dev/null && echo "" || echo "  Using default"
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                # Create/Apply ClusterPolicy
+                print_header "Create/Apply ClusterPolicy"
+                echo ""
+                if oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+                    print_info "ClusterPolicy already exists"
+                    local current_state=$(oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null)
+                    echo "Current state: $current_state"
+                    echo ""
+                    read -p "Re-apply ClusterPolicy? (y/N): " reapply
+                    if [[ ! "$reapply" =~ ^[Yy]$ ]]; then
+                        continue
+                    fi
+                fi
+                
+                # Check for GPU nodes
+                local gpu_nodes=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true --no-headers 2>/dev/null | wc -l | tr -d ' ')
+                if [ "$gpu_nodes" -eq 0 ]; then
+                    print_warning "No GPU nodes detected in the cluster"
+                    echo "ClusterPolicy requires GPU nodes to function properly."
+                    read -p "Create ClusterPolicy anyway? (y/N): " create_anyway
+                    if [[ ! "$create_anyway" =~ ^[Yy]$ ]]; then
+                        continue
+                    fi
+                fi
+                
+                print_step "Applying ClusterPolicy..."
+                if [ -f "$SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml" ]; then
+                    oc apply -f "$SCRIPT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
+                    print_success "ClusterPolicy applied"
+                else
+                    # Create default ClusterPolicy
+                    cat <<EOF | oc apply -f -
+apiVersion: nvidia.com/v1
+kind: ClusterPolicy
+metadata:
+  name: gpu-cluster-policy
+spec:
+  operator:
+    defaultRuntime: crio
+    use_ocp_driver_toolkit: true
+  driver:
+    enabled: true
+    use_ocp_driver_toolkit: true
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+  dcgm:
+    enabled: true
+  dcgmExporter:
+    enabled: true
+  gfd:
+    enabled: true
+  migManager:
+    enabled: true
+  nodeStatusExporter:
+    enabled: true
+  validator:
+    enabled: true
+EOF
+                    print_success "Default ClusterPolicy created"
+                fi
+                echo ""
+                print_info "ClusterPolicy will take a few minutes to initialize."
+                print_info "Check status with option 1 or: oc get clusterpolicy"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                # Delete ClusterPolicy
+                print_header "Delete ClusterPolicy"
+                echo ""
+                if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
+                    print_info "No ClusterPolicy found"
+                    read -p "Press Enter to continue..."
+                    continue
+                fi
+                
+                print_warning "This will delete the ClusterPolicy and stop GPU workloads!"
+                echo ""
+                read -p "Are you sure? (type 'delete' to confirm): " confirm_delete
+                if [ "$confirm_delete" = "delete" ]; then
+                    print_step "Deleting ClusterPolicy..."
+                    oc delete clusterpolicy gpu-cluster-policy
+                    print_success "ClusterPolicy deleted"
+                else
+                    print_info "Operation cancelled"
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                check_gpu_operator_status
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                fix_gpu_operator_cuda_compatibility
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                pin_nvidia_driver_version
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                # Show GPU Nodes
+                print_header "GPU Nodes"
+                echo ""
+                echo -e "${CYAN}GPU Nodes (NVIDIA PCI device present):${NC}"
+                oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o wide 2>/dev/null || echo "  No GPU nodes found"
+                echo ""
+                echo -e "${CYAN}GPU Nodes (nvidia.com/gpu.present label):${NC}"
+                oc get nodes -l nvidia.com/gpu.present=true -o wide 2>/dev/null || echo "  No nodes with GPU present label"
+                echo ""
+                echo -e "${CYAN}GPU Resources:${NC}"
+                oc get nodes -o custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu' 2>/dev/null | grep -v "<none>" || echo "  No GPU resources found"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                uncordon_gpu_nodes
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
+                # Run nvidia-smi
+                print_header "Run nvidia-smi on GPU Node"
+                echo ""
+                local driver_pod=$(oc get pods -n nvidia-gpu-operator -o name 2>/dev/null | grep driver | head -1)
+                if [ -z "$driver_pod" ]; then
+                    print_error "No NVIDIA driver pod found"
+                    echo "Make sure GPU Operator and ClusterPolicy are installed."
+                    read -p "Press Enter to continue..."
+                    continue
+                fi
+                
+                echo -e "${CYAN}Running nvidia-smi on driver pod...${NC}"
+                echo ""
+                oc exec -n nvidia-gpu-operator $driver_pod -c nvidia-driver-ctr -- nvidia-smi 2>/dev/null || print_error "Failed to run nvidia-smi"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-9 or 0."
                 sleep 1
                 ;;
         esac
@@ -5114,7 +5338,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-9, 0): " choice
+        read -p "Select an option (1-9, h, 0): " choice
         
         case $choice in
             1)
@@ -5157,9 +5381,12 @@ main() {
                 read -p "Press Enter to return to main menu..."
                 ;;
             8)
-                configure_kubeconfig_interactive
+                gpu_clusterpolicy_menu
                 ;;
             9)
+                configure_kubeconfig_interactive
+                ;;
+            h|H)
                 show_help
                 echo ""
                 read -p "Press Enter to return to main menu..."
@@ -5169,7 +5396,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9 or 0."
+                print_error "Invalid option. Please select 1-9, h, or 0."
                 sleep 2
                 ;;
         esac
