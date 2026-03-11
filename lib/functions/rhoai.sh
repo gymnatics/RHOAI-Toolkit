@@ -9,7 +9,7 @@ _RHOAI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 
-# Get RHOAI channel based on version
+# Get RHOAI channel based on version (fallback/default mapping)
 get_rhoai_channel() {
     local version="$1"
     
@@ -23,6 +23,422 @@ get_rhoai_channel() {
         3.0|3.1|3.2|3.3) echo "fast-3.x" ;;
         *) echo "stable" ;;
     esac
+}
+
+# Fetch available RHOAI channels from the cluster
+# Returns newline-separated list of channels
+get_available_rhoai_channels() {
+    local channels=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+    
+    if [ -z "$channels" ]; then
+        print_error "Unable to fetch RHOAI channels. Are you connected to a cluster?"
+        return 1
+    fi
+    
+    echo "$channels" | tr ' ' '\n' | sort -V
+}
+
+# Get the default RHOAI channel from the cluster
+get_default_rhoai_channel() {
+    oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.defaultChannel}' 2>/dev/null
+}
+
+# Interactive channel selection for RHOAI
+# Usage: select_rhoai_channel
+# Sets SELECTED_RHOAI_CHANNEL variable
+select_rhoai_channel() {
+    print_header "RHOAI Channel Selection"
+    
+    print_step "Fetching available channels from cluster..."
+    
+    local channels_raw=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+    
+    if [ -z "$channels_raw" ]; then
+        print_error "Unable to fetch RHOAI channels from cluster"
+        print_info "Make sure you're connected to an OpenShift cluster with access to redhat-operators"
+        return 1
+    fi
+    
+    local default_channel=$(get_default_rhoai_channel)
+    
+    # Convert to array and sort
+    local channels=()
+    while IFS= read -r channel; do
+        [ -n "$channel" ] && channels+=("$channel")
+    done < <(echo "$channels_raw" | tr ' ' '\n' | sort -V)
+    
+    if [ ${#channels[@]} -eq 0 ]; then
+        print_error "No channels found"
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Available RHOAI Channels:${NC}"
+    echo ""
+    
+    # Categorize channels for better display
+    local stable_channels=()
+    local fast_channels=()
+    local other_channels=()
+    
+    for channel in "${channels[@]}"; do
+        if [[ "$channel" == stable* ]]; then
+            stable_channels+=("$channel")
+        elif [[ "$channel" == fast* ]]; then
+            fast_channels+=("$channel")
+        else
+            other_channels+=("$channel")
+        fi
+    done
+    
+    local idx=1
+    local channel_map=()
+    
+    # Display fast channels first (latest/preview)
+    if [ ${#fast_channels[@]} -gt 0 ]; then
+        echo -e "${MAGENTA}Fast Channels (Latest/Preview):${NC}"
+        for channel in "${fast_channels[@]}"; do
+            local marker=""
+            [ "$channel" = "$default_channel" ] && marker=" ${GREEN}[default]${NC}"
+            echo -e "  ${YELLOW}$idx)${NC} $channel$marker"
+            channel_map+=("$channel")
+            ((idx++))
+        done
+        echo ""
+    fi
+    
+    # Display stable channels
+    if [ ${#stable_channels[@]} -gt 0 ]; then
+        echo -e "${MAGENTA}Stable Channels:${NC}"
+        for channel in "${stable_channels[@]}"; do
+            local marker=""
+            [ "$channel" = "$default_channel" ] && marker=" ${GREEN}[default]${NC}"
+            echo -e "  ${YELLOW}$idx)${NC} $channel$marker"
+            channel_map+=("$channel")
+            ((idx++))
+        done
+        echo ""
+    fi
+    
+    # Display other channels
+    if [ ${#other_channels[@]} -gt 0 ]; then
+        echo -e "${MAGENTA}Other Channels:${NC}"
+        for channel in "${other_channels[@]}"; do
+            local marker=""
+            [ "$channel" = "$default_channel" ] && marker=" ${GREEN}[default]${NC}"
+            echo -e "  ${YELLOW}$idx)${NC} $channel$marker"
+            channel_map+=("$channel")
+            ((idx++))
+        done
+        echo ""
+    fi
+    
+    echo -e "${CYAN}Channel Types:${NC}"
+    echo "  • fast-3.x  : RHOAI 3.x (latest features, GenAI, MaaS)"
+    echo "  • stable    : Production-ready releases"
+    echo "  • stable-X.Y: Specific version streams"
+    echo ""
+    
+    # Find default channel index
+    local default_idx=1
+    for i in "${!channel_map[@]}"; do
+        if [ "${channel_map[$i]}" = "$default_channel" ]; then
+            default_idx=$((i + 1))
+            break
+        fi
+    done
+    
+    local max_idx=${#channel_map[@]}
+    local choice=""
+    
+    while true; do
+        read -p "Select channel (1-$max_idx) [default: $default_idx]: " choice
+        choice=$(echo "$choice" | tr -d '[:space:]')
+        
+        # Use default if empty
+        if [ -z "$choice" ]; then
+            choice=$default_idx
+        fi
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$max_idx" ]; then
+            break
+        else
+            print_error "Invalid choice. Please select 1-$max_idx."
+        fi
+    done
+    
+    SELECTED_RHOAI_CHANNEL="${channel_map[$((choice - 1))]}"
+    print_success "Selected channel: $SELECTED_RHOAI_CHANNEL"
+    
+    # Provide version info based on channel
+    echo ""
+    case "$SELECTED_RHOAI_CHANNEL" in
+        fast-3.x|fast)
+            print_info "This channel provides RHOAI 3.x with latest features"
+            ;;
+        stable)
+            print_info "This channel provides the latest stable RHOAI release"
+            ;;
+        stable-*)
+            local version="${SELECTED_RHOAI_CHANNEL#stable-}"
+            print_info "This channel provides RHOAI $version.x releases"
+            ;;
+    esac
+    
+    return 0
+}
+
+# Interactive upgrade approval selection
+# Usage: select_install_plan_approval
+# Sets SELECTED_INSTALL_PLAN_APPROVAL variable
+select_install_plan_approval() {
+    echo ""
+    echo -e "${CYAN}Upgrade Approval Mode:${NC}"
+    echo ""
+    echo -e "  ${YELLOW}1)${NC} Automatic ${GREEN}[default]${NC}"
+    echo "     Operator upgrades are installed automatically when available."
+    echo "     Best for: Development, testing, staying current"
+    echo ""
+    echo -e "  ${YELLOW}2)${NC} Manual"
+    echo "     You must approve each upgrade before it's installed."
+    echo "     Best for: Production, controlled upgrades, stability"
+    echo ""
+    
+    local choice=""
+    while true; do
+        read -p "Select approval mode (1-2) [default: 1]: " choice
+        choice=$(echo "$choice" | tr -d '[:space:]')
+        
+        # Use default if empty
+        if [ -z "$choice" ]; then
+            choice=1
+        fi
+        
+        case "$choice" in
+            1)
+                SELECTED_INSTALL_PLAN_APPROVAL="Automatic"
+                break
+                ;;
+            2)
+                SELECTED_INSTALL_PLAN_APPROVAL="Manual"
+                break
+                ;;
+            *)
+                print_error "Invalid choice. Please select 1 or 2."
+                ;;
+        esac
+    done
+    
+    print_success "Selected approval mode: $SELECTED_INSTALL_PLAN_APPROVAL"
+    
+    if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
+        echo ""
+        print_info "With Manual approval, you'll need to approve InstallPlans:"
+        echo "  oc get installplan -n redhat-ods-operator"
+        echo "  oc patch installplan <name> -n redhat-ods-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
+    fi
+    
+    return 0
+}
+
+# Get current InstallPlanApproval setting for RHOAI
+get_current_install_plan_approval() {
+    oc get subscription rhods-operator -n redhat-ods-operator \
+        -o jsonpath='{.spec.installPlanApproval}' 2>/dev/null
+}
+
+# Install RHOAI Operator with interactive channel and approval selection
+# Usage: install_rhoai_operator_interactive
+install_rhoai_operator_interactive() {
+    print_header "Installing Red Hat OpenShift AI Operator"
+    
+    # Check if already installed
+    if check_operator_installed "rhods-operator" "redhat-ods-operator"; then
+        print_success "RHOAI Operator already installed"
+        
+        # Show current settings
+        local current_channel=$(oc get subscription rhods-operator -n redhat-ods-operator \
+            -o jsonpath='{.spec.channel}' 2>/dev/null)
+        local current_approval=$(get_current_install_plan_approval)
+        
+        echo ""
+        echo -e "${CYAN}Current Settings:${NC}"
+        [ -n "$current_channel" ] && echo "  Channel: $current_channel"
+        [ -n "$current_approval" ] && echo "  Upgrade Approval: $current_approval"
+        echo ""
+        
+        read -p "Do you want to modify these settings? (y/N): " modify_settings
+        if [[ ! "$modify_settings" =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        
+        echo ""
+        echo -e "${CYAN}What would you like to change?${NC}"
+        echo -e "  ${YELLOW}1)${NC} Channel only"
+        echo -e "  ${YELLOW}2)${NC} Upgrade approval mode only"
+        echo -e "  ${YELLOW}3)${NC} Both channel and approval mode"
+        echo -e "  ${YELLOW}0)${NC} Cancel"
+        echo ""
+        
+        local modify_choice=""
+        read -p "Select option (0-3): " modify_choice
+        
+        case "$modify_choice" in
+            1)
+                if ! select_rhoai_channel; then
+                    return 1
+                fi
+                print_step "Updating RHOAI subscription channel..."
+                oc patch subscription rhods-operator -n redhat-ods-operator \
+                    --type merge -p "{\"spec\":{\"channel\":\"$SELECTED_RHOAI_CHANNEL\"}}"
+                print_success "Channel updated to: $SELECTED_RHOAI_CHANNEL"
+                ;;
+            2)
+                select_install_plan_approval
+                print_step "Updating RHOAI subscription approval mode..."
+                oc patch subscription rhods-operator -n redhat-ods-operator \
+                    --type merge -p "{\"spec\":{\"installPlanApproval\":\"$SELECTED_INSTALL_PLAN_APPROVAL\"}}"
+                print_success "Approval mode updated to: $SELECTED_INSTALL_PLAN_APPROVAL"
+                ;;
+            3)
+                if ! select_rhoai_channel; then
+                    return 1
+                fi
+                select_install_plan_approval
+                print_step "Updating RHOAI subscription..."
+                oc patch subscription rhods-operator -n redhat-ods-operator \
+                    --type merge -p "{\"spec\":{\"channel\":\"$SELECTED_RHOAI_CHANNEL\",\"installPlanApproval\":\"$SELECTED_INSTALL_PLAN_APPROVAL\"}}"
+                print_success "Updated - Channel: $SELECTED_RHOAI_CHANNEL, Approval: $SELECTED_INSTALL_PLAN_APPROVAL"
+                ;;
+            0|*)
+                print_info "No changes made"
+                return 0
+                ;;
+        esac
+        
+        # Handle pending InstallPlan if Manual approval
+        if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ] || [ "$current_approval" = "Manual" ]; then
+            echo ""
+            local pending_ip=$(oc get installplan -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.approved==false)].metadata.name}' 2>/dev/null)
+            if [ -n "$pending_ip" ]; then
+                print_warning "Pending InstallPlan detected: $pending_ip"
+                read -p "Approve this InstallPlan now? (y/N): " approve_ip
+                if [[ "$approve_ip" =~ ^[Yy]$ ]]; then
+                    oc patch installplan "$pending_ip" -n redhat-ods-operator \
+                        --type merge -p '{"spec":{"approved":true}}'
+                    print_success "InstallPlan approved"
+                fi
+            fi
+        fi
+        
+        return 0
+    fi
+    
+    # New installation - select channel interactively
+    if ! select_rhoai_channel; then
+        print_warning "Channel selection failed, using default channel"
+        SELECTED_RHOAI_CHANNEL=$(get_default_rhoai_channel)
+        if [ -z "$SELECTED_RHOAI_CHANNEL" ]; then
+            SELECTED_RHOAI_CHANNEL="fast-3.x"
+        fi
+    fi
+    
+    # Select upgrade approval mode
+    select_install_plan_approval
+    
+    echo ""
+    print_step "Installing RHOAI Operator..."
+    echo "  Channel: $SELECTED_RHOAI_CHANNEL"
+    echo "  Approval: $SELECTED_INSTALL_PLAN_APPROVAL"
+    echo ""
+    
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redhat-ods-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: redhat-ods-operator
+  namespace: redhat-ods-operator
+spec: {}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhods-operator
+  namespace: redhat-ods-operator
+spec:
+  channel: $SELECTED_RHOAI_CHANNEL
+  installPlanApproval: $SELECTED_INSTALL_PLAN_APPROVAL
+  name: rhods-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+    
+    # If Manual approval, need to approve the initial InstallPlan
+    if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
+        print_step "Waiting for InstallPlan to be created..."
+        sleep 10
+        
+        local timeout=60
+        local elapsed=0
+        local installplan=""
+        
+        while [ $elapsed -lt $timeout ]; do
+            installplan=$(oc get installplan -n redhat-ods-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [ -n "$installplan" ]; then
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        
+        if [ -n "$installplan" ]; then
+            print_step "Approving initial InstallPlan: $installplan"
+            oc patch installplan "$installplan" -n redhat-ods-operator \
+                --type merge -p '{"spec":{"approved":true}}'
+            print_success "InstallPlan approved"
+        else
+            print_warning "InstallPlan not found. You may need to approve it manually:"
+            echo "  oc get installplan -n redhat-ods-operator"
+            echo "  oc patch installplan <name> -n redhat-ods-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
+        fi
+    fi
+    
+    # Wait for operator to be ready
+    print_step "Waiting for RHOAI operator to be ready (this may take 2-3 minutes)..."
+    sleep 30
+    
+    local timeout=300
+    local elapsed=0
+    until oc get crd datascienceclusters.datasciencecluster.opendatahub.io &>/dev/null; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Timeout waiting for RHOAI operator CRDs (continuing anyway)"
+            break
+        fi
+        echo "Waiting for DataScienceCluster CRD... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "RHOAI Operator is ready"
+    echo ""
+    echo -e "${CYAN}Installation Summary:${NC}"
+    echo "  Channel: $SELECTED_RHOAI_CHANNEL"
+    echo "  Upgrade Approval: $SELECTED_INSTALL_PLAN_APPROVAL"
+    
+    if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
+        echo ""
+        print_info "Future upgrades will require manual approval:"
+        echo "  oc get installplan -n redhat-ods-operator"
+        echo "  oc patch installplan <name> -n redhat-ods-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
+    fi
 }
 
 # Install RHOAI Operator

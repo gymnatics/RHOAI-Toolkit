@@ -48,6 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Source utilities
 source "$SCRIPT_DIR/lib/utils/colors.sh"
 source "$SCRIPT_DIR/lib/utils/common.sh"
+source "$SCRIPT_DIR/lib/functions/rhoai.sh"
 
 # Installation options (can be set via flags)
 INSTALL_KUEUE=false
@@ -942,59 +943,11 @@ EOF
     print_success "Authorino installation complete"
 }
 
-# Install RHOAI Operator
+# Install RHOAI Operator (uses interactive channel/approval selection from lib/functions/rhoai.sh)
 install_rhoai_operator() {
-    print_header "Installing Red Hat OpenShift AI Operator"
-    
-    local ns="redhat-ods-operator"
-    
-    if oc get csv -n "$ns" 2>/dev/null | grep -q "rhods-operator.*Succeeded"; then
-        print_success "RHOAI Operator already installed"
-        return 0
-    fi
-    
-    print_step "Creating RHOAI operator namespace and subscription..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: redhat-ods-operator
-  namespace: redhat-ods-operator
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: fast-3.x
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-    
-    # Wait for operator
-    print_step "Waiting for RHOAI operator to be ready (this may take 3-5 minutes)..."
-    local timeout=300
-    local elapsed=0
-    until oc get csv -n "$ns" 2>/dev/null | grep -q "rhods-operator.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "RHOAI operator not ready yet (continuing anyway)"
-            break
-        fi
-        echo "Waiting for RHOAI operator... (${elapsed}s elapsed)"
-        sleep 15
-        elapsed=$((elapsed + 15))
-    done
-    
-    print_success "RHOAI operator installation complete"
+    # Use the interactive installer from lib/functions/rhoai.sh
+    # This allows users to select channel and upgrade approval mode
+    install_rhoai_operator_interactive
 }
 
 # Wait for RHOAI webhook service

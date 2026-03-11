@@ -15,7 +15,6 @@
 #   ./rhoai-toolkit.sh --with-maas        # Auto-enable MaaS (non-interactive)
 #   ./rhoai-toolkit.sh --skip-maas        # Skip MaaS setup (non-interactive)
 #   ./rhoai-toolkit.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
-#   ./rhoai-toolkit.sh --legacy           # Use legacy version (scripts/integrated-workflow.sh)
 #
 # Interactive Menu Options:
 #   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
@@ -46,8 +45,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false
-USE_MODULAR=true  # Modular is now the default!
-USE_LEGACY=false
 SKIP_OPENSHIFT=false
 SKIP_GPU=false
 SKIP_RHOAI=false
@@ -4244,16 +4241,6 @@ parse_arguments() {
                 SETUP_MAAS="yes"
                 shift
                 ;;
-            --modular)
-                USE_MODULAR=true
-                USE_LEGACY=false
-                shift
-                ;;
-            --legacy)
-                USE_MODULAR=false
-                USE_LEGACY=true
-                shift
-                ;;
             --skip-openshift)
                 SKIP_OPENSHIFT=true
                 shift
@@ -4289,32 +4276,22 @@ OPTIONS:
     --with-maas         Automatically set up MaaS (no prompt)
     --skip-maas         Skip MaaS setup (no prompt)
     --maas-only         Only set up MaaS (assumes RHOAI already installed)
-    --legacy            Use legacy version (scripts/integrated-workflow.sh)
-    --modular           Use modular version (default, integrated-workflow-v2.sh)
     --skip-openshift    Skip OpenShift installation (use existing cluster)
     --skip-gpu          Skip GPU worker node creation
     --skip-rhoai        Skip RHOAI installation
     -h, --help          Show this help message
 
 EXAMPLES:
-    $0                              # Interactive mode (uses modular by default)
+    $0                              # Interactive mode
     $0 --with-maas                  # Full setup including MaaS
     $0 --skip-maas                  # Setup without MaaS
     $0 --skip-openshift             # Install RHOAI on existing cluster
     $0 --skip-openshift --skip-gpu  # Install only RHOAI (no OpenShift, no GPU)
-    $0 --legacy                     # Use legacy/original version
     $0 --maas-only                  # Only set up MaaS infrastructure
 
-NOTE:
-    Modular version is now the default. Use --legacy for the original version.
-    $0 --maas-only          # Only add MaaS to existing RHOAI
-
 WHAT THIS SCRIPT DOES:
-    1. Runs integrated-workflow-v2.sh by default (modular version)
-       Or scripts/integrated-workflow.sh with --legacy flag
+    1. Runs integrated-workflow-v2.sh for OpenShift + RHOAI installation
     2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
-    
-    Note: Modular version is now the default! Use --legacy for the original version.
     3. Provides final summary and next steps
 
 EOF
@@ -4467,33 +4444,18 @@ check_prerequisites() {
         esac
     fi
     
-    # Check for required scripts based on USE_MODULAR flag
-    if [ "$USE_MODULAR" = true ]; then
-        if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-            print_error "integrated-workflow-v2.sh not found"
-            all_good=false
-        else
-            print_success "integrated-workflow-v2.sh found"
-        fi
-        
-        # Make executable if needed
-        if [ ! -x "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-            print_warning "Making integrated-workflow-v2.sh executable..."
-            chmod +x "$SCRIPT_DIR/integrated-workflow-v2.sh"
-        fi
+    # Check for required workflow script
+    if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
+        print_error "integrated-workflow-v2.sh not found"
+        all_good=false
     else
-        if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
-            print_error "scripts/integrated-workflow.sh not found"
-            all_good=false
-        else
-            print_success "scripts/integrated-workflow.sh found"
-        fi
-        
-        # Make executable if needed
-        if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow.sh" ]; then
-            print_warning "Making scripts/integrated-workflow.sh executable..."
-            chmod +x "$SCRIPT_DIR/scripts/integrated-workflow.sh"
-        fi
+        print_success "integrated-workflow-v2.sh found"
+    fi
+    
+    # Make executable if needed
+    if [ ! -x "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
+        print_warning "Making integrated-workflow-v2.sh executable..."
+        chmod +x "$SCRIPT_DIR/integrated-workflow-v2.sh"
     fi
     
     # Check for setup-maas.sh
@@ -4533,14 +4495,6 @@ display_setup_plan() {
         echo -e "${YELLOW}Note: Assumes RHOAI is already installed${NC}"
     else
         echo -e "${CYAN}This script will:${NC}"
-        echo ""
-        
-        # Show version being used
-        if [ "$USE_MODULAR" = true ]; then
-            echo -e "${GREEN}Using: Modular version (integrated-workflow-v2.sh)${NC}"
-        else
-            echo -e "${YELLOW}Using: Legacy version (scripts/integrated-workflow.sh)${NC}"
-        fi
         echo ""
         
         local step=1
@@ -4627,13 +4581,8 @@ run_integrated_workflow() {
         workflow_args="$workflow_args --skip-rhoai"
     fi
     
-    if [ "$USE_MODULAR" = true ]; then
-        workflow_script="$SCRIPT_DIR/integrated-workflow-v2.sh"
-        print_step "Running integrated-workflow-v2.sh (modular version)..."
-    else
-        workflow_script="$SCRIPT_DIR/scripts/integrated-workflow.sh"
-        print_step "Running scripts/integrated-workflow.sh..."
-    fi
+    workflow_script="$SCRIPT_DIR/integrated-workflow-v2.sh"
+    print_step "Running integrated-workflow-v2.sh..."
     
     if [ -n "$workflow_args" ]; then
         print_info "Flags: $workflow_args"
@@ -5298,8 +5247,19 @@ EOF
     print_step "Applying dashboard configuration..."
     oc apply -f "$manifests_dir/odhdashboardconfig.yaml" || true
     
-    print_step "Creating admin group..."
+    print_step "Creating admin group with kube:admin..."
     oc apply -f "$manifests_dir/group.yaml" || true
+    
+    # Configure dashboard admin groups
+    print_step "Configuring RHOAI dashboard admin groups..."
+    oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type=merge -p '{
+      "spec": {
+        "groupsConfig": {
+          "adminGroups": "rhods-admins,dedicated-admins,cluster-admins",
+          "allowedGroups": "system:authenticated"
+        }
+      }
+    }' 2>/dev/null || true
     
     print_step "Creating serving runtime template..."
     oc apply -f "$manifests_dir/template-rhaiis.yaml" || true
@@ -5591,6 +5551,48 @@ EOF
     echo ""
     echo -e "${GREEN}Users:${NC} user1 to user$user_count"
     echo -e "${GREEN}Password:${NC} openshift"
+    
+    # Add kubeadmin to rhods-admins for full dashboard access
+    add_kubeadmin_to_rhods_admins
+}
+
+add_kubeadmin_to_rhods_admins() {
+    print_step "Adding kube:admin to rhods-admins group..."
+    
+    # Get current users in rhods-admins group
+    local current_users=$(oc get group rhods-admins -o jsonpath='{.users}' 2>/dev/null || echo "[]")
+    
+    # Check if b64:kube:admin is already in the group
+    if echo "$current_users" | grep -q "b64:kube:admin"; then
+        print_success "kube:admin already in rhods-admins group"
+        return 0
+    fi
+    
+    # Add b64:kube:admin to the group (the correct format for usernames with colons)
+    oc patch group rhods-admins --type=json -p='[{"op": "add", "path": "/users/-", "value": "b64:kube:admin"}]' 2>/dev/null || \
+    cat <<EOF | oc apply -f -
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: rhods-admins
+users:
+- b64:kube:admin
+EOF
+    
+    print_success "kube:admin added to rhods-admins group"
+    
+    # Configure OdhDashboardConfig with adminGroups
+    print_step "Configuring RHOAI dashboard admin groups..."
+    oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type=merge -p '{
+      "spec": {
+        "groupsConfig": {
+          "adminGroups": "rhods-admins,dedicated-admins,cluster-admins",
+          "allowedGroups": "system:authenticated"
+        }
+      }
+    }' 2>/dev/null || true
+    
+    print_success "RHOAI dashboard admin groups configured"
 }
 
 setup_workshop_grafana() {
@@ -5669,37 +5671,33 @@ EOF
     print_step "Waiting for Grafana to be ready..."
     sleep 30
     
-    # Download and fix dashboards
-    print_step "Downloading and configuring dashboards..."
-    curl -sL "https://raw.githubusercontent.com/redhat-et/ai-observability/main/vllm-dashboards/vllm-grafana-openshift.json" -o /tmp/vllm-dashboard.json
-    curl -sL "https://github.com/cbtham/rhoai-genai-workshop/raw/main/obs/grafana-dashboard-llm-performance.json" -o /tmp/llm-performance-dashboard.json
-    curl -sL "https://grafana.com/api/dashboards/12239/revisions/1/download" -o /tmp/nvidia-dcgm-dashboard.json
+    # Use local pre-fixed dashboards from lib/manifests/grafana
+    print_step "Copying pre-configured dashboards..."
+    local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
-    # Fix datasource references - replace ALL variations with "Prometheus" (capital P)
-    # This includes: ${DS_PROMETHEUS}, "prometheus", datasource references
-    print_step "Fixing datasource references in dashboards..."
+    if [ -f "$SCRIPT_DIR/lib/manifests/grafana/vllm-dashboard.json" ]; then
+        cp "$SCRIPT_DIR/lib/manifests/grafana/vllm-dashboard.json" /tmp/vllm-dashboard.json
+        cp "$SCRIPT_DIR/lib/manifests/grafana/vllm-advanced-dashboard.json" /tmp/llm-performance-dashboard.json
+        cp "$SCRIPT_DIR/lib/manifests/grafana/nvidia-dcgm-dashboard.json" /tmp/nvidia-dcgm-dashboard.json
+        print_success "Using local pre-configured dashboards"
+    else
+        # Fallback to downloading if local files don't exist
+        print_warning "Local dashboards not found, downloading from internet..."
+        curl -sL "https://raw.githubusercontent.com/redhat-et/ai-observability/main/vllm-dashboards/vllm-grafana-openshift.json" -o /tmp/vllm-dashboard.json
+        curl -sL "https://github.com/cbtham/rhoai-genai-workshop/raw/main/obs/grafana-dashboard-llm-performance.json" -o /tmp/llm-performance-dashboard.json
+        curl -sL "https://grafana.com/api/dashboards/12239/revisions/1/download" -o /tmp/nvidia-dcgm-dashboard.json
+        
+        # Fix datasource references
+        print_step "Fixing datasource references in dashboards..."
+        for dashboard in /tmp/vllm-dashboard.json /tmp/nvidia-dcgm-dashboard.json /tmp/llm-performance-dashboard.json; do
+            sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' "$dashboard" 2>/dev/null || \
+                sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' "$dashboard"
+            sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' "$dashboard" 2>/dev/null || \
+                sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' "$dashboard"
+        done
+    fi
     
-    # For vLLM dashboard
-    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/vllm-dashboard.json 2>/dev/null || \
-        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/vllm-dashboard.json
-    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/vllm-dashboard.json 2>/dev/null || \
-        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/vllm-dashboard.json
-    sed -i.bak 's/"uid": *"prometheus"/"uid": "prometheus"/g' /tmp/vllm-dashboard.json 2>/dev/null || \
-        sed -i '' 's/"uid": *"prometheus"/"uid": "prometheus"/g' /tmp/vllm-dashboard.json
-    
-    # For NVIDIA DCGM dashboard  
-    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/nvidia-dcgm-dashboard.json 2>/dev/null || \
-        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/nvidia-dcgm-dashboard.json
-    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/nvidia-dcgm-dashboard.json 2>/dev/null || \
-        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/nvidia-dcgm-dashboard.json
-    
-    # For LLM Performance dashboard
-    sed -i.bak 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/llm-performance-dashboard.json 2>/dev/null || \
-        sed -i '' 's/\${DS_PROMETHEUS}/Prometheus/g' /tmp/llm-performance-dashboard.json
-    sed -i.bak 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/llm-performance-dashboard.json 2>/dev/null || \
-        sed -i '' 's/"datasource": *"prometheus"/"datasource": "Prometheus"/g' /tmp/llm-performance-dashboard.json
-    
-    print_success "Datasource references fixed"
+    print_success "Dashboards ready"
     
     # Create ConfigMaps for dashboards
     print_step "Creating dashboard ConfigMaps..."

@@ -337,7 +337,9 @@ install_rhoai() {
     fi
     
     # Install RHOAI operator
-    install_rhoai_operator "$RHOAI_VERSION"
+    # Use interactive channel/approval selection for flexibility
+    # (The version-based channel mapping is still available as fallback in get_rhoai_channel)
+    install_rhoai_operator_interactive
     
     # Approve any pending InstallPlans (Service Mesh may require approval)
     print_step "Checking for pending operator InstallPlans..."
