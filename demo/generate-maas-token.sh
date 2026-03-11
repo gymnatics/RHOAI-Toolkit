@@ -14,6 +14,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Source RHOAI detection utility
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib/rhoai-detect.sh" ]; then
+    source "$SCRIPT_DIR/lib/rhoai-detect.sh"
+fi
+
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          MaaS API Token Generator                              ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
@@ -29,27 +35,19 @@ fi
 echo -e "${GREEN}✓ Connected to OpenShift cluster${NC}"
 echo ""
 
-# Check if MaaS is set up
-if ! oc get namespace maas-api &>/dev/null; then
-    echo -e "${RED}✗ MaaS infrastructure not set up${NC}"
-    echo "Run: ../scripts/setup-maas.sh"
+# Detect RHOAI version and get MaaS endpoint
+detect_rhoai_version
+
+if ! get_maas_endpoint; then
+    echo ""
+    if is_rhoai_33_or_higher; then
+        echo "For RHOAI 3.3+: Enable modelsAsService in DataScienceCluster"
+    else
+        echo "For RHOAI 3.2 and earlier: Run ../scripts/setup-maas.sh"
+    fi
     exit 1
 fi
 
-echo -e "${GREEN}✓ MaaS infrastructure is set up${NC}"
-echo ""
-
-# Get MaaS API endpoint
-echo -e "${BLUE}Getting MaaS API endpoint...${NC}"
-MAAS_ENDPOINT=$(oc get route maas-api -n maas-api -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-
-if [ -z "$MAAS_ENDPOINT" ]; then
-    echo -e "${RED}✗ MaaS API route not found${NC}"
-    echo "MaaS may not be fully deployed yet"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ MaaS API endpoint: https://$MAAS_ENDPOINT${NC}"
 echo ""
 
 # Generate token using OpenShift service account
@@ -93,6 +91,8 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "Token saved to: $TOKEN_FILE"
 echo ""
+echo -e "${YELLOW}RHOAI Version:${NC} $RHOAI_VERSION"
+echo ""
 echo -e "${YELLOW}API Endpoint:${NC}"
 echo "  https://$MAAS_ENDPOINT/v1/chat/completions"
 echo ""
@@ -108,5 +108,3 @@ echo "  ./test-maas-api.sh"
 echo ""
 echo -e "${RED}⚠ Keep this token secure! It expires in 24 hours.${NC}"
 echo ""
-
-

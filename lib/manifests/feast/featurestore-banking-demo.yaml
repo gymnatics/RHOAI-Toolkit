@@ -1,4 +1,5 @@
 # Banking Feature Store Demo
+# Source: https://github.com/RHRolun/banking-feature-store
 #
 # This creates a complete banking feature store demo with:
 # - Customer demographics features
@@ -18,11 +19,26 @@
 # 2. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast apply
 # 3. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast materialize 2025-01-01T00:00:00 $(date -u +'%Y-%m-%dT%H:%M:%S')
 #
+# RHOAI Version Compatibility:
+# - RHOAI 3.2: Works with this configuration
+# - RHOAI 3.3+: Requires ALL of the following for dashboard visibility:
+#   1. Label: feature-store-ui: enabled (in metadata.labels)
+#   2. Registry restAPI: true (in spec.services.registry.local.server)
+#   3. Namespace label: opendatahub.io/dashboard=true
+#   4. Services: feast-<name>-registry AND feast-<name>-registry-rest must exist
+#
+# If FeatureStore disappears from dashboard after 3.2→3.3 upgrade:
+#   oc label featurestore banking -n <namespace> feature-store-ui=enabled --overwrite
+#   oc patch featurestore banking -n <namespace> --type=merge \
+#     -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+#
+---
 apiVersion: feast.dev/v1alpha1
 kind: FeatureStore
 metadata:
   labels:
     feature-store-ui: enabled
+    opendatahub.io/dashboard: "true"
   name: banking
 spec:
   feastProject: banking

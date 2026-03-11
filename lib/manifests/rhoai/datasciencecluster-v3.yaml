@@ -1,0 +1,65 @@
+# DataScienceCluster for RHOAI 3.3
+# This configuration enables all major components for a full RHOAI 3.3 installation
+# Requires: NFD, GPU Operator, Kueue, cert-manager, RHCL (for MaaS), LWS (for llm-d multi-node)
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    # Dashboard - OpenShift AI web interface
+    dashboard:
+      managementState: Managed
+    
+    # Workbenches - Jupyter notebooks and IDEs
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+    
+    # AI Pipelines - ML workflow automation
+    aipipelines:
+      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
+    
+    # KServe - Model serving platform (required for vLLM, llm-d)
+    kserve:
+      managementState: Managed
+      # MaaS - Models as a Service (Tech Preview)
+      # Requires: RHCL operator, Gateway API
+      modelsAsService:
+        managementState: Managed
+    
+    # Kueue - Workload scheduling
+    # Set to Unmanaged when using Red Hat Build of Kueue Operator
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+    
+    # Ray - Distributed computing framework
+    ray:
+      managementState: Managed
+    
+    # Training Operator - Distributed training (Kubeflow Trainer v2 in 3.3)
+    trainingoperator:
+      managementState: Managed
+    
+    # Model Registry - Model versioning and tracking
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    
+    # TrustyAI - Model explainability and fairness
+    trustyai:
+      managementState: Managed
+    
+    # Feast Operator - Feature Store
+    feastoperator:
+      managementState: Managed
+    
+    # Llama Stack Operator - GenAI orchestration, RAG
+    llamastackoperator:
+      managementState: Managed

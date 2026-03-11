@@ -2,6 +2,8 @@
 
 This folder contains demo scripts and applications for RHOAI.
 
+> **RHOAI 3.3 Compatibility**: All demos are compatible with RHOAI 3.3. The LlamaStack demo benefits from Llama Stack 0.4.2 improvements. MaaS demos work with both the integrated 3.3 MaaS and legacy setup.
+
 ## 📁 Contents
 
 | Directory/File | Description |

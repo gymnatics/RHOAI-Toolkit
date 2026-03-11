@@ -1,0 +1,65 @@
+# Guardrails Gateway Configuration
+# Defines preset detector pipelines with unique endpoints
+#
+# Pipelines created:
+#   /pii/v1/chat/completions         - Filters PII (email, SSN, credit card, phone)
+#   /safe/v1/chat/completions        - All safety checks (PII + future detectors)
+#   /passthrough/v1/chat/completions - No filtering, direct to model
+#
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: guardrails-gateway-config
+data:
+  config.yaml: |
+    # Detector configurations for gateway pipelines
+    detectors:
+      # PII detector using built-in regex patterns
+      - name: pii-input-output
+        server: built-in-detector
+        input: true
+        output: true
+        detector_params:
+          regex:
+            - email
+            - us-social-security-number
+            - credit-card
+            - us-phone-number
+            - ipv4
+
+      # PII detector for input only (faster, output not checked)
+      - name: pii-input-only
+        server: built-in-detector
+        input: true
+        output: false
+        detector_params:
+          regex:
+            - email
+            - us-social-security-number
+            - credit-card
+            - us-phone-number
+
+      # Passthrough detector (no filtering)
+      - name: passthrough-detector
+        server: built-in-detector
+        input: false
+        output: false
+        detector_params: {}
+
+    # Route presets - each creates a /<name>/v1/chat/completions endpoint
+    routes:
+      # Full PII filtering on both input and output
+      - name: pii
+        detectors:
+          - pii-input-output
+
+      # Safe mode - all available safety checks
+      # Currently same as PII, but extensible for future detectors (HAP, prompt injection)
+      - name: safe
+        detectors:
+          - pii-input-only
+
+      # No filtering - direct passthrough to model
+      - name: passthrough
+        detectors:
+          - passthrough-detector

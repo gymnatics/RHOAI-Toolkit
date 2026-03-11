@@ -2,6 +2,8 @@
 
 A **reusable** Streamlit-based demo interface for testing LlamaStack with MCP tools. This UI is fully configurable via environment variables, making it adaptable to different LlamaStack distributions, MCP servers, and use cases.
 
+> **RHOAI 3.3 Compatible**: This demo works with Llama Stack 0.4.2 in RHOAI 3.3, which adds OpenAI-compatible RAG annotations and improved file citation support.
+
 ---
 
 ## Features

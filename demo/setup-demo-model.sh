@@ -14,6 +14,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Source RHOAI detection utility
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib/rhoai-detect.sh" ]; then
+    source "$SCRIPT_DIR/lib/rhoai-detect.sh"
+fi
+
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          MaaS Demo Model Setup                                 ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
@@ -39,16 +45,40 @@ fi
 echo -e "${GREEN}✓ RHOAI is installed${NC}"
 echo ""
 
-# Check if MaaS is set up
-if ! oc get namespace maas-api &>/dev/null; then
-    echo -e "${YELLOW}⚠ MaaS infrastructure not set up${NC}"
-    echo "Run: ../scripts/setup-maas.sh"
+# Detect RHOAI version and check MaaS
+detect_rhoai_version
+
+MAAS_READY=false
+if is_rhoai_33_or_higher; then
+    # RHOAI 3.3+: Check for integrated MaaS
+    echo -e "${BLUE}Checking RHOAI 3.3+ integrated MaaS...${NC}"
+    if oc get pods -n redhat-ods-applications -l app=maas-api 2>/dev/null | grep -q Running; then
+        echo -e "${GREEN}✓ MaaS is enabled (RHOAI 3.3 integrated)${NC}"
+        MAAS_READY=true
+    else
+        echo -e "${YELLOW}⚠ MaaS not enabled in RHOAI 3.3+${NC}"
+        echo "Enable modelsAsService.managementState: Managed in DataScienceCluster"
+    fi
+else
+    # RHOAI 3.2 and earlier: Check for legacy MaaS namespace
+    echo -e "${BLUE}Checking legacy MaaS setup...${NC}"
+    if oc get namespace maas-api &>/dev/null; then
+        echo -e "${GREEN}✓ MaaS infrastructure found (legacy namespace)${NC}"
+        MAAS_READY=true
+    else
+        echo -e "${YELLOW}⚠ Legacy MaaS namespace not found${NC}"
+        echo "Run: ../scripts/setup-maas.sh"
+    fi
+fi
+
+if [ "$MAAS_READY" = false ]; then
     echo ""
     read -p "Continue anyway? (y/n): " continue_anyway
     if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
         exit 0
     fi
 fi
+echo ""
 
 # Create a demo project
 PROJECT_NAME="maas-demo"
@@ -87,11 +117,8 @@ if ! oc get secret aws-connection-models -n "$PROJECT_NAME" &>/dev/null; then
     fi
 fi
 
-# Deploy model via YAML
-echo -e "${BLUE}Deploying model with MaaS using RHOAI 3 best practices...${NC}"
-echo ""
-echo -e "${YELLOW}Note: This creates a ServingRuntime and InferenceService${NC}"
-echo -e "${YELLOW}The model will take 5-10 minutes to download and start${NC}"
+# Deploy model via YAML - different approach based on RHOAI version
+echo -e "${BLUE}Deploying model with MaaS...${NC}"
 echo ""
 
 # Prompt for model details
@@ -101,7 +128,81 @@ MODEL_PATH=${MODEL_PATH:-models/instructlab/granite-7b-lab}
 read -p "Enter display name (default: Demo Model): " DISPLAY_NAME
 DISPLAY_NAME=${DISPLAY_NAME:-Demo Model}
 
-cat <<EOF | oc apply -f -
+if is_rhoai_33_or_higher; then
+    # RHOAI 3.3+: Use LLMInferenceService for MaaS-enabled models
+    echo -e "${CYAN}Using RHOAI 3.3+ LLMInferenceService...${NC}"
+    echo ""
+    
+    cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-runtime
+  namespace: $PROJECT_NAME
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+    - args:
+        - --model
+        - /mnt/models
+        - --port
+        - "8080"
+        - --max-model-len
+        - "6144"
+        - --max-num-seqs
+        - "256"
+      image: quay.io/modh/vllm:rhoai-2.15-20241107
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: pytorch
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: demo-model
+  namespace: $PROJECT_NAME
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: "$DISPLAY_NAME"
+spec:
+  modelSpec:
+    modelFormat:
+      name: pytorch
+    runtime: vllm-runtime
+    storage:
+      key: aws-connection-models
+      path: $MODEL_PATH
+  maasEnabled: true
+  predictor:
+    tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+      requests:
+        nvidia.com/gpu: "1"
+EOF
+else
+    # RHOAI 3.2 and earlier: Use InferenceService with MaaS annotation
+    echo -e "${CYAN}Using RHOAI 3.2 InferenceService with MaaS annotation...${NC}"
+    echo ""
+    
+    cat <<EOF | oc apply -f -
 apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
 metadata:
@@ -166,6 +267,7 @@ spec:
       requests:
         nvidia.com/gpu: "1"
 EOF
+fi
 
 echo ""
 echo -e "${GREEN}✓ Model deployment created${NC}"
@@ -177,9 +279,13 @@ echo ""
 # Wait a bit for the deployment to start
 sleep 5
 
-# Show status
-echo "InferenceService status:"
-oc get inferenceservice llama-3-2-3b-demo -n "$PROJECT_NAME" 2>/dev/null || echo "Not ready yet"
+# Show status based on version
+echo "Model status:"
+if is_rhoai_33_or_higher; then
+    oc get llminferenceservice demo-model -n "$PROJECT_NAME" 2>/dev/null || echo "Not ready yet"
+else
+    oc get inferenceservice demo-model -n "$PROJECT_NAME" 2>/dev/null || echo "Not ready yet"
+fi
 echo ""
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -189,11 +295,15 @@ echo ""
 echo "Next steps:"
 echo ""
 echo "1. Wait for model to be ready (5-10 minutes):"
-echo -e "   ${YELLOW}oc get inferenceservice -n $PROJECT_NAME -w${NC}"
+if is_rhoai_33_or_higher; then
+    echo -e "   ${YELLOW}oc get llminferenceservice -n $PROJECT_NAME -w${NC}"
+else
+    echo -e "   ${YELLOW}oc get inferenceservice -n $PROJECT_NAME -w${NC}"
+fi
 echo ""
 echo "2. Check in RHOAI Dashboard:"
 echo "   - Go to Models"
-echo "   - Look for 'llama-3-2-3b-demo'"
+echo "   - Look for 'demo-model'"
 echo "   - Wait for status: Running"
 echo ""
 echo "3. Generate MaaS token:"
@@ -202,5 +312,3 @@ echo ""
 echo "4. Test the API:"
 echo -e "   ${YELLOW}./test-maas-api.sh${NC}"
 echo ""
-
-

@@ -15,6 +15,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Source RHOAI detection utility
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib/rhoai-detect.sh" ]; then
+    source "$SCRIPT_DIR/lib/rhoai-detect.sh"
+fi
+
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          MaaS API Test                                         ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
@@ -31,31 +37,44 @@ TOKEN=$(cat maas-token.txt)
 echo -e "${GREEN}✓ Token loaded from maas-token.txt${NC}"
 echo ""
 
-# Get MaaS API endpoint
+# Check if logged in
 if ! oc whoami &>/dev/null; then
     echo -e "${RED}✗ Not logged in to OpenShift${NC}"
     echo "Please login first: oc login <cluster-url>"
     exit 1
 fi
 
-MAAS_HOST=$(oc get route maas-api -n maas-api -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+# Detect RHOAI version and get MaaS endpoint
+detect_rhoai_version
 
-if [ -z "$MAAS_HOST" ]; then
-    echo -e "${RED}✗ MaaS API route not found${NC}"
+if ! get_maas_endpoint; then
+    echo ""
+    if is_rhoai_33_or_higher; then
+        echo "For RHOAI 3.3+: Ensure modelsAsService is enabled in DataScienceCluster"
+    else
+        echo "For RHOAI 3.2 and earlier: Run ../scripts/setup-maas.sh"
+    fi
     exit 1
 fi
 
-MAAS_ENDPOINT="https://$MAAS_HOST/v1/chat/completions"
-echo -e "${GREEN}✓ MaaS endpoint: $MAAS_ENDPOINT${NC}"
+MAAS_API_URL="https://$MAAS_ENDPOINT/v1/chat/completions"
+echo ""
+echo -e "${GREEN}✓ MaaS endpoint: $MAAS_API_URL${NC}"
 echo ""
 
-# Get model name
+# Get model name - list differently based on version
 echo -e "${BLUE}Available models:${NC}"
-oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No models found"
+if is_rhoai_33_or_higher; then
+    oc get llminferenceservice -A 2>/dev/null | grep -v NAME || echo "No LLMInferenceService models found"
+    echo ""
+    oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No InferenceService models found"
+else
+    oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No models found"
+fi
 echo ""
 
-read -p "Enter model name (default: llama-3-2-3b-demo): " MODEL_NAME
-MODEL_NAME=${MODEL_NAME:-llama-3-2-3b-demo}
+read -p "Enter model name (default: demo-model): " MODEL_NAME
+MODEL_NAME=${MODEL_NAME:-demo-model}
 
 # Get prompt
 echo ""
@@ -65,12 +84,13 @@ USER_PROMPT=${USER_PROMPT:-"What is Red Hat OpenShift AI?"}
 
 echo ""
 echo -e "${BLUE}Sending request to MaaS API...${NC}"
+echo -e "${CYAN}RHOAI Version: $RHOAI_VERSION${NC}"
 echo -e "${CYAN}Model: $MODEL_NAME${NC}"
 echo -e "${CYAN}Prompt: $USER_PROMPT${NC}"
 echo ""
 
 # Make API request
-RESPONSE=$(curl -s -X POST "$MAAS_ENDPOINT" \
+RESPONSE=$(curl -s -X POST "$MAAS_API_URL" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
@@ -127,13 +147,19 @@ else
         echo "Generate a new token: ./generate-maas-token.sh"
     elif echo "$RESPONSE" | grep -q "Not Found"; then
         echo -e "${YELLOW}⚠ Model not found - check model name${NC}"
-        echo "List models: oc get inferenceservice -A"
+        if is_rhoai_33_or_higher; then
+            echo "List models: oc get llminferenceservice -A"
+        else
+            echo "List models: oc get inferenceservice -A"
+        fi
     elif echo "$RESPONSE" | grep -q "Service Unavailable"; then
         echo -e "${YELLOW}⚠ Model may not be ready yet${NC}"
-        echo "Check status: oc get inferenceservice -A"
+        if is_rhoai_33_or_higher; then
+            echo "Check status: oc get llminferenceservice -A"
+        else
+            echo "Check status: oc get inferenceservice -A"
+        fi
     fi
 fi
 
 echo ""
-
-

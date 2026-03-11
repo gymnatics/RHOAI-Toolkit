@@ -1,25 +1,39 @@
 #!/bin/bash
 
 ################################################################################
-# Setup Model as a Service (MaaS) for RHOAI 3.0
+# Setup Model as a Service (MaaS) for RHOAI
 ################################################################################
-# Based on CAI's guide to RHOAI 3.0 - Section 4
-# This script sets up the MaaS API infrastructure
+# This script sets up MaaS infrastructure with version-aware configuration:
+# - RHOAI 3.3+: Uses integrated MaaS (modelsAsService in DataScienceCluster)
+# - RHOAI 3.2 and earlier: Uses legacy kustomize-based setup
 #
 # Prerequisites:
-# - RHOAI 3.0 installed
-# - enable-genai-maas.sh already run (dashboard features enabled)
-# - kustomize installed
-# - Network access to GitHub
+# - RHOAI installed
+# - oc CLI configured and logged in
 
 set -e
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
+
+# Global variables for version detection
+RHOAI_VERSION=""
+RHOAI_MAJOR_VERSION=""
+CLUSTER_DOMAIN=""
+
+################################################################################
+# Helper Functions
+################################################################################
 
 print_header() {
     echo ""
@@ -45,11 +59,73 @@ print_warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
 }
 
+print_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+
 ################################################################################
-# Prerequisites Check
+# RHOAI Version Detection
 ################################################################################
 
-check_prerequisites() {
+detect_rhoai_version() {
+    print_step "Detecting RHOAI version..."
+    
+    # Try to get version from CSV
+    local csv_version=$(oc get csv -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.displayName=="Red Hat OpenShift AI")].spec.version}' 2>/dev/null | head -1)
+    
+    if [ -n "$csv_version" ]; then
+        RHOAI_VERSION="$csv_version"
+        # Extract major.minor (e.g., "3.3" from "3.3.0")
+        RHOAI_MAJOR_VERSION=$(echo "$csv_version" | cut -d. -f1,2)
+    else
+        # Fallback: detect based on features
+        if oc get crd llminferenceservices.serving.kserve.io &>/dev/null; then
+            # LLMInferenceService CRD exists - this is 3.x
+            # Check if modelsAsService is available in DSC spec
+            if oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService}' &>/dev/null 2>&1; then
+                RHOAI_VERSION="3.3.x"
+                RHOAI_MAJOR_VERSION="3.3"
+            else
+                RHOAI_VERSION="3.x"
+                RHOAI_MAJOR_VERSION="3.0"
+            fi
+        elif oc get datasciencecluster &>/dev/null; then
+            RHOAI_VERSION="2.x"
+            RHOAI_MAJOR_VERSION="2.0"
+        else
+            RHOAI_VERSION="unknown"
+            RHOAI_MAJOR_VERSION="unknown"
+        fi
+    fi
+    
+    print_success "Detected RHOAI version: $RHOAI_VERSION (major: $RHOAI_MAJOR_VERSION)"
+}
+
+is_rhoai_33_or_higher() {
+    case "$RHOAI_MAJOR_VERSION" in
+        3.3|3.4|3.5|3.6|3.7|3.8|3.9|4.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+get_cluster_domain() {
+    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    if [ -z "$CLUSTER_DOMAIN" ]; then
+        print_error "Failed to get cluster domain"
+        exit 1
+    fi
+    print_info "Cluster domain: $CLUSTER_DOMAIN"
+}
+
+################################################################################
+# Prerequisites Check (Common)
+################################################################################
+
+check_common_prerequisites() {
     print_header "Checking Prerequisites"
     
     # Check oc
@@ -58,18 +134,6 @@ check_prerequisites() {
         exit 1
     fi
     print_success "oc CLI found"
-    
-    # Check kustomize
-    if ! command -v kustomize &> /dev/null; then
-        print_error "kustomize not found. Please install kustomize."
-        echo ""
-        echo "Install with:"
-        echo "  brew install kustomize"
-        echo "  OR"
-        echo "  curl -s 'https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh' | bash"
-        exit 1
-    fi
-    print_success "kustomize found"
     
     # Check if logged in
     if ! oc whoami &> /dev/null; then
@@ -85,26 +149,409 @@ check_prerequisites() {
     fi
     print_success "RHOAI installation detected"
     
-    # Check if dashboard config has MaaS enabled
-    local maas_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig.modelAsService}' 2>/dev/null)
-    if [ "$maas_enabled" != "true" ]; then
-        print_warning "MaaS not enabled in dashboard config. Run enable-genai-maas.sh first!"
-        echo ""
-        read -p "Continue anyway? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    else
-        print_success "MaaS enabled in dashboard config"
-    fi
+    # Detect version
+    detect_rhoai_version
+    
+    # Get cluster domain
+    get_cluster_domain
 }
 
 ################################################################################
-# Step 1: Install RHCL (Red Hat Connectivity Link) Operator
+# RHOAI 3.3+ Integrated MaaS Setup
 ################################################################################
 
-install_rhcl_operator() {
+setup_maas_33() {
+    print_header "Setting up MaaS for RHOAI 3.3+ (Integrated)"
+    
+    echo -e "${CYAN}RHOAI 3.3+ uses integrated MaaS via the DataScienceCluster.${NC}"
+    echo -e "${CYAN}This is simpler than the legacy setup and requires fewer components.${NC}"
+    echo ""
+    
+    # Step 1: Install RHCL Operator (still required for auth)
+    install_rhcl_operator_33
+    
+    # Step 2: Enable MaaS in DataScienceCluster
+    enable_maas_in_dsc
+    
+    # Step 3: Create GatewayClass and Gateway for inference
+    create_inference_gateway_33
+    
+    # Step 4: Enable dashboard features
+    enable_dashboard_maas_features
+    
+    # Step 5: Restart controllers
+    restart_controllers_33
+    
+    # Step 6: Display instructions
+    display_usage_instructions_33
+}
+
+install_rhcl_operator_33() {
+    print_header "Step 1: Installing RHCL (Kuadrant) Operator"
+    
+    # Check if kuadrant-system namespace exists
+    if oc get namespace kuadrant-system &>/dev/null; then
+        print_success "kuadrant-system namespace already exists"
+    else
+        print_step "Creating kuadrant-system namespace..."
+        oc create namespace kuadrant-system
+        print_success "kuadrant-system namespace created"
+    fi
+    
+    # Check if RHCL operator is already installed
+    if oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
+        print_success "RHCL Operator already installed"
+    else
+        print_step "Installing RHCL Operator..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kuadrant-system
+  namespace: kuadrant-system
+spec: {}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: kuadrant-system
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        print_success "RHCL Operator subscription created"
+        
+        # Wait for RHCL operator to be ready
+        print_step "Waiting for RHCL operator to be ready (this may take 2-3 minutes)..."
+        
+        local timeout=300
+        local elapsed=0
+        until oc get crd kuadrants.kuadrant.io &>/dev/null; do
+            if [ $elapsed -ge $timeout ]; then
+                print_error "Timeout waiting for RHCL operator CRDs"
+                return 1
+            fi
+            echo -n "."
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+        echo ""
+        print_success "RHCL Operator is ready"
+    fi
+    
+    # Create Kuadrant instance
+    if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
+        print_success "Kuadrant instance already exists"
+    else
+        print_step "Creating Kuadrant instance..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+EOF
+        
+        print_success "Kuadrant instance created"
+        
+        # Wait for Authorino
+        print_step "Waiting for Authorino service..."
+        local auth_timeout=120
+        local auth_elapsed=0
+        until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
+            if [ $auth_elapsed -ge $auth_timeout ]; then
+                print_warning "Timeout waiting for Authorino service - continuing anyway"
+                break
+            fi
+            sleep 10
+            auth_elapsed=$((auth_elapsed + 10))
+        done
+    fi
+    
+    # Configure Authorino TLS
+    print_step "Configuring Authorino TLS..."
+    
+    oc annotate svc/authorino-authorino-authorization \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        -n kuadrant-system --overwrite 2>/dev/null || true
+    
+    sleep 5
+    
+    cat <<EOF | oc apply -f -
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: kuadrant-system
+spec:
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
+EOF
+    
+    print_success "Authorino configured with TLS"
+}
+
+enable_maas_in_dsc() {
+    print_header "Step 2: Enabling MaaS in DataScienceCluster"
+    
+    # Check current state
+    local current_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$current_state" = "Managed" ]; then
+        print_success "MaaS already enabled in DataScienceCluster"
+    else
+        print_step "Enabling modelsAsService in DataScienceCluster..."
+        
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "kserve": {
+                        "modelsAsService": {
+                            "managementState": "Managed"
+                        }
+                    }
+                }
+            }
+        }'
+        
+        print_success "MaaS enabled in DataScienceCluster"
+        
+        # Wait for reconciliation
+        print_step "Waiting for DataScienceCluster to reconcile..."
+        sleep 30
+    fi
+}
+
+create_inference_gateway_33() {
+    print_header "Step 3: Creating Inference Gateway"
+    
+    # Create GatewayClass
+    if oc get gatewayclass openshift-ai-inference &>/dev/null; then
+        print_success "GatewayClass 'openshift-ai-inference' already exists"
+    else
+        print_step "Creating GatewayClass..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-ai-inference
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+EOF
+        
+        print_success "GatewayClass 'openshift-ai-inference' created"
+    fi
+    
+    # Create Gateway
+    local gateway_hostname="inference-gateway.${CLUSTER_DOMAIN}"
+    
+    if oc get gateway openshift-ai-inference -n openshift-ingress &>/dev/null; then
+        print_success "Gateway 'openshift-ai-inference' already exists"
+    else
+        print_step "Creating Gateway with hostname: $gateway_hostname"
+        
+        cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    istio.io/rev: openshift-gateway
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: ${gateway_hostname}
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: default-gateway-tls
+        mode: Terminate
+EOF
+        
+        print_success "Gateway 'openshift-ai-inference' created"
+    fi
+}
+
+enable_dashboard_maas_features() {
+    print_header "Step 4: Enabling Dashboard MaaS Features"
+    
+    print_step "Updating OdhDashboardConfig..."
+    
+    oc patch odhdashboardconfig odh-dashboard-config \
+        -n redhat-ods-applications \
+        --type=merge \
+        -p '{
+            "spec": {
+                "dashboardConfig": {
+                    "disableModelRegistry": false,
+                    "disableModelCatalog": false,
+                    "disableKServeMetrics": false,
+                    "genAiStudio": true,
+                    "modelAsService": true,
+                    "disableLMEval": false
+                }
+            }
+        }' 2>/dev/null || print_warning "Could not patch dashboard config - may already be configured"
+    
+    print_success "Dashboard features enabled"
+}
+
+restart_controllers_33() {
+    print_header "Step 5: Restarting Controllers"
+    
+    print_step "Restarting odh-model-controller..."
+    oc delete pod -n redhat-ods-applications -l app=odh-model-controller --ignore-not-found=true
+    
+    print_step "Restarting kserve-controller..."
+    oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager --ignore-not-found=true
+    
+    sleep 10
+    print_success "Controllers restarted"
+}
+
+display_usage_instructions_33() {
+    print_header "MaaS Setup Complete! (RHOAI 3.3+)"
+    
+    echo -e "${GREEN}✓ Model as a Service (MaaS) has been enabled!${NC}"
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}RHOAI 3.3+ MaaS Configuration:${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "Inference Gateway: https://inference-gateway.${CLUSTER_DOMAIN}"
+    echo "Dashboard URL:     https://data-science-gateway.${CLUSTER_DOMAIN}"
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}How to Deploy a Model with MaaS:${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "Option 1: Via Dashboard"
+    echo "  1. Go to RHOAI Dashboard → Models → Deploy Model"
+    echo "  2. Select a model and choose 'llm-d' serving runtime"
+    echo "  3. ✅ Check 'Enable Model as a Service'"
+    echo "  4. ✅ Check 'Require authentication' (CRITICAL for security!)"
+    echo "  5. Deploy and wait for Running status"
+    echo ""
+    echo "Option 2: Via CLI (LLMInferenceService)"
+    echo ""
+    cat <<'YAML'
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: my-model
+  namespace: my-namespace
+  annotations:
+    security.opendatahub.io/enable-auth: "true"
+spec:
+  replicas: 1
+  model:
+    uri: oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:latest
+    name: RedHatAI/Qwen3-8B-FP8-dynamic
+  router:
+    route: {}
+    gateway: {}
+  template:
+    containers:
+    - name: main
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+YAML
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}Testing MaaS API:${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "# Generate a token"
+    echo "TOKEN=\$(oc create token default -n my-namespace --duration=1h)"
+    echo ""
+    echo "# Call the model"
+    echo "curl -X POST \"https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions\" \\"
+    echo "  -H \"Authorization: Bearer \$TOKEN\" \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{"
+    echo "    \"model\": \"my-model\","
+    echo "    \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]"
+    echo "  }'"
+    echo ""
+    echo -e "${GREEN}✓ MaaS setup complete for RHOAI 3.3+!${NC}"
+    echo ""
+}
+
+################################################################################
+# RHOAI 3.2 and Earlier - Legacy MaaS Setup
+################################################################################
+
+setup_maas_legacy() {
+    print_header "Setting up MaaS for RHOAI 3.2 and Earlier (Legacy)"
+    
+    echo -e "${CYAN}RHOAI 3.2 and earlier uses the legacy MaaS setup with kustomize.${NC}"
+    echo -e "${CYAN}This creates a separate 'maas-api' namespace with the MaaS components.${NC}"
+    echo ""
+    
+    # Check kustomize
+    if ! command -v kustomize &> /dev/null; then
+        print_error "kustomize not found. Please install kustomize."
+        echo ""
+        echo "Install with:"
+        echo "  brew install kustomize"
+        echo "  OR"
+        echo "  curl -s 'https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh' | bash"
+        exit 1
+    fi
+    print_success "kustomize found"
+    
+    # Check if dashboard config has MaaS enabled
+    local maas_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig.modelAsService}' 2>/dev/null)
+    if [ "$maas_enabled" != "true" ]; then
+        print_warning "MaaS not enabled in dashboard config. Enabling now..."
+        oc patch odhdashboardconfig odh-dashboard-config \
+            -n redhat-ods-applications \
+            --type=merge \
+            -p '{"spec": {"dashboardConfig": {"modelAsService": true, "genAiStudio": true}}}' 2>/dev/null || true
+    else
+        print_success "MaaS enabled in dashboard config"
+    fi
+    
+    # Execute legacy steps
+    install_rhcl_operator_legacy
+    create_kuadrant_instance_legacy
+    configure_authorino_legacy
+    create_gateway_class_legacy
+    create_maas_namespace_legacy
+    deploy_maas_api_legacy
+    configure_audience_policy_legacy
+    restart_controllers_legacy
+    test_maas_configuration_legacy
+    verify_security_configuration_legacy
+    display_usage_instructions_legacy
+}
+
+install_rhcl_operator_legacy() {
     print_header "Step 1: Installing RHCL (Kuadrant) Operator"
     
     # Check if kuadrant-system namespace exists
@@ -165,11 +612,7 @@ EOF
     print_success "RHCL Operator is ready"
 }
 
-################################################################################
-# Step 2: Create Kuadrant Instance
-################################################################################
-
-create_kuadrant_instance() {
+create_kuadrant_instance_legacy() {
     print_header "Step 2: Creating Kuadrant Instance"
     
     # Check if Kuadrant instance already exists
@@ -189,10 +632,9 @@ EOF
         print_success "Kuadrant instance created"
     fi
     
-    # Wait for Kuadrant components to be ready (always check, even if already exists)
+    # Wait for Kuadrant components to be ready
     print_step "Waiting for Kuadrant components to be ready..."
     
-    # Wait for Authorino service to be created
     local auth_timeout=120
     local auth_elapsed=0
     until oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; do
@@ -208,14 +650,9 @@ EOF
     print_success "Kuadrant is ready"
 }
 
-################################################################################
-# Step 3: Configure Authorino
-################################################################################
-
-configure_authorino() {
+configure_authorino_legacy() {
     print_header "Step 3: Configuring Authorino"
     
-    # Annotate Authorino service for TLS
     print_step "Annotating Authorino service for TLS certificate..."
     
     oc annotate svc/authorino-authorino-authorization \
@@ -224,11 +661,9 @@ configure_authorino() {
     
     print_success "Authorino service annotated"
     
-    # Wait for certificate to be created
     print_step "Waiting for TLS certificate..."
     sleep 10
     
-    # Update Authorino to enable TLS
     print_step "Enabling TLS in Authorino..."
     
     cat <<EOF | oc apply -f -
@@ -252,16 +687,11 @@ EOF
     
     print_success "Authorino configured with TLS"
     
-    # Wait for Authorino to restart
     print_step "Waiting for Authorino to restart..."
     sleep 15
 }
 
-################################################################################
-# Step 4: Create GatewayClass
-################################################################################
-
-create_gateway_class() {
+create_gateway_class_legacy() {
     print_header "Step 4: Creating GatewayClass 'openshift-default'"
     
     if oc get gatewayclass openshift-default &>/dev/null; then
@@ -283,11 +713,7 @@ EOF
     print_success "GatewayClass 'openshift-default' created"
 }
 
-################################################################################
-# Step 5: Create maas-api namespace
-################################################################################
-
-create_maas_namespace() {
+create_maas_namespace_legacy() {
     print_header "Step 5: Creating 'maas-api' namespace"
     
     if oc get namespace maas-api &>/dev/null; then
@@ -301,22 +727,8 @@ create_maas_namespace() {
     print_success "Namespace 'maas-api' created"
 }
 
-################################################################################
-# Step 6: Deploy MaaS API objects
-################################################################################
-
-deploy_maas_api() {
+deploy_maas_api_legacy() {
     print_header "Step 6: Deploying MaaS API Objects"
-    
-    print_step "Getting cluster domain..."
-    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
-    
-    if [ -z "$CLUSTER_DOMAIN" ]; then
-        print_error "Failed to get cluster domain"
-        exit 1
-    fi
-    
-    print_success "Cluster domain: $CLUSTER_DOMAIN"
     
     print_step "Deploying MaaS API using kustomize (this may take a minute)..."
     
@@ -330,37 +742,26 @@ deploy_maas_api() {
     print_step "Waiting for MaaS API pods to be ready..."
     sleep 10
     
-    # Wait for pods to be ready
     oc wait --for=condition=ready pod -l app=maas-api -n maas-api --timeout=300s || true
     
     print_success "MaaS API deployment complete"
 }
 
-################################################################################
-# Step 7: Configure Audience Policy
-################################################################################
-
-configure_audience_policy() {
+configure_audience_policy_legacy() {
     print_header "Step 7: Configuring Audience Policy"
     
     print_step "Extracting audience from service account token..."
     
-    # Create token and extract payload
     TOKEN=$(oc create token default --duration=10m 2>/dev/null)
     PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
     
-    # Add base64 padding if needed (JWT payloads may not be padded)
     while [ $((${#PAYLOAD} % 4)) -ne 0 ]; do
         PAYLOAD="${PAYLOAD}="
     done
     
-    # Decode base64
     DECODED=$(echo "$PAYLOAD" | base64 -d 2>/dev/null)
-    
-    # Extract audience using jq
     AUD=$(echo "$DECODED" | jq -r '.aud[0]' 2>/dev/null)
     
-    # If jq fails, try manual extraction
     if [ -z "$AUD" ]; then
         print_warning "jq extraction failed, trying manual extraction..."
         AUD=$(echo "$DECODED" | grep -o '"aud":\["[^"]*"' | sed 's/"aud":\["\([^"]*\)"/\1/')
@@ -368,11 +769,6 @@ configure_audience_policy() {
     
     if [ -z "$AUD" ]; then
         print_error "Failed to extract audience from token"
-        echo ""
-        echo "Decoded token payload:"
-        echo "$DECODED"
-        echo ""
-        echo "Is jq installed? Check with: jq --version"
         exit 1
     fi
     
@@ -395,11 +791,7 @@ EOF
     print_success "Audience policy configured"
 }
 
-################################################################################
-# Step 8: Restart Controllers
-################################################################################
-
-restart_controllers() {
+restart_controllers_legacy() {
     print_header "Step 8: Restarting Controllers"
     
     print_step "Restarting odh-model-controller..."
@@ -413,17 +805,12 @@ restart_controllers() {
     print_success "kuadrant-operator restarted (if it exists)"
 }
 
-################################################################################
-# Step 9: Test MaaS Configuration
-################################################################################
-
-test_maas_configuration() {
+test_maas_configuration_legacy() {
     print_header "Step 9: Testing MaaS Configuration"
     
     print_step "Waiting for MaaS API to be fully ready..."
     sleep 20
     
-    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
     HOST="https://maas.${CLUSTER_DOMAIN}"
     
     print_step "Testing MaaS API endpoint: $HOST"
@@ -460,26 +847,19 @@ test_maas_configuration() {
     fi
 }
 
-################################################################################
-# Verify Security Configuration
-################################################################################
-
-verify_security_configuration() {
+verify_security_configuration_legacy() {
     print_header "Step 10: Verifying Security Configuration"
     
     print_step "Checking for models with MaaS enabled but no authentication..."
     
-    # Check all namespaces for LLMInferenceServices
     local insecure_models=0
     local namespaces=$(oc get ns -o name | grep -v "openshift\|kube\|default" | sed 's/namespace\///')
     
     for ns in $namespaces; do
-        # Check for llmisvc with MaaS enabled but auth disabled
         local models=$(oc get llmisvc -n "$ns" -o json 2>/dev/null | jq -r '.items[] | select(.metadata.annotations."security.opendatahub.io/enable-auth" == "false") | .metadata.name' 2>/dev/null || echo "")
         
         if [ -n "$models" ]; then
             for model in $models; do
-                # Check if model has MaaS enabled (has HTTPRoute to maas gateway)
                 local has_maas=$(oc get httproute -n "$ns" -l serving.kserve.io/inferenceservice="$model" -o json 2>/dev/null | jq -r '.items[] | select(.spec.parentRefs[]?.name == "maas-default-gateway") | .metadata.name' 2>/dev/null || echo "")
                 
                 if [ -n "$has_maas" ]; then
@@ -501,19 +881,18 @@ verify_security_configuration() {
     fi
 }
 
-################################################################################
-# Display Usage Instructions
-################################################################################
-
-display_usage_instructions() {
-    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
-    
-    print_header "MaaS Setup Complete!"
+display_usage_instructions_legacy() {
+    print_header "MaaS Setup Complete! (Legacy)"
     
     echo -e "${GREEN}✓ Model as a Service (MaaS) infrastructure has been deployed!${NC}"
     echo ""
     echo -e "${YELLOW}Note: The MaaS API may take 2-3 minutes to be fully ready after deployment.${NC}"
-    echo -e "${YELLOW}      If the automatic test above failed, wait a few minutes and try the manual test below.${NC}"
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}MaaS API Endpoint:${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "MaaS URL: https://maas.${CLUSTER_DOMAIN}/maas-api/v1/..."
     echo ""
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}How to Use MaaS:${NC}"
@@ -537,9 +916,7 @@ display_usage_instructions() {
     echo -e "${BLUE}Testing MaaS API (Manual):${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo "# Set variables"
-    echo "CLUSTER_DOMAIN=\$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
-    echo "HOST=\"https://maas.\${CLUSTER_DOMAIN}\""
+    echo "HOST=\"https://maas.${CLUSTER_DOMAIN}\""
     echo ""
     echo "# Generate token"
     echo "TOKEN_RESPONSE=\$(curl -sSk \\"
@@ -556,42 +933,7 @@ display_usage_instructions() {
     echo "    -H \"Content-Type: application/json\" \\"
     echo "    -H \"Authorization: Bearer \$TOKEN\" | jq ."
     echo ""
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}Important Notes:${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-    echo "⚠️  MaaS vs Direct Access:"
-    echo "   - MaaS URL: https://maas.${CLUSTER_DOMAIN}/maas-api/v1/..."
-    echo "   - Direct URL: https://maas.${CLUSTER_DOMAIN}/<namespace>/<model>/v1/..."
-    echo "   - Direct access bypasses MaaS billing/tracking!"
-    echo ""
-    echo "⚠️  CRITICAL SECURITY ISSUE:"
-    echo "   - When you enable MaaS, TWO routes are created:"
-    echo "     1. MaaS Gateway: https://maas.${CLUSTER_DOMAIN}/maas-api/v1/..."
-    echo "     2. Direct Route: https://maas.${CLUSTER_DOMAIN}/<namespace>/<model>/v1/..."
-    echo ""
-    echo "   - The direct route BYPASSES MaaS policies!"
-    echo "   - If you only enable 'Model as a Service' but NOT 'Require authentication':"
-    echo "     ✓ MaaS route is protected"
-    echo "     ✗ Direct route is UNPROTECTED (anyone can access!)"
-    echo ""
-    echo "   - ALWAYS enable BOTH checkboxes when deploying:"
-    echo "     ✅ Enable Model as a Service"
-    echo "     ✅ Require authentication"
-    echo ""
-    echo "⚠️  Token Management:"
-    echo "   - All tokens you create remain active until expiration"
-    echo "   - No revocation mechanism currently available"
-    echo "   - Recommendation: Use short expiration times (10m, 1h)"
-    echo ""
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}✓ MaaS infrastructure deployment complete!${NC}"
-    echo ""
-    echo -e "${CYAN}Next steps:${NC}"
-    echo "  1. Wait 2-3 minutes for all MaaS components to be ready"
-    echo "  2. Deploy a model with 'llm-d' serving runtime"
-    echo "  3. Enable 'Model as a Service' checkbox when deploying"
-    echo "  4. Access your model via the MaaS API"
     echo ""
 }
 
@@ -600,37 +942,35 @@ display_usage_instructions() {
 ################################################################################
 
 main() {
-    print_header "Model as a Service (MaaS) Setup for RHOAI 3.0"
+    print_header "Model as a Service (MaaS) Setup"
     
-    echo -e "${YELLOW}This script will set up the MaaS API infrastructure.${NC}"
+    echo -e "${CYAN}This script will set up MaaS infrastructure for your RHOAI installation.${NC}"
+    echo -e "${CYAN}It will automatically detect your RHOAI version and use the appropriate setup.${NC}"
     echo ""
-    echo "Prerequisites:"
-    echo "  - RHOAI 3.0 installed"
-    echo "  - enable-genai-maas.sh already run"
-    echo "  - kustomize installed"
-    echo "  - Network access to GitHub"
-    echo ""
+    
     read -p "Continue? (y/n): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 0
     fi
     
-    # Execute steps
-    check_prerequisites
-    install_rhcl_operator
-    create_kuadrant_instance
-    configure_authorino
-    create_gateway_class
-    create_maas_namespace
-    deploy_maas_api
-    configure_audience_policy
-    restart_controllers
-    test_maas_configuration
-    verify_security_configuration
-    display_usage_instructions
+    # Check common prerequisites and detect version
+    check_common_prerequisites
+    
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    
+    # Choose setup path based on version
+    if is_rhoai_33_or_higher; then
+        echo -e "${GREEN}Using RHOAI 3.3+ integrated MaaS setup${NC}"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        setup_maas_33
+    else
+        echo -e "${YELLOW}Using legacy MaaS setup (RHOAI 3.2 and earlier)${NC}"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        setup_maas_legacy
+    fi
 }
 
 # Run main function
 main
-

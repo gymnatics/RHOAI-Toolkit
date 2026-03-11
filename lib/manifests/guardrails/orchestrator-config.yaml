@@ -1,0 +1,37 @@
+# Guardrails Orchestrator Configuration
+# Template for envsubst - requires MODEL_SERVICE_NAME variable
+#
+# Usage:
+#   export MODEL_SERVICE_NAME=my-model-predictor
+#   envsubst < orchestrator-config.yaml | oc apply -n $NAMESPACE -f -
+#
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: guardrails-orchestrator-config
+data:
+  config.yaml: |
+    # Chat generation model configuration
+    # Points to the KServe InferenceService predictor service
+    chat_generation:
+      service:
+        hostname: ${MODEL_SERVICE_NAME}
+        port: 8080
+
+    # Detector configurations
+    detectors:
+      # Built-in detector (runs as sidecar, no external service needed)
+      # Provides regex-based detection for PII, file validation, etc.
+      built-in-detector:
+        type: text_contents
+        service:
+          hostname: "127.0.0.1"
+          port: 8080
+        chunker_id: whole_doc_chunker
+        default_threshold: 0.5
+
+    # Headers to pass through to downstream services
+    # Required for authenticated model endpoints
+    passthrough_headers:
+      - "authorization"
+      - "content-type"

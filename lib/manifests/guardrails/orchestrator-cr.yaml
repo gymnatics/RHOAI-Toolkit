@@ -1,0 +1,37 @@
+# GuardrailsOrchestrator Custom Resource
+# Template for envsubst - requires ENABLE_AUTH variable
+#
+# Usage:
+#   export ENABLE_AUTH=false
+#   envsubst < orchestrator-cr.yaml | oc apply -n $NAMESPACE -f -
+#
+# Prerequisites:
+#   - TrustyAI component enabled in DataScienceCluster
+#   - KServe RawDeployment mode configured
+#   - orchestrator-config and gateway-config ConfigMaps created
+#
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: GuardrailsOrchestrator
+metadata:
+  name: guardrails-orchestrator
+  annotations:
+    # Set to "true" to require Bearer token authentication
+    security.opendatahub.io/enable-auth: "${ENABLE_AUTH}"
+spec:
+  # Reference to orchestrator ConfigMap
+  orchestratorConfig: guardrails-orchestrator-config
+  
+  # Reference to gateway ConfigMap
+  guardrailsGatewayConfig: guardrails-gateway-config
+  
+  # Enable built-in detector sidecar (regex-based PII detection)
+  enableBuiltInDetectors: true
+  
+  # Enable gateway for preset pipeline endpoints
+  enableGuardrailsGateway: true
+  
+  # Log level: Error, Warn, Info, Debug, Trace
+  logLevel: INFO
+  
+  # Number of orchestrator replicas
+  replicas: 1
