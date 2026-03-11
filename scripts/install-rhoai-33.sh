@@ -25,6 +25,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 SKIP_PREREQUISITES=false
 SKIP_RHCL=false
 SKIP_MAAS=false
+SKIP_NODE_SCALING=false
 ENABLE_LLMD=true
 CLUSTER_DOMAIN=""
 WAIT_TIMEOUT=600
@@ -69,6 +70,7 @@ usage() {
     echo "  --skip-prerequisites    Skip installing NFD, GPU, Kueue, cert-manager operators"
     echo "  --skip-rhcl            Skip RHCL/Kuadrant installation (no MaaS/llm-d auth)"
     echo "  --skip-maas            Skip MaaS configuration"
+    echo "  --skip-node-scaling    Skip automatic worker/GPU node scaling"
     echo "  --no-llmd              Don't configure llm-d Gateway"
     echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.3). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
@@ -315,6 +317,62 @@ check_prerequisites() {
     print_success "Prerequisites check passed"
 }
 
+scale_cluster_nodes() {
+    print_step "Checking and scaling cluster nodes..."
+    
+    # Get worker machineset
+    local worker_ms=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[?(@.spec.template.metadata.labels.machine\.openshift\.io/cluster-api-machine-role=="worker")].metadata.name}' 2>/dev/null | awk '{print $1}')
+    
+    if [ -z "$worker_ms" ]; then
+        print_warning "No worker machineset found, skipping node scaling"
+        return 0
+    fi
+    
+    # Check current worker replicas
+    local current_replicas=$(oc get machineset "$worker_ms" -n openshift-machine-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+    print_info "Worker machineset: $worker_ms (current replicas: $current_replicas)"
+    
+    # Scale workers to at least 2 if less
+    if [ "$current_replicas" -lt 2 ]; then
+        print_step "Scaling worker nodes to 2..."
+        oc scale machineset "$worker_ms" -n openshift-machine-api --replicas=2
+        print_success "Worker machineset scaled to 2 replicas"
+    else
+        print_info "Worker nodes already at $current_replicas replicas"
+    fi
+    
+    # Check for existing GPU machineset
+    local gpu_ms=$(oc get machineset -n openshift-machine-api -o name 2>/dev/null | grep -i gpu | head -1)
+    
+    if [ -n "$gpu_ms" ]; then
+        print_info "GPU machineset already exists: $gpu_ms"
+        # Scale to at least 1 if currently 0
+        local gpu_replicas=$(oc get "$gpu_ms" -n openshift-machine-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
+        if [ "$gpu_replicas" -eq 0 ]; then
+            print_step "Scaling GPU machineset to 1..."
+            oc scale "$gpu_ms" -n openshift-machine-api --replicas=1
+            print_success "GPU machineset scaled to 1 replica"
+        fi
+    else
+        # Create GPU machineset using the script
+        print_step "Creating GPU machineset..."
+        if [ -f "$ROOT_DIR/scripts/create-gpu-machineset.sh" ]; then
+            # Get first available AZ from existing worker machineset
+            local az=$(oc get machineset "$worker_ms" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.placement.availabilityZone}' 2>/dev/null)
+            
+            # Create GPU machineset with g6e.xlarge, 1 replica, and apply
+            "$ROOT_DIR/scripts/create-gpu-machineset.sh" --instance-type g6e.xlarge --az "$az" --replicas 1 --apply
+            print_success "GPU machineset created and scaled to 1 replica"
+        else
+            print_warning "GPU machineset script not found, skipping GPU node creation"
+        fi
+    fi
+    
+    # Wait for nodes to be ready (non-blocking, just inform)
+    print_info "Nodes are scaling in the background. Installation will continue."
+    print_info "Check node status with: oc get nodes"
+}
+
 install_nfd_operator() {
     print_step "Installing Node Feature Discovery (NFD) Operator..."
     
@@ -352,13 +410,14 @@ install_gpu_operator() {
 install_kueue_operator() {
     print_step "Installing Red Hat Build of Kueue Operator..."
     
-    if oc get csv -n openshift-kueue-operator 2>/dev/null | grep -q kueue; then
+    # Kueue subscription is in openshift-operators, so CSV is there too
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q kueue; then
         print_info "Kueue Operator already installed"
         return 0
     fi
     
     oc apply -f "$ROOT_DIR/lib/manifests/operators/kueue-subscription.yaml"
-    wait_for_operator "kueue" "openshift-kueue-operator"
+    wait_for_operator "kueue" "openshift-operators"
     
     print_success "Kueue Operator installed"
 }
@@ -382,7 +441,8 @@ install_certmanager_operator() {
 install_lws_operator() {
     print_step "Installing Leader Worker Set (LWS) Operator..."
     
-    if oc get csv -n openshift-lws-operator 2>/dev/null | grep -q lws; then
+    # CSV is named "leader-worker-set", not "lws"
+    if oc get csv -n openshift-lws-operator 2>/dev/null | grep -q "leader-worker-set"; then
         print_info "LWS Operator already installed"
         return 0
     fi
@@ -390,7 +450,7 @@ install_lws_operator() {
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-namespace.yaml"
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-operatorgroup.yaml"
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-subscription.yaml"
-    wait_for_operator "lws" "openshift-lws-operator"
+    wait_for_operator "leader-worker-set" "openshift-lws-operator"
     
     # Create LWS instance
     oc apply -f - <<EOF
@@ -414,12 +474,13 @@ install_rhcl_operator() {
     # Create namespace
     oc create namespace kuadrant-system 2>/dev/null || true
     
-    if oc get csv -n kuadrant-system 2>/dev/null | grep -q kuadrant; then
+    # CSV is named "rhcl-operator", not "kuadrant"
+    if oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
         print_info "RHCL Operator already installed"
     else
         # Install RHCL operator via subscription
         oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator.yaml"
-        wait_for_operator "kuadrant" "kuadrant-system"
+        wait_for_operator "rhcl-operator" "kuadrant-system"
     fi
     
     # Create Kuadrant instance
@@ -571,7 +632,44 @@ create_inference_gateway() {
     
     get_cluster_domain
     
-    # Create GatewayClass
+    # Create GatewayClass for OpenShift Gateway Controller
+    oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-gateway-controller
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+EOF
+    
+    # Create maas-default-gateway (required for MaaS component)
+    print_step "Creating maas-default-gateway..."
+    oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maas-default-gateway
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-gateway-controller
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: maas-api.apps.${CLUSTER_DOMAIN}
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: default-gateway-tls
+        mode: Terminate
+EOF
+    
+    # Also create openshift-ai-inference gateway for llm-d
+    print_step "Creating openshift-ai-inference gateway..."
     oc apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
@@ -581,7 +679,6 @@ spec:
   controllerName: openshift.io/gateway-controller/v1
 EOF
     
-    # Create Gateway
     oc apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -608,7 +705,8 @@ spec:
         mode: Terminate
 EOF
     
-    print_success "Inference Gateway created"
+    print_success "Gateways created"
+    print_info "MaaS endpoint: https://maas-api.apps.${CLUSTER_DOMAIN}"
     print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"
 }
 
@@ -697,6 +795,10 @@ main() {
                 SKIP_RHCL=true
                 shift
                 ;;
+            --skip-node-scaling)
+                SKIP_NODE_SCALING=true
+                shift
+                ;;
             --skip-maas)
                 SKIP_MAAS=true
                 shift
@@ -733,6 +835,13 @@ main() {
     check_prerequisites
     get_cluster_domain
     
+    # Scale up cluster nodes first (workers + GPU)
+    if [ "$SKIP_NODE_SCALING" = false ]; then
+        scale_cluster_nodes
+    else
+        print_info "Skipping node scaling (--skip-node-scaling)"
+    fi
+    
     # Install prerequisite operators
     if [ "$SKIP_PREREQUISITES" = false ]; then
         install_nfd_operator
@@ -748,6 +857,9 @@ main() {
     # Install RHCL for MaaS/llm-d auth
     if [ "$SKIP_RHCL" = false ]; then
         install_rhcl_operator
+        
+        # Create gateways BEFORE DSC (MaaS requires maas-default-gateway to exist)
+        create_inference_gateway
     fi
     
     # Enable monitoring
@@ -760,11 +872,6 @@ main() {
     # Post-installation configuration
     enable_dashboard_features
     create_hardware_profile
-    
-    # Create inference gateway for llm-d
-    if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
-        create_inference_gateway
-    fi
     
     print_summary
 }
