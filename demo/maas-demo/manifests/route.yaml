@@ -1,0 +1,17 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: maas-demo
+  labels:
+    app: maas-demo
+    app.kubernetes.io/name: maas-demo
+    app.kubernetes.io/component: streamlit-app
+spec:
+  to:
+    kind: Service
+    name: maas-demo
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

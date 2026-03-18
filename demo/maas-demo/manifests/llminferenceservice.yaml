@@ -1,0 +1,42 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: ${MODEL_NAME}
+  labels:
+    kueue.x-k8s.io/queue-name: default
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    security.opendatahub.io/enable-auth: "${AUTH_ENABLED}"
+    openshift.io/display-name: "${MODEL_DISPLAY_NAME}"
+    # MaaS publishing annotations
+    alpha.maas.opendatahub.io/published: "true"
+    alpha.maas.opendatahub.io/tiers: '["free","premium","enterprise"]'
+spec:
+  replicas: 1
+  model:
+    uri: ${MODEL_URI}
+    name: ${MODEL_NAME}
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=${TOOL_PARSER}"
+      resources:
+        limits:
+          cpu: '4'
+          memory: 16Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: '2'
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule

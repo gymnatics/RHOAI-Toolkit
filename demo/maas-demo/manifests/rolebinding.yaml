@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: maas-demo-app-model-access
+  labels:
+    app: maas-demo
+    app.kubernetes.io/name: maas-demo
+    app.kubernetes.io/component: rbac
+subjects:
+- kind: ServiceAccount
+  name: maas-demo-app
+  namespace: ${APP_NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,55 @@
+# TokenRateLimitPolicy for MaaS Tier-Based Rate Limiting
+# This policy targets the maas-default-gateway used by RHOAI 3.3+
+# All tiers must be in a SINGLE policy to avoid override conflicts
+#
+# Tier limits are based on auth.identity.tier claim which is set
+# based on the user's OpenShift group membership (see tier-to-group-mapping ConfigMap)
+#
+# NOTE: Using 1-MINUTE windows for demo testing (easy to demonstrate rate limiting)
+# For production, change window to 1h0m0s and adjust limits accordingly
+#
+# To customize limits, edit the 'limit' values below and reapply:
+#   oc apply -f tokenratelimitpolicy.yaml
+apiVersion: kuadrant.io/v1alpha1
+kind: TokenRateLimitPolicy
+metadata:
+  name: maas-tier-token-rate-limits
+  namespace: openshift-ingress
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+  limits:
+    # Free tier - 1,000 tokens per minute (for demo)
+    # Groups: system:authenticated, tier-free-users
+    free-tokens:
+      rates:
+        - limit: 1000
+          window: 1m0s
+      when:
+        - predicate: 'auth.identity.tier == "free" && !request.path.endsWith("/v1/models")'
+      counters:
+        - expression: auth.identity.userid
+    # Premium tier - 5,000 tokens per minute (for demo)
+    # Groups: tier-premium-users, premium-group
+    premium-tokens:
+      rates:
+        - limit: 5000
+          window: 1m0s
+      when:
+        - predicate: 'auth.identity.tier == "premium" && !request.path.endsWith("/v1/models")'
+      counters:
+        - expression: auth.identity.userid
+    # Enterprise tier - 10,000 tokens per minute (for demo)
+    # Groups: tier-enterprise-users, enterprise-group, admin-group
+    enterprise-tokens:
+      rates:
+        - limit: 10000
+          window: 1m0s
+      when:
+        - predicate: 'auth.identity.tier == "enterprise" && !request.path.endsWith("/v1/models")'
+      counters:
+        - expression: auth.identity.userid

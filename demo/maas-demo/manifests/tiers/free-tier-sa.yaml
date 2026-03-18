@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: maas-free-tier
+  labels:
+    app: maas-demo
+    maas.opendatahub.io/tier: free
+  annotations:
+    maas.opendatahub.io/tier: free
+    maas.opendatahub.io/token-limit: "1000"
+    maas.opendatahub.io/description: "Free tier - 1,000 tokens/hour"

@@ -1,6 +1,8 @@
 # OpenShift AI Installation Toolkit
 
-A comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI) 3.0** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
+A comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI) 3.x** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
+
+> **Latest:** RHOAI 3.3 is now supported. See [What's New in RHOAI 3.3](docs/guides/RHOAI-33-WHATS-NEW.md) for details.
 
 ## Quick Start
 
@@ -24,7 +26,7 @@ This single command provides an interactive menu to:
 |---------|-------------|
 | **One-Click Setup** | Interactive menu-driven installation |
 | **GPU Support** | Automated GPU MachineSet creation (g6e, p5 instances) |
-| **RHOAI 3.0** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
+| **RHOAI 3.x** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
 | **MaaS API** | Model as a Service with authentication via Kuadrant |
 | **GenAI Playground** | Interactive model testing interface |
 | **LlamaStack Demo** | Chatbot frontend with MCP tool calling |
@@ -120,6 +122,8 @@ Select from the menu:
 
 ### Key Guides
 
+- [What's New in RHOAI 3.3](docs/guides/RHOAI-33-WHATS-NEW.md)
+- [RHOAI 3.3 Installation](docs/guides/RHOAI-33-INSTALLATION.md)
 - [Hardware Profile Setup](docs/guides/HARDWARE-PROFILE-SETUP.md)
 - [GPU Taints Configuration](docs/guides/GPU-TAINTS-RHOAI3.md)
 - [MaaS Setup](docs/guides/MAAS-SERVING-RUNTIMES.md)
@@ -222,7 +226,8 @@ Apache License 2.0
 
 ## External Resources
 
-- [RHOAI 3.0 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.0)
+- [RHOAI 3.3 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3)
+- [RHOAI Supported Configurations](https://access.redhat.com/articles/rhoai-supported-configs)
 - [OpenShift Documentation](https://docs.openshift.com)
 - [Kueue Documentation](https://kueue.sigs.k8s.io/)
 - [KServe Documentation](https://kserve.github.io/website/)

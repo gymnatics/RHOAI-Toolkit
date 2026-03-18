@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: authorino-metrics
+  namespace: kuadrant-system
+  labels:
+    app: authorino
+spec:
+  selector:
+    matchLabels:
+      app: authorino
+  namespaceSelector:
+    matchNames:
+      - kuadrant-system
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

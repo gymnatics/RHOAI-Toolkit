@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: maas-standard-tier
+  labels:
+    app: maas-demo
+    maas.opendatahub.io/tier: standard
+  annotations:
+    maas.opendatahub.io/tier: standard
+    maas.opendatahub.io/token-limit: "10000"
+    maas.opendatahub.io/description: "Standard tier - 10,000 tokens/hour"

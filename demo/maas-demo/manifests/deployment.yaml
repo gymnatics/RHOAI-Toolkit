@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maas-demo
+  labels:
+    app: maas-demo
+    app.kubernetes.io/name: maas-demo
+    app.kubernetes.io/component: streamlit-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: maas-demo
+  template:
+    metadata:
+      labels:
+        app: maas-demo
+    spec:
+      serviceAccountName: maas-demo-app
+      containers:
+      - name: streamlit
+        image: python:3.11-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          pip install --user --no-cache-dir -r /app/requirements.txt && \
+          export PATH="/tmp/.local/bin:$PATH" && \
+          cd /app && \
+          python -m streamlit run app.py \
+            --server.port=8501 \
+            --server.address=0.0.0.0 \
+            --server.headless=true \
+            --browser.gatherUsageStats=false
+        ports:
+        - containerPort: 8501
+          name: http
+        env:
+        - name: HOME
+          value: /tmp
+        - name: MAAS_ENDPOINT
+          value: "${MAAS_ENDPOINT}"
+        - name: MAAS_NAMESPACE
+          value: "${MODEL_NAMESPACE}"
+        - name: MAAS_MODEL
+          value: "${MODEL_NAME}"
+        - name: MAAS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: maas-demo-token
+              key: token
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 60
+          periodSeconds: 30
+      volumes:
+      - name: app-code
+        configMap:
+          name: maas-demo-code

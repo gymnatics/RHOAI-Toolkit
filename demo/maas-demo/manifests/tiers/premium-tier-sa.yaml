@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: maas-premium-tier
+  labels:
+    app: maas-demo
+    maas.opendatahub.io/tier: premium
+  annotations:
+    maas.opendatahub.io/tier: premium
+    maas.opendatahub.io/token-limit: "100000"
+    maas.opendatahub.io/description: "Premium tier - 100,000 tokens/hour"
