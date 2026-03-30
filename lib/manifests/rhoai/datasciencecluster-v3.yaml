@@ -1,6 +1,9 @@
 # DataScienceCluster for RHOAI 3.3
 # This configuration enables all major components for a full RHOAI 3.3 installation
 # Requires: NFD, GPU Operator, Kueue, cert-manager, RHCL (for MaaS), LWS (for llm-d multi-node)
+# Optional: JobSet operator (required if trainer.managementState: Managed)
+#
+# Reference: https://gist.github.com/bryonbaker/7949f6d060181bfd6ae7a8ee2793207b
 apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
@@ -27,13 +30,17 @@ spec:
     # KServe - Model serving platform (required for vLLM, llm-d)
     kserve:
       managementState: Managed
+      # NVIDIA NIM support
+      nim:
+        managementState: Managed
       # MaaS - Models as a Service (Tech Preview)
       # Requires: RHCL operator, Gateway API
       modelsAsService:
         managementState: Managed
     
     # Kueue - Workload scheduling
-    # Set to Unmanaged when using Red Hat Build of Kueue Operator
+    # Set to Unmanaged when using Red Hat Build of Kueue Operator (standalone)
+    # The standalone operator provides more control over Kueue configuration
     kueue:
       defaultClusterQueueName: default
       defaultLocalQueueName: default
@@ -43,9 +50,18 @@ spec:
     ray:
       managementState: Managed
     
-    # Training Operator - Distributed training (Kubeflow Trainer v2 in 3.3)
+    # Trainer - Kubeflow Trainer v2 (GA in RHOAI 3.3)
+    # New unified training API replacing Training Operator v1
+    # IMPORTANT: Requires JobSet operator to be installed first!
+    # Install JobSet: oc apply -f lib/manifests/operators/jobset-subscription.yaml
+    # Set to Removed if JobSet is not installed
+    trainer:
+      managementState: Removed
+    
+    # Training Operator - Legacy distributed training (deprecated in 3.3)
+    # Set to Removed if using Trainer (v2) instead
     trainingoperator:
-      managementState: Managed
+      managementState: Removed
     
     # Model Registry - Model versioning and tracking
     modelregistry:
@@ -62,4 +78,8 @@ spec:
     
     # Llama Stack Operator - GenAI orchestration, RAG
     llamastackoperator:
+      managementState: Managed
+    
+    # MLflow Operator - Experiment tracking, model versioning
+    mlflowoperator:
       managementState: Managed

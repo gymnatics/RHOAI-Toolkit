@@ -1,0 +1,13 @@
+# JobSet Operator - Required for Kubeflow Trainer v2 (RHOAI 3.3+)
+# Install this BEFORE enabling trainer.managementState: Managed in DataScienceCluster
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: jobset-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: jobset-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

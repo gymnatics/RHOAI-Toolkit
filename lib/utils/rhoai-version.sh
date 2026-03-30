@@ -420,30 +420,43 @@ diagnose_featurestore() {
 }
 
 ################################################################################
-# Model Serving Configuration (Version-Aware)
+# Model Serving CRD Detection
+################################################################################
+#
+# RHOAI 3.3 Model Serving CR Reference:
+#   - LLMInferenceService (v1alpha1): ONLY for llm-d runtime, required for MaaS
+#   - InferenceService (v1beta1): All other runtimes (vLLM, OpenVINO, Caikit-TGIS, NIM, etc.)
+#
+# The CR type is determined by the RUNTIME choice, not the RHOAI version.
+# When deploying, the script/user chooses the runtime and uses the appropriate CR.
+# See lib/functions/model-deployment.sh for the actual deployment logic.
 ################################################################################
 
-# Get the correct InferenceService/LLMInferenceService kind based on version
-get_model_serving_kind() {
-    detect_rhoai_version
-    
-    if is_rhoai_33_or_higher; then
-        # RHOAI 3.3+ prefers LLMInferenceService for MaaS-enabled models
-        echo "LLMInferenceService"
-    else
-        # RHOAI 3.2 and earlier uses InferenceService
-        echo "InferenceService"
-    fi
+# Check if llm-d runtime is available on the cluster (LLMInferenceService CRD exists)
+is_llmd_available() {
+    oc get crd llminferenceservices.serving.kserve.io &>/dev/null
 }
 
-# Get the correct API version for model serving
-get_model_serving_api_version() {
-    detect_rhoai_version
+# Check if standard KServe is available (InferenceService CRD exists)
+is_kserve_available() {
+    oc get crd inferenceservices.serving.kserve.io &>/dev/null
+}
+
+# List all deployed models (both InferenceService and LLMInferenceService)
+# Returns: namespace/name/kind for each deployed model
+list_deployed_models() {
+    local ns="${1:-}"
+    local ns_flag=""
+    [ -n "$ns" ] && ns_flag="-n $ns" || ns_flag="-A"
     
-    if is_rhoai_33_or_higher; then
-        echo "serving.kserve.io/v1alpha1"
-    else
-        echo "serving.kserve.io/v1beta1"
+    # Get InferenceServices
+    if is_kserve_available; then
+        oc get inferenceservice $ns_flag -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/InferenceService{"\n"}{end}' 2>/dev/null
+    fi
+    
+    # Get LLMInferenceServices
+    if is_llmd_available; then
+        oc get llminferenceservice $ns_flag -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/LLMInferenceService{"\n"}{end}' 2>/dev/null
     fi
 }
 

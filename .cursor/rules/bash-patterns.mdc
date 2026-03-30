@@ -1,0 +1,349 @@
+---
+description: Bash coding patterns and conventions used in this repository
+globs: "**/*.sh"
+alwaysApply: false
+---
+
+# Bash Coding Patterns
+
+## Script Structure
+
+### Standard Header
+```bash
+#!/bin/bash
+################################################################################
+# Script description
+################################################################################
+
+set -e  # Exit on error
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source utilities
+source "$ROOT_DIR/lib/utils/colors.sh"
+source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/utils/os-compat.sh"
+```
+
+### Color Definitions
+```bash
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m'  # No Color
+```
+
+### Print Functions
+```bash
+print_header() {
+    echo ""
+    echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║ $1${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+}
+
+print_step() {
+    echo -e "${YELLOW}▶ $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+```
+
+## Function Patterns
+
+### Library Function Header
+```bash
+# Use local variable to avoid overwriting caller's SCRIPT_DIR
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_LIB_DIR/lib/utils/colors.sh"
+```
+
+### Wait Loop Pattern
+```bash
+wait_for_resource() {
+    local timeout="${1:-300}"
+    local elapsed=0
+    local interval=10
+    
+    while [ $elapsed -lt $timeout ]; do
+        if condition_met; then
+            print_success "Resource ready"
+            return 0
+        fi
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        echo "Waiting... (${elapsed}s elapsed)"
+    done
+    
+    print_warning "Timeout waiting for resource"
+    return 1
+}
+```
+
+### Interactive Prompt Pattern
+```bash
+read -p "Continue? (Y/n): " choice
+choice=${choice:-Y}  # Default to Y
+
+if [[ "$choice" =~ ^[Yy]$ ]]; then
+    # Proceed
+fi
+```
+
+### Menu Pattern
+```bash
+show_menu() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           Menu Title                   ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Option 1"
+    echo -e "${YELLOW}2)${NC} Option 2"
+    echo -e "${YELLOW}0)${NC} Back"
+    echo ""
+}
+
+handle_menu() {
+    while true; do
+        show_menu
+        read -p "Select option: " choice
+        
+        case $choice in
+            1) action_1 ;;
+            2) action_2 ;;
+            0) return ;;
+            *) print_error "Invalid option" ;;
+        esac
+    done
+}
+```
+
+## OpenShift Patterns
+
+### Check Resource Exists
+```bash
+if oc get resource name -n namespace &>/dev/null; then
+    print_success "Resource exists"
+else
+    print_step "Creating resource..."
+fi
+```
+
+### Apply Manifest
+```bash
+apply_manifest() {
+    local file="$1"
+    local description="${2:-manifest}"
+    
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+    
+    print_step "Applying $description..."
+    if oc apply -f "$file"; then
+        print_success "$description applied"
+    else
+        print_error "Failed to apply $description"
+        return 1
+    fi
+}
+```
+
+### Wait for Operator
+```bash
+wait_for_operator() {
+    local name="$1"
+    local namespace="$2"
+    local timeout="${3:-300}"
+    
+    print_step "Waiting for $name operator..."
+    
+    local elapsed=0
+    until oc get csv -n "$namespace" 2>/dev/null | grep "$name" | grep -q "Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Timeout waiting for $name"
+            return 1
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "$name operator ready"
+}
+```
+
+### Patch Resource
+```bash
+oc patch resource name -n namespace --type=merge -p '{
+    "spec": {
+        "field": "value"
+    }
+}'
+```
+
+### Get JSON Value
+```bash
+value=$(oc get resource name -n namespace -o jsonpath='{.spec.field}' 2>/dev/null)
+```
+
+### Apply Inline YAML
+```bash
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+  namespace: my-namespace
+data:
+  key: value
+EOF
+```
+
+### Apply with envsubst
+```bash
+export VARIABLE="value"
+envsubst < template.yaml | oc apply -f -
+unset VARIABLE
+```
+
+## Cross-Platform Patterns
+
+### Use os-compat.sh Functions
+```bash
+source "$ROOT_DIR/lib/utils/os-compat.sh"
+
+# Instead of: echo -n "text" | base64 -w 0
+encoded=$(base64_encode "text")
+
+# Instead of: sed -i 's/old/new/' file
+sed_inplace 's/old/new/' file
+
+# Instead of: grep -oP '(?<=prefix)[a-z]+'
+value=$(grep_extract "prefix" "$text")
+```
+
+### Check OS Type
+```bash
+if [ "$OS_TYPE" = "macos" ]; then
+    # macOS-specific code
+else
+    # Linux code
+fi
+```
+
+## Error Handling
+
+### Exit on Error
+```bash
+set -e  # At script start
+```
+
+### Trap Cleanup
+```bash
+cleanup() {
+    # Cleanup code
+    rm -f "$temp_file"
+}
+trap cleanup EXIT
+```
+
+### Check Command Success
+```bash
+if ! command_that_might_fail; then
+    print_error "Command failed"
+    exit 1
+fi
+```
+
+### Silent Failure
+```bash
+oc delete resource name -n namespace 2>/dev/null || true
+```
+
+## Variable Patterns
+
+### Default Values
+```bash
+value="${input:-default}"
+```
+
+### Required Variables
+```bash
+: "${REQUIRED_VAR:?REQUIRED_VAR must be set}"
+```
+
+### Array Operations
+```bash
+# Declare array
+declare -a items=()
+
+# Add to array
+items+=("item")
+
+# Iterate
+for item in "${items[@]}"; do
+    echo "$item"
+done
+
+# Length
+echo "${#items[@]}"
+```
+
+## CLI Argument Parsing
+
+### With Flags
+```bash
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --option)
+            OPTION=true
+            shift
+            ;;
+        --value)
+            VALUE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+```
+
+### With Positional Args
+```bash
+namespace="${1:-default}"
+name="${2:-}"
+
+if [ -z "$name" ]; then
+    print_error "Name required"
+    exit 1
+fi
+```

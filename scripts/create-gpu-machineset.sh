@@ -15,6 +15,7 @@
 #   --spot-max-price PRICE Maximum spot price per hour
 #   --az ZONE              Availability zone (e.g., us-east-2a)
 #   --replicas N           Number of replicas (default: 0)
+#   --volume-size SIZE     Root volume size in GB (default: from existing MachineSet)
 #   --apply                Apply the MachineSet immediately
 #   --help                 Show this help
 #
@@ -33,6 +34,7 @@ CLI_SPOT=false
 CLI_SPOT_MAX_PRICE=""
 CLI_AZ=""
 CLI_REPLICAS=""
+CLI_VOLUME_SIZE=""
 CLI_APPLY=false
 NON_INTERACTIVE=false
 
@@ -60,6 +62,10 @@ while [[ $# -gt 0 ]]; do
             CLI_REPLICAS="$2"
             shift 2
             ;;
+        --volume-size)
+            CLI_VOLUME_SIZE="$2"
+            shift 2
+            ;;
         --apply)
             CLI_APPLY=true
             shift
@@ -73,6 +79,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --spot-max-price PRICE Maximum spot price per hour"
             echo "  --az ZONE              Availability zone"
             echo "  --replicas N           Number of replicas (default: 0)"
+            echo "  --volume-size SIZE     Root volume size in GB (default: 100, recommend 200 for large models)"
             echo "  --apply                Apply the MachineSet immediately"
             echo "  --help                 Show this help"
             echo ""
@@ -161,8 +168,16 @@ CLUSTER_ID=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].
 AMI_ID=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.ami.id}')
 IAM_PROFILE=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.iamInstanceProfile.id}')
 REGION=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.placement.region}')
-VOLUME_SIZE=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.blockDevices[0].ebs.volumeSize}')
+# Get volume config from existing MachineSet, but allow CLI override
+DEFAULT_VOLUME_SIZE=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.blockDevices[0].ebs.volumeSize}')
 VOLUME_TYPE=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.blockDevices[0].ebs.volumeType}')
+
+# Use CLI volume size if provided, otherwise use default from existing MachineSet
+if [ -n "$CLI_VOLUME_SIZE" ]; then
+    VOLUME_SIZE="$CLI_VOLUME_SIZE"
+else
+    VOLUME_SIZE="$DEFAULT_VOLUME_SIZE"
+fi
 
 echo ""
 print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -175,236 +190,325 @@ echo "Region:        $REGION"
 echo "Volume:        ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
 echo ""
 
-# Simple prompts for only the required inputs
-print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-print_header "GPU MachineSet Configuration (3 simple questions)"
-print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-# Question 1: GPU Instance Type
-echo "1️⃣  Select GPU instance type:"
-echo ""
-echo "  1) g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM   | ~\$0.69/hr"
-echo "  2) g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM   | ~\$1.10/hr"
-echo "  3) g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM   | ~\$1.92/hr"
-echo "  4) p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM | ~\$98/hr"
-echo ""
-read -p "Enter choice [1-4]: " instance_choice
-
-case $instance_choice in
-    1)
-        INSTANCE_TYPE="g6e.xlarge"
-        GPU_COUNT=1
-        VCPU=4
-        MEMORY_MB=16384
-        ;;
-    2)
-        INSTANCE_TYPE="g6e.2xlarge"
-        GPU_COUNT=1
-        VCPU=8
-        MEMORY_MB=32768
-        ;;
-    3)
-        INSTANCE_TYPE="g6e.4xlarge"
-        GPU_COUNT=1
-        VCPU=16
-        MEMORY_MB=65536
-        ;;
-    4)
-        INSTANCE_TYPE="p5.48xlarge"
-        GPU_COUNT=8
-        VCPU=192
-        MEMORY_MB=2097152
-        ;;
-    *)
-        print_error "Invalid choice"
-        exit 1
-        ;;
-esac
-
-echo ""
-print_success "Selected: $INSTANCE_TYPE ($GPU_COUNT GPU, $VCPU vCPU, $((MEMORY_MB/1024))GB RAM)"
-echo ""
-
-# Question 1.5: Spot Instance Option
-echo "1.5️⃣  Use Spot Instances? (up to 90% cost savings, but can be interrupted)"
-echo ""
-echo "  1) On-Demand (default) - Guaranteed capacity, full price"
-echo "  2) Spot Instance - Up to 90% cheaper, may be interrupted"
-echo ""
-read -p "Enter choice [1-2, default: 1]: " spot_choice
-
-USE_SPOT=false
-SPOT_MAX_PRICE=""
-case ${spot_choice:-1} in
-    2)
-        USE_SPOT=true
-        echo ""
-        print_info "Spot Instance selected"
-        echo ""
-        echo "Spot instances can save 60-90% but may be terminated with 2-min warning."
-        echo "Recommended for: development, testing, fault-tolerant workloads"
-        echo "Not recommended for: production serving, long-running training"
-        echo ""
-        read -p "Set max price per hour (leave empty for on-demand price cap): " SPOT_MAX_PRICE
-        if [ -n "$SPOT_MAX_PRICE" ]; then
-            print_success "Spot max price: \$${SPOT_MAX_PRICE}/hr"
-        else
-            print_success "Spot max price: On-demand price (default)"
-        fi
-        ;;
-    *)
-        print_success "On-Demand instance selected"
-        ;;
-esac
-echo ""
-
-# Question 2: Availability Zone and Subnet Selection
-echo "2️⃣  Select availability zone and subnet:"
-echo ""
-
-# Get all available AZs and subnets from existing MachineSets
-print_info "Scanning available subnets from existing MachineSets..."
-echo ""
-
-# Create arrays to store AZ and subnet information
-declare -a AZ_LIST
-declare -a SUBNET_LIST
-declare -a SUBNET_TYPE_LIST  # "id" or "filter"
-declare -a MACHINESET_LIST
-
-# Extract unique AZ/subnet combinations - handle both subnet.id and subnet.filters
-while IFS='|' read -r ms_name az subnet_id subnet_filter; do
-    if [ -n "$az" ] && [ "$az" != "null" ]; then
-        AZ_LIST+=("$az")
-        MACHINESET_LIST+=("$ms_name")
-        
-        # Check if subnet.id is used (direct subnet ID)
-        if [ -n "$subnet_id" ] && [ "$subnet_id" != "null" ]; then
-            SUBNET_LIST+=("$subnet_id")
-            SUBNET_TYPE_LIST+=("id")
-        # Otherwise check for subnet.filters (tag-based)
-        elif [ -n "$subnet_filter" ] && [ "$subnet_filter" != "null" ]; then
-            SUBNET_LIST+=("$subnet_filter")
-            SUBNET_TYPE_LIST+=("filter")
-        else
-            # Fallback - try to get the full subnet spec
-            SUBNET_LIST+=("(auto-detect from AZ)")
-            SUBNET_TYPE_LIST+=("auto")
-        fi
+# Handle non-interactive mode with CLI arguments
+if [ "$NON_INTERACTIVE" = true ]; then
+    # Set instance type from CLI
+    case "$CLI_INSTANCE_TYPE" in
+        g6e.xlarge)
+            INSTANCE_TYPE="g6e.xlarge"
+            GPU_COUNT=1
+            VCPU=4
+            MEMORY_MB=16384
+            ;;
+        g6e.2xlarge)
+            INSTANCE_TYPE="g6e.2xlarge"
+            GPU_COUNT=1
+            VCPU=8
+            MEMORY_MB=32768
+            ;;
+        g6e.4xlarge)
+            INSTANCE_TYPE="g6e.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=65536
+            ;;
+        p5.48xlarge)
+            INSTANCE_TYPE="p5.48xlarge"
+            GPU_COUNT=8
+            VCPU=192
+            MEMORY_MB=2097152
+            ;;
+        *)
+            print_error "Invalid instance type: $CLI_INSTANCE_TYPE"
+            print_info "Valid types: g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.48xlarge"
+            exit 1
+            ;;
+    esac
+    print_success "Instance type: $INSTANCE_TYPE ($GPU_COUNT GPU, $VCPU vCPU, $((MEMORY_MB/1024))GB RAM)"
+    
+    # Set spot from CLI
+    USE_SPOT=$CLI_SPOT
+    SPOT_MAX_PRICE="$CLI_SPOT_MAX_PRICE"
+    if [ "$USE_SPOT" = true ]; then
+        print_info "Using Spot instances"
     fi
-done < <(oc get machineset -n openshift-machine-api -o json | \
-    jq -r '.items[] | "\(.metadata.name)|\(.spec.template.spec.providerSpec.value.placement.availabilityZone)|\(.spec.template.spec.providerSpec.value.subnet.id // "null")|\(.spec.template.spec.providerSpec.value.subnet.filters[0].values[0] // "null")"')
+else
+    # Interactive mode - Simple prompts for only the required inputs
+    print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_header "GPU MachineSet Configuration (3 simple questions)"
+    print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
 
-if [ ${#AZ_LIST[@]} -eq 0 ]; then
-    print_error "No availability zones found in existing MachineSets"
-    exit 1
+    # Question 1: GPU Instance Type
+    echo "1️⃣  Select GPU instance type:"
+    echo ""
+    echo "  1) g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM   | ~\$0.69/hr"
+    echo "  2) g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM   | ~\$1.10/hr"
+    echo "  3) g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM   | ~\$1.92/hr"
+    echo "  4) p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM | ~\$98/hr"
+    echo ""
+    read -p "Enter choice [1-4]: " instance_choice
+
+    case $instance_choice in
+        1)
+            INSTANCE_TYPE="g6e.xlarge"
+            GPU_COUNT=1
+            VCPU=4
+            MEMORY_MB=16384
+            ;;
+        2)
+            INSTANCE_TYPE="g6e.2xlarge"
+            GPU_COUNT=1
+            VCPU=8
+            MEMORY_MB=32768
+            ;;
+        3)
+            INSTANCE_TYPE="g6e.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=65536
+            ;;
+        4)
+            INSTANCE_TYPE="p5.48xlarge"
+            GPU_COUNT=8
+            VCPU=192
+            MEMORY_MB=2097152
+            ;;
+        *)
+            print_error "Invalid choice"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    print_success "Selected: $INSTANCE_TYPE ($GPU_COUNT GPU, $VCPU vCPU, $((MEMORY_MB/1024))GB RAM)"
+    echo ""
+
+    # Question 1.5: Spot Instance Option
+    echo "1.5️⃣  Use Spot Instances? (up to 90% cost savings, but can be interrupted)"
+    echo ""
+    echo "  1) On-Demand (default) - Guaranteed capacity, full price"
+    echo "  2) Spot Instance - Up to 90% cheaper, may be interrupted"
+    echo ""
+    read -p "Enter choice [1-2, default: 1]: " spot_choice
+
+    USE_SPOT=false
+    SPOT_MAX_PRICE=""
+    case ${spot_choice:-1} in
+        2)
+            USE_SPOT=true
+            echo ""
+            print_info "Spot Instance selected"
+            echo ""
+            echo "Spot instances can save 60-90% but may be terminated with 2-min warning."
+            echo "Recommended for: development, testing, fault-tolerant workloads"
+            echo "Not recommended for: production serving, long-running training"
+            echo ""
+            read -p "Set max price per hour (leave empty for on-demand price cap): " SPOT_MAX_PRICE
+            if [ -n "$SPOT_MAX_PRICE" ]; then
+                print_success "Spot max price: \$${SPOT_MAX_PRICE}/hr"
+            else
+                print_success "Spot max price: On-demand price (default)"
+            fi
+            ;;
+        *)
+            print_success "On-Demand instance selected"
+            ;;
+    esac
+
+    # Question 1.6: Volume Size
+    echo ""
+    echo "1.6️⃣  Root volume size (for model storage):"
+    echo ""
+    echo "  Current default: ${VOLUME_SIZE}GB"
+    echo ""
+    echo "  Recommendations:"
+    echo "    100GB  - Small models (<20GB)"
+    echo "    200GB  - Medium models (20-50GB) ← Recommended for most LLMs"
+    echo "    300GB  - Large models (50-100GB)"
+    echo ""
+    read -p "Enter volume size in GB [${VOLUME_SIZE}]: " volume_input
+    if [ -n "$volume_input" ]; then
+        VOLUME_SIZE="$volume_input"
+    fi
+    print_success "Volume size: ${VOLUME_SIZE}GB"
 fi
-
-# Display available options
-echo "Available availability zones (from existing MachineSets):"
-echo ""
-for i in "${!AZ_LIST[@]}"; do
-    if [ "${SUBNET_TYPE_LIST[$i]}" = "id" ]; then
-        echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet ID: ${SUBNET_LIST[$i]}"
-    elif [ "${SUBNET_TYPE_LIST[$i]}" = "filter" ]; then
-        echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet Tag: ${SUBNET_LIST[$i]}"
-    else
-        echo "  $((i+1))) ${AZ_LIST[$i]} - (will use same subnet config as source)"
-    fi
-    echo "     (from MachineSet: ${MACHINESET_LIST[$i]})"
-done
-echo ""
-echo "  $((${#AZ_LIST[@]}+1))) Enter custom AZ and subnet"
-echo ""
-
-read -p "Enter choice [1-$((${#AZ_LIST[@]}+1))]: " subnet_choice
 
 # Variables to track subnet configuration
 SUBNET_ID=""
 SUBNET_FILTER_NAME=""
 USE_SUBNET_FILTER=false
 
-if [ "$subnet_choice" -eq "$((${#AZ_LIST[@]}+1))" ]; then
-    # Custom AZ and subnet
-    echo ""
-    print_info "Enter custom availability zone and subnet"
-    read -p "Availability Zone (e.g., us-east-2a): " AZ
-    read -p "Subnet ID (e.g., subnet-xxxxx): " SUBNET_ID
+# Question 2 & 3: AZ/Subnet and Storage - handle non-interactive mode
+if [ "$NON_INTERACTIVE" = true ]; then
+    # Non-interactive: use CLI args or auto-detect from first machineset
+    if [ -n "$CLI_AZ" ]; then
+        AZ="$CLI_AZ"
+    else
+        # Auto-detect AZ from first machineset
+        AZ=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.placement.availabilityZone}')
+    fi
+    
+    # Get subnet config from source machineset
+    SOURCE_MS=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].metadata.name}')
+    SUBNET_FILTER_NAME=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.filters[0].values[0]}' 2>/dev/null)
+    if [ -n "$SUBNET_FILTER_NAME" ]; then
+        USE_SUBNET_FILTER=true
+        print_success "Using AZ: $AZ - Subnet Tag: $SUBNET_FILTER_NAME"
+    else
+        SUBNET_ID=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.id}' 2>/dev/null)
+        print_success "Using AZ: $AZ - Subnet ID: $SUBNET_ID"
+    fi
+    
+    # Use CLI replicas or default to 0
+    REPLICAS=${CLI_REPLICAS:-0}
+    print_info "Replicas: $REPLICAS"
 else
-    # Use selected subnet from list
-    idx=$((subnet_choice-1))
-    if [ $idx -ge 0 ] && [ $idx -lt ${#AZ_LIST[@]} ]; then
-        AZ="${AZ_LIST[$idx]}"
-        
-        if [ "${SUBNET_TYPE_LIST[$idx]}" = "id" ]; then
-            SUBNET_ID="${SUBNET_LIST[$idx]}"
-            print_success "Selected: $AZ - Subnet ID: $SUBNET_ID"
-        elif [ "${SUBNET_TYPE_LIST[$idx]}" = "filter" ]; then
-            SUBNET_FILTER_NAME="${SUBNET_LIST[$idx]}"
-            USE_SUBNET_FILTER=true
-            print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME"
-        else
-            # Auto-detect - get full subnet config from source MachineSet
-            SOURCE_MS="${MACHINESET_LIST[$idx]}"
-            SUBNET_FILTER_NAME=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.filters[0].values[0]}' 2>/dev/null)
-            if [ -n "$SUBNET_FILTER_NAME" ]; then
-                USE_SUBNET_FILTER=true
-                print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME (from $SOURCE_MS)"
+    echo ""
+
+    # Question 2: Availability Zone and Subnet Selection
+    echo "2️⃣  Select availability zone and subnet:"
+    echo ""
+
+    # Get all available AZs and subnets from existing MachineSets
+    print_info "Scanning available subnets from existing MachineSets..."
+    echo ""
+
+    # Create arrays to store AZ and subnet information
+    declare -a AZ_LIST
+    declare -a SUBNET_LIST
+    declare -a SUBNET_TYPE_LIST  # "id" or "filter"
+    declare -a MACHINESET_LIST
+
+    # Extract unique AZ/subnet combinations - handle both subnet.id and subnet.filters
+    while IFS='|' read -r ms_name az subnet_id subnet_filter; do
+        if [ -n "$az" ] && [ "$az" != "null" ]; then
+            AZ_LIST+=("$az")
+            MACHINESET_LIST+=("$ms_name")
+            
+            # Check if subnet.id is used (direct subnet ID)
+            if [ -n "$subnet_id" ] && [ "$subnet_id" != "null" ]; then
+                SUBNET_LIST+=("$subnet_id")
+                SUBNET_TYPE_LIST+=("id")
+            # Otherwise check for subnet.filters (tag-based)
+            elif [ -n "$subnet_filter" ] && [ "$subnet_filter" != "null" ]; then
+                SUBNET_LIST+=("$subnet_filter")
+                SUBNET_TYPE_LIST+=("filter")
             else
-                SUBNET_ID=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.id}' 2>/dev/null)
-                print_success "Selected: $AZ - Subnet ID: $SUBNET_ID (from $SOURCE_MS)"
+                # Fallback - try to get the full subnet spec
+                SUBNET_LIST+=("(auto-detect from AZ)")
+                SUBNET_TYPE_LIST+=("auto")
             fi
         fi
-    else
-        print_error "Invalid choice"
+    done < <(oc get machineset -n openshift-machine-api -o json | \
+        jq -r '.items[] | "\(.metadata.name)|\(.spec.template.spec.providerSpec.value.placement.availabilityZone)|\(.spec.template.spec.providerSpec.value.subnet.id // "null")|\(.spec.template.spec.providerSpec.value.subnet.filters[0].values[0] // "null")"')
+
+    if [ ${#AZ_LIST[@]} -eq 0 ]; then
+        print_error "No availability zones found in existing MachineSets"
         exit 1
     fi
-fi
 
-echo ""
-
-# Question 3: Volume configuration
-echo "3️⃣  Storage configuration:"
-echo ""
-echo "Current default: ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
-echo ""
-read -p "Use default storage? [Y/n]: " use_default_storage
-
-if [[ "$use_default_storage" == "n" || "$use_default_storage" == "N" ]]; then
+    # Display available options
+    echo "Available availability zones (from existing MachineSets):"
     echo ""
-    read -p "Enter volume size in GB [default: $VOLUME_SIZE]: " custom_volume_size
-    VOLUME_SIZE=${custom_volume_size:-$VOLUME_SIZE}
-    
+    for i in "${!AZ_LIST[@]}"; do
+        if [ "${SUBNET_TYPE_LIST[$i]}" = "id" ]; then
+            echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet ID: ${SUBNET_LIST[$i]}"
+        elif [ "${SUBNET_TYPE_LIST[$i]}" = "filter" ]; then
+            echo "  $((i+1))) ${AZ_LIST[$i]} - Subnet Tag: ${SUBNET_LIST[$i]}"
+        else
+            echo "  $((i+1))) ${AZ_LIST[$i]} - (will use same subnet config as source)"
+        fi
+        echo "     (from MachineSet: ${MACHINESET_LIST[$i]})"
+    done
     echo ""
-    echo "Volume types:"
-    echo "  1) gp3 (General Purpose SSD - recommended)"
-    echo "  2) gp2 (General Purpose SSD - older)"
-    echo "  3) io1 (Provisioned IOPS SSD)"
-    echo "  4) io2 (Provisioned IOPS SSD - newer)"
+    echo "  $((${#AZ_LIST[@]}+1))) Enter custom AZ and subnet"
     echo ""
-    read -p "Select volume type [1-4, default: 1]: " vol_type_choice
-    
-    case ${vol_type_choice:-1} in
-        1) VOLUME_TYPE="gp3" ;;
-        2) VOLUME_TYPE="gp2" ;;
-        3) VOLUME_TYPE="io1" ;;
-        4) VOLUME_TYPE="io2" ;;
-        *) VOLUME_TYPE="gp3" ;;
-    esac
-fi
 
-print_success "Storage: ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
-echo ""
+    read -p "Enter choice [1-$((${#AZ_LIST[@]}+1))]: " subnet_choice
 
-# Question 4: Number of replicas
-echo "4️⃣  How many GPU worker nodes to create?"
-echo ""
-read -p "Enter number of replicas [default: 0 for later scaling]: " REPLICAS
-REPLICAS=${REPLICAS:-0}
+    if [ "$subnet_choice" -eq "$((${#AZ_LIST[@]}+1))" ]; then
+        # Custom AZ and subnet
+        echo ""
+        print_info "Enter custom availability zone and subnet"
+        read -p "Availability Zone (e.g., us-east-2a): " AZ
+        read -p "Subnet ID (e.g., subnet-xxxxx): " SUBNET_ID
+    else
+        # Use selected subnet from list
+        idx=$((subnet_choice-1))
+        if [ $idx -ge 0 ] && [ $idx -lt ${#AZ_LIST[@]} ]; then
+            AZ="${AZ_LIST[$idx]}"
+            
+            if [ "${SUBNET_TYPE_LIST[$idx]}" = "id" ]; then
+                SUBNET_ID="${SUBNET_LIST[$idx]}"
+                print_success "Selected: $AZ - Subnet ID: $SUBNET_ID"
+            elif [ "${SUBNET_TYPE_LIST[$idx]}" = "filter" ]; then
+                SUBNET_FILTER_NAME="${SUBNET_LIST[$idx]}"
+                USE_SUBNET_FILTER=true
+                print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME"
+            else
+                # Auto-detect - get full subnet config from source MachineSet
+                SOURCE_MS="${MACHINESET_LIST[$idx]}"
+                SUBNET_FILTER_NAME=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.filters[0].values[0]}' 2>/dev/null)
+                if [ -n "$SUBNET_FILTER_NAME" ]; then
+                    USE_SUBNET_FILTER=true
+                    print_success "Selected: $AZ - Subnet Tag: $SUBNET_FILTER_NAME (from $SOURCE_MS)"
+                else
+                    SUBNET_ID=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.id}' 2>/dev/null)
+                    print_success "Selected: $AZ - Subnet ID: $SUBNET_ID (from $SOURCE_MS)"
+                fi
+            fi
+        else
+            print_error "Invalid choice"
+            exit 1
+        fi
+    fi
 
-echo ""
-print_success "Configuration complete!"
+    echo ""
+
+    # Question 3: Volume configuration
+    echo "3️⃣  Storage configuration:"
+    echo ""
+    echo "Current default: ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
+    echo ""
+    read -p "Use default storage? [Y/n]: " use_default_storage
+
+    if [[ "$use_default_storage" == "n" || "$use_default_storage" == "N" ]]; then
+        echo ""
+        read -p "Enter volume size in GB [default: $VOLUME_SIZE]: " custom_volume_size
+        VOLUME_SIZE=${custom_volume_size:-$VOLUME_SIZE}
+        
+        echo ""
+        echo "Volume types:"
+        echo "  1) gp3 (General Purpose SSD - recommended)"
+        echo "  2) gp2 (General Purpose SSD - older)"
+        echo "  3) io1 (Provisioned IOPS SSD)"
+        echo "  4) io2 (Provisioned IOPS SSD - newer)"
+        echo ""
+        read -p "Select volume type [1-4, default: 1]: " vol_type_choice
+        
+        case ${vol_type_choice:-1} in
+            1) VOLUME_TYPE="gp3" ;;
+            2) VOLUME_TYPE="gp2" ;;
+            3) VOLUME_TYPE="io1" ;;
+            4) VOLUME_TYPE="io2" ;;
+            *) VOLUME_TYPE="gp3" ;;
+        esac
+    fi
+
+    print_success "Storage: ${VOLUME_SIZE}GB ${VOLUME_TYPE}"
+    echo ""
+
+    # Question 4: Number of replicas
+    echo "4️⃣  How many GPU worker nodes to create?"
+    echo ""
+    read -p "Enter number of replicas [default: 0 for later scaling]: " REPLICAS
+    REPLICAS=${REPLICAS:-0}
+
+    echo ""
+    print_success "Configuration complete!"
+fi  # End of interactive mode
+
 echo ""
 
 # Generate MachineSet name
@@ -568,11 +672,23 @@ echo "✓ Instance type: m6a.4xlarge → $INSTANCE_TYPE"
 echo "✓ GPU annotation: 0 → $GPU_COUNT"
 echo ""
 
-# Ask to apply
-print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-read -p "Apply this MachineSet now? [y/N]: " apply_now
+# Handle apply - either from CLI flag or interactive prompt
+SHOULD_APPLY=false
+if [ "$NON_INTERACTIVE" = true ]; then
+    # Non-interactive: use CLI flag
+    if [ "$CLI_APPLY" = true ]; then
+        SHOULD_APPLY=true
+    fi
+else
+    # Interactive: ask user
+    print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    read -p "Apply this MachineSet now? [y/N]: " apply_now
+    if [[ "$apply_now" == "y" || "$apply_now" == "Y" ]]; then
+        SHOULD_APPLY=true
+    fi
+fi
 
-if [[ "$apply_now" == "y" || "$apply_now" == "Y" ]]; then
+if [ "$SHOULD_APPLY" = true ]; then
     echo ""
     print_info "Applying MachineSet..."
     oc apply -f "$OUTPUT_FILE"
@@ -586,9 +702,15 @@ if [[ "$apply_now" == "y" || "$apply_now" == "Y" ]]; then
         if oc get crd clusterpolicies.nvidia.com &>/dev/null; then
             if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
                 print_info "GPU Operator detected but no ClusterPolicy found"
-                echo ""
-                read -p "Create GPU ClusterPolicy now? [Y/n]: " create_policy
-                create_policy="${create_policy:-Y}"
+                
+                # In non-interactive mode, auto-create policy
+                if [ "$NON_INTERACTIVE" = true ]; then
+                    create_policy="Y"
+                else
+                    echo ""
+                    read -p "Create GPU ClusterPolicy now? [Y/n]: " create_policy
+                    create_policy="${create_policy:-Y}"
+                fi
                 
                 if [[ "$create_policy" =~ ^[Yy]$ ]]; then
                     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

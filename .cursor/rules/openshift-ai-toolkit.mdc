@@ -1,0 +1,280 @@
+---
+description: OpenShift AI Installation Toolkit - comprehensive context for this repository
+alwaysApply: true
+---
+
+# OpenShift AI Installation Toolkit
+
+This repository is a comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI)** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
+
+## Repository Purpose
+
+End-to-end automation for:
+- OpenShift 4.19+ cluster installation on AWS
+- RHOAI 3.x (and 2.x for workshops) deployment
+- GPU worker nodes (g6e, p5 instances)
+- Model serving with vLLM and llm-d runtimes
+- MaaS API with Kuadrant/Authorino authentication
+- GenAI Playground and LlamaStack demos
+
+## Key Entry Points
+
+| Script | Purpose |
+|--------|---------|
+| `rhoai-toolkit.sh` | Main interactive menu - start here |
+| `integrated-workflow-v2.sh` | Alternative modular workflow |
+| `Makefile` | CLI automation targets |
+
+## Directory Structure
+
+```
+├── rhoai-toolkit.sh              # Main entry point (6000+ lines)
+├── scripts/                      # 32+ utility scripts
+│   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
+│   ├── setup-maas.sh             # MaaS API gateway (version-aware)
+│   ├── serve-model.sh            # Model deployment
+│   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation
+│   ├── install-rhoai-minimal.sh  # Minimal RHOAI install
+│   ├── deploy-llmd-model.sh      # llm-d model deployment
+│   └── cleanup-all.sh            # Resource cleanup
+│
+├── lib/
+│   ├── functions/                # Reusable bash functions
+│   │   ├── rhoai.sh             # RHOAI installation (2400+ lines)
+│   │   ├── operators.sh         # Operator management
+│   │   └── model-deployment.sh  # Model serving (1300+ lines)
+│   ├── manifests/               # Kubernetes YAML
+│   │   ├── operators/           # NFD, GPU, Kueue, LWS, cert-manager
+│   │   ├── rhoai/               # DataScienceCluster configs
+│   │   ├── rhoai-2x/            # RHOAI 2.x workshop manifests
+│   │   ├── rhcl/                # Kuadrant/Authorino for MaaS
+│   │   ├── templates/           # envsubst YAML templates
+│   │   ├── feast/               # Feature Store
+│   │   ├── demo/                # Open WebUI, GuideLLM, etc.
+│   │   └── grafana/             # Observability dashboards
+│   └── utils/                   # Utility libraries
+│       ├── os-compat.sh         # macOS/Linux compatibility
+│       ├── colors.sh            # Terminal colors
+│       ├── common.sh            # Common utilities
+│       ├── config-manager.sh    # Configuration persistence
+│       └── rhoai-version.sh     # Version detection & compatibility
+│
+├── docs/
+│   ├── guides/                  # How-to guides (18+ files)
+│   ├── reference/               # Technical reference
+│   ├── fixes/                   # Fix documentation
+│   └── TROUBLESHOOTING.md       # Common issues
+│
+├── demo/
+│   ├── maas-demo/               # MaaS demo with Streamlit
+│   ├── llamastack-demo/         # Streamlit chatbot with MCP
+│   └── guardrails-demo/         # AI safety demo
+│
+├── diagnostics/                 # Diagnostic scripts
+└── archive/                     # Deprecated files
+```
+
+## RHOAI Versions Supported
+
+| Version | Channel Options | Use Case |
+|---------|-----------------|----------|
+| RHOAI 3.3 | `fast-3.x`, `stable-3.3` (check cluster) | Latest - MaaS, llm-d, Llama Stack 0.4.2 |
+| RHOAI 3.2 | `fast-3.x`, `stable-3.2` | Production with GenAI, MaaS |
+| RHOAI 2.25 | `stable` | Workshops, demos |
+| RHOAI 2.22, 2.19 | `stable-X.Y` | Legacy support |
+
+**Note**: Available channels vary by cluster. Use `oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'` to see available channels on your cluster.
+
+### RHOAI 3.3 Key Changes (vs 3.2)
+- **Kubeflow Trainer v2** - GA (replaces Training Operator v1, use `trainer` not `trainingoperator`)
+  - **IMPORTANT**: Requires JobSet operator to be installed first!
+- **MLServer ServingRuntime** - Tech Preview for scikit-learn, XGBoost
+- **Llama Stack 0.4.2** - OpenAI-compatible RAG annotations
+- **MaaS Zero-Touch** - Simplified setup via operator (modelsAsService in DSC)
+- **NVIDIA NIM support** - `kserve.nim.managementState: Managed`
+- **MLflow Operator** - New component for experiment tracking
+- **Dashboard URL changed** - `data-science-gateway.apps.<cluster>`
+- **CodeFlare removed** - Functionality in KubeRay
+- **Resource naming** - Now uses `data-science-` prefix
+- **Feature Store visibility** - Stricter requirements for dashboard discovery
+
+### Component Dependency Matrix (per [bryonbaker gist](https://gist.github.com/bryonbaker/7949f6d060181bfd6ae7a8ee2793207b))
+| Component | Required Dependencies |
+|-----------|----------------------|
+| Workbenches | None |
+| AI Pipelines | S3-compatible storage |
+| Kueue/Distributed Workloads | Kueue Operator, cert-manager |
+| Model Serving (KServe) | cert-manager |
+| Distributed Inference (llm-d) | cert-manager, RHCL, LWS |
+| Llama Stack/RAG | Llama Stack Op, Service Mesh 3, cert-manager, NFD, GPU Op |
+| Model Registry | MySQL 5.x/8.x, S3 storage |
+| GPU Acceleration | NVIDIA GPU Operator, NFD |
+| Trainer (Kubeflow v2) | **JobSet operator** |
+
+## Key Technologies
+
+- **OpenShift 4.19+** - Container platform
+- **RHOAI** - Red Hat OpenShift AI
+- **NFD** - Node Feature Discovery (GPU detection)
+- **NVIDIA GPU Operator** - GPU drivers and runtime (recommend pinning to v25.10)
+- **Kueue** - Distributed workload scheduling (channel: stable-v1.3)
+- **LWS** - LeaderWorkerSet for llm-d (channel: stable-v1.0)
+- **cert-manager** - Certificate management (channel: stable-v1)
+- **KServe** - Model serving framework
+- **vLLM** - High-performance inference
+- **llm-d** - Red Hat's serving runtime (MaaS compatible)
+- **RHCL/Kuadrant/Authorino** - API gateway and auth for MaaS
+- **Service Mesh 3** - Auto-installed by RHCL
+- **LlamaStack** - GenAI orchestration
+- **Feast** - Feature Store
+- **MLflow** - Experiment tracking (new in 3.3)
+- **TrustyAI** - Model explainability
+
+## Critical Configuration Notes
+
+### Hardware Profiles (RHOAI 3.x)
+MUST include scheduling section for dashboard visibility:
+```yaml
+spec:
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue
+```
+
+### Model Serving CRs (RHOAI 3.3)
+**IMPORTANT**: The CR type depends on the runtime, NOT the RHOAI version:
+
+| Runtime | Custom Resource | API Version | MaaS Support |
+|---------|-----------------|-------------|--------------|
+| **llm-d** | `LLMInferenceService` | `serving.kserve.io/v1alpha1` | ✅ Yes |
+| **vLLM** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+| **OpenVINO** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+| **Caikit-TGIS** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+| **NVIDIA NIM** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+| **MLServer** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+
+### MaaS Limitation
+Only `llm-d` serving runtime works with MaaS through the UI. vLLM does NOT support MaaS via dashboard.
+
+### MaaS Setup (Version-Aware)
+- **RHOAI 3.3+**: Uses integrated MaaS (`modelsAsService` in DataScienceCluster)
+  - Endpoint: `inference-gateway.apps.<cluster>`
+- **RHOAI 3.2-**: Uses legacy kustomize-based setup (`maas-api` namespace)
+  - Endpoint: `maas.<cluster>/maas-api/v1/...`
+
+### Feature Store (Feast) Requirements
+For FeatureStore to appear in RHOAI dashboard, ensure:
+1. **Label required**: `feature-store-ui: enabled` in metadata.labels
+2. **REST API enabled**: `spec.services.registry.local.server.restAPI: true`
+3. **Namespace labeled**: `opendatahub.io/dashboard=true` on namespace
+
+**RHOAI 3.2 → 3.3 Upgrade Issue**: FeatureStores may disappear from dashboard after upgrade. Use:
+```bash
+./rhoai-toolkit.sh → Feature Store (Feast) → Diagnose Feature Store
+```
+Or manually fix:
+```bash
+oc label featurestore <name> -n <namespace> feature-store-ui=enabled --overwrite
+oc patch featurestore <name> -n <namespace> --type=merge -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+```
+
+### Tool Calling (vLLM)
+```yaml
+env:
+  - name: VLLM_ADDITIONAL_ARGS
+    value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+```
+Parsers: `hermes` (Qwen), `llama3_json` (Llama), `mistral` (Mistral)
+
+## Common Workflows
+
+### RHOAI 3.3 Installation (Recommended)
+```bash
+./rhoai-toolkit.sh
+# 3) Install RHOAI 3.3
+# Or directly:
+./scripts/install-rhoai-33.sh
+```
+
+### Full Installation (3.x generic)
+```bash
+./rhoai-toolkit.sh
+# 1) Complete Setup → follows wizard
+```
+
+### Add GPU Nodes
+```bash
+./scripts/create-gpu-machineset.sh
+# Or: ./rhoai-toolkit.sh → 7) Create GPU MachineSet
+```
+
+### Deploy Model (from Quay.io)
+```bash
+./scripts/serve-model.sh
+# Or: ./rhoai-toolkit.sh → RHOAI Management → Model Management → Deploy Model
+```
+
+### Deploy Model from HuggingFace
+```bash
+# 1. Setup MinIO storage
+./scripts/setup-model-storage.sh
+
+# 2. Download model from HuggingFace to S3
+./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct
+
+# 3. Deploy using storageUri: s3://models/Qwen/Qwen3-8B-Instruct/
+
+# Or use the interactive menu:
+# ./rhoai-toolkit.sh → RHOAI Management → Model Management → Setup Model Storage
+# ./rhoai-toolkit.sh → RHOAI Management → Model Management → Download Model from HuggingFace
+```
+
+### Setup MaaS (Version-Aware)
+```bash
+./scripts/setup-maas.sh
+# Automatically detects RHOAI version:
+# - RHOAI 3.3+: Uses integrated MaaS (modelsAsService in DSC)
+# - RHOAI 3.2-: Uses legacy kustomize-based setup (maas-api namespace)
+```
+
+## Verification Commands
+
+```bash
+# Check operators
+oc get csv -A | grep -E "nfd|gpu|kueue|lws|rhcl|rhods"
+
+# Check RHOAI
+oc get datasciencecluster
+
+# Check hardware profiles
+oc get hardwareprofiles -n redhat-ods-applications
+
+# Check GPU nodes
+oc get nodes -l nvidia.com/gpu.present=true
+
+# Check MaaS (3.3+)
+oc get gateway -n openshift-ingress
+
+# Check Feature Stores
+oc get featurestore -A
+```
+
+## Code Style
+
+- Scripts use `lib/utils/os-compat.sh` for macOS/Linux compatibility
+- Colors defined in `lib/utils/colors.sh`
+- Functions sourced from `lib/functions/`
+- Templates use `envsubst` for variable substitution
+- All scripts should work on both macOS and Linux
+
+## Documentation Index
+
+- `README.md` - Quick start
+- `FEATURES.md` - Feature reference
+- `QUICK-REFERENCE.md` - Command cheat sheet
+- `docs/TROUBLESHOOTING.md` - Problem solving
+- `docs/guides/` - Step-by-step guides
+- `docs/guides/RHOAI-33-INSTALLATION.md` - RHOAI 3.3 installation guide
+- `docs/reference/RHAIE 3.3 Guide/` - Official 3.3 documentation (extracted)

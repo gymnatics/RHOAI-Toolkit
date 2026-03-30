@@ -176,6 +176,10 @@ spec:
     automountServiceAccountToken: false
     maxReplicas: 1
     minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
     model:
       args:
         - '--max-model-len'
@@ -220,6 +224,10 @@ spec:
     automountServiceAccountToken: false
     maxReplicas: 1
     minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
     model:
       args:
         - '--max-model-len'
@@ -262,6 +270,10 @@ spec:
     automountServiceAccountToken: false
     maxReplicas: 1
     minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
     model:
       args:
         - '--max-model-len'

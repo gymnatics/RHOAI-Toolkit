@@ -44,7 +44,8 @@ source "$SCRIPT_DIR/lib/common.sh" 2>/dev/null || {
 # Default values
 NAMESPACE="${NAMESPACE:-maas-demo}"
 MODEL_KEY="${MODEL_KEY:-qwen3-4b}"
-TOKEN_AUDIENCE="${TOKEN_AUDIENCE:-maas-default-gateway-sa}"
+# Audience must match what AuthPolicy expects (Kubernetes token review)
+TOKEN_AUDIENCE="${TOKEN_AUDIENCE:-https://kubernetes.default.svc}"
 
 ################################################################################
 # Helper Functions
@@ -428,20 +429,42 @@ cmd_ratelimit_check() {
 }
 
 ################################################################################
-# Command: Fix All
+# Command: Fix All (Engineer-recommended steps)
 ################################################################################
 
 cmd_fix_all() {
-    print_header "Apply All Tier Fixes"
+    print_header "Apply All Tier Fixes (Engineer-Recommended)"
     check_logged_in || return 1
     
+    # Step 1: Label gateway as NOT managed by RHOAI
+    print_step "Step 1: Labeling gateway as not managed by RHOAI..."
+    oc label gateway maas-default-gateway -n openshift-ingress \
+        opendatahub.io/managed=false --overwrite 2>/dev/null && \
+        print_success "Gateway labeled as not managed" || \
+        print_warning "Could not label gateway (may not exist yet)"
+    
+    # Step 2: Remove conflicting AuthPolicy created by RHOAI
+    print_step "Step 2: Removing conflicting maas-default-gateway-authn AuthPolicy..."
+    oc delete authpolicy maas-default-gateway-authn -n openshift-ingress --ignore-not-found 2>/dev/null && \
+        print_success "Conflicting AuthPolicy removed" || \
+        print_info "AuthPolicy not found (already removed)"
+    
+    # Step 3: Apply AuthPolicy fix (if needed)
+    echo ""
     cmd_authpolicy
+    
+    # Step 4: Apply combined TokenRateLimitPolicy
     echo ""
     cmd_ratelimit
+    
+    # Step 5: Clear caches
     echo ""
     cmd_clear_caches
     
     print_success "All fixes applied!"
+    echo ""
+    echo "IMPORTANT: Do NOT use the UI to create or manage tiers."
+    echo "Use CLI/API only for tier management."
 }
 
 ################################################################################
@@ -483,11 +506,23 @@ cmd_model() {
         return 0
     fi
     
+    # Get model info from catalog
+    if ! parse_model_info "$MODEL_KEY"; then
+        print_error "Model '$MODEL_KEY' not found in catalog"
+        print_info "Available models:"
+        list_catalog_models
+        return 1
+    fi
+    
     print_step "Deploying model: $MODEL_KEY"
+    print_info "Display name: $MODEL_DISPLAY_NAME"
+    print_info "URI: $MODEL_URI"
+    print_info "Tool parser: $TOOL_PARSER"
     
     if [ -f "$SCRIPT_DIR/manifests/llminferenceservice.yaml" ]; then
         export MODEL_NAME="$MODEL_KEY"
         export AUTH_ENABLED="true"
+        # MODEL_DISPLAY_NAME, MODEL_URI, TOOL_PARSER already exported by parse_model_info
         envsubst < "$SCRIPT_DIR/manifests/llminferenceservice.yaml" | oc apply -f -
     else
         print_error "Model manifest not found"
@@ -530,7 +565,8 @@ cmd_tokens() {
     echo ""
     
     for tier in free premium enterprise; do
-        echo "=== ${tier^^} TIER ==="
+        local tier_upper=$(echo "$tier" | tr '[:lower:]' '[:upper:]')
+        echo "=== ${tier_upper} TIER ==="
         oc create token "tier-${tier}-sa" -n "$NAMESPACE" \
             --duration="$duration" \
             --audience="$TOKEN_AUDIENCE" 2>/dev/null || echo "Failed to generate token"
@@ -577,7 +613,8 @@ cmd_test() {
     
     local cluster_domain
     cluster_domain=$(get_cluster_domain)
-    local endpoint="maas-api.${cluster_domain}"
+    # Use inference-gateway endpoint (not maas-api which doesn't exist)
+    local endpoint="inference-gateway.${cluster_domain}"
     
     echo "Endpoint: https://$endpoint"
     echo "Namespace: $NAMESPACE"
@@ -597,7 +634,8 @@ cmd_test_tier() {
     if [ -z "$endpoint" ]; then
         local cluster_domain
         cluster_domain=$(get_cluster_domain)
-        endpoint="maas-api.${cluster_domain}"
+        # Use inference-gateway endpoint (not maas-api which doesn't exist)
+        endpoint="inference-gateway.${cluster_domain}"
     fi
     
     local tier_upper

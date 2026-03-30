@@ -1,0 +1,255 @@
+---
+description: Scripts reference - all scripts in scripts/ directory
+globs: scripts/*.sh
+alwaysApply: false
+---
+
+# Scripts Reference
+
+## Installation Scripts
+
+### scripts/install-rhoai-33.sh (1100+ lines)
+Full RHOAI 3.3 installation with all prerequisites.
+
+**Usage:**
+```bash
+./scripts/install-rhoai-33.sh [OPTIONS]
+  --skip-prerequisites    Skip NFD, GPU, Kueue, cert-manager
+  --skip-rhcl            Skip RHCL/Kuadrant (no MaaS auth)
+  --skip-maas            Skip MaaS configuration
+  --skip-node-scaling    Skip automatic worker/GPU node scaling
+  --no-llmd              Don't configure llm-d Gateway
+  --channel <channel>    RHOAI channel (fast-3.x, stable-3.3)
+  --domain <domain>      Cluster domain
+  --timeout <seconds>    Wait timeout (default: 600)
+```
+
+**Installation Order:**
+1. Check prerequisites (OCP 4.19+, cluster-admin)
+2. Scale cluster nodes (workers to 2, create GPU machineset)
+3. Install operators: NFD → GPU → Kueue → cert-manager → LWS
+4. Install RHCL (Service Mesh 3 → Kuadrant → Istio → Authorino TLS)
+5. Create inference gateways (maas-default-gateway, openshift-ai-inference)
+6. Enable user workload monitoring
+7. Install RHOAI operator (interactive channel selection)
+8. Create DataScienceCluster
+9. Enable dashboard features, create hardware profile
+
+### scripts/install-rhoai-minimal.sh
+Minimal RHOAI installation with operator selection.
+
+### scripts/setup-maas.sh (980 lines)
+Version-aware MaaS setup.
+
+**Auto-detects RHOAI version:**
+- **3.3+**: Enables `modelsAsService` in DSC, creates inference gateway
+- **3.2-**: Legacy kustomize-based setup with maas-api namespace
+
+**Steps (3.3+):**
+1. Install RHCL operator
+2. Enable MaaS in DataScienceCluster
+3. Create GatewayClass and Gateway
+4. Enable dashboard features
+5. Restart controllers
+
+**Steps (Legacy):**
+1. Install RHCL operator
+2. Create Kuadrant instance
+3. Configure Authorino TLS
+4. Create GatewayClass
+5. Create maas-api namespace
+6. Deploy MaaS API via kustomize
+7. Configure audience policy
+8. Restart controllers
+
+## GPU Scripts
+
+### scripts/create-gpu-machineset.sh (760 lines)
+Create GPU MachineSet for AWS.
+
+**Usage:**
+```bash
+./scripts/create-gpu-machineset.sh                    # Interactive
+./scripts/create-gpu-machineset.sh --spot             # With spot default
+./scripts/create-gpu-machineset.sh --instance-type g6e.4xlarge --spot --apply
+```
+
+**Options:**
+```
+--instance-type TYPE   g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.48xlarge
+--spot                 Use spot instances (up to 90% savings)
+--spot-max-price PRICE Maximum spot price per hour
+--az ZONE              Availability zone
+--replicas N           Number of replicas (default: 0)
+--apply                Apply immediately
+```
+
+**Instance Types:**
+| Type | GPU | vCPU | RAM | Price |
+|------|-----|------|-----|-------|
+| g6e.xlarge | 1x L40S | 4 | 16GB | ~$0.69/hr |
+| g6e.2xlarge | 1x L40S | 8 | 32GB | ~$1.10/hr |
+| g6e.4xlarge | 1x L40S | 16 | 64GB | ~$1.92/hr |
+| p5.48xlarge | 8x H100 | 192 | 2TB | ~$98/hr |
+
+**Key Changes from Worker:**
+- machine-role: worker → gpu-worker
+- Add label: node-role.kubernetes.io/gpu-worker
+- Add taint: nvidia.com/gpu:NoSchedule
+- Change instanceType to GPU instance
+
+### scripts/fix-gpu-resourceflavor.sh
+Fix Kueue ResourceFlavor for GPU nodes with taints.
+
+### scripts/setup-gpu-scheduling.sh
+Configure GPU scheduling with Kueue.
+
+## Model Storage Scripts
+
+### scripts/setup-model-storage.sh
+Deploy MinIO S3-compatible storage for HuggingFace models.
+
+**Usage:**
+```bash
+./scripts/setup-model-storage.sh [OPTIONS]
+  -n, --namespace NAME      Namespace for MinIO (default: model-storage)
+  -b, --bucket NAME         Bucket name (default: models)
+  --storage-size SIZE       PVC size (default: 200Gi)
+  --minio-user USER         MinIO username (default: minio)
+  --minio-password PASS     MinIO password (default: minio123)
+  --skip-data-connection    Skip creating RHOAI data connection
+  --data-connection-ns NS   Namespace for data connection
+```
+
+**What it does:**
+1. Creates namespace with RHOAI dashboard label
+2. Deploys MinIO (Deployment, Service, Routes)
+3. Creates PVC for model storage
+4. Creates S3 bucket
+5. Creates RHOAI data connection secrets (`aws-connection-minio`, `aws-connection-my-storage`)
+
+### scripts/download-model.sh
+Download models from HuggingFace to S3 (MinIO) or PVC.
+
+**Usage:**
+```bash
+./scripts/download-model.sh <s3|pvc> <model1> [model2] ...
+
+# Examples:
+./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct
+./scripts/download-model.sh pvc meta-llama/Llama-3-8B-Instruct
+HF_TOKEN=hf_xxx ./scripts/download-model.sh s3 meta-llama/Llama-3-8B-Instruct
+```
+
+**Environment Variables:**
+- `HF_TOKEN` - HuggingFace token for gated models
+- `NAMESPACE` - Target namespace (default: model-storage)
+- `MINIO_NAMESPACE` - MinIO namespace (default: model-storage)
+- `BUCKET_NAME` - S3 bucket name (default: models)
+
+**Prerequisites for S3 mode:**
+Run `setup-model-storage.sh` first to deploy MinIO.
+
+## Model Deployment Scripts
+
+### scripts/serve-model.sh
+Deploy models with vLLM or llm-d.
+
+### scripts/deploy-llmd-model.sh
+Deploy LLMInferenceService (llm-d runtime).
+
+### scripts/deploy-qwen3-4b-with-tools.sh
+Deploy Qwen3-4B with tool calling enabled.
+
+### scripts/add-model-to-playground.sh
+Add deployed model to GenAI Playground.
+
+## Hardware Profile Scripts
+
+### scripts/create-hardware-profile.sh
+Create custom GPU hardware profile.
+
+### scripts/create-hardware-profile-quick.sh
+Create pre-configured profiles (Small/Medium/Large).
+
+### scripts/create-hardware-profile-in-namespace.sh
+Create hardware profile in specific namespace.
+
+### scripts/create-project-hardware-profiles.sh
+Create profiles for project namespaces.
+
+### scripts/fix-hardware-profile.sh
+Fix hardware profile issues.
+
+## Operator Management Scripts
+
+### scripts/check-operator-install-status.sh
+Check status of all RHOAI-related operators.
+
+### scripts/check-pending-installplans.sh
+Find and approve pending InstallPlans.
+
+### scripts/approve-csrs.sh
+Approve pending Certificate Signing Requests.
+
+## MCP & LlamaStack Scripts
+
+### scripts/manage-mcp-servers.sh
+Manage MCP server configurations.
+
+### scripts/setup-mcp-servers.sh
+Setup MCP servers for tool calling.
+
+### scripts/setup-llmd.sh
+Setup llm-d serving runtime.
+
+## Configuration Scripts
+
+### scripts/enable-genai-maas.sh
+Enable GenAI and MaaS features.
+
+### scripts/enable-dashboard-features.sh
+Enable RHOAI dashboard features.
+
+### scripts/manage-kubeconfig.sh
+Manage kubeconfig files.
+
+### scripts/refresh-aws-credentials.sh
+Refresh AWS credentials.
+
+### scripts/diagnose-aws-credentials.sh
+Diagnose AWS credential issues.
+
+### scripts/check-aws-prerequisites.sh
+Check AWS prerequisites.
+
+## Security Scripts
+
+### scripts/check-maas-security.sh
+Check MaaS security configuration.
+
+### scripts/scan-for-secrets.sh
+Scan for exposed secrets.
+
+### scripts/install-pre-commit-hook.sh
+Install pre-commit hooks.
+
+## Cleanup Scripts
+
+### scripts/cleanup-all.sh
+Clean up all RHOAI resources.
+
+## Guardrails Scripts
+
+### scripts/deploy-guardrails.sh
+Deploy TrustyAI Guardrails Orchestrator.
+
+## Kuadrant/Istio Scripts
+
+### scripts/fix-kuadrant-istio.sh
+Fix Kuadrant-Istio integration issues.
+
+## OpenShift Installation
+
+### scripts/openshift-installer-master.sh
+Master OpenShift installation script.

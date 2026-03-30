@@ -1,0 +1,258 @@
+---
+description: rhoai-toolkit.sh menu structure and functions
+globs: rhoai-toolkit.sh
+alwaysApply: false
+---
+
+# rhoai-toolkit.sh Menu Structure
+
+## Main Menu (show_main_menu)
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║                    Main Menu                                   ║
+╚════════════════════════════════════════════════════════════════╝
+
+RHOAI 3.x (Current):
+1) Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) [Full]
+2) Minimal RHOAI 3.x Setup (choose operators) [Flexible]
+3) Install RHOAI 3.3 [NEW - Recommended]
+
+RHOAI 2.x / Workshop:
+4) Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop)
+5) Install RHOAI 2.x Only [2.25, 2.22, 2.19]
+
+Management & Tools:
+6) RHOAI Management (configure features, deploy models, etc.)
+7) Create GPU MachineSet
+8) GPU & ClusterPolicy Management [NVIDIA]
+9) Configure Kubeconfig [Connection]
+h) Help
+0) Exit
+```
+
+## RHOAI Management Menu (show_rhoai_management_menu)
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║                 RHOAI Management Menu                          ║
+╚════════════════════════════════════════════════════════════════╝
+
+1) Model Management →
+2) AI Services & Infrastructure →
+3) Demos [Version-Aware] →
+4) RHOAI 3.2+ Features [NEW] →
+5) Dashboard & Configuration
+6) Quick Start Wizard ✨
+7) Day 2 Operations
+8) Troubleshooting & Fixes [Fixes]
+0) Back to Main Menu
+```
+
+## Model Management Submenu (show_model_management_submenu)
+
+```
+1) Deploy Model - Interactive deployment
+2) Add Model to Playground - Test in GenAI Studio
+3) Create GPU Hardware Profile (Custom)
+4) Quick GPU Profile Setup [Recommended]
+0) Back
+```
+
+## AI Services Submenu (show_ai_services_submenu)
+
+```
+Model as a Service (MaaS):
+1) Setup MaaS [Version-Aware]
+
+LlamaStack:
+2) Setup LlamaStack (Generic)
+3) Enable LlamaStack Operator
+
+Feature Store (Feast):
+4) Feature Store Management →
+
+MCP Servers (Tool Calling):
+5) MCP Server Management →
+
+0) Back
+```
+
+## Feature Store Submenu (show_feast_submenu)
+
+```
+1) Enable Feast Operator
+2) Setup Custom Feature Store
+3) Show Feature Store Status
+4) Diagnose Feature Store [Version-Aware]
+5) Delete Feature Store
+6) Run feast apply
+7) Run feast materialize
+0) Back
+```
+
+## Demos Submenu (show_demos_submenu)
+
+```
+Feature Store:
+1) Deploy Banking Demo (Feast)
+
+Chat & AI Assistants:
+2) Deploy Open WebUI [Recommended]
+3) Deploy LlamaStack Demo
+
+Benchmarking & Testing:
+4) Deploy GuideLLM
+
+AI Safety:
+5) Deploy Guardrails Demo [TrustyAI]
+
+API Gateway:
+6) MaaS Demo [Interactive]
+
+0) Back
+```
+
+## RHOAI 3.2+ Features Submenu (show_rhoai32_features_submenu)
+
+```
+Model Serving (llm-d):
+1) Setup llm-d Infrastructure [Required]
+2) Deploy LLMInferenceService
+
+New Operators:
+3) Enable MLflow Operator [NEW]
+4) Enable LlamaStack Operator
+
+Observability:
+5) Enable Cluster Monitoring for KServe
+6) Configure DSCInitialization Observability
+
+Configuration:
+7) Setup MCP Servers ConfigMap (3.2 format)
+
+0) Back
+```
+
+## Troubleshooting Submenu (show_troubleshooting_submenu)
+
+```
+GPU / CUDA Issues:
+1) Fix GPU Operator CUDA Compatibility [Common Fix]
+2) Pin NVIDIA Driver Version (CUDA 12.8)
+3) Check GPU Operator Status
+4) Uncordon GPU Nodes
+
+Operator Issues:
+5) Fix Operator Channel Issues
+6) Check All Operator Status
+
+Model Serving Issues:
+7) Restart Failed Model Pods
+8) Restart RHOAI Controllers
+
+0) Back
+```
+
+## GPU & ClusterPolicy Menu (show_gpu_clusterpolicy_menu)
+
+```
+ClusterPolicy:
+1) Show ClusterPolicy Status
+2) Create/Apply ClusterPolicy
+3) Delete ClusterPolicy
+
+GPU Operator:
+4) Check GPU Operator Status
+5) Downgrade GPU Operator to v24.6
+6) Pin NVIDIA Driver Version
+
+GPU Nodes:
+7) Show GPU Nodes
+8) Uncordon GPU Nodes
+9) Run nvidia-smi on GPU Node
+
+0) Back
+```
+
+## Key Functions in rhoai-toolkit.sh
+
+### Helper Functions
+```bash
+print_banner()                      # Display main banner
+print_header(text)                  # Section header
+print_step(text)                    # Step indicator
+print_success(text)                 # Success message
+print_error(text)                   # Error message
+print_warning(text)                 # Warning message
+print_info(text)                    # Info message
+```
+
+### CSR Approval
+```bash
+approve_pending_csrs()              # Approve Certificate Signing Requests
+```
+
+### Kubeconfig Management
+```bash
+configure_kubeconfig_menu()         # Interactive kubeconfig setup
+```
+
+### GPU Management
+```bash
+show_gpu_status()                   # Display GPU node status
+run_nvidia_smi()                    # Run nvidia-smi on GPU node
+uncordon_gpu_nodes()                # Re-enable scheduling
+downgrade_gpu_operator()            # Downgrade to v24.6
+show_clusterpolicy_status()         # Show ClusterPolicy
+create_clusterpolicy()              # Create/apply ClusterPolicy
+delete_clusterpolicy()              # Delete ClusterPolicy
+```
+
+### Model Management
+```bash
+deploy_model_menu()                 # Model deployment submenu
+add_model_to_playground()           # Add to GenAI Studio
+create_hardware_profile_menu()      # Hardware profile creation
+quick_gpu_profile_setup()           # Pre-configured profiles
+```
+
+### MaaS & LlamaStack
+```bash
+setup_maas_menu()                   # MaaS setup (version-aware)
+setup_llamastack_menu()             # LlamaStack setup
+enable_llamastack_operator()        # Enable in DSC
+```
+
+### Feature Store
+```bash
+feast_submenu()                     # Feast management menu
+run_feast_apply()                   # Execute feast apply
+run_feast_materialize()             # Execute feast materialize
+```
+
+### Demos
+```bash
+deploy_open_webui()                 # Deploy Open WebUI
+deploy_guidellm()                   # Deploy GuideLLM
+deploy_llamastack_demo()            # Deploy LlamaStack demo
+```
+
+### Troubleshooting
+```bash
+fix_gpu_cuda_compatibility()        # Downgrade GPU operator
+check_gpu_operator_status()         # Show operator status
+restart_failed_model_pods()         # Restart stuck pods
+restart_rhoai_controllers()         # Restart controllers
+check_all_operator_status()         # Show all operators
+```
+
+### Quick Start Wizard
+```bash
+quick_start_wizard()                # Guided post-install workflow
+```
+
+### Day 2 Operations
+```bash
+day2_operations_menu()              # Day 2 tasks menu
+```

@@ -81,6 +81,7 @@ if [ "$DELETE_MODE" = true ]; then
     oc delete service maas-demo -n "$APP_NAMESPACE" --ignore-not-found=true
     oc delete deployment maas-demo -n "$APP_NAMESPACE" --ignore-not-found=true
     oc delete secret maas-demo-token -n "$APP_NAMESPACE" --ignore-not-found=true
+    oc delete secret maas-demo-tier-tokens -n "$APP_NAMESPACE" --ignore-not-found=true
     oc delete configmap maas-demo-code -n "$APP_NAMESPACE" --ignore-not-found=true
     oc delete serviceaccount maas-demo-app -n "$APP_NAMESPACE" --ignore-not-found=true
     
@@ -182,6 +183,43 @@ oc create secret generic maas-demo-token \
     -n "$APP_NAMESPACE" \
     --dry-run=client -o yaml | oc apply -f -
 print_success "Secret created"
+
+# Generate tier tokens (if tier ServiceAccounts exist)
+print_step "Generating tier tokens..."
+FREE_TOKEN=""
+PREMIUM_TOKEN=""
+ENTERPRISE_TOKEN=""
+
+# Check if tier ServiceAccounts exist and generate tokens
+if oc get sa tier-free-sa -n "$APP_NAMESPACE" &>/dev/null; then
+    FREE_TOKEN=$(oc create token tier-free-sa -n "$APP_NAMESPACE" --duration=24h --audience=https://kubernetes.default.svc 2>/dev/null || echo "")
+fi
+if oc get sa tier-premium-sa -n "$APP_NAMESPACE" &>/dev/null; then
+    PREMIUM_TOKEN=$(oc create token tier-premium-sa -n "$APP_NAMESPACE" --duration=24h --audience=https://kubernetes.default.svc 2>/dev/null || echo "")
+fi
+if oc get sa tier-enterprise-sa -n "$APP_NAMESPACE" &>/dev/null; then
+    ENTERPRISE_TOKEN=$(oc create token tier-enterprise-sa -n "$APP_NAMESPACE" --duration=24h --audience=https://kubernetes.default.svc 2>/dev/null || echo "")
+fi
+
+# Create tier tokens secret if any tier tokens were generated
+if [ -n "$FREE_TOKEN" ] || [ -n "$PREMIUM_TOKEN" ] || [ -n "$ENTERPRISE_TOKEN" ]; then
+    print_step "Creating tier tokens secret..."
+    oc create secret generic maas-demo-tier-tokens \
+        --from-literal=free="${FREE_TOKEN:-placeholder}" \
+        --from-literal=premium="${PREMIUM_TOKEN:-placeholder}" \
+        --from-literal=enterprise="${ENTERPRISE_TOKEN:-placeholder}" \
+        -n "$APP_NAMESPACE" \
+        --dry-run=client -o yaml | oc apply -f -
+    print_success "Tier tokens secret created"
+    
+    # Report which tiers are available
+    [ -n "$FREE_TOKEN" ] && print_info "  - Free tier token: ✓"
+    [ -n "$PREMIUM_TOKEN" ] && print_info "  - Premium tier token: ✓"
+    [ -n "$ENTERPRISE_TOKEN" ] && print_info "  - Enterprise tier token: ✓"
+else
+    print_warning "No tier ServiceAccounts found - tier switching will not work"
+    print_info "Run './maas-toolkit.sh tiers' to create tier ServiceAccounts"
+fi
 
 # Create Deployment
 print_step "Creating Deployment..."

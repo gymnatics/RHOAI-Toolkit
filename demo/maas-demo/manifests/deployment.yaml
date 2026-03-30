@@ -49,6 +49,24 @@ spec:
             secretKeyRef:
               name: maas-demo-token
               key: token
+        - name: MAAS_TIER_FREE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: maas-demo-tier-tokens
+              key: free
+              optional: true
+        - name: MAAS_TIER_PREMIUM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: maas-demo-tier-tokens
+              key: premium
+              optional: true
+        - name: MAAS_TIER_ENTERPRISE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: maas-demo-tier-tokens
+              key: enterprise
+              optional: true
         volumeMounts:
         - name: app-code
           mountPath: /app

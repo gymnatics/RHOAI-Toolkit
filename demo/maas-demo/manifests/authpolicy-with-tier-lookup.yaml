@@ -7,6 +7,12 @@
 # resolve user tiers. This manifest adds the metadata section to call maas-api
 # for tier lookup, enabling tier-based rate limiting.
 #
+# CRITICAL FIX: The body expression includes BOTH groups AND username because:
+# - Kubernetes TokenReview only returns system groups (system:authenticated, etc.)
+# - It does NOT return OpenShift groups (tier-premium-users, etc.)
+# - By including the username, we can match ServiceAccount-specific tier mappings
+#   in the tier-to-group-mapping ConfigMap
+#
 # IMPORTANT: The odh-model-controller will recreate the AuthPolicy if the model
 # is redeployed. You may need to reapply this patch after model changes.
 #
@@ -55,6 +61,7 @@ spec:
             expression: auth.identity.user.username
         priority: 1
     # Tier lookup - calls maas-api to resolve user's tier based on group membership
+    # CRITICAL: Include username in groups array for SA-specific tier matching
     metadata:
       matchedTier:
         http:
@@ -62,7 +69,8 @@ spec:
           method: POST
           contentType: application/json
           body:
-            expression: '{ "groups": auth.identity.user.groups }'
+            # Include username in groups array so tier lookup can match SA-specific mappings
+            expression: '{ "groups": auth.identity.user.groups + [auth.identity.user.username] }'
         cache:
           key:
             selector: auth.identity.user.username

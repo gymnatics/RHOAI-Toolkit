@@ -1,0 +1,244 @@
+---
+description: Library functions reference - rhoai.sh, operators.sh, model-deployment.sh
+globs: lib/functions/*.sh
+alwaysApply: false
+---
+
+# Library Functions Reference
+
+## lib/functions/rhoai.sh (2400+ lines)
+
+Core RHOAI installation and configuration functions.
+
+### Channel & Version Functions
+```bash
+get_rhoai_channel(version)          # Get channel for version (2.x → stable, 3.x → fast-3.x)
+get_available_rhoai_channels()      # Fetch channels from cluster
+get_default_rhoai_channel()         # Get cluster's default channel
+select_rhoai_channel()              # Interactive channel selection (sets SELECTED_RHOAI_CHANNEL)
+select_install_plan_approval()      # Choose Automatic/Manual approval
+get_current_install_plan_approval() # Get current approval setting
+```
+
+### Installation Functions
+```bash
+install_rhoai_operator()            # Install with specific version
+install_rhoai_operator_interactive() # Interactive install with channel selection
+initialize_rhoai()                  # Create DSCInitialization
+create_datasciencecluster_v1()      # RHOAI 2.x DSC
+create_datasciencecluster_v2()      # RHOAI 3.x DSC with GenAI/MaaS
+```
+
+### Configuration Functions
+```bash
+configure_rhoai_dashboard()         # Enable GenAI Studio, MaaS in dashboard
+create_gpu_hardware_profile()       # Create GPU HardwareProfile
+configure_gpu_resourceflavor()      # Configure Kueue ResourceFlavor for GPU
+enable_user_workload_monitoring()   # Enable monitoring ConfigMap
+enable_cluster_monitoring_for_kserve() # Enable KServe metrics
+configure_dsci_observability()      # Configure metrics/traces storage
+```
+
+### MaaS & llm-d Functions
+```bash
+setup_mcp_servers_configmap(namespace) # Create MCP servers ConfigMap (3.2 format)
+setup_llmd_infrastructure()         # GatewayClass, Gateway, LWS, RHCL
+setup_rhcl_for_llmd()              # Configure Kuadrant/Authorino for llm-d
+deploy_llminferenceservice(ns, name, uri) # Deploy LLMInferenceService
+```
+
+### Feature Store (Feast) Functions
+```bash
+check_feast_operator()              # Check if feastoperator is Managed
+enable_feast_operator()             # Enable in DSC
+deploy_banking_demo(namespace)      # Deploy banking feature store demo
+setup_feature_store(ns, git_url, ref, project) # Generic FeatureStore setup
+show_feast_status()                 # Show all FeatureStores
+diagnose_feature_store_interactive() # Troubleshoot visibility issues
+delete_feature_store(ns, name)      # Delete FeatureStore
+```
+
+### NVIDIA Driver Functions
+```bash
+pin_nvidia_driver_version()         # Pin to 570.195.03 for CUDA 12.8
+```
+
+### MLflow Functions
+```bash
+enable_mlflow_operator()            # Enable MLflow in DSC
+```
+
+### Demo Functions
+```bash
+deploy_guardrails_demo()            # TrustyAI Guardrails Orchestrator
+run_maas_demo()                     # CLI/Web MaaS demo
+```
+
+## lib/functions/operators.sh (350 lines)
+
+Operator installation and management.
+
+### Installation Functions
+```bash
+install_nfd_operator()              # Node Feature Discovery
+install_gpu_operator()              # NVIDIA GPU Operator + ClusterPolicy
+install_rhcl_operator()             # Kuadrant/Authorino (creates Kuadrant instance)
+install_lws_operator()              # LeaderWorkerSet
+install_certmanager_operator()      # cert-manager (Kueue dependency)
+install_kueue_operator()            # Kueue (installs cert-manager first)
+```
+
+### Authorino Functions
+```bash
+wait_for_authorino_service()        # Wait for Authorino, restart if needed
+configure_authorino_tls()           # Annotate service, apply TLS config
+```
+
+## lib/functions/model-deployment.sh (1300 lines)
+
+Interactive model deployment supporting multiple runtimes.
+
+### Main Function
+```bash
+deploy_model_interactive()          # Full interactive deployment wizard
+deploy_llmd_model_interactive()     # Alias for backward compatibility
+```
+
+### Deployment Flow
+1. **Runtime Selection**: Detects llm-d, vLLM (Red Hat), vLLM (Community)
+2. **Model Selection**: Pre-defined catalog from quay.io/redhat-ai-services/modelcar-catalog
+3. **Namespace Selection**: List existing or create new
+4. **Resource Configuration**: Hardware profiles or manual (GPU, CPU, Memory)
+5. **Tool Calling**: Enable with appropriate parser (hermes, llama3_json, mistral)
+6. **Authentication**: Enable/disable with ServiceAccount creation
+
+### Supported Models (from modelcar-catalog)
+- Qwen3-4B (recommended for demos)
+- Llama 3.2-3B Instruct
+- Llama 3.1-8B Instruct
+- Granite 3.0-8B / 3.1-8B Instruct
+- Mistral 7B Instruct v0.3
+- Custom URI
+
+### Runtime-Specific Deployment
+- **llm-d**: Creates LLMInferenceService with tolerations, env vars
+- **vLLM (Red Hat)**: Creates Secret + ServingRuntime + InferenceService + Route
+- **vLLM (Community)**: Same as above with security hardening, CUDA 13+ support
+
+## lib/utils/os-compat.sh (380 lines)
+
+Cross-platform compatibility layer.
+
+### OS Detection
+```bash
+detect_os()                         # Returns "macos" or "linux"
+OS_TYPE                             # Exported variable
+```
+
+### Grep Compatibility
+```bash
+grep_perl(pattern, ...)             # Portable grep -P replacement
+grep_extract(prefix, text)          # Extract value after prefix
+```
+
+### Base64 Compatibility
+```bash
+base64_encode(text)                 # Encode without newlines
+base64_decode(encoded)              # Decode (handles -D vs -d)
+```
+
+### Sed Compatibility
+```bash
+sed_inplace(pattern, file)          # In-place edit (handles macOS -i '')
+```
+
+### Arithmetic
+```bash
+calc_half(value, min)               # Integer division by 2
+parse_memory_gi(mem_string)         # Extract number from "16Gi"
+parse_cpu(cpu_string)               # Extract cores from "4" or "4000m"
+```
+
+### Other Utilities
+```bash
+date_iso8601()                      # ISO 8601 timestamp
+date_timestamp()                    # Unix timestamp
+timeout_cmd(duration, cmd...)       # Portable timeout
+readlink_full(path)                 # Resolve symlinks
+stat_size(file)                     # File size in bytes
+stat_mtime(file)                    # Modification time
+check_required_tools()              # Verify oc, kubectl, jq, curl, git
+```
+
+## lib/utils/rhoai-version.sh (490 lines)
+
+Version detection and compatibility utilities.
+
+### Version Detection
+```bash
+detect_rhoai_version()              # Sets RHOAI_VERSION, RHOAI_MAJOR_VERSION, RHOAI_MINOR_VERSION
+get_rhoai_version()                 # Returns full version string
+get_rhoai_major_minor()             # Returns "3.3" format
+```
+
+### Version Comparison
+```bash
+is_rhoai_33_or_higher()             # Returns 0 if >= 3.3
+is_rhoai_32_or_higher()             # Returns 0 if >= 3.2
+is_rhoai_3x()                       # Returns 0 if 3.x
+is_rhoai_2x()                       # Returns 0 if 2.x
+```
+
+### MaaS Configuration
+```bash
+get_maas_endpoint()                 # Sets MAAS_ENDPOINT, MAAS_NAMESPACE (version-aware)
+```
+
+### Dashboard URL
+```bash
+get_dashboard_url()                 # Returns URL (3.3+: data-science-gateway, else: rhods-dashboard)
+```
+
+### Feature Store Utilities
+```bash
+get_featurestore_labels()           # Required labels for version
+check_featurestore_labels(ns, name) # Verify labels
+fix_featurestore_labels(ns, name)   # Add missing labels
+check_featurestore_registry(ns, name) # Verify restAPI setting
+fix_featurestore_registry(ns, name) # Enable restAPI
+diagnose_featurestore(ns, name)     # Full diagnostic with auto-fix option
+```
+
+### Model Serving CRD Detection
+```bash
+is_llmd_available()                 # Check if LLMInferenceService CRD exists
+is_kserve_available()               # Check if InferenceService CRD exists
+list_deployed_models([namespace])   # List all models (both CR types)
+```
+
+**RHOAI 3.3 CR Usage** (determined by runtime choice, not version):
+- `LLMInferenceService` (v1alpha1) - ONLY for llm-d runtime (required for MaaS)
+- `InferenceService` (v1beta1) - All other runtimes (vLLM, OpenVINO, Caikit-TGIS, NIM, etc.)
+
+See `lib/functions/model-deployment.sh` for actual deployment logic.
+
+### Info Display
+```bash
+print_rhoai_info()                  # Display version, dashboard URL, component status
+```
+
+## lib/utils/common.sh (220 lines)
+
+Common utility functions.
+
+```bash
+get_script_dir()                    # Get script directory
+apply_manifest(file, description)   # Apply YAML with logging
+wait_for_resource(type, name, ns, timeout) # Wait for resource to exist
+check_operator_installed(name, ns)  # Check subscription exists
+wait_for_operator_ready(name, ns, timeout) # Wait for CSV Succeeded
+ensure_namespace(namespace)         # Create namespace if not exists
+get_operator_channel(package, pattern) # Get channel from packagemanifest
+approve_installplan(sub, ns)        # Approve pending InstallPlan
+wait_for_operator_with_approval(name, ns, timeout) # Wait with auto-approval
+```

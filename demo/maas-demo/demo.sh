@@ -289,54 +289,83 @@ if [ "$APP_ONLY" != true ]; then
 fi
 
 ################################################################################
-# Step 4: Setup Tier ServiceAccounts and AuthPolicy Fix
+# Step 4: Setup Tier ServiceAccounts and Rate Limiting Fixes
 ################################################################################
 
 if [ "$SKIP_TIERS" != true ]; then
-    print_header "Step 4: Tier Setup"
+    print_header "Step 4: Tier Setup & Rate Limiting Fixes"
+    
+    echo ""
+    echo -e "${CYAN}Setting up tier-based rate limiting:${NC}"
+    echo "  - Create tier ServiceAccounts (free, premium, enterprise)"
+    echo "  - Configure tier-to-group-mapping for SA-based tier resolution"
+    echo "  - Apply AuthPolicy with tier lookup"
+    echo "  - Apply TokenRateLimitPolicy with per-tier limits"
+    echo ""
     
     # Use the comprehensive tier setup function from tiers.sh
     # This creates: groups, ServiceAccounts, RBAC, and tokens
     setup_tier_testing "$NAMESPACE"
     
-    # Apply AuthPolicy fix for tier-based rate limiting
-    # This is needed because odh-model-controller creates an AuthPolicy
-    # that overrides the tier lookup functionality
-    print_step "Checking AuthPolicy for tier lookup..."
-    if check_authpolicy_tier_fix_needed; then
-        apply_authpolicy_tier_fix "$SCRIPT_DIR/manifests"
+    # Wait for AuthPolicy to be created by odh-model-controller
+    # The AuthPolicy is created when the LLMInferenceService is deployed
+    print_step "Waiting for AuthPolicy to be created..."
+    for i in {1..30}; do
+        if oc get authpolicy maas-default-gateway-authn -n openshift-ingress &>/dev/null; then
+            print_success "AuthPolicy found"
+            break
+        fi
+        sleep 2
+    done
+    
+    # Apply ALL tier fixes in the correct order:
+    # 1. Fix tier-to-group-mapping ConfigMap (use SA usernames instead of OpenShift groups)
+    #    - Kubernetes TokenReview doesn't return OpenShift groups, only system groups
+    #    - By using SA usernames as "groups", we can properly resolve tiers
+    # 2. Apply AuthPolicy with tier lookup (includes username in groups array)
+    #    - The default AuthPolicy doesn't have tier lookup
+    #    - We need metadata section to call maas-api for tier resolution
+    #    - We need response section to inject tier into auth.identity.tier
+    # 3. Delete conflicting UI-created TokenRateLimitPolicies
+    #    - UI creates individual policies per tier which override each other
+    # 4. Apply combined TokenRateLimitPolicy
+    #    - Single policy with all tiers to avoid conflicts
+    # 5. Clear caches (restart maas-api, Authorino, Limitador)
+    #    - Ensure fresh tier resolution and rate limit counters
+    
+    print_step "Applying tier rate limiting fixes..."
+    
+    # Fix tier-to-group-mapping to use SA usernames
+    fix_tier_to_group_mapping "$NAMESPACE"
+    
+    # Apply AuthPolicy with tier lookup (includes username in groups)
+    if [ -f "$SCRIPT_DIR/manifests/authpolicy-with-tier-lookup.yaml" ]; then
+        apply_authpolicy_with_tier_lookup "$SCRIPT_DIR/manifests"
     else
-        print_success "AuthPolicy tier lookup is configured"
+        fix_authpolicy_username_in_groups
     fi
     
-    # Apply critical tier fixes:
-    # 1. Fix tier-to-group-mapping to use SA usernames (TokenReview doesn't return OpenShift groups)
-    # 2. Patch AuthPolicy to include username in tier lookup
-    # 3. Delete conflicting UI-created TokenRateLimitPolicies
-    # 4. Clear rate limit caches
-    print_step "Applying tier rate limiting fixes..."
-    fix_tier_to_group_mapping "$NAMESPACE"
-    fix_authpolicy_username_in_groups
+    # Delete conflicting UI-created policies
     cleanup_ui_tier_policies
     
-    # Try to apply TokenRateLimitPolicy if CRD exists
+    # Apply TokenRateLimitPolicy if CRD exists
     if check_tokenratelimitpolicy_crd; then
         print_step "Applying TokenRateLimitPolicy..."
         if [ -f "$SCRIPT_DIR/manifests/tiers/tokenratelimitpolicy.yaml" ]; then
             oc apply -f "$SCRIPT_DIR/manifests/tiers/tokenratelimitpolicy.yaml" 2>/dev/null || true
-            print_success "TokenRateLimitPolicy applied"
             
-            # Verify our policy is enforced (not overridden by UI policies)
-            sleep 3
+            # Wait and verify enforcement
+            sleep 5
             local enforced
             enforced=$(oc get tokenratelimitpolicy maas-tier-token-rate-limits -n openshift-ingress \
                 -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}' 2>/dev/null)
             if [ "$enforced" = "True" ]; then
                 print_success "TokenRateLimitPolicy is enforced"
             else
-                print_warning "TokenRateLimitPolicy may not be enforced - checking for conflicts..."
+                print_warning "TokenRateLimitPolicy may not be enforced yet - retrying..."
                 cleanup_ui_tier_policies
                 oc apply -f "$SCRIPT_DIR/manifests/tiers/tokenratelimitpolicy.yaml" 2>/dev/null || true
+                sleep 3
             fi
         fi
     else
@@ -346,6 +375,10 @@ if [ "$SKIP_TIERS" != true ]; then
     
     # Clear caches to ensure fresh tier resolution
     clear_rate_limit_caches
+    
+    # Regenerate tier tokens (in case they expired or were invalidated)
+    print_step "Regenerating tier tokens..."
+    generate_tier_tokens_secret "$NAMESPACE" "maas-demo-tier-tokens" "24h"
 fi
 
 # Exit early if only setting up tiers
@@ -388,6 +421,7 @@ if [ "$SKIP_APP" != true ]; then
     export APP_NAMESPACE="$NAMESPACE"
     export MODEL_NAMESPACE
     export MODEL_NAME
+    # Use maas-api endpoint for RHOAI 3.3+ (supports tier-based rate limiting)
     export MAAS_ENDPOINT="maas-api.${CLUSTER_DOMAIN}"
     
     # Create ConfigMap with app code

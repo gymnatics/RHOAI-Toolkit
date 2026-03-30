@@ -1,0 +1,179 @@
+---
+description: Demo applications - MaaS demo, LlamaStack demo, guardrails
+globs: demo/**/*.sh,demo/**/*.py
+alwaysApply: false
+---
+
+# Demo Applications Reference
+
+## MaaS Demo (demo/maas-demo/)
+
+Interactive Model as a Service demonstration.
+
+### Entry Points
+- `demo-maas.sh` - CLI demo launcher
+- `maas-toolkit.sh` - Full MaaS toolkit
+- `app.py` - Streamlit web interface
+- `demo.sh` - Quick demo script
+- `run-demo.sh` - Run demo with setup
+
+### Library Files (lib/)
+- `common.sh` - Common utilities
+- `infrastructure.sh` - Infrastructure setup
+- `model-catalog.sh` - Model catalog functions
+- `model-discovery.sh` - Discover deployed models
+- `tiers.sh` - Tier management (rate limiting)
+
+### Scripts
+- `deploy-app.sh` - Deploy demo application
+- `setup-demo-model.sh` - Setup demo model
+- `scripts/show-tier-metrics.sh` - Display tier metrics
+
+### Manifests
+- `manifests/deployment.yaml` - Demo deployment
+- `manifests/authpolicy-with-tier-lookup.yaml` - AuthPolicy with tiers
+
+### Features
+- Chat with deployed models
+- Compare model responses
+- View MaaS metrics
+- Tier-based rate limiting demo
+
+## LlamaStack Demo (demo/llamastack-demo/ and llamastack-demo/)
+
+Streamlit chatbot with MCP integration.
+
+### Scripts
+- `scripts/deploy.sh` - Deploy LlamaStack
+- `scripts/setup-multi-project.sh` - Multi-project setup
+- `scripts/test-deployment.sh` - Test deployment
+- `scripts/validate-repo.sh` - Validate repository
+
+### Features
+- Streamlit UI for chat
+- MCP server integration
+- MongoDB for persistence
+- Weather MCP server demo
+
+## Guardrails Demo (demo/guardrails-demo/)
+
+TrustyAI Guardrails Orchestrator demonstration.
+
+### Scripts
+- `test-gateway.sh` - Test gateway configuration
+- `test-guardrails.sh` - Test guardrails functionality
+
+### Features
+- PII detection (email, SSN, credit card, phone)
+- Content filtering
+- TrustyAI integration
+
+## Demo Utilities (demo/)
+
+### MaaS Testing
+- `test-maas-api.sh` - Test MaaS API endpoints
+- `generate-maas-token.sh` - Generate MaaS tokens
+
+### Model Setup
+- `setup-demo-model.sh` - Setup demo model
+
+### RHOAI Detection
+- `lib/rhoai-detect.sh` - Detect RHOAI version for demos
+
+## Common Demo Patterns
+
+### MaaS API Testing
+```bash
+# Generate token
+HOST="https://maas.${CLUSTER_DOMAIN}"
+TOKEN_RESPONSE=$(curl -sSk \
+  -H "Authorization: Bearer $(oc whoami -t)" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"expiration": "10m"}' \
+  "${HOST}/maas-api/v1/tokens")
+TOKEN=$(echo $TOKEN_RESPONSE | jq -r .token)
+
+# List models
+curl -sSk ${HOST}/maas-api/v1/models \
+    -H "Authorization: Bearer $TOKEN" | jq .
+
+# Chat completion
+curl -X POST "${HOST}/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### RHOAI 3.3+ MaaS Testing
+```bash
+# Generate token
+TOKEN=$(oc create token default -n my-namespace --duration=1h)
+
+# Call inference gateway
+curl -X POST "https://inference-gateway.apps.${CLUSTER_DOMAIN}/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Streamlit App Pattern
+```python
+import streamlit as st
+import requests
+
+# Get MaaS endpoint from environment
+MAAS_ENDPOINT = os.getenv("MAAS_ENDPOINT", "https://inference-gateway.apps.cluster.example.com")
+
+def chat_completion(model, messages, token):
+    response = requests.post(
+        f"{MAAS_ENDPOINT}/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": model,
+            "messages": messages
+        }
+    )
+    return response.json()
+```
+
+## Demo Deployment
+
+### Deploy Open WebUI
+```bash
+./rhoai-toolkit.sh → RHOAI Management → Demos → Deploy Open WebUI
+```
+
+### Deploy GuideLLM
+```bash
+./rhoai-toolkit.sh → RHOAI Management → Demos → Deploy GuideLLM
+```
+
+### Deploy Guardrails
+```bash
+./scripts/deploy-guardrails.sh
+# Or: ./rhoai-toolkit.sh → RHOAI Management → Demos → Deploy Guardrails Demo
+```
+
+### Deploy Banking Demo (Feast)
+```bash
+./rhoai-toolkit.sh → RHOAI Management → Demos → Deploy Banking Demo
+```
+
+### Run MaaS Demo
+```bash
+./rhoai-toolkit.sh → RHOAI Management → Demos → MaaS Demo
+# Options:
+# 1) CLI Demo (Terminal)
+# 2) Web Demo (Streamlit)
+# 3) Quick API Test
+```

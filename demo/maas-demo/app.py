@@ -327,11 +327,16 @@ def init_session_state():
     
     # Tier-related state
     if "current_tier" not in st.session_state:
-        st.session_state.current_tier = os.environ.get("MAAS_TIER", "")
+        st.session_state.current_tier = os.environ.get("MAAS_TIER", "free")  # Default to free tier
     if "available_tiers" not in st.session_state:
-        st.session_state.available_tiers = []
+        st.session_state.available_tiers = list(TIERS.keys())  # All tiers available
     if "tier_tokens" not in st.session_state:
-        st.session_state.tier_tokens = {}  # tier -> token mapping
+        # Pre-load tier tokens from environment
+        st.session_state.tier_tokens = {}
+        for tier in TIERS.keys():
+            tier_token = get_tier_token_from_env(tier)
+            if tier_token:
+                st.session_state.tier_tokens[tier] = tier_token
     if "token_usage" not in st.session_state:
         st.session_state.token_usage = {}  # tier -> tokens used
     if "rate_limited" not in st.session_state:
@@ -347,7 +352,13 @@ def init_session_state():
     if "current_model" not in st.session_state:
         st.session_state.current_model = os.environ.get("MAAS_MODEL", "")
     if "token" not in st.session_state:
-        st.session_state.token = os.environ.get("MAAS_TOKEN", "")
+        # Use tier token if available, otherwise fall back to default
+        default_tier = st.session_state.current_tier or "free"
+        tier_token = get_tier_token_from_env(default_tier)
+        if tier_token:
+            st.session_state.token = tier_token
+        else:
+            st.session_state.token = os.environ.get("MAAS_TOKEN", "")
 
 
 def get_api_path(endpoint: str, namespace: str, model: str, path: str, api_mode: str = "auto") -> str:
@@ -709,6 +720,7 @@ def render_sidebar():
                     help="Select tier to test different rate limits"
                 )
                 
+                # Always update token when tier changes
                 if selected_tier != st.session_state.current_tier:
                     st.session_state.current_tier = selected_tier
                     # Try to get tier-specific token from environment
@@ -717,18 +729,21 @@ def render_sidebar():
                         st.session_state.token = tier_token
                         st.session_state.tier_tokens[selected_tier] = tier_token
                         token = tier_token
-                        st.success(f"Switched to {TIERS[selected_tier]['name']} token")
+                        st.success(f"🔄 Switched to {TIERS[selected_tier]['name']} tier!")
+                        st.rerun()  # Force rerun to apply new token
                     # Use cached token if available
                     elif selected_tier in st.session_state.tier_tokens:
                         st.session_state.token = st.session_state.tier_tokens[selected_tier]
                         token = st.session_state.token
+                        st.rerun()
                 
-                # Show if tier tokens are available
+                # Show current tier token status
                 tier_token_available = get_tier_token_from_env(selected_tier) is not None
                 if tier_token_available:
-                    st.caption(f"✅ {TIERS[selected_tier]['name']} token available")
+                    st.caption(f"✅ Using **{TIERS[selected_tier]['name']}** token")
+                    st.caption(f"Rate limit: {TIERS[selected_tier]['description']}")
                 else:
-                    st.caption("⚠️ Using default token (tier may not apply)")
+                    st.warning("⚠️ No tier token - using default")
             else:
                 st.caption("No tiers configured in this namespace")
         

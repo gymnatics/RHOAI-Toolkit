@@ -167,16 +167,25 @@ show_model_management_submenu() {
     echo -e "${CYAN}║                 Model Management                               ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
+    echo -e "${MAGENTA}Model Deployment:${NC}"
     echo -e "${YELLOW}1)${NC} Deploy Model"
     echo "    Interactive model deployment to OpenShift AI"
     echo ""
     echo -e "${YELLOW}2)${NC} Add Model to Playground"
     echo "    Test models interactively in GenAI Studio"
     echo ""
-    echo -e "${YELLOW}3)${NC} Create GPU Hardware Profile (Custom)"
+    echo -e "${MAGENTA}Model Storage (HuggingFace → S3):${NC}"
+    echo -e "${YELLOW}3)${NC} Setup Model Storage (MinIO) ${GREEN}[New]${NC}"
+    echo "    Deploy MinIO S3 storage for HuggingFace models"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
+    echo "    Download models to S3 for deployment"
+    echo ""
+    echo -e "${MAGENTA}Hardware Profiles:${NC}"
+    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (Custom)"
     echo "    Define custom GPU resources for model deployments"
     echo ""
-    echo -e "${YELLOW}4)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
+    echo -e "${YELLOW}6)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
     echo "    Create pre-configured profiles (Small/Medium/Large)"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
@@ -336,7 +345,7 @@ show_rhoai32_features_submenu() {
     echo "    GatewayClass, Gateway, RHCL/Kuadrant for authentication"
     echo ""
     echo -e "${YELLOW}2)${NC} Deploy LLMInferenceService"
-    echo "    Deploy a model using llm-d runtime (new in 3.2)"
+    echo "    Deploy a model using llm-d runtime (RHOAI 3.2+, requires OCP 4.20+)"
     echo ""
     echo -e "${MAGENTA}New Operators:${NC}"
     echo -e "${YELLOW}3)${NC} Enable MLflow Operator ${GREEN}[NEW]${NC}"
@@ -3297,6 +3306,195 @@ deploy_complete_llamastack_demo() {
 }
 
 ################################################################################
+# Model Storage (MinIO + HuggingFace)
+################################################################################
+
+setup_model_storage_interactive() {
+    print_header "Setup Model Storage (MinIO)"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    echo ""
+    
+    # Check if MinIO already exists
+    local existing_ns=""
+    for ns in model-storage demo; do
+        if oc get deployment minio -n "$ns" &>/dev/null 2>&1; then
+            existing_ns="$ns"
+            break
+        fi
+    done
+    
+    if [ -n "$existing_ns" ]; then
+        print_info "MinIO already deployed in namespace: $existing_ns"
+        echo ""
+        local minio_route=$(oc get route minio-console -n "$existing_ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$minio_route" ]; then
+            echo -e "${CYAN}MinIO Console:${NC} https://$minio_route"
+        fi
+        echo ""
+        read -p "Deploy MinIO in a different namespace? (y/N): " deploy_new
+        if [[ ! "$deploy_new" =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+    fi
+    
+    # Get namespace
+    echo ""
+    read -p "Namespace for MinIO [model-storage]: " namespace
+    namespace=${namespace:-model-storage}
+    
+    # Get storage size
+    read -p "Storage size [200Gi]: " storage_size
+    storage_size=${storage_size:-200Gi}
+    
+    # Get bucket name
+    read -p "Bucket name [models]: " bucket_name
+    bucket_name=${bucket_name:-models}
+    
+    # Data connection namespace
+    echo ""
+    echo -e "${CYAN}Data connections allow RHOAI workbenches and model servers to access MinIO.${NC}"
+    read -p "Create data connection in namespace [$namespace]: " dc_ns
+    dc_ns=${dc_ns:-$namespace}
+    
+    echo ""
+    print_step "Running setup-model-storage.sh..."
+    echo ""
+    
+    "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
+        --namespace "$namespace" \
+        --bucket "$bucket_name" \
+        --storage-size "$storage_size" \
+        --data-connection-ns "$dc_ns"
+    
+    return $?
+}
+
+download_hf_model_interactive() {
+    print_header "Download Model from HuggingFace"
+    
+    # Check if logged in
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo ""
+        echo "Please log in first:"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+    
+    print_success "Connected to cluster: $(oc whoami --show-server)"
+    echo ""
+    
+    # Check if MinIO exists
+    local minio_ns=""
+    for ns in model-storage demo; do
+        if oc get deployment minio -n "$ns" &>/dev/null 2>&1; then
+            minio_ns="$ns"
+            break
+        fi
+    done
+    
+    if [ -z "$minio_ns" ]; then
+        print_warning "MinIO not found. Please set up model storage first."
+        echo ""
+        echo "Run option 3 (Setup Model Storage) to deploy MinIO."
+        return 1
+    fi
+    
+    print_info "Found MinIO in namespace: $minio_ns"
+    echo ""
+    
+    # Get model name
+    echo -e "${CYAN}Popular models:${NC}"
+    echo "  - Qwen/Qwen3-8B"
+    echo "  - Qwen/Qwen2.5-7B-Instruct"
+    echo "  - meta-llama/Llama-3.1-8B-Instruct (requires HF token)"
+    echo "  - mistralai/Mistral-7B-Instruct-v0.3"
+    echo ""
+    read -p "Model name (e.g., Qwen/Qwen3-8B): " model_name
+    
+    if [ -z "$model_name" ]; then
+        print_error "Model name is required"
+        return 1
+    fi
+    
+    # Check if model requires authentication
+    local needs_token=false
+    if [[ "$model_name" == *"llama"* ]] || [[ "$model_name" == *"Llama"* ]]; then
+        needs_token=true
+    fi
+    
+    # Get HF token if needed
+    local hf_token=""
+    if [ "$needs_token" = true ]; then
+        echo ""
+        print_warning "This model may require a HuggingFace token."
+        echo "Get your token from: https://huggingface.co/settings/tokens"
+        read -p "HuggingFace token (leave empty to skip): " hf_token
+    else
+        echo ""
+        read -p "HuggingFace token (optional, for gated models): " hf_token
+    fi
+    
+    # Get namespace for download job
+    echo ""
+    read -p "Namespace for download job [$minio_ns]: " job_ns
+    job_ns=${job_ns:-$minio_ns}
+    
+    # Check for data connection
+    if ! oc get secret aws-connection-my-storage -n "$job_ns" &>/dev/null && \
+       ! oc get secret aws-connection-minio -n "$job_ns" &>/dev/null; then
+        print_warning "No data connection found in namespace '$job_ns'"
+        echo ""
+        echo "Creating data connection..."
+        "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
+            --namespace "$minio_ns" \
+            --skip-data-connection \
+            --data-connection-ns "$job_ns" 2>/dev/null || true
+    fi
+    
+    echo ""
+    print_step "Starting download..."
+    echo ""
+    echo -e "${CYAN}This may take a while depending on model size.${NC}"
+    echo "You can monitor progress with:"
+    echo "  oc logs -f job/download-models-s3 -n $job_ns"
+    echo ""
+    
+    # Run download
+    NAMESPACE="$job_ns" MINIO_NAMESPACE="$minio_ns" HF_TOKEN="$hf_token" \
+        "$SCRIPT_DIR/scripts/download-model.sh" s3 "$model_name"
+    
+    local result=$?
+    
+    if [ $result -eq 0 ]; then
+        echo ""
+        print_success "Model downloaded successfully!"
+        echo ""
+        echo -e "${CYAN}To deploy this model:${NC}"
+        echo "  1. Go to RHOAI Dashboard → Data Science Projects"
+        echo "  2. Create/select a project"
+        echo "  3. Deploy model with:"
+        echo "     - Data connection: MinIO Model Storage"
+        echo "     - Path: $model_name"
+        echo ""
+        echo "  Or use CLI:"
+        echo "     storageUri: s3://models/$model_name/"
+    fi
+    
+    return $result
+}
+
+################################################################################
 # Model Deployment
 ################################################################################
 
@@ -3624,7 +3822,7 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -p "Select an option (1-4, 0): " model_choice
+        read -p "Select an option (1-6, 0): " model_choice
         
         case $model_choice in
             1)
@@ -3638,11 +3836,21 @@ model_management_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                create_hardware_profile_interactive
+                setup_model_storage_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             4)
+                download_hf_model_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
                 create_hardware_profile_quick
                 echo ""
                 read -p "Press Enter to continue..."
@@ -3651,7 +3859,7 @@ model_management_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-4 or 0."
+                print_error "Invalid option. Please select 1-6 or 0."
                 sleep 1
                 ;;
         esac

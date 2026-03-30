@@ -662,6 +662,10 @@ spec:
     gateway: {}
     scheduler: {}
   template:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
     containers:
     - name: main
 $env_section
@@ -822,6 +826,10 @@ spec:
     automountServiceAccountToken: false
     maxReplicas: 1
     minReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
     model:
 $model_args
       modelFormat:

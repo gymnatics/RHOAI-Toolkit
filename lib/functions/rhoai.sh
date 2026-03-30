@@ -1569,6 +1569,10 @@ spec:
     gateway: {}
     scheduler: {}
   template:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
     containers:
     - name: main
       env:

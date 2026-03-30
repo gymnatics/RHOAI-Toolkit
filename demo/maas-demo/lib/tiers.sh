@@ -253,8 +253,43 @@ EOF
     fi
 }
 
+# Apply the complete AuthPolicy fix with tier lookup
+# This applies the full AuthPolicy manifest which includes:
+# 1. Metadata section for tier lookup (calls maas-api)
+# 2. Response section for tier injection (sets auth.identity.tier)
+# 3. Username included in groups array (for SA-specific tier matching)
+apply_authpolicy_with_tier_lookup() {
+    local manifests_dir="$1"
+    local gateway_ns="openshift-ingress"
+    local policy_name="maas-default-gateway-authn"
+    
+    if [ -z "$manifests_dir" ]; then
+        print_error "Manifests directory required"
+        return 1
+    fi
+    
+    local manifest_file="$manifests_dir/authpolicy-with-tier-lookup.yaml"
+    
+    if [ ! -f "$manifest_file" ]; then
+        print_error "AuthPolicy manifest not found: $manifest_file"
+        return 1
+    fi
+    
+    print_step "Applying AuthPolicy with tier lookup..."
+    
+    # Apply the full manifest
+    if oc apply -f "$manifest_file"; then
+        print_success "AuthPolicy with tier lookup applied"
+        return 0
+    else
+        print_error "Failed to apply AuthPolicy"
+        return 1
+    fi
+}
+
 # Patch AuthPolicy to include username in tier lookup
 # The tier lookup needs the username to match against SA-specific tier mappings
+# This is needed because Kubernetes TokenReview doesn't return OpenShift groups
 fix_authpolicy_username_in_groups() {
     local gateway_ns="openshift-ingress"
     local policy_name="maas-default-gateway-authn"
@@ -263,6 +298,17 @@ fix_authpolicy_username_in_groups() {
     if ! oc get authpolicy "$policy_name" -n "$gateway_ns" &>/dev/null; then
         print_info "AuthPolicy $policy_name not found yet - will be created after model deployment"
         return 0
+    fi
+    
+    # Check if metadata section exists (tier lookup)
+    local has_metadata
+    has_metadata=$(oc get authpolicy "$policy_name" -n "$gateway_ns" \
+        -o jsonpath='{.spec.rules.metadata.matchedTier}' 2>/dev/null)
+    
+    if [ -z "$has_metadata" ]; then
+        print_warning "AuthPolicy missing tier lookup metadata section"
+        print_info "Run apply_authpolicy_with_tier_lookup() first"
+        return 1
     fi
     
     # Check current body expression
@@ -348,9 +394,11 @@ clear_rate_limit_caches() {
     print_success "Rate limit caches cleared"
 }
 
-# Apply all tier fixes
+# Apply all tier fixes in the correct order
+# This is the complete fix procedure for tier-based rate limiting
 apply_all_tier_fixes() {
     local namespace="$1"
+    local manifests_dir="$2"
     
     if [ -z "$namespace" ]; then
         print_error "Namespace required"
@@ -359,19 +407,47 @@ apply_all_tier_fixes() {
     
     print_header "Applying Tier Rate Limiting Fixes"
     
+    echo ""
+    echo "This applies all fixes required for tier-based rate limiting to work:"
+    echo "  1. Update tier-to-group-mapping ConfigMap (use SA usernames)"
+    echo "  2. Apply AuthPolicy with tier lookup (metadata + response sections)"
+    echo "  3. Delete conflicting UI-created TokenRateLimitPolicies"
+    echo "  4. Apply combined TokenRateLimitPolicy"
+    echo "  5. Clear caches (restart maas-api, Authorino, Limitador)"
+    echo ""
+    
     # 1. Fix tier-to-group-mapping to use SA usernames
+    # This is needed because Kubernetes TokenReview doesn't return OpenShift groups
     fix_tier_to_group_mapping "$namespace"
     
-    # 2. Patch AuthPolicy to include username
-    fix_authpolicy_username_in_groups
+    # 2. Apply AuthPolicy with tier lookup (includes username in groups)
+    if [ -n "$manifests_dir" ] && [ -f "$manifests_dir/authpolicy-with-tier-lookup.yaml" ]; then
+        apply_authpolicy_with_tier_lookup "$manifests_dir"
+    else
+        # Fall back to patching existing policy
+        fix_authpolicy_username_in_groups
+    fi
     
     # 3. Delete conflicting UI-created policies
     cleanup_ui_tier_policies
     
-    # 4. Clear caches
+    # 4. Apply combined TokenRateLimitPolicy
+    if [ -n "$manifests_dir" ] && [ -f "$manifests_dir/tiers/tokenratelimitpolicy.yaml" ]; then
+        print_step "Applying TokenRateLimitPolicy..."
+        oc apply -f "$manifests_dir/tiers/tokenratelimitpolicy.yaml" 2>/dev/null && \
+            print_success "TokenRateLimitPolicy applied" || \
+            print_warning "Failed to apply TokenRateLimitPolicy"
+    fi
+    
+    # 5. Clear caches
     clear_rate_limit_caches
     
     print_success "All tier fixes applied!"
+    echo ""
+    echo "Rate limits configured:"
+    echo "  - Free tier: 1,000 tokens/minute"
+    echo "  - Premium tier: 5,000 tokens/minute"
+    echo "  - Enterprise tier: 10,000 tokens/minute"
 }
 
 ################################################################################

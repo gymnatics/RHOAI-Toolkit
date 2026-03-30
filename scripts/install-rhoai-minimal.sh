@@ -808,7 +808,205 @@ EOF
         print_success "Kuadrant instance already exists"
     fi
     
+    # Setup Service Mesh and Istio for Kuadrant
+    install_servicemesh_for_kuadrant
+    
     print_success "RHCL installation complete"
+}
+
+# Install Service Mesh 3 and setup Istio for Kuadrant
+install_servicemesh_for_kuadrant() {
+    print_step "Installing OpenShift Service Mesh 3 for Kuadrant..."
+    
+    # Check if Service Mesh operator is already installed
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; then
+        print_success "Service Mesh 3 Operator already installed"
+    else
+        print_step "Creating Service Mesh 3 subscription..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: servicemeshoperator3
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Manual
+  name: servicemeshoperator3
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+        
+        print_step "Waiting for Service Mesh InstallPlan..."
+        sleep 10
+    fi
+    
+    # Approve any pending Service Mesh InstallPlans
+    approve_servicemesh_installplans
+    
+    # Wait for operator to be ready
+    print_step "Waiting for Service Mesh operator to be ready..."
+    local timeout=300
+    local elapsed=0
+    until oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Service Mesh operator not ready yet (continuing anyway)"
+            break
+        fi
+        # Keep checking for pending InstallPlans
+        approve_servicemesh_installplans 2>/dev/null || true
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    # Setup Istio for Kuadrant
+    setup_istio_for_kuadrant
+    
+    # Restart Kuadrant operator to detect Istio
+    restart_kuadrant_operator
+}
+
+# Approve pending Service Mesh InstallPlans
+approve_servicemesh_installplans() {
+    # Find all pending Service Mesh InstallPlans
+    local pending_plans=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
+        jq -r '.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | contains("servicemeshoperator3")) | .metadata.name' 2>/dev/null)
+    
+    if [ -n "$pending_plans" ]; then
+        for plan in $pending_plans; do
+            print_step "Approving InstallPlan: $plan"
+            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+            print_success "Approved InstallPlan: $plan"
+        done
+        sleep 15
+    fi
+    
+    # Also check for any other pending InstallPlans for Service Mesh
+    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | grep -i "false" | awk '{print $1}')
+    for plan in $all_pending; do
+        local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
+        if echo "$csv_names" | grep -qi "servicemesh"; then
+            print_step "Approving additional InstallPlan: $plan"
+            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+        fi
+    done
+}
+
+# Setup Istio for Kuadrant (required for AuthPolicy/RateLimitPolicy enforcement)
+setup_istio_for_kuadrant() {
+    print_step "Setting up Istio for Kuadrant..."
+    
+    # Create required namespaces
+    oc create namespace istio-system 2>/dev/null || true
+    oc create namespace istio-cni 2>/dev/null || true
+    
+    # Check if Istio already exists
+    if oc get istio default -n istio-system &>/dev/null; then
+        print_success "Istio instance already exists in istio-system"
+        return 0
+    fi
+    
+    # Get the Istio version from existing installation or use default
+    local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.26.2")
+    
+    print_step "Creating IstioCNI..."
+    cat <<EOF | oc apply -f -
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  namespace: istio-cni
+  version: $istio_version
+EOF
+    
+    # Wait for IstioCNI to be ready
+    print_step "Waiting for IstioCNI to be ready..."
+    local elapsed=0
+    local timeout=120
+    while [ $elapsed -lt $timeout ]; do
+        local cni_ready=$(oc get istiocni default -n istio-cni -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$cni_ready" = "True" ]; then
+            print_success "IstioCNI is ready"
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_step "Creating Istio instance in istio-system..."
+    cat <<EOF | oc apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  namespace: istio-system
+  version: $istio_version
+EOF
+    
+    # Wait for Istio to be healthy
+    print_step "Waiting for Istio to be healthy..."
+    elapsed=0
+    timeout=180
+    while [ $elapsed -lt $timeout ]; do
+        local istio_status=$(oc get istio default -n istio-system -o jsonpath='{.status.state}' 2>/dev/null)
+        if [ "$istio_status" = "Healthy" ]; then
+            print_success "Istio is healthy"
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    # Create openshift-default GatewayClass (required by RHCL docs)
+    if ! oc get gatewayclass openshift-default &>/dev/null; then
+        print_step "Creating openshift-default GatewayClass..."
+        cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-default
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+EOF
+    fi
+    
+    print_success "Istio setup complete for Kuadrant"
+}
+
+# Restart Kuadrant operator to detect Istio
+restart_kuadrant_operator() {
+    print_step "Restarting Kuadrant operator to detect Istio..."
+    
+    # Delete the pod to force restart
+    local pod_name=$(oc get pods -n kuadrant-system -o name 2>/dev/null | grep kuadrant-operator-controller)
+    if [ -n "$pod_name" ]; then
+        oc delete $pod_name -n kuadrant-system 2>/dev/null || true
+        sleep 20
+    fi
+    
+    # Wait for Kuadrant to be ready
+    print_step "Waiting for Kuadrant to be ready..."
+    local elapsed=0
+    local timeout=120
+    while [ $elapsed -lt $timeout ]; do
+        local kuadrant_ready=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        local kuadrant_reason=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+        
+        if [ "$kuadrant_ready" = "True" ]; then
+            print_success "Kuadrant is ready"
+            return 0
+        fi
+        
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_warning "Kuadrant may not be fully ready. Check: oc get kuadrant -n kuadrant-system"
 }
 
 # Install Standalone Authorino Operator

@@ -1,0 +1,259 @@
+---
+description: Kubernetes manifests reference - all YAML templates and configurations
+globs: lib/manifests/**/*.yaml,lib/manifests/**/*.yaml.tmpl
+alwaysApply: false
+---
+
+# Manifests Reference
+
+## Operator Manifests (lib/manifests/operators/)
+
+### NFD (Node Feature Discovery)
+- `nfd-operator.yaml` - Subscription for NFD operator
+- `nfd-instance.yaml` - NodeFeatureDiscovery CR
+
+### GPU Operator
+- `gpu-operator.yaml` - Subscription for NVIDIA GPU Operator
+- `gpu-clusterpolicy.yaml` - ClusterPolicy for GPU configuration
+
+### Kueue
+- `kueue-subscription.yaml` - Subscription for Kueue operator
+
+### LWS (LeaderWorkerSet)
+- `lws-namespace.yaml` - openshift-lws-operator namespace
+- `lws-operatorgroup.yaml` - OperatorGroup
+- `lws-subscription.yaml` - Subscription
+
+### cert-manager
+- `certmanager-namespace.yaml` - cert-manager-operator namespace
+- `certmanager-operatorgroup.yaml` - OperatorGroup
+- `certmanager-subscription.yaml` - Subscription
+
+## RHOAI Manifests (lib/manifests/rhoai/)
+
+### DataScienceCluster
+- `datasciencecluster-v1.yaml` - RHOAI 2.x configuration
+- `datasciencecluster-v2.yaml` - RHOAI 3.x with GenAI/MaaS
+- `datasciencecluster-v3.yaml` - RHOAI 3.3+ full configuration
+
+### DSCInitialization
+- `dscinitalization.yaml` - Default DSCInitialization
+
+## RHOAI 2.x Manifests (lib/manifests/rhoai-2x/)
+
+Workshop-specific manifests for RHOAI 2.x deployments.
+
+## RHCL/Kuadrant Manifests (lib/manifests/rhcl/)
+
+### Operator
+- `rhcl-operator.yaml` - RHCL operator subscription
+
+### Kuadrant
+- `kuadrant-instance.yaml` - Kuadrant CR
+
+### Authorino
+- `authorino-tls.yaml` - Authorino with TLS configuration
+
+## Template Manifests (lib/manifests/templates/)
+
+Templates using `envsubst` for variable substitution.
+
+### Hardware Profiles
+- `hardwareprofile-gpu.yaml.tmpl` - Generic GPU profile
+- `hardwareprofile-gpu-small.yaml.tmpl` - Small (4B-8B models)
+- `hardwareprofile-gpu-medium.yaml.tmpl` - Medium (8B-30B models)
+- `hardwareprofile-gpu-large.yaml.tmpl` - Large (70B+ models)
+
+**Variables:**
+- `${NAMESPACE}` - Target namespace
+- `${PROFILE_NAME}` - Profile name
+- `${DISPLAY_NAME}` - Display name
+- `${DEFAULT_CPU}`, `${MAX_CPU}` - CPU limits
+- `${DEFAULT_MEM}`, `${MAX_MEM}` - Memory limits
+- `${DEFAULT_GPU}`, `${MAX_GPU}` - GPU limits
+
+### Model Serving
+- `inferenceservice.yaml.tmpl` - InferenceService template
+- `llminferenceservice.yaml.tmpl` - LLMInferenceService template
+
+## Feature Store Manifests (lib/manifests/feast/)
+
+- `featurestore.yaml` - FeatureStore CR template
+
+## Demo Manifests (lib/manifests/demo/)
+
+### Open WebUI
+- `open-webui-deployment.yaml` - Open WebUI deployment
+- `open-webui-service.yaml` - Service
+- `open-webui-route.yaml` - Route
+
+### GuideLLM
+- `guidellm-deployment.yaml` - GuideLLM benchmarking tool
+
+## Guardrails Manifests (lib/manifests/guardrails/)
+
+- `orchestrator-config.yaml` - Guardrails Orchestrator ConfigMap
+- `gateway-config.yaml` - Gateway configuration
+- `orchestrator-cr.yaml` - GuardrailsOrchestrator CR
+
+## Grafana Manifests (lib/manifests/grafana/)
+
+Observability dashboards for monitoring.
+
+## Key YAML Patterns
+
+### Hardware Profile (RHOAI 3.x)
+```yaml
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: gpu-profile
+  namespace: redhat-ods-applications
+  annotations:
+    opendatahub.io/display-name: GPU Profile
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+spec:
+  identifiers:
+    - identifier: cpu
+      resourceType: CPU
+      defaultCount: '2'
+      maxCount: '16'
+    - identifier: memory
+      resourceType: Memory
+      defaultCount: 16Gi
+      maxCount: 64Gi
+    - identifier: nvidia.com/gpu
+      resourceType: Accelerator
+      defaultCount: 1
+      maxCount: 8
+  scheduling:
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+```
+
+### LLMInferenceService (llm-d)
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: my-model
+  namespace: my-namespace
+  labels:
+    kueue.x-k8s.io/queue-name: default
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    security.opendatahub.io/enable-auth: "true"
+spec:
+  replicas: 1
+  model:
+    uri: oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b
+    name: my-model
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+```
+
+### InferenceService (vLLM)
+```yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: my-model
+  namespace: my-namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: 'true'
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+      modelFormat:
+        name: vLLM
+      runtime: my-model-runtime
+      storageUri: 'oci://...'
+      resources:
+        limits:
+          nvidia.com/gpu: '1'
+```
+
+### FeatureStore (Feast)
+```yaml
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+    feature-store-ui: enabled
+    opendatahub.io/dashboard: "true"  # Required for RHOAI 3.3+
+  name: banking
+spec:
+  feastProject: banking
+  feastProjectDir:
+    git:
+      ref: rbac
+      url: 'https://github.com/RHRolun/banking-feature-store'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: true  # Required for dashboard visibility
+```
+
+### Gateway (MaaS)
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: inference-gateway.apps.${CLUSTER_DOMAIN}
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - kind: Secret
+            name: default-gateway-tls
+        mode: Terminate
+```

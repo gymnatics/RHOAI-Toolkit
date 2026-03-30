@@ -475,6 +475,10 @@ spec:
     route: {}
     gateway: {}
   template:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
     containers:
     - name: main
       resources:

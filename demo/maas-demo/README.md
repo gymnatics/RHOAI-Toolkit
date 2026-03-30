@@ -340,7 +340,7 @@ TOKEN=$(oc create token default -n maas-demo --audience="https://kubernetes.defa
 
 # Make requests until rate limited (HTTP 429)
 for i in {1..5}; do
-  curl -sk "https://maas-api.apps.../maas-demo/qwen3-4b/v1/chat/completions" \
+  curl -sk "https://inference-gateway.apps.../maas-demo/qwen3-4b/v1/chat/completions" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"model":"qwen3-4b","messages":[{"role":"user","content":"Hi"}],"max_tokens":30}' \
