@@ -18,8 +18,12 @@
 #   ./serve-model.sh oci qwen3-8b-fp8 oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b:1.5
 #   ./serve-model.sh s3 qwen3-8b Qwen/Qwen3-8B-Instruct "--max-model-len 8192 --enable-auto-tool-choice"
 #
+#   # For multimodal/image models (FLUX, etc.) use RUNTIME=omni:
+#   RUNTIME=omni ./serve-model.sh s3 flux2-klein black-forest-labs/FLUX.2-klein-4B "--gpu-memory-utilization 0.90"
+#
 # Environment Variables:
 #   NAMESPACE  - Target namespace (default: demo)
+#   RUNTIME    - Runtime type: vllm (default) or omni (for vLLM-Omni multimodal)
 ################################################################################
 
 set -e
@@ -45,6 +49,7 @@ fi
 
 # Configuration
 NAMESPACE="${NAMESPACE:-demo}"
+RUNTIME="${RUNTIME:-vllm}"
 MODE="${1:-s3}"
 NAME="${2:-}"
 MODEL_PATH="${3:-}"
@@ -92,6 +97,7 @@ printf "%-15s | %s\n" "Name" "$NAME"
 printf "%-15s | %s\n" "Storage Mode" "$MODE"
 printf "%-15s | %s\n" "Model Path" "$MODEL_PATH"
 printf "%-15s | %s\n" "Namespace" "$NAMESPACE"
+printf "%-15s | %s\n" "Runtime" "$RUNTIME"
 if [ -n "$EXTRA_VLLM_ARGS" ]; then
     printf "%-15s | %s\n" "Extra Args" "$EXTRA_VLLM_ARGS"
 fi
@@ -103,8 +109,72 @@ oc delete isvc/$NAME -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
 oc delete servingruntime/$NAME -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
 
 # Create ServingRuntime
-print_step "Creating ServingRuntime..."
-cat <<EOF | oc apply -n ${NAMESPACE} -f -
+print_step "Creating ServingRuntime (${RUNTIME})..."
+
+if [ "$RUNTIME" = "omni" ]; then
+    cat <<EOF | oc apply -n ${NAMESPACE} -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
+    openshift.io/display-name: ${NAME}
+  name: ${NAME}
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--host=0.0.0.0'
+        - '--trust-remote-code'
+      command:
+        - vllm
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: /tmp/flashinfer
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+      image: 'vllm/vllm-omni:v0.18.0'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+EOF
+else
+    cat <<EOF | oc apply -n ${NAMESPACE} -f -
 apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
 metadata:
@@ -151,6 +221,7 @@ spec:
         sizeLimit: 2Gi
       name: shm
 EOF
+fi
 
 # Create InferenceService based on mode
 print_step "Creating InferenceService ($MODE mode)..."
