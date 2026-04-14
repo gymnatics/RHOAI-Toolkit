@@ -181,11 +181,15 @@ show_model_management_submenu() {
     echo -e "${YELLOW}4)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
     echo "    Download models to S3 for deployment"
     echo ""
+    echo -e "${MAGENTA}Serving Runtimes:${NC}"
+    echo -e "${YELLOW}5)${NC} Manage Serving Runtimes ${GREEN}[New]${NC}"
+    echo "    Add/export runtimes (vLLM-Omni, Community vLLM, Red Hat vLLM)"
+    echo ""
     echo -e "${MAGENTA}Hardware Profiles:${NC}"
-    echo -e "${YELLOW}5)${NC} Create GPU Hardware Profile (Custom)"
+    echo -e "${YELLOW}6)${NC} Create GPU Hardware Profile (Custom)"
     echo "    Define custom GPU resources for model deployments"
     echo ""
-    echo -e "${YELLOW}6)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
+    echo -e "${YELLOW}7)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
     echo "    Create pre-configured profiles (Small/Medium/Large)"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
@@ -3822,7 +3826,7 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -p "Select an option (1-6, 0): " model_choice
+        read -p "Select an option (1-7, 0): " model_choice
         
         case $model_choice in
             1)
@@ -3846,11 +3850,16 @@ model_management_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             5)
-                create_hardware_profile_interactive
+                "$SCRIPT_DIR/scripts/add-serving-runtime.sh"
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             6)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
                 create_hardware_profile_quick
                 echo ""
                 read -p "Press Enter to continue..."
@@ -3859,7 +3868,7 @@ model_management_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6 or 0."
+                print_error "Invalid option. Please select 1-7 or 0."
                 sleep 1
                 ;;
         esac

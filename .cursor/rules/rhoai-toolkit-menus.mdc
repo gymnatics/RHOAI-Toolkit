@@ -52,10 +52,22 @@ h) Help
 ## Model Management Submenu (show_model_management_submenu)
 
 ```
+Model Deployment:
 1) Deploy Model - Interactive deployment
 2) Add Model to Playground - Test in GenAI Studio
-3) Create GPU Hardware Profile (Custom)
-4) Quick GPU Profile Setup [Recommended]
+
+Model Storage (HuggingFace → S3):
+3) Setup Model Storage (MinIO)
+4) Download Model from HuggingFace
+
+Serving Runtimes:
+5) Manage Serving Runtimes [New]
+   Add/export runtimes (vLLM-Omni, Community vLLM, Red Hat vLLM)
+   → scripts/add-serving-runtime.sh (interactive)
+
+Hardware Profiles:
+6) Create GPU Hardware Profile (Custom)
+7) Quick GPU Profile Setup [Recommended]
 0) Back
 ```
 

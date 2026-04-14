@@ -72,6 +72,18 @@ Templates using `envsubst` for variable substitution.
 - `${DEFAULT_MEM}`, `${MAX_MEM}` - Memory limits
 - `${DEFAULT_GPU}`, `${MAX_GPU}` - GPU limits
 
+### Serving Runtimes
+- `servingruntime-vllm.yaml.tmpl` - Generic vLLM ServingRuntime (legacy)
+- `servingruntime-vllm-community.yaml.tmpl` - Community vLLM (vllm/vllm-openai)
+- `servingruntime-vllm-omni.yaml.tmpl` - vLLM-Omni multimodal (FLUX, SD3, audio)
+- `servingruntime-vllm-redhat.yaml.tmpl` - Red Hat vLLM RHAIIS (registry.redhat.io)
+
+**Variables (ServingRuntime templates):**
+- `${NAME}` - Runtime metadata.name
+- `${VERSION}` - Image tag (e.g., v0.18.0, latest, 3.2.5)
+- `${DISPLAY}` - Display name in RHOAI dashboard
+- `${SHM_SIZE}` - Shared memory size
+
 ### Model Serving
 - `inferenceservice.yaml.tmpl` - InferenceService template
 - `llminferenceservice.yaml.tmpl` - LLMInferenceService template
@@ -204,6 +216,39 @@ spec:
       resources:
         limits:
           nvidia.com/gpu: '1'
+```
+
+### ServingRuntime (vLLM-Omni)
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-omni
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  containers:
+    - name: kserve-container
+      image: vllm/vllm-omni:v0.18.0
+      args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--trust-remote-code'
+      command:
+        - vllm
+      env:
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
 ```
 
 ### FeatureStore (Feast)

@@ -1,0 +1,68 @@
+# vLLM-Omni ServingRuntime for RHOAI Dashboard (Multimodal: FLUX, SD3, Audio)
+# Usage: export NAME=vllm-omni VERSION=v0.18.0 && envsubst < servingruntime-vllm-omni.yaml.tmpl | oc apply -f -
+#
+# Variables:
+#   NAME       - Runtime name (e.g., vllm-omni)
+#   VERSION    - vLLM-Omni version tag (e.g., v0.18.0)
+#   DISPLAY    - Display name in RHOAI dashboard
+#   SHM_SIZE   - Shared memory size (default: 12Gi)
+#
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${NAME}
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: "${DISPLAY}"
+    openshift.io/display-name: "${DISPLAY}"
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+    - name: kserve-container
+      image: vllm/vllm-omni:${VERSION}
+      command:
+        - vllm
+      args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--host=0.0.0.0'
+        - '--trust-remote-code'
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: /tmp/flashinfer
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: ${SHM_SIZE}

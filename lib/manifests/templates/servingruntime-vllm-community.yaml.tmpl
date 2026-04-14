@@ -1,0 +1,51 @@
+# Community vLLM ServingRuntime for RHOAI Dashboard
+# Usage: export NAME=vllm-community VERSION=v0.18.0 && envsubst < servingruntime-vllm-community.yaml.tmpl | oc apply -f -
+#
+# Variables:
+#   NAME       - Runtime name (e.g., vllm-community)
+#   VERSION    - vLLM version tag (e.g., v0.18.0, latest)
+#   DISPLAY    - Display name in RHOAI dashboard
+#   SHM_SIZE   - Shared memory size (default: 12Gi)
+#
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${NAME}
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: "${DISPLAY}"
+    openshift.io/display-name: "${DISPLAY}"
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+    - name: kserve-container
+      image: vllm/vllm-openai:${VERSION}
+      args:
+        - --model
+        - /mnt/models
+        - --port
+        - "8080"
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+      priority: 1
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: ${SHM_SIZE}

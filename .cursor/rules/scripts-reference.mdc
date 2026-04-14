@@ -153,7 +153,37 @@ Run `setup-model-storage.sh` first to deploy MinIO.
 ## Model Deployment Scripts
 
 ### scripts/serve-model.sh
-Deploy models with vLLM or llm-d.
+Deploy models with vLLM, vLLM-Omni, or llm-d.
+Supports `RUNTIME=vllm` (default, text LLMs) and `RUNTIME=omni` (multimodal: FLUX, SD3, audio).
+Storage modes: s3, pvc, oci.
+
+### scripts/add-serving-runtime.sh
+Add/manage custom serving runtimes in RHOAI.
+
+**Modes:**
+- `(default)` - Apply runtime to cluster via `oc apply`
+- `--print` - Print YAML to stdout for copy-paste into RHOAI Dashboard UI
+- `--export FILE` - Export YAML to a file
+- `--export-all DIR` - Export all catalog runtimes as YAML files
+- `--list` - List installed ServingRuntimes
+
+**Runtime Catalog (presets):**
+- `vllm-community` - Community vLLM (vllm/vllm-openai) for text LLMs
+- `vllm-omni` - vLLM-Omni multimodal (FLUX, SD3, audio)
+- `vllm-redhat` - Red Hat vLLM (RHAIIS, registry.redhat.io)
+- `custom` - Custom image via `--image`
+
+**Usage:**
+```bash
+./scripts/add-serving-runtime.sh                              # Interactive
+./scripts/add-serving-runtime.sh --preset vllm-omni           # Apply vLLM-Omni
+./scripts/add-serving-runtime.sh --preset vllm-omni --print   # Print YAML for UI import
+./scripts/add-serving-runtime.sh --export-all ./runtimes      # Export all YAMLs
+./scripts/add-serving-runtime.sh --list                       # Show installed
+./scripts/add-serving-runtime.sh --image myrepo/vllm:1.0 --name my-rt --print
+```
+
+**Templates:** `lib/manifests/templates/servingruntime-vllm-{community,omni,redhat}.yaml.tmpl`
 
 ### scripts/deploy-llmd-model.sh
 Deploy LLMInferenceService (llm-d runtime).
