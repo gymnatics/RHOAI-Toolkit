@@ -50,7 +50,7 @@ fi
 CATALOG_ENTRIES=(
     "vllm-community|vllm-community|vllm/vllm-openai|vLLM Community|servingruntime-vllm-community.yaml.tmpl|Community vLLM for text LLMs (Qwen, Llama, Mistral, etc.)|v0.18.0|12Gi"
     "vllm-omni|vllm-omni|vllm/vllm-omni|vLLM-Omni (Multimodal)|servingruntime-vllm-omni.yaml.tmpl|Multimodal inference: image gen (FLUX, SD3), audio, video|v0.18.0|12Gi"
-    "vllm-redhat|vllm-rhaiis|registry.redhat.io/rhaiis/vllm-cuda-rhel9|Red Hat vLLM (RHAIIS)|servingruntime-vllm-redhat.yaml.tmpl|Official Red Hat supported vLLM image|3.2.5|2Gi"
+    "vllm-redhat|vllm-rhaiis|registry.redhat.io/rhaiis/vllm-cuda-rhel9|Red Hat vLLM (RHAIIS)|servingruntime-vllm-redhat.yaml.tmpl|Official Red Hat supported vLLM image|3.3|2Gi"
 )
 
 catalog_field() {

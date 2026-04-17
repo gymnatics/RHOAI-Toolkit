@@ -66,6 +66,13 @@ if [ -z "$NAME" ] || [ -z "$MODEL_PATH" ]; then
     echo "  $0 pvc llama-3-8b meta-llama/Llama-3-8B-Instruct"
     echo "  $0 oci qwen3-8b-fp8 oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b:1.5"
     echo "  $0 s3 qwen3-8b Qwen/Qwen3-8B-Instruct \"--max-model-len 8192\""
+    echo ""
+    echo "For multimodal/image models (FLUX, etc.):"
+    echo "  RUNTIME=omni $0 s3 flux2-klein black-forest-labs/FLUX.2-klein-4B"
+    echo ""
+    echo "Environment Variables:"
+    echo "  NAMESPACE  - Target namespace (default: demo)"
+    echo "  RUNTIME    - Runtime type: vllm (default) or omni (vLLM-Omni multimodal)"
     exit 1
 fi
 
@@ -79,7 +86,14 @@ NAME=$(k8s_safe_name "$NAME")
 # Remove leading slash from model path
 MODEL_PATH="${MODEL_PATH#/}"
 
-# Build vLLM args array for YAML
+# Build default and extra args for the InferenceService
+DEFAULT_ARGS=""
+if [ "$RUNTIME" != "omni" ]; then
+    DEFAULT_ARGS="        - '--max-model-len'
+        - '4096'
+"
+fi
+
 VLLM_ARGS=""
 if [ -n "$EXTRA_VLLM_ARGS" ]; then
     for arg in $EXTRA_VLLM_ARGS; do
@@ -203,7 +217,7 @@ spec:
       env:
         - name: HF_HOME
           value: /tmp/hf_home
-      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.5'
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3'
       name: kserve-container
       ports:
         - containerPort: 8080
@@ -253,9 +267,7 @@ spec:
         effect: NoSchedule
     model:
       args:
-        - '--max-model-len'
-        - '4096'
-${VLLM_ARGS}
+${DEFAULT_ARGS}${VLLM_ARGS}
       modelFormat:
         name: vLLM
       name: ''
@@ -301,9 +313,7 @@ spec:
         effect: NoSchedule
     model:
       args:
-        - '--max-model-len'
-        - '4096'
-${VLLM_ARGS}
+${DEFAULT_ARGS}${VLLM_ARGS}
       modelFormat:
         name: vLLM
       name: ''
@@ -347,9 +357,7 @@ spec:
         effect: NoSchedule
     model:
       args:
-        - '--max-model-len'
-        - '4096'
-${VLLM_ARGS}
+${DEFAULT_ARGS}${VLLM_ARGS}
       modelFormat:
         name: vLLM
       name: ''
@@ -390,10 +398,17 @@ if oc wait --for=condition=Ready isvc/${NAME} -n ${NAMESPACE} --timeout=600s 2>/
         echo "Test with:"
         echo "  curl -s ${URL}/v1/models | jq"
         echo ""
-        echo "Chat completion:"
-        echo "  curl -X POST ${URL}/v1/chat/completions \\"
-        echo "    -H 'Content-Type: application/json' \\"
-        echo "    -d '{\"model\": \"${NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
+        if [ "$RUNTIME" = "omni" ]; then
+            echo "Image generation:"
+            echo "  curl -X POST ${URL}/v1/images/generations \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"model\": \"${NAME}\", \"prompt\": \"A red panda sitting on a cloud\", \"size\": \"1024x1024\"}'"
+        else
+            echo "Chat completion:"
+            echo "  curl -X POST ${URL}/v1/chat/completions \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"model\": \"${NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
+        fi
     fi
 else
     print_error "Model deployment timed out or failed"

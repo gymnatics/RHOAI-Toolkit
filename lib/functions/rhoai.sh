@@ -1762,62 +1762,39 @@ deploy_banking_demo() {
     # Create FeatureStore with version-appropriate configuration
     print_step "Creating FeatureStore 'banking' in namespace '$namespace'..."
     
+    # Two-step approach (from CAI guide): create with restAPI: false first,
+    # wait for pod, then flip to true. Avoids race condition during startup.
+    local feast_labels="    feature-store-ui: enabled"
     if [ "$rhoai_33_plus" = true ]; then
-        # RHOAI 3.3+ configuration with additional labels
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-    opendatahub.io/dashboard: "true"
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
-    else
-        # RHOAI 3.2 and earlier configuration
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
+        feast_labels="    feature-store-ui: enabled
+    opendatahub.io/dashboard: \"true\""
     fi
+
+    cat <<EOF | oc apply -n "$namespace" -f -
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+${feast_labels}
+  name: $feast_project
+spec:
+  feastProject: $feast_project
+  feastProjectDir:
+    git:
+      ref: $git_ref
+      url: '$git_url'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: false
+EOF
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -1858,6 +1835,13 @@ EOF
     fi
     
     print_success "Feast pod is running: $feast_pod"
+
+    # Step 2: Now enable restAPI (two-step pattern from CAI guide)
+    print_step "Enabling registry REST API (step 2 of 2)..."
+    oc patch featurestore "$feast_project" -n "$namespace" --type=merge \
+        -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+    print_success "Registry REST API enabled"
+    sleep 10
     
     # Run feast apply
     echo ""

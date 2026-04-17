@@ -64,6 +64,38 @@ print_info() {
 }
 
 ################################################################################
+# Service Mesh InstallPlan Approval
+################################################################################
+
+approve_servicemesh_installplans() {
+    print_step "Checking for pending Service Mesh InstallPlans..."
+    
+    local pending_ips
+    pending_ips=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
+        python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data.get('items', []):
+    approved = item.get('spec', {}).get('approved', True)
+    names = [n for n in item.get('spec', {}).get('clusterServiceVersionNames', []) if 'servicemesh' in n.lower() or 'istio' in n.lower()]
+    if not approved and names:
+        print(item['metadata']['name'])
+" 2>/dev/null)
+    
+    if [ -n "$pending_ips" ]; then
+        while IFS= read -r ip; do
+            [ -z "$ip" ] && continue
+            print_step "Approving Service Mesh InstallPlan: $ip"
+            oc patch installplan "$ip" -n openshift-operators --type=merge -p '{"spec":{"approved":true}}'
+        done <<< "$pending_ips"
+        print_success "Service Mesh InstallPlans approved"
+        sleep 15
+    else
+        print_success "No pending Service Mesh InstallPlans found"
+    fi
+}
+
+################################################################################
 # RHOAI Version Detection
 ################################################################################
 
@@ -166,6 +198,9 @@ setup_maas_33() {
     echo -e "${CYAN}RHOAI 3.3+ uses integrated MaaS via the DataScienceCluster.${NC}"
     echo -e "${CYAN}This is simpler than the legacy setup and requires fewer components.${NC}"
     echo ""
+    
+    # Step 0: Approve pending Service Mesh InstallPlans (auto-installed by RHOAI, may need manual approval)
+    approve_servicemesh_installplans
     
     # Step 1: Install RHCL Operator (still required for auth)
     install_rhcl_operator_33
@@ -442,6 +477,7 @@ display_usage_instructions_33() {
     echo -e "${BLUE}RHOAI 3.3+ MaaS Configuration:${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    echo "MaaS endpoint:     https://maas.${CLUSTER_DOMAIN}"
     echo "Inference Gateway: https://inference-gateway.${CLUSTER_DOMAIN}"
     echo "Dashboard URL:     https://data-science-gateway.${CLUSTER_DOMAIN}"
     echo ""
@@ -493,12 +529,15 @@ YAML
     echo "# Generate a token"
     echo "TOKEN=\$(oc create token default -n my-namespace --duration=1h)"
     echo ""
-    echo "# Call the model"
-    echo "curl -X POST \"https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions\" \\"
+    echo "# List available models"
+    echo "curl -s \"https://maas.${CLUSTER_DOMAIN}/v1/models\" -H \"Authorization: Bearer \$TOKEN\""
+    echo ""
+    echo "# Call a model (replace <model-name> with your deployed model)"
+    echo "curl -X POST \"https://maas.${CLUSTER_DOMAIN}/llm/<model-name>/v1/chat/completions\" \\"
     echo "  -H \"Authorization: Bearer \$TOKEN\" \\"
     echo "  -H \"Content-Type: application/json\" \\"
     echo "  -d '{"
-    echo "    \"model\": \"my-model\","
+    echo "    \"model\": \"<model-name>\","
     echo "    \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]"
     echo "  }'"
     echo ""

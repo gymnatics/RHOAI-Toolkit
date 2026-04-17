@@ -1,10 +1,10 @@
 #!/bin/bash
 
 ################################################################################
-# Enable GenAI Playground and Model as a Service (MaaS) in RHOAI 3.0
+# Enable GenAI Playground and Model as a Service (MaaS) in RHOAI 3.x
 ################################################################################
-# Based on CAI's guide to RHOAI 3.0
-# This script enables missing features in an existing RHOAI 3.0 deployment
+# Based on CAI's guide to RHOAI 3.2/3.3
+# This script enables missing features in an existing RHOAI 3.x deployment
 
 set -e
 
@@ -56,11 +56,12 @@ update_datasciencecluster() {
     print_step "Patching DataScienceCluster to enable:"
     echo "  - llamastackoperator (for GenAI Playground)"
     echo "  - feastoperator (for Feature Store)"
-    echo "  - kueue (for workload management)"
-    echo "  - trainingoperator (for distributed training)"
+    echo "  - kueue (Unmanaged, uses standalone RHBOK)"
     echo "  - trustyai (for model monitoring)"
     echo "  - modelregistry (for model catalog)"
+    echo "  - mlflowoperator (for experiment tracking)"
     echo "  - aipipelines (for AI pipelines)"
+    echo "  - kserve + MaaS + NIM"
     
     cat <<EOF | oc apply -f -
 apiVersion: datasciencecluster.opendatahub.io/v2
@@ -73,31 +74,41 @@ spec:
   components:
     dashboard:
       managementState: Managed
+    workbenches:
+      managementState: Managed
     aipipelines:
       managementState: Managed
-    feastoperator:
-      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
     kserve:
       managementState: Managed
-    llamastackoperator:
-      managementState: Managed
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
+      nim:
+        managementState: Managed
+      modelsAsService:
+        managementState: Managed
     kueue:
       defaultClusterQueueName: default
       defaultLocalQueueName: default
       managementState: Unmanaged
+    ray:
+      managementState: Managed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
     modelregistry:
       managementState: Managed
       registriesNamespace: rhoai-model-registries
-    ray:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    trainingoperator:
-      managementState: Managed
     trustyai:
       managementState: Managed
-    codeflare:
-      managementState: Removed
+    feastoperator:
+      managementState: Managed
+    llamastackoperator:
+      managementState: Managed
+    mlflowoperator:
+      managementState: Managed
 EOF
     
     print_success "DataScienceCluster updated"
@@ -477,7 +488,7 @@ display_next_steps() {
 ################################################################################
 
 main() {
-    print_header "Enable GenAI Playground & Model as a Service in RHOAI 3.0"
+    print_header "Enable GenAI Playground & Model as a Service in RHOAI 3.x"
     
     # Check if oc is available
     if ! command -v oc &> /dev/null; then

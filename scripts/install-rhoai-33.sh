@@ -314,6 +314,11 @@ check_prerequisites() {
         exit 1
     fi
     
+    if [ "$ENABLE_LLMD" = true ] && [[ "$ocp_version" < "4.20" ]]; then
+        print_warning "Distributed inference with llm-d requires OCP 4.20+. Current: $ocp_version"
+        print_warning "llm-d will be installed but multi-node inference may not work correctly."
+    fi
+    
     print_success "Prerequisites check passed"
 }
 
@@ -899,7 +904,7 @@ spec:
     - allowedRoutes:
         namespaces:
           from: All
-      hostname: maas-api.apps.${CLUSTER_DOMAIN}
+      hostname: maas.apps.${CLUSTER_DOMAIN}
       name: https
       port: 443
       protocol: HTTPS
@@ -949,7 +954,7 @@ spec:
 EOF
     
     print_success "Gateways created"
-    print_info "MaaS endpoint: https://maas-api.apps.${CLUSTER_DOMAIN}"
+    print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
     print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"
 }
 
@@ -1098,11 +1103,15 @@ main() {
     fi
     
     # Install RHCL for MaaS/llm-d auth
-    if [ "$SKIP_RHCL" = false ]; then
+    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
         install_rhcl_operator
         
         # Create gateways BEFORE DSC (MaaS requires maas-default-gateway to exist)
         create_inference_gateway
+    elif [ "$SKIP_RHCL" = false ]; then
+        install_rhcl_operator
+    else
+        print_info "Skipping RHCL/MaaS (--skip-rhcl or --skip-maas)"
     fi
     
     # Enable monitoring
