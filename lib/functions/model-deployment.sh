@@ -54,6 +54,11 @@ deploy_model_interactive() {
         runtimes+=("vllm-community")
         runtime_names+=("vLLM (Community Image - CUDA 13+)")
         runtime_descriptions+=("Community vLLM image, newer GPU driver support, security hardened")
+        
+        # vLLM-Omni for multimodal (image gen, audio, etc.)
+        runtimes+=("vllm-omni")
+        runtime_names+=("vLLM-Omni (Multimodal - Image/Audio)")
+        runtime_descriptions+=("Diffusion models (FLUX, SD3, Wan2.2), audio, uses vllm/vllm-omni:v0.18.0")
     fi
     
     # Check for ServingRuntime templates
@@ -325,18 +330,14 @@ deploy_model_interactive() {
         while IFS= read -r profile; do
             if [ -n "$profile" ]; then
                 # Get profile details (try redhat-ods-applications namespace)
-                local cpu=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.cpu}' 2>/dev/null)
-                local memory=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.memory}' 2>/dev/null)
-                
-                # Get GPU count from nodeSelector
-                local gpu_count=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.count"}' 2>/dev/null)
-                
-                # If no gpu.count, try gpu.present
+                local cpu=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.identifiers[?(@.identifier=="cpu")].defaultCount}' 2>/dev/null)
+                local memory=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.identifiers[?(@.identifier=="memory")].defaultCount}' 2>/dev/null)
+
+                local gpu_count=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.identifiers[?(@.identifier=="nvidia.com/gpu")].defaultCount}' 2>/dev/null)
+
+                # Fallback: check for any accelerator-type identifier
                 if [ -z "$gpu_count" ]; then
-                    local gpu_present=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.hardwareCharacteristic.nodeSelector."nvidia\.com/gpu\.present"}' 2>/dev/null)
-                    if [ "$gpu_present" = "true" ]; then
-                        gpu_count="1"
-                    fi
+                    gpu_count=$(oc get hardwareprofile "$profile" -n redhat-ods-applications -o jsonpath='{.spec.identifiers[?(@.resourceType=="Accelerator")].defaultCount}' 2>/dev/null)
                 fi
                 
                 # If still no GPU count but profile has "gpu" in name, assume 1 GPU
@@ -753,7 +754,7 @@ spec:
       env:
         - name: HF_HOME
           value: /tmp/hf_home
-      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:latest'
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3'
       name: kserve-container
       ports:
         - containerPort: 8080
@@ -1195,6 +1196,180 @@ EOF
                 echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
             fi
             
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
+        
+    elif [ "$selected_runtime" = "vllm-omni" ]; then
+        # Deploy using vLLM-Omni (InferenceService) for diffusion/multimodal models
+        print_step "Creating vLLM-Omni deployment for '$model_name' in namespace '$target_namespace'..."
+        
+        # Step 1: Create Secret for model storage URI
+        print_step "Creating model storage secret..."
+        local encoded_uri=$(base64_encode "$model_uri")
+        
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${model_name}-storage
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/connection-type-protocol: uri
+    opendatahub.io/connection-type-ref: uri-v1
+    openshift.io/display-name: ${model_name}
+data:
+  URI: ${encoded_uri}
+type: Opaque
+EOF
+        print_success "Secret created"
+        
+        # Step 2: Create vLLM-Omni ServingRuntime
+        print_step "Creating vLLM-Omni ServingRuntime..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
+    openshift.io/display-name: ${model_name}
+  name: ${model_name}-runtime
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--host=0.0.0.0'
+        - '--trust-remote-code'
+      command:
+        - vllm
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: /tmp/flashinfer
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+      image: 'vllm/vllm-omni:v0.18.0'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+EOF
+        print_success "ServingRuntime created"
+        
+        # Step 3: Create InferenceService
+        print_step "Creating InferenceService..."
+        
+        local hw_profile_annotations=""
+        if [ -n "$selected_profile_name" ]; then
+            hw_profile_annotations="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
+    opendatahub.io/hardware-profile-name: $selected_profile_name"
+        fi
+        
+        local omni_args=""
+        if [ -n "$vllm_args" ]; then
+            omni_args="      args:"
+            for arg in $vllm_args; do
+                omni_args="${omni_args}
+        - '${arg}'"
+            done
+        fi
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    serving.kserve.io/stop: 'false'
+    $auth_annotation
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/connections: ${model_name}-storage
+    opendatahub.io/model-type: generative
+$hw_profile_annotations
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+$omni_args
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: '$gpu_limit'
+        requests:
+          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2)}')'
+          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: ${model_name}-runtime
+      storageUri: '$model_uri'
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Deployment configuration:"
+            echo "  Runtime: vLLM-Omni v0.18.0 (Multimodal)"
+            echo "  Image: vllm/vllm-omni:v0.18.0"
+            echo ""
+            print_info "Test with (image generation):"
+            echo "  curl -X POST <URL>/v1/images/generations \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"model\": \"$model_name\", \"prompt\": \"A red panda\", \"size\": \"1024x1024\"}'"
             echo ""
             print_info "Monitor deployment:"
             echo "  oc get inferenceservice $model_name -n $target_namespace -w"

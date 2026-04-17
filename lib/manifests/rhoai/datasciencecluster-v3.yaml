@@ -30,6 +30,9 @@ spec:
     # KServe - Model serving platform (required for vLLM, llm-d)
     kserve:
       managementState: Managed
+      # RawDeployment with Headed config (required for Guardrails + TrustyAI)
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
       # NVIDIA NIM support
       nim:
         managementState: Managed
