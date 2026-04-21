@@ -379,6 +379,7 @@ deploy_model_interactive() {
     local memory_limit="$default_memory"
     local selected_profile_name=""
     local selected_profile_namespace="redhat-ods-applications"
+    local selected_profile_resource_version=""
     
     if [ ${#profiles[@]} -gt 0 ]; then
         echo -e "${BLUE}Resource configuration options:${NC}"
@@ -418,6 +419,7 @@ deploy_model_interactive() {
             cpu_limit="${profile_cpus[$idx]}"
             memory_limit="${profile_memories[$idx]}"
             selected_profile_name="${profile_names[$idx]}"
+            selected_profile_resource_version=$(oc get hardwareprofile "${profile_names[$idx]}" -n "$selected_profile_namespace" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)
             print_success "Using hardware profile: ${profile_names[$idx]}"
         elif [ "$resource_choice" -eq "$manual_option" ]; then
             # Use defaults
@@ -638,6 +640,10 @@ deploy_model_interactive() {
         if [ -n "$selected_profile_name" ]; then
             hw_profile_annotations_llmd="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
     opendatahub.io/hardware-profile-name: $selected_profile_name"
+            if [ -n "$selected_profile_resource_version" ]; then
+                hw_profile_annotations_llmd="$hw_profile_annotations_llmd
+    opendatahub.io/hardware-profile-resource-version: \"$selected_profile_resource_version\""
+            fi
         fi
         
         cat <<EOF | oc apply -f -
@@ -802,6 +808,10 @@ EOF
         if [ -n "$selected_profile_name" ]; then
             hw_profile_annotations="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
     opendatahub.io/hardware-profile-name: $selected_profile_name"
+            if [ -n "$selected_profile_resource_version" ]; then
+                hw_profile_annotations="$hw_profile_annotations
+    opendatahub.io/hardware-profile-resource-version: \"$selected_profile_resource_version\""
+            fi
         fi
         
         cat <<EOF | oc apply -f -
@@ -1112,6 +1122,10 @@ EOF
         if [ -n "$selected_profile_name" ]; then
             hw_profile_annotations_community="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
     opendatahub.io/hardware-profile-name: $selected_profile_name"
+            if [ -n "$selected_profile_resource_version" ]; then
+                hw_profile_annotations_community="$hw_profile_annotations_community
+    opendatahub.io/hardware-profile-resource-version: \"$selected_profile_resource_version\""
+            fi
         fi
         
         cat <<EOF | oc apply -f -
@@ -1304,6 +1318,10 @@ EOF
         if [ -n "$selected_profile_name" ]; then
             hw_profile_annotations="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
     opendatahub.io/hardware-profile-name: $selected_profile_name"
+            if [ -n "$selected_profile_resource_version" ]; then
+                hw_profile_annotations="$hw_profile_annotations
+    opendatahub.io/hardware-profile-resource-version: \"$selected_profile_resource_version\""
+            fi
         fi
         
         local omni_args=""

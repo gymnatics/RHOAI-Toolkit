@@ -27,7 +27,9 @@ This single command provides an interactive menu to:
 | **One-Click Setup** | Interactive menu-driven installation |
 | **GPU Support** | Automated GPU MachineSet creation (g6e, p5 instances) |
 | **RHOAI 3.x** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
+| **Model Serving** | vLLM, vLLM-Omni (multimodal), llm-d, and community runtimes |
 | **MaaS API** | Model as a Service with authentication via Kuadrant |
+| **HuggingFace → S3** | Download models from HuggingFace to MinIO for deployment |
 | **GenAI Playground** | Interactive model testing interface |
 | **LlamaStack Demo** | Chatbot frontend with MCP tool calling |
 | **Cross-Platform** | Works on macOS and Linux |
@@ -101,8 +103,18 @@ Select from the menu:
 # Set up MaaS API
 ./scripts/setup-maas.sh
 
-# Deploy a model
-./scripts/deploy-llmd-model.sh
+# Deploy a text LLM (vLLM)
+./scripts/serve-model.sh s3 qwen3-8b Qwen/Qwen3-8B-Instruct
+
+# Deploy a multimodal model (vLLM-Omni - FLUX, SD3, etc.)
+RUNTIME=omni ./scripts/serve-model.sh s3 flux2-klein black-forest-labs/FLUX.2-klein-4B
+
+# Setup model storage (MinIO) and download from HuggingFace
+./scripts/setup-model-storage.sh
+./scripts/download-model.sh
+
+# Add custom serving runtimes
+./scripts/add-serving-runtime.sh --preset omni
 
 # Clean up resources
 ./scripts/cleanup-all.sh
@@ -126,7 +138,7 @@ Select from the menu:
 - [RHOAI 3.3 Installation](docs/guides/RHOAI-33-INSTALLATION.md)
 - [Hardware Profile Setup](docs/guides/HARDWARE-PROFILE-SETUP.md)
 - [GPU Taints Configuration](docs/guides/GPU-TAINTS-RHOAI3.md)
-- [MaaS Setup](docs/guides/MAAS-SERVING-RUNTIMES.md)
+- [MaaS Setup](docs/guides/MAAS-SETUP-STEP-BY-STEP.md)
 - [Tool Calling](docs/guides/TOOL-CALLING-GUIDE.md)
 - [Configuration Reuse](docs/guides/CONFIGURATION-REUSE.md)
 
@@ -161,6 +173,17 @@ Select from the menu:
 ./rhoai-toolkit.sh
 # Select: 4) Model Deployment → 1) Deploy Model
 ```
+
+---
+
+## Supported Serving Runtimes
+
+| Runtime | Image | Use Case | CR Type |
+|---------|-------|----------|---------|
+| **vLLM (Red Hat)** | `registry.redhat.io/rhaiis/vllm-cuda-rhel9` | Text LLMs (default) | InferenceService |
+| **vLLM (Community)** | `vllm/vllm-openai:v0.18.0` | Newer models (Qwen3.5, etc.) | InferenceService |
+| **vLLM-Omni** | `vllm/vllm-omni:v0.18.0` | Multimodal: FLUX, SD3, audio | InferenceService |
+| **llm-d** | Red Hat managed | MaaS, multi-replica | LLMInferenceService |
 
 ---
 

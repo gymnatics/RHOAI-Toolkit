@@ -121,7 +121,8 @@ End-to-end automation for:
 - **LWS** - LeaderWorkerSet for llm-d (channel: stable-v1.0)
 - **cert-manager** - Certificate management (channel: stable-v1)
 - **KServe** - Model serving framework
-- **vLLM** - High-performance inference
+- **vLLM** - High-performance LLM inference
+- **vLLM-Omni** - Multimodal inference (image gen, audio) using vllm/vllm-omni
 - **llm-d** - Red Hat's serving runtime (MaaS compatible)
 - **RHCL/Kuadrant/Authorino** - API gateway and auth for MaaS
 - **Service Mesh 3** - Auto-installed by RHCL
@@ -133,15 +134,30 @@ End-to-end automation for:
 ## Critical Configuration Notes
 
 ### Hardware Profiles (RHOAI 3.x)
-MUST include scheduling section for dashboard visibility:
+MUST include scheduling section with tolerations for GPU node scheduling:
 ```yaml
 spec:
   scheduling:
-    kueue:
-      localQueueName: default
-      priorityClass: None
-    type: Queue
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
 ```
+
+### Hardware Profile Annotations on Models
+For RHOAI dashboard to show the correct profile name (not "Custom"), deployed models
+MUST have all three annotations:
+```yaml
+annotations:
+  opendatahub.io/hardware-profile-name: gpu-profile
+  opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+  opendatahub.io/hardware-profile-resource-version: "<resourceVersion>"
+```
+The `resource-version` is fetched from the HardwareProfile's `metadata.resourceVersion` at deploy time.
 
 ### Model Serving CRs (RHOAI 3.3)
 **IMPORTANT**: The CR type depends on the runtime, NOT the RHOAI version:
@@ -150,6 +166,7 @@ spec:
 |---------|-----------------|-------------|--------------|
 | **llm-d** | `LLMInferenceService` | `serving.kserve.io/v1alpha1` | ✅ Yes |
 | **vLLM** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
+| **vLLM-Omni** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
 | **OpenVINO** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
 | **Caikit-TGIS** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |
 | **NVIDIA NIM** | `InferenceService` | `serving.kserve.io/v1beta1` | ❌ No |

@@ -169,6 +169,9 @@ metadata:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: gpu-profile
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
   name: gpu-profile
   namespace: redhat-ods-applications
 spec:
@@ -191,6 +194,15 @@ spec:
       maxCount: 4
       minCount: 1
       resourceType: Accelerator
+  scheduling:
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
 EOF
     
     print_success "GPU Hardware Profile created"

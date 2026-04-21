@@ -818,13 +818,15 @@ EOF
 install_servicemesh_for_kuadrant() {
     print_step "Installing OpenShift Service Mesh 3 for Kuadrant..."
     
-    # Check if Service Mesh operator is already installed
+    # Check if Service Mesh operator is already installed and Succeeded
     if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; then
         print_success "Service Mesh 3 Operator already installed"
     else
-        print_step "Creating Service Mesh 3 subscription..."
-        
-        cat <<EOF | oc apply -f -
+        # Create subscription if it doesn't exist
+        if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
+            print_step "Creating Service Mesh 3 subscription..."
+            
+            cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -837,15 +839,28 @@ spec:
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
+        fi
         
-        print_step "Waiting for Service Mesh InstallPlan..."
-        sleep 10
+        # Wait for InstallPlan to appear (retry up to 60s)
+        print_step "Waiting for Service Mesh InstallPlan to be created..."
+        local ip_wait=0
+        local ip_timeout=60
+        while [ $ip_wait -lt $ip_timeout ]; do
+            local has_plan=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
+                jq -r '[.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | test("servicemesh|kiali"))] | length' 2>/dev/null)
+            if [ -n "$has_plan" ] && [ "$has_plan" -gt 0 ]; then
+                print_info "Found pending InstallPlan(s)"
+                break
+            fi
+            sleep 5
+            ip_wait=$((ip_wait + 5))
+        done
+        
+        # Approve all pending Service Mesh related InstallPlans
+        approve_servicemesh_installplans
     fi
     
-    # Approve any pending Service Mesh InstallPlans
-    approve_servicemesh_installplans
-    
-    # Wait for operator to be ready
+    # Wait for operator to be ready with periodic re-approval
     print_step "Waiting for Service Mesh operator to be ready..."
     local timeout=300
     local elapsed=0
@@ -854,7 +869,6 @@ EOF
             print_warning "Service Mesh operator not ready yet (continuing anyway)"
             break
         fi
-        # Keep checking for pending InstallPlans
         approve_servicemesh_installplans 2>/dev/null || true
         sleep 10
         elapsed=$((elapsed + 10))
@@ -867,30 +881,27 @@ EOF
     restart_kuadrant_operator
 }
 
-# Approve pending Service Mesh InstallPlans
+# Approve pending Service Mesh InstallPlans (including kiali/sail dependencies)
 approve_servicemesh_installplans() {
-    # Find all pending Service Mesh InstallPlans
-    local pending_plans=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-        jq -r '.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | contains("servicemeshoperator3")) | .metadata.name' 2>/dev/null)
+    local approved_any=false
     
-    if [ -n "$pending_plans" ]; then
-        for plan in $pending_plans; do
-            print_step "Approving InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
-            print_success "Approved InstallPlan: $plan"
-        done
-        sleep 15
-    fi
-    
-    # Also check for any other pending InstallPlans for Service Mesh
-    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | grep -i "false" | awk '{print $1}')
+    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
     for plan in $all_pending; do
-        local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
-        if echo "$csv_names" | grep -qi "servicemesh"; then
-            print_step "Approving additional InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
+        if [ "$is_approved" = "false" ]; then
+            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
+            if echo "$csv_names" | grep -qiE "servicemesh|kiali|sail"; then
+                print_step "Approving InstallPlan: $plan (CSVs: $csv_names)"
+                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+                print_success "Approved InstallPlan: $plan"
+                approved_any=true
+            fi
         fi
     done
+    
+    if [ "$approved_any" = true ]; then
+        sleep 10
+    fi
 }
 
 # Setup Istio for Kuadrant (required for AuthPolicy/RateLimitPolicy enforcement)

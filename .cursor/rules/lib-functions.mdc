@@ -112,6 +112,15 @@ deploy_llmd_model_interactive()     # Alias for backward compatibility
 5. **Tool Calling**: Enable with appropriate parser (hermes, llama3_json, mistral)
 6. **Authentication**: Enable/disable with ServiceAccount creation
 
+### Hardware Profile Annotations (Required for Dashboard Recognition)
+When a hardware profile is selected, the deployed model gets these annotations:
+- `opendatahub.io/hardware-profile-name` - Profile name (e.g., `gpu-profile`)
+- `opendatahub.io/hardware-profile-namespace` - Profile namespace (e.g., `redhat-ods-applications`)
+- `opendatahub.io/hardware-profile-resource-version` - Profile's resourceVersion from cluster
+
+**All three are required** for the RHOAI dashboard to show the correct profile name.
+Without `resource-version`, the dashboard shows "Custom" instead of the profile name.
+
 ### Supported Models (from modelcar-catalog)
 - Qwen3-4B (recommended for demos)
 - Llama 3.2-3B Instruct
@@ -124,6 +133,7 @@ deploy_llmd_model_interactive()     # Alias for backward compatibility
 - **llm-d**: Creates LLMInferenceService with tolerations, env vars
 - **vLLM (Red Hat)**: Creates Secret + ServingRuntime + InferenceService + Route
 - **vLLM (Community)**: Same as above with security hardening, CUDA 13+ support
+- **vLLM-Omni**: Creates Secret + ServingRuntime (vllm/vllm-omni:v0.18.0 with --omni flag) + InferenceService for diffusion/multimodal models (FLUX, SD3, Wan2.2, audio)
 
 ## lib/utils/os-compat.sh (380 lines)
 

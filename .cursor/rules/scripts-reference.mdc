@@ -35,6 +35,12 @@ Full RHOAI 3.3 installation with all prerequisites.
 8. Create DataScienceCluster
 9. Enable dashboard features, create hardware profile
 
+**Service Mesh InstallPlan Handling:**
+- Service Mesh uses `installPlanApproval: Manual` (required by RHCL)
+- The script waits up to 60s for the InstallPlan to appear before trying to approve
+- During the operator wait loop, it periodically re-checks for pending InstallPlans
+- Approval covers servicemeshoperator3, kiali-operator, and sail-operator InstallPlans
+
 ### scripts/install-rhoai-minimal.sh
 Minimal RHOAI installation with operator selection.
 
