@@ -42,6 +42,14 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Source library functions
+source "$SCRIPT_DIR/lib/utils/colors.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/common.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/os-compat.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/operators.sh" 2>/dev/null || true
+
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false

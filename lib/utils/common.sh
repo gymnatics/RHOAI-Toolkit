@@ -218,3 +218,67 @@ wait_for_operator_with_approval() {
     return 1
 }
 
+# Ensure a TLS certificate exists for a gateway via cert-manager.
+# Creates a self-signed Issuer + Certificate if the secret doesn't already exist.
+# Usage: ensure_gateway_tls_cert <secret-name> <namespace> <hostname>
+ensure_gateway_tls_cert() {
+    local secret_name="$1"
+    local namespace="${2:-openshift-ingress}"
+    local hostname="$3"
+    
+    if [ -z "$secret_name" ] || [ -z "$hostname" ]; then
+        print_error "Usage: ensure_gateway_tls_cert <secret-name> <namespace> <hostname>"
+        return 1
+    fi
+    
+    if oc get secret "$secret_name" -n "$namespace" &>/dev/null; then
+        return 0
+    fi
+    
+    print_step "Creating TLS certificate '$secret_name' for $hostname..."
+    
+    local issuer_name="${secret_name}-issuer"
+    
+    cat <<CERTEOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ${issuer_name}
+  namespace: ${namespace}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${secret_name}
+  namespace: ${namespace}
+spec:
+  secretName: ${secret_name}
+  isCA: false
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: ${issuer_name}
+    kind: Issuer
+  commonName: "${hostname}"
+  dnsNames:
+    - "${hostname}"
+  usages:
+    - server auth
+CERTEOF
+    
+    local elapsed=0
+    while [ $elapsed -lt 30 ]; do
+        if oc get secret "$secret_name" -n "$namespace" &>/dev/null; then
+            print_success "TLS certificate '$secret_name' created"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    
+    print_warning "TLS certificate may not be ready yet (check cert-manager)"
+    return 0
+}
+
