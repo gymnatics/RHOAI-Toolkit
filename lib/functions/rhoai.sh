@@ -2575,8 +2575,9 @@ setup_model_registry() {
     local mysql_svc_name="${registry_name}-mysql"
     local mysql_db="mlmddb"
     local mysql_user="mlmd"
-    local mysql_password=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "mlmd-$(date +%s)")
-    local mysql_root_password=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "root-$(date +%s)")
+    local mysql_password=""
+    local mysql_root_password=""
+    local password_source="generated"
     
     print_step "Step 6: Deploying MySQL 8.0 database..."
     
@@ -2602,7 +2603,33 @@ setup_model_registry() {
         # Check if credentials secret already exists (re-use if so)
         if oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
             print_info "Re-using existing MySQL credentials secret"
+            password_source="existing-secret"
         else
+            # Prompt for password or generate random
+            echo ""
+            local default_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "mlmd$(date +%s | tail -c 8)")
+            echo -e "${BLUE}MySQL password configuration:${NC}"
+            echo "  User: $mysql_user | Database: $mysql_db"
+            echo ""
+            read -p "MySQL password (leave empty for auto-generated): " user_password
+            
+            if [ -n "$user_password" ]; then
+                mysql_password="$user_password"
+                password_source="user-provided"
+            else
+                mysql_password="$default_pw"
+                password_source="generated"
+            fi
+            
+            local default_root_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "root$(date +%s | tail -c 8)")
+            read -p "MySQL root password (leave empty for auto-generated): " user_root_password
+            
+            if [ -n "$user_root_password" ]; then
+                mysql_root_password="$user_root_password"
+            else
+                mysql_root_password="$default_root_pw"
+            fi
+            
             cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Secret
@@ -2619,6 +2646,7 @@ stringData:
   MYSQL_PASSWORD: "$mysql_password"
   MYSQL_ROOT_PASSWORD: "$mysql_root_password"
 EOF
+            print_success "MySQL credentials secret created"
         fi
         
         cat <<EOF | oc apply -f -
@@ -2763,19 +2791,25 @@ EOF
     ############################################################################
     # Step 8: Verify and show summary
     ############################################################################
-    _show_model_registry_summary "$registry_name" "$registry_ns"
+    _show_model_registry_summary "$registry_name" "$registry_ns" "$mysql_svc_name" "$mysql_db" "$mysql_user" "$mysql_password" "$mysql_root_password" "$password_source"
 }
 
 # Internal helper: display model registry summary
 _show_model_registry_summary() {
     local registry_name="$1"
     local registry_ns="$2"
+    local mysql_svc="${3:-}"
+    local mysql_db="${4:-}"
+    local mysql_user="${5:-}"
+    local mysql_password="${6:-}"
+    local mysql_root_password="${7:-}"
+    local password_source="${8:-}"
     
     echo ""
-    print_header "Model Registry Summary"
+    print_header "Model Registry Setup Complete"
     echo ""
-    echo -e "${BLUE}Registry Name:${NC} $registry_name"
-    echo -e "${BLUE}Namespace:${NC} $registry_ns"
+    echo -e "${BLUE}Registry Name:${NC}  $registry_name"
+    echo -e "${BLUE}Namespace:${NC}      $registry_ns"
     echo ""
     
     # Show pods
@@ -2787,25 +2821,61 @@ _show_model_registry_summary() {
     # Show REST route
     local rest_route=$(oc get route -n "$registry_ns" --no-headers 2>/dev/null | grep "$registry_name" | awk '{print $2}' | head -1)
     if [ -n "$rest_route" ]; then
-        echo -e "${BLUE}REST API:${NC} https://$rest_route"
+        echo -e "${BLUE}REST API:${NC}       https://$rest_route"
         echo ""
     fi
     
-    echo -e "${YELLOW}Access:${NC}"
-    echo "  Dashboard: Settings → Model resources and operations → AI registry settings"
-    echo "  CLI: oc get modelregistry.modelregistry.opendatahub.io -n $registry_ns"
+    # MySQL connection details
+    if [ -n "$mysql_svc" ]; then
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${MAGENTA}MySQL Connection Details${NC}"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${BLUE}Host:${NC}          ${mysql_svc}.${registry_ns}.svc.cluster.local"
+        echo -e "  ${BLUE}Port:${NC}          3306"
+        echo -e "  ${BLUE}Database:${NC}      $mysql_db"
+        echo -e "  ${BLUE}User:${NC}          $mysql_user"
+        if [ -n "$mysql_password" ] && [ "$password_source" != "existing-secret" ]; then
+            echo -e "  ${BLUE}Password:${NC}      $mysql_password"
+            echo -e "  ${BLUE}Root Password:${NC} $mysql_root_password"
+            echo ""
+            echo -e "  ${YELLOW}⚠ Save these credentials! They are stored in:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o yaml"
+        else
+            echo -e "  ${BLUE}Password:${NC}      (stored in secret ${registry_name}-mysql-credentials)"
+            echo ""
+            echo -e "  ${CYAN}Retrieve credentials:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_PASSWORD}' | base64 -d"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_ROOT_PASSWORD}' | base64 -d"
+        fi
+        echo ""
+        echo -e "  ${CYAN}Connect from a pod:${NC}"
+        echo "    mysql -h ${mysql_svc}.${registry_ns}.svc.cluster.local -u $mysql_user -p $mysql_db"
+        echo ""
+        echo -e "  ${CYAN}Port-forward for local access:${NC}"
+        echo "    oc port-forward svc/${mysql_svc} 3306:3306 -n $registry_ns"
+        echo "    mysql -h 127.0.0.1 -u $mysql_user -p $mysql_db"
+        echo ""
+    fi
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Dashboard Access:${NC}"
+    echo "  Settings → Model resources and operations → AI registry settings"
+    echo ""
+    echo -e "${YELLOW}CLI:${NC}"
+    echo "  oc get modelregistry.modelregistry.opendatahub.io -n $registry_ns"
     echo ""
     echo -e "${YELLOW}Python SDK:${NC}"
     if [ -n "$rest_route" ]; then
         echo "  from model_registry import ModelRegistry"
         echo "  registry = ModelRegistry(server_address=\"https://$rest_route\", author=\"user@example.com\")"
     else
-        echo "  # Get route first: oc get route -n $registry_ns"
+        echo "  # Get route: oc get route -n $registry_ns | grep $registry_name"
     fi
     echo ""
     echo -e "${YELLOW}Permissions:${NC}"
-    echo "  # Auto-created group (add users for access):"
-    echo "  oc get group ${registry_name}-users 2>/dev/null || echo 'Group created on first access'"
+    echo "  # Add users to auto-created group:"
+    echo "  oc adm groups add-users ${registry_name}-users <username>"
     echo ""
 }
 
