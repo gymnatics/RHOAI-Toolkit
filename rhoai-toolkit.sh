@@ -3176,8 +3176,58 @@ _mcp_deploy_helm() {
         --create-namespace 2>&1
     
     local rc=$?
+    
+    if [ $rc -eq 0 ]; then
+        # Helm chart only creates namespace-scoped RBAC; add cluster-wide access
+        _mcp_ensure_cluster_rbac "$target_ns" "$read_only"
+    fi
+    
     cd - &>/dev/null
     return $rc
+}
+
+# Helper: Ensure cluster-wide RBAC for MCP server ServiceAccount
+_mcp_ensure_cluster_rbac() {
+    local target_ns="$1"
+    local read_only="${2:-true}"
+    
+    local cluster_role="view"
+    if [ "$read_only" != "true" ]; then
+        cluster_role="edit"
+    fi
+    
+    # Detect the ServiceAccount name (Helm may use release-name based SA)
+    local sa_name=$(oc get sa -n "$target_ns" --no-headers 2>/dev/null | awk '{print $1}' | grep -E "mcp|kubernetes-mcp" | head -1)
+    sa_name="${sa_name:-kubernetes-mcp-server}"
+    
+    local crb_name="kubernetes-mcp-server-${target_ns}"
+    
+    if oc get clusterrolebinding "$crb_name" &>/dev/null; then
+        print_info "ClusterRoleBinding '$crb_name' already exists"
+        return 0
+    fi
+    
+    print_step "Creating ClusterRoleBinding for cluster-wide $cluster_role access..."
+    cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: $crb_name
+  labels:
+    app: kubernetes-mcp-server
+subjects:
+- kind: ServiceAccount
+  name: $sa_name
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $cluster_role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "ClusterRoleBinding created (SA: $sa_name, Role: $cluster_role)"
+    fi
 }
 
 # Method 2: OpenShift BuildConfig (build on cluster)
