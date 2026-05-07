@@ -2879,3 +2879,437 @@ _show_model_registry_summary() {
     echo ""
 }
 
+################################################################################
+# Pipeline Server Setup
+################################################################################
+
+# Setup Data Science Pipelines Application (DSPA) with S3 storage.
+# Per RHAIE 3.3 Guide Chapter 1: configuring a pipeline server requires S3 storage.
+# Offers: reuse existing MinIO or deploy new one.
+# Usage: setup_pipeline_server [namespace]
+setup_pipeline_server() {
+    local target_ns="${1:-}"
+    
+    print_header "Setup Pipeline Server"
+    echo "  Per RHAIE 3.3 Guide: Data Science Pipelines with S3 storage"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Check aipipelines is enabled in DSC
+    ############################################################################
+    print_step "Step 1: Checking aipipelines component in DSC..."
+    
+    local pipelines_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aipipelines.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$pipelines_state" = "Managed" ]; then
+        print_success "aipipelines already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling aipipelines in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "aipipelines": {
+                        "managementState": "Managed"
+                    }
+                }
+            }
+        }'
+        print_success "aipipelines enabled in DSC"
+        sleep 10
+    fi
+    
+    ############################################################################
+    # Step 2: Select target namespace
+    ############################################################################
+    if [ -z "$target_ns" ]; then
+        echo ""
+        print_step "Step 2: Select project namespace for pipeline server"
+        
+        local current_project=$(oc project -q 2>/dev/null)
+        echo "  Current project: $current_project"
+        echo ""
+        read -p "Deploy pipeline server in namespace [$current_project]: " target_ns
+        target_ns="${target_ns:-$current_project}"
+    fi
+    
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (Y/n): " create_ns
+        if [[ ! "$create_ns" =~ ^[Nn]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+            print_success "Namespace '$target_ns' created"
+        else
+            return 1
+        fi
+    fi
+    
+    # Ensure dashboard label
+    oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+    
+    ############################################################################
+    # Step 3: Check if DSPA already exists
+    ############################################################################
+    print_step "Step 3: Checking for existing pipeline server..."
+    
+    if oc get dspa -n "$target_ns" -o name &>/dev/null 2>&1; then
+        local existing_dspa=$(oc get dspa -n "$target_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$existing_dspa" ]; then
+            local dspa_ready=$(oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+            if [ "$dspa_ready" = "True" ]; then
+                print_success "Pipeline server '$existing_dspa' already running [SKIP]"
+                _show_pipeline_server_summary "$target_ns" "$existing_dspa"
+                return 0
+            else
+                print_warning "DSPA '$existing_dspa' exists but not ready"
+                print_info "Checking status..."
+                oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions}' 2>/dev/null | python3 -m json.tool 2>/dev/null | head -20
+                echo ""
+                read -p "Delete and recreate? (y/N): " recreate
+                if [[ "$recreate" =~ ^[Yy]$ ]]; then
+                    oc delete dspa "$existing_dspa" -n "$target_ns"
+                    sleep 5
+                else
+                    return 0
+                fi
+            fi
+        fi
+    fi
+    
+    ############################################################################
+    # Step 4: S3 Storage Configuration
+    ############################################################################
+    echo ""
+    print_step "Step 4: S3 Storage for Pipeline Artifacts"
+    echo ""
+    echo -e "${BLUE}Pipeline server requires S3-compatible storage for artifacts.${NC}"
+    echo ""
+    
+    # Detect existing MinIO deployments
+    local existing_minio_ns=""
+    local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | grep -i minio | awk '{print $1 "\t" $2}')
+    
+    if [ -n "$minio_deployments" ]; then
+        echo -e "${CYAN}Existing MinIO deployments found:${NC}"
+        echo "$minio_deployments" | while IFS=$'\t' read -r ns name; do
+            local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            echo "  - $ns / $name (service: $minio_svc)"
+        done
+        echo ""
+    fi
+    
+    echo -e "${YELLOW}Storage options:${NC}"
+    echo "  1) Use existing MinIO (create new bucket for pipelines)"
+    echo "  2) Deploy new MinIO in this namespace"
+    echo ""
+    read -p "Select option [1]: " storage_choice
+    storage_choice="${storage_choice:-1}"
+    
+    local s3_endpoint=""
+    local s3_bucket="pipelines"
+    local s3_access_key=""
+    local s3_secret_key=""
+    local s3_scheme="http"
+    local s3_host=""
+    local s3_port="9000"
+    local credentials_secret_name="pipelines-s3-credentials"
+    
+    if [ "$storage_choice" = "1" ]; then
+        # Reuse existing MinIO
+        echo ""
+        echo -e "${CYAN}Enter existing MinIO details:${NC}"
+        
+        # Try to auto-detect from model-storage namespace
+        local default_ns=$(echo "$minio_deployments" | head -1 | awk '{print $1}')
+        default_ns="${default_ns:-model-storage}"
+        
+        read -p "  MinIO namespace [$default_ns]: " minio_ns
+        minio_ns="${minio_ns:-$default_ns}"
+        
+        # Find service name
+        local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+        detected_svc="${detected_svc:-minio}"
+        
+        read -p "  MinIO service name [$detected_svc]: " minio_svc
+        minio_svc="${minio_svc:-$detected_svc}"
+        
+        s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+        
+        read -p "  MinIO port [$s3_port]: " input_port
+        s3_port="${input_port:-$s3_port}"
+        
+        read -p "  Pipeline bucket name [$s3_bucket]: " input_bucket
+        s3_bucket="${input_bucket:-$s3_bucket}"
+        
+        # Get credentials
+        local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
+        
+        if [ -n "$detected_secret" ]; then
+            print_info "Found credentials secret: $detected_secret in $minio_ns"
+            read -p "  Use these credentials? (Y/n): " use_existing
+            if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
+                s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
+                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
+                s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
+                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+            fi
+        fi
+        
+        if [ -z "$s3_access_key" ]; then
+            read -p "  MinIO access key [minio]: " s3_access_key
+            s3_access_key="${s3_access_key:-minio}"
+            read -p "  MinIO secret key [minio123]: " s3_secret_key
+            s3_secret_key="${s3_secret_key:-minio123}"
+        fi
+        
+        print_success "Using existing MinIO: $s3_host:$s3_port"
+        
+    else
+        # Deploy new MinIO
+        echo ""
+        print_step "Deploying new MinIO in '$target_ns'..."
+        
+        s3_host="minio.${target_ns}.svc.cluster.local"
+        s3_access_key="minio"
+        s3_secret_key=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "minio$(date +%s | tail -c 8)")
+        
+        read -p "  MinIO password (leave empty for auto-generated): " user_secret
+        if [ -n "$user_secret" ]; then
+            s3_secret_key="$user_secret"
+        fi
+        
+        read -p "  Storage size [50Gi]: " storage_size
+        storage_size="${storage_size:-50Gi}"
+        
+        cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pipelines-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $storage_size
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:latest
+        args:
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        env:
+        - name: MINIO_ROOT_USER
+          value: "$s3_access_key"
+        - name: MINIO_ROOT_PASSWORD
+          value: "$s3_secret_key"
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-pipelines-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  selector:
+    app: minio
+EOF
+        
+        # Wait for MinIO
+        print_step "Waiting for MinIO to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$target_ns" -l app=minio -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MinIO is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        
+        print_info "MinIO credentials: $s3_access_key / $s3_secret_key"
+    fi
+    
+    ############################################################################
+    # Step 5: Create S3 credentials secret in target namespace
+    ############################################################################
+    print_step "Step 5: Creating S3 credentials secret..."
+    
+    if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
+        print_success "Credentials secret already exists [SKIP]"
+    else
+        cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $credentials_secret_name
+  labels:
+    app.kubernetes.io/part-of: pipelines
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "$s3_access_key"
+  AWS_SECRET_ACCESS_KEY: "$s3_secret_key"
+EOF
+        print_success "Credentials secret created"
+    fi
+    
+    ############################################################################
+    # Step 6: Create DataSciencePipelinesApplication CR
+    ############################################################################
+    print_step "Step 6: Creating DataSciencePipelinesApplication..."
+    
+    local dspa_name="dspa"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: $dspa_name
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    pipelineStore: kubernetes
+  objectStorage:
+    externalStorage:
+      host: "$s3_host"
+      port: "$s3_port"
+      bucket: "$s3_bucket"
+      scheme: "$s3_scheme"
+      s3CredentialsSecret:
+        secretName: "$credentials_secret_name"
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+EOF
+    
+    ############################################################################
+    # Step 7: Wait for pipeline server to be ready
+    ############################################################################
+    print_step "Step 7: Waiting for pipeline server to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 180 ]; do
+        local ready=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            print_success "Pipeline server is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [ $((elapsed % 15)) -eq 0 ]; then
+            local reason=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+            echo "  Waiting... status: ${reason:-pending} (${elapsed}s elapsed)"
+        fi
+    done
+    
+    if [ $elapsed -ge 180 ]; then
+        print_warning "Pipeline server may not be fully ready yet"
+        print_info "Check: oc get dspa $dspa_name -n $target_ns -o yaml"
+    fi
+    
+    ############################################################################
+    # Step 8: Show summary
+    ############################################################################
+    _show_pipeline_server_summary "$target_ns" "$dspa_name"
+}
+
+# Internal helper: display pipeline server summary
+_show_pipeline_server_summary() {
+    local target_ns="$1"
+    local dspa_name="${2:-dspa}"
+    
+    echo ""
+    print_header "Pipeline Server Summary"
+    echo ""
+    echo -e "${BLUE}Namespace:${NC}     $target_ns"
+    echo -e "${BLUE}DSPA Name:${NC}     $dspa_name"
+    echo ""
+    
+    # Get route
+    local pipeline_route=$(oc get route "ds-pipeline-${dspa_name}" -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$pipeline_route" ]; then
+        echo -e "${BLUE}Pipeline API:${NC}  https://$pipeline_route"
+    else
+        echo -e "${BLUE}Pipeline API:${NC}  (route not yet available, check: oc get route -n $target_ns)"
+    fi
+    echo ""
+    
+    # Pods
+    echo -e "${CYAN}Pods:${NC}"
+    oc get pods -n "$target_ns" --no-headers 2>/dev/null | grep -E "ds-pipeline|mariadb" | sed 's/^/  /'
+    echo ""
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo ""
+    echo "  1. Import a pipeline via Dashboard:"
+    echo "     Projects → $target_ns → Pipelines → Import pipeline"
+    echo ""
+    echo "  2. Import via Python SDK:"
+    echo "     from kfp import Client"
+    echo "     token = !oc whoami -t"
+    if [ -n "$pipeline_route" ]; then
+        echo "     client = Client(host='https://$pipeline_route', existing_token=token[0], ssl_ca_cert=False)"
+    else
+        echo "     client = Client(host='https://ds-pipeline-${dspa_name}-${target_ns}.apps.<cluster>', existing_token=token[0])"
+    fi
+    echo "     client.list_pipelines()"
+    echo ""
+    echo "  3. Compile + upload a pipeline:"
+    echo "     from kfp import compiler, dsl"
+    echo "     compiler.Compiler().compile(my_pipeline, 'pipeline.yaml')"
+    echo "     client.upload_pipeline('pipeline.yaml', pipeline_name='my-pipeline')"
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+

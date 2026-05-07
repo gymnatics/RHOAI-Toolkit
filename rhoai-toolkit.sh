@@ -229,8 +229,12 @@ show_ai_services_submenu() {
     echo -e "${YELLOW}5)${NC} Setup Model Registry ${GREEN}[NEW]${NC}"
     echo "    Deploy MySQL + create ModelRegistry instance"
     echo ""
+    echo -e "${MAGENTA}AI Pipelines:${NC}"
+    echo -e "${YELLOW}6)${NC} Setup Pipeline Server ${GREEN}[NEW]${NC}"
+    echo "    Deploy DSPA with S3 storage (reuse existing MinIO or new)"
+    echo ""
     echo -e "${MAGENTA}MCP Servers (Tool Calling):${NC}"
-    echo -e "${YELLOW}6)${NC} MCP Server Management ${BLUE}→${NC}"
+    echo -e "${YELLOW}7)${NC} MCP Server Management ${BLUE}→${NC}"
     echo "    Weather MCP, Kubernetes MCP, and other tool servers"
     echo ""
     echo -e "${CYAN}Tip: Deploy demos from: RHOAI Management → Demos${NC}"
@@ -4306,7 +4310,7 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -p "Select an option (1-6, 0): " ai_choice
+        read -p "Select an option (1-7, 0): " ai_choice
         
         case $ai_choice in
             1)
@@ -4348,6 +4352,11 @@ ai_services_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             6)
+                setup_pipeline_server
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
                 setup_mcp_servers_interactive
                 ;;
             0)
