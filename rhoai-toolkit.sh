@@ -3171,6 +3171,8 @@ _mcp_deploy_helm() {
         --set server.port=8080 \
         --set server.stateless=true \
         --set "server.toolsets={$toolsets}" \
+        --set ingress.enabled=false \
+        --set route.enabled=false \
         --create-namespace 2>&1
     
     local rc=$?
