@@ -225,8 +225,12 @@ show_ai_services_submenu() {
     echo -e "${YELLOW}4)${NC} Feature Store Management ${BLUE}→${NC}"
     echo "    Setup and manage Feature Store for ML features"
     echo ""
+    echo -e "${MAGENTA}Model Registry:${NC}"
+    echo -e "${YELLOW}5)${NC} Setup Model Registry ${GREEN}[NEW]${NC}"
+    echo "    Deploy MySQL + create ModelRegistry instance"
+    echo ""
     echo -e "${MAGENTA}MCP Servers (Tool Calling):${NC}"
-    echo -e "${YELLOW}5)${NC} MCP Server Management ${BLUE}→${NC}"
+    echo -e "${YELLOW}6)${NC} MCP Server Management ${BLUE}→${NC}"
     echo "    Weather MCP, Kubernetes MCP, and other tool servers"
     echo ""
     echo -e "${CYAN}Tip: Deploy demos from: RHOAI Management → Demos${NC}"
@@ -3886,7 +3890,7 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -p "Select an option (1-5, 0): " ai_choice
+        read -p "Select an option (1-6, 0): " ai_choice
         
         case $ai_choice in
             1)
@@ -3923,6 +3927,11 @@ ai_services_submenu() {
                 feast_submenu
                 ;;
             5)
+                setup_model_registry
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
                 setup_mcp_servers_interactive
                 ;;
             0)

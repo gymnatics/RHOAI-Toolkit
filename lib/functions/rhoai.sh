@@ -2452,3 +2452,360 @@ run_maas_demo() {
     esac
 }
 
+################################################################################
+# Model Registry Setup
+################################################################################
+
+# Full idempotent Model Registry setup workflow.
+# Per RHAIE 3.3 Guide: enables the component, creates namespace, deploys MySQL,
+# creates ModelRegistry CR, enables dashboard visibility, verifies.
+# Skips any step that is already completed.
+# Usage: setup_model_registry [registry-name]
+setup_model_registry() {
+    local registry_name="${1:-}"
+    local registry_ns="rhoai-model-registries"
+    
+    print_header "Setup Model Registry"
+    echo "  Full workflow per RHAIE 3.3 Guide Chapter 2-3"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Enable modelregistry component in DSC
+    ############################################################################
+    print_step "Step 1: Checking modelregistry component in DataScienceCluster..."
+    
+    local mr_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.modelregistry.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$mr_state" = "Managed" ]; then
+        print_success "modelregistry already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling modelregistry in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "modelregistry": {
+                        "managementState": "Managed",
+                        "registriesNamespace": "rhoai-model-registries"
+                    }
+                }
+            }
+        }'
+        print_success "modelregistry enabled in DSC"
+        
+        # Wait for operator to reconcile
+        print_step "Waiting for Model Registry operator to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get modelregistry default-modelregistry -o jsonpath='{.status.phase}' 2>/dev/null | grep -q "Ready"; then
+                print_success "Model Registry operator is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+    fi
+    
+    ############################################################################
+    # Step 2: Enable Model Registry in dashboard
+    ############################################################################
+    print_step "Step 2: Checking dashboard configuration..."
+    
+    local mr_disabled=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig.disableModelRegistry}' 2>/dev/null || echo "true")
+    
+    if [ "$mr_disabled" = "false" ]; then
+        print_success "Model Registry enabled in dashboard [SKIP]"
+    else
+        print_step "Enabling Model Registry in dashboard..."
+        oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+            --type=merge -p '{"spec":{"dashboardConfig":{"disableModelRegistry":false}}}'
+        print_success "Model Registry enabled in dashboard"
+    fi
+    
+    ############################################################################
+    # Step 3: Ensure registries namespace exists
+    ############################################################################
+    print_step "Step 3: Checking namespace '$registry_ns'..."
+    
+    if oc get namespace "$registry_ns" &>/dev/null; then
+        print_success "Namespace '$registry_ns' exists [SKIP]"
+    else
+        oc create namespace "$registry_ns"
+        print_success "Namespace '$registry_ns' created"
+    fi
+    
+    ############################################################################
+    # Step 4: Get registry name (interactive or argument)
+    ############################################################################
+    if [ -z "$registry_name" ]; then
+        echo ""
+        # Show existing registries if any
+        local existing=$(oc get modelregistry.modelregistry.opendatahub.io -n "$registry_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+        if [ -n "$existing" ]; then
+            print_info "Existing registries: $existing"
+        fi
+        
+        echo -e "${BLUE}Enter a name for the Model Registry:${NC}"
+        echo "  Examples: team-models, production-registry, shared-registry"
+        echo ""
+        read -p "Registry name [model-registry]: " registry_name
+        registry_name="${registry_name:-model-registry}"
+    fi
+    
+    # Sanitize name (lowercase, alphanumeric + hyphens only)
+    registry_name=$(echo "$registry_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/^-//;s/-$//')
+    
+    ############################################################################
+    # Step 5: Check if this registry already exists and is ready
+    ############################################################################
+    print_step "Step 5: Checking if registry '$registry_name' exists..."
+    
+    local mr_exists=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+    
+    if [ "$mr_exists" = "True" ]; then
+        print_success "Model Registry '$registry_name' already exists and is ready [SKIP]"
+        _show_model_registry_summary "$registry_name" "$registry_ns"
+        return 0
+    fi
+    
+    ############################################################################
+    # Step 6: Deploy MySQL database (if not already running for this registry)
+    ############################################################################
+    local mysql_deploy_name="${registry_name}-mysql"
+    local mysql_svc_name="${registry_name}-mysql"
+    local mysql_db="mlmddb"
+    local mysql_user="mlmd"
+    local mysql_password=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "mlmd-$(date +%s)")
+    local mysql_root_password=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "root-$(date +%s)")
+    
+    print_step "Step 6: Deploying MySQL 8.0 database..."
+    
+    # Check if MySQL is already running for this registry
+    if oc get deployment "$mysql_deploy_name" -n "$registry_ns" &>/dev/null; then
+        local mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$mysql_ready" = "True" ]; then
+            print_success "MySQL '$mysql_deploy_name' already running [SKIP]"
+        else
+            print_info "MySQL deployment exists but not ready, waiting..."
+            local elapsed=0
+            while [ $elapsed -lt 90 ]; do
+                mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$mysql_ready" = "True" ]; then
+                    print_success "MySQL is ready"
+                    break
+                fi
+                sleep 5
+                elapsed=$((elapsed + 5))
+            done
+        fi
+    else
+        # Check if credentials secret already exists (re-use if so)
+        if oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
+            print_info "Re-using existing MySQL credentials secret"
+        else
+            cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${mysql_deploy_name}-credentials
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+type: Opaque
+stringData:
+  MYSQL_DATABASE: "$mysql_db"
+  MYSQL_USER: "$mysql_user"
+  MYSQL_PASSWORD: "$mysql_password"
+  MYSQL_ROOT_PASSWORD: "$mysql_root_password"
+EOF
+        fi
+        
+        cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $mysql_deploy_name
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $mysql_deploy_name
+  template:
+    metadata:
+      labels:
+        app: $mysql_deploy_name
+    spec:
+      containers:
+      - name: mysql
+        image: registry.redhat.io/rhel9/mysql-80:latest
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: ${mysql_deploy_name}-credentials
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 30
+          periodSeconds: 20
+      volumes:
+      - name: mysql-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: $mysql_svc_name
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+  selector:
+    app: $mysql_deploy_name
+EOF
+        
+        print_step "Waiting for MySQL to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 120 ]; do
+            if oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MySQL is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+            echo "  Waiting for MySQL... (${elapsed}s elapsed)"
+        done
+        
+        if [ $elapsed -ge 120 ]; then
+            print_warning "MySQL may not be fully ready yet (continuing)"
+        fi
+    fi
+    
+    ############################################################################
+    # Step 7: Create ModelRegistry CR
+    ############################################################################
+    print_step "Step 7: Creating ModelRegistry '$registry_name'..."
+    
+    if oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" &>/dev/null; then
+        print_info "ModelRegistry CR already exists, checking status..."
+    else
+        cat <<EOF | oc apply -f -
+apiVersion: modelregistry.opendatahub.io/v1beta1
+kind: ModelRegistry
+metadata:
+  name: $registry_name
+  namespace: $registry_ns
+  labels:
+    app: $registry_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  grpc:
+    port: 9090
+  rest:
+    port: 8080
+    serviceRoute: enabled
+  mysql:
+    host: ${mysql_svc_name}.${registry_ns}.svc.cluster.local
+    port: 3306
+    database: $mysql_db
+    username: $mysql_user
+    passwordSecret:
+      name: ${mysql_deploy_name}-credentials
+      key: MYSQL_PASSWORD
+EOF
+    fi
+    
+    # Wait for ModelRegistry to be ready
+    print_step "Waiting for Model Registry to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        local mr_ready=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mr_ready" = "True" ]; then
+            print_success "Model Registry '$registry_name' is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        echo "  Waiting for Model Registry... (${elapsed}s elapsed)"
+    done
+    
+    ############################################################################
+    # Step 8: Verify and show summary
+    ############################################################################
+    _show_model_registry_summary "$registry_name" "$registry_ns"
+}
+
+# Internal helper: display model registry summary
+_show_model_registry_summary() {
+    local registry_name="$1"
+    local registry_ns="$2"
+    
+    echo ""
+    print_header "Model Registry Summary"
+    echo ""
+    echo -e "${BLUE}Registry Name:${NC} $registry_name"
+    echo -e "${BLUE}Namespace:${NC} $registry_ns"
+    echo ""
+    
+    # Show pods
+    echo -e "${BLUE}Pods:${NC}"
+    oc get pods -n "$registry_ns" -l "app.kubernetes.io/instance=$registry_name" --no-headers 2>/dev/null | sed 's/^/  /'
+    oc get pods -n "$registry_ns" -l "app=${registry_name}-mysql" --no-headers 2>/dev/null | sed 's/^/  /'
+    echo ""
+    
+    # Show REST route
+    local rest_route=$(oc get route -n "$registry_ns" --no-headers 2>/dev/null | grep "$registry_name" | awk '{print $2}' | head -1)
+    if [ -n "$rest_route" ]; then
+        echo -e "${BLUE}REST API:${NC} https://$rest_route"
+        echo ""
+    fi
+    
+    echo -e "${YELLOW}Access:${NC}"
+    echo "  Dashboard: Settings → Model resources and operations → AI registry settings"
+    echo "  CLI: oc get modelregistry.modelregistry.opendatahub.io -n $registry_ns"
+    echo ""
+    echo -e "${YELLOW}Python SDK:${NC}"
+    if [ -n "$rest_route" ]; then
+        echo "  from model_registry import ModelRegistry"
+        echo "  registry = ModelRegistry(server_address=\"https://$rest_route\", author=\"user@example.com\")"
+    else
+        echo "  # Get route first: oc get route -n $registry_ns"
+    fi
+    echo ""
+    echo -e "${YELLOW}Permissions:${NC}"
+    echo "  # Auto-created group (add users for access):"
+    echo "  oc get group ${registry_name}-users 2>/dev/null || echo 'Group created on first access'"
+    echo ""
+}
+
