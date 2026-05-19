@@ -42,6 +42,14 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Source library functions
+source "$SCRIPT_DIR/lib/utils/colors.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/common.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/os-compat.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/operators.sh" 2>/dev/null || true
+
 # Default flags
 SETUP_MAAS="ask"
 MAAS_ONLY=false
@@ -217,8 +225,16 @@ show_ai_services_submenu() {
     echo -e "${YELLOW}4)${NC} Feature Store Management ${BLUE}→${NC}"
     echo "    Setup and manage Feature Store for ML features"
     echo ""
+    echo -e "${MAGENTA}Model Registry:${NC}"
+    echo -e "${YELLOW}5)${NC} Setup Model Registry ${GREEN}[NEW]${NC}"
+    echo "    Deploy MySQL + create ModelRegistry instance"
+    echo ""
+    echo -e "${MAGENTA}AI Pipelines:${NC}"
+    echo -e "${YELLOW}6)${NC} Setup Pipeline Server ${GREEN}[NEW]${NC}"
+    echo "    Deploy DSPA with S3 storage (reuse existing MinIO or new)"
+    echo ""
     echo -e "${MAGENTA}MCP Servers (Tool Calling):${NC}"
-    echo -e "${YELLOW}5)${NC} MCP Server Management ${BLUE}→${NC}"
+    echo -e "${YELLOW}7)${NC} MCP Server Management ${BLUE}→${NC}"
     echo "    Weather MCP, Kubernetes MCP, and other tool servers"
     echo ""
     echo -e "${CYAN}Tip: Deploy demos from: RHOAI Management → Demos${NC}"
@@ -1118,55 +1134,9 @@ EOF
 
 ################################################################################
 # MCP Server Functions
+# Note: deploy_kubernetes_mcp_server() is defined later in the file
+# with full multi-strategy deployment (Helm, BuildConfig, local build, manifest)
 ################################################################################
-
-# Deploy Kubernetes MCP Server
-deploy_kubernetes_mcp_server() {
-    print_header "Deploy Kubernetes MCP Server"
-    
-    local namespace=$(oc project -q 2>/dev/null)
-    echo "Current namespace: $namespace"
-    read -p "Deploy to namespace [$namespace]: " target_ns
-    target_ns="${target_ns:-$namespace}"
-    
-    # Check/create namespace
-    if ! oc get namespace "$target_ns" &>/dev/null; then
-        print_warning "Namespace '$target_ns' does not exist"
-        read -p "Create it? (y/N): " create_ns
-        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
-            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
-        else
-            return 1
-        fi
-    fi
-    
-    print_step "Deploying Kubernetes MCP Server..."
-    oc apply -f "$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml" -n "$target_ns"
-    
-    print_step "Waiting for deployment..."
-    oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s || true
-    
-    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
-    
-    print_success "Kubernetes MCP Server deployed"
-    echo ""
-    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
-    echo ""
-    
-    # Ask to register in AI Assets
-    read -p "Register in AI Asset endpoints (shows in UI)? (Y/n): " register_ai
-    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
-        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
-            "Kubernetes cluster operations - list pods, deployments, services, get logs." \
-            "streamable-http"
-    fi
-    
-    # Ask to register in LlamaStack
-    read -p "Register in LlamaStack config (enables tool calling)? (Y/n): " register_ls
-    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
-        register_mcp_llamastack "mcp::kubernetes" "$mcp_url" "$target_ns"
-    fi
-}
 
 # Deploy Weather MCP Server with MongoDB
 deploy_mcp_mongodb_only() {
@@ -2974,11 +2944,16 @@ EOF
 }
 
 ################################################################################
-# Kubernetes MCP Server Deployment
+# Kubernetes MCP Server Deployment (Multi-Strategy)
+# Source: https://github.com/openshift/openshift-mcp-server
 ################################################################################
 
 deploy_kubernetes_mcp_server() {
     print_header "Deploy Kubernetes MCP Server"
+    print_info "Source: github.com/openshift/openshift-mcp-server"
+    echo ""
+    
+    local MCP_REPO="https://github.com/openshift/openshift-mcp-server.git"
     
     # Check if logged in
     if ! oc whoami &>/dev/null; then
@@ -2986,15 +2961,31 @@ deploy_kubernetes_mcp_server() {
         return 1
     fi
     
-    # Get target namespace
-    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    # Check if already deployed
     local current_project=$(oc project -q 2>/dev/null)
-    echo "Current project: $current_project"
+    if oc get deployment kubernetes-mcp-server -n "$current_project" &>/dev/null 2>&1; then
+        local ready=$(oc get deployment kubernetes-mcp-server -n "$current_project" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        if [ "${ready:-0}" -gt 0 ]; then
+            print_success "Kubernetes MCP Server already running in '$current_project'"
+            local mcp_url="http://kubernetes-mcp-server.${current_project}.svc.cluster.local:8080/mcp"
+            echo -e "  ${CYAN}Endpoint:${NC} $mcp_url"
+            echo ""
+            read -p "Redeploy/upgrade? (y/N): " redeploy
+            if [[ ! "$redeploy" =~ ^[Yy]$ ]]; then
+                return 0
+            fi
+        fi
+    fi
+    
+    ############################################################################
+    # Namespace selection
+    ############################################################################
+    echo -e "${CYAN}Target Namespace:${NC}"
+    echo "  Current project: $current_project"
     echo ""
-    read -p "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Deploy to namespace [$current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
-    # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
         read -p "Create it? (y/N): " create_ns
@@ -3002,78 +2993,519 @@ deploy_kubernetes_mcp_server() {
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
         else
-            print_error "Namespace required"
             return 1
         fi
     fi
     
-    oc project "$target_ns" &>/dev/null
-    
+    ############################################################################
+    # Configuration
+    ############################################################################
     echo ""
-    echo -e "${CYAN}This will deploy:${NC}"
-    echo "  • Kubernetes MCP Server"
-    echo "  • ServiceAccount with read-only cluster access"
-    echo "  • Enables querying pods, deployments, services, logs via LLM"
-    echo ""
-    echo -e "${YELLOW}Available tools after deployment:${NC}"
-    echo "  • List/describe pods, deployments, services"
-    echo "  • Get pod logs"
-    echo "  • Query InferenceServices"
-    echo "  • Check namespace resources"
+    print_step "Configuration"
     echo ""
     
-    read -p "Proceed? (Y/n): " confirm
-    if [[ "$confirm" =~ ^[Nn]$ ]]; then
-        print_info "Cancelled"
+    # Read-only mode
+    echo -e "${BLUE}Read-only mode${NC} (prevents write/delete operations on the cluster):"
+    read -p "  Enable read-only? (Y/n): " readonly_choice
+    local read_only="true"
+    if [[ "$readonly_choice" =~ ^[Nn]$ ]]; then
+        read_only="false"
+        print_warning "Write operations enabled -- be careful in shared clusters"
+    fi
+    
+    # Toolsets
+    echo ""
+    echo -e "${BLUE}Toolsets${NC} (which capabilities to enable):"
+    echo "  1) core          - Pods, Deployments, Services, Namespaces"
+    echo "  2) core + events - Add Kubernetes events"
+    echo "  3) core + helm   - Add Helm chart management"
+    echo "  4) full           - core + events + helm + tekton + exec"
+    echo "  5) custom         - Choose individually"
+    echo ""
+    read -p "  Select toolset profile [1]: " toolset_choice
+    toolset_choice="${toolset_choice:-1}"
+    
+    local toolsets="core"
+    case "$toolset_choice" in
+        2) toolsets="core,events" ;;
+        3) toolsets="core,helm" ;;
+        4) toolsets="core,events,helm,tekton,exec" ;;
+        5)
+            echo ""
+            echo "  Available: core, config, events, helm, tekton, exec"
+            read -p "  Enter comma-separated toolsets: " toolsets
+            toolsets="${toolsets:-core}"
+            ;;
+        *) toolsets="core" ;;
+    esac
+    print_info "Toolsets: $toolsets"
+    
+    ############################################################################
+    # Deployment method selection
+    ############################################################################
+    echo ""
+    print_step "Deployment Method"
+    echo ""
+    
+    # Auto-detect available tools
+    local has_helm=false
+    local has_podman=false
+    if command -v helm &>/dev/null; then has_helm=true; fi
+    if command -v podman &>/dev/null || command -v docker &>/dev/null; then has_podman=true; fi
+    
+    local suggested="2"
+    if [ "$has_helm" = true ]; then suggested="1"; fi
+    
+    echo -e "${YELLOW}1)${NC} Helm chart install ${GREEN}$([ "$has_helm" = true ] && echo '[detected]' || echo '[helm not found]')${NC}"
+    echo "   Clone chart from GitHub, deploy with helm"
+    echo ""
+    echo -e "${YELLOW}2)${NC} OpenShift BuildConfig ${GREEN}[works with oc only]${NC}"
+    echo "   Build image on-cluster from GitHub repo (no local tools needed)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Local container build ${GREEN}$([ "$has_podman" = true ] && echo '[podman/docker detected]' || echo '[not detected]')${NC}"
+    echo "   Clone repo, build locally with podman/docker, push to cluster"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Quick static manifest ${GREEN}[offline/air-gapped]${NC}"
+    echo "   Apply bundled manifest (limited toolset, older image)"
+    echo ""
+    
+    read -p "Select method [$suggested]: " method_choice
+    method_choice="${method_choice:-$suggested}"
+    
+    ############################################################################
+    # Execute selected method
+    ############################################################################
+    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local:8080/mcp"
+    
+    case "$method_choice" in
+        1) _mcp_deploy_helm "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        2) _mcp_deploy_buildconfig "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        3) _mcp_deploy_local_build "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        4) _mcp_deploy_manifest "$target_ns" ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
+    local deploy_rc=$?
+    if [ $deploy_rc -ne 0 ]; then
+        print_error "Deployment failed"
+        return 1
+    fi
+    
+    ############################################################################
+    # Wait for rollout
+    ############################################################################
+    print_step "Waiting for MCP Server to be ready..."
+    if oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=180s 2>/dev/null; then
+        print_success "Kubernetes MCP Server is running"
+    else
+        print_warning "MCP Server may still be starting (check pods)"
+    fi
+    
+    ############################################################################
+    # Registration and summary
+    ############################################################################
+    echo ""
+    print_header "Kubernetes MCP Server Deployed"
+    echo ""
+    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
+    echo -e "${CYAN}Namespace:${NC}    $target_ns"
+    echo -e "${CYAN}Toolsets:${NC}     $toolsets"
+    echo -e "${CYAN}Read-Only:${NC}    $read_only"
+    echo ""
+    echo -e "${YELLOW}Available tools:${NC}"
+    echo "  Pods: list, get, delete, logs, exec, top, run"
+    echo "  Resources: create/update, get, list, delete (any K8s/OCP resource)"
+    echo "  Namespaces, Events, Projects (OpenShift)"
+    [ "$toolsets" = *"helm"* ] && echo "  Helm: install, list, uninstall"
+    [ "$toolsets" = *"tekton"* ] && echo "  Tekton: start pipeline/task, get logs"
+    echo ""
+    echo -e "${YELLOW}Use with LlamaStack:${NC}"
+    echo "  tool_groups:"
+    echo "  - toolgroup_id: mcp::kubernetes"
+    echo "    provider_id: model-context-protocol"
+    echo "    mcp_endpoint:"
+    echo "      uri: $mcp_url"
+    echo ""
+    
+    # Ask to register
+    read -p "Register in AI Asset endpoints (shows in RHOAI UI)? (Y/n): " register_ai
+    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs, helm, tekton." \
+            "streamable-http"
+    fi
+    
+    read -p "Register in LlamaStack config (tool calling)? (Y/n): " register_ls
+    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
+        register_mcp_llamastack "mcp::kubernetes" "$mcp_url" "$target_ns"
+    fi
+    
+    return 0
+}
+
+# Method 1: Helm chart install
+_mcp_deploy_helm() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    if ! command -v helm &>/dev/null; then
+        print_error "helm CLI not found. Install helm or choose another method."
+        return 1
+    fi
+    
+    print_step "Cloning Helm chart from GitHub..."
+    local tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+    
+    git clone --depth=1 --filter=blob:none --sparse "$repo_url" "$tmpdir/repo" 2>&1 | tail -1
+    cd "$tmpdir/repo" && git sparse-checkout set charts/kubernetes-mcp-server 2>/dev/null
+    
+    if [ ! -d "$tmpdir/repo/charts/kubernetes-mcp-server" ]; then
+        print_error "Failed to clone Helm chart"
+        return 1
+    fi
+    
+    print_step "Installing via Helm..."
+    helm upgrade --install kubernetes-mcp-server \
+        "$tmpdir/repo/charts/kubernetes-mcp-server" \
+        --namespace "$target_ns" \
+        --set server.readOnly="$read_only" \
+        --set server.port=8080 \
+        --set server.stateless=true \
+        --set "server.toolsets={$toolsets}" \
+        --set ingress.enabled=false \
+        --set route.enabled=false \
+        --create-namespace 2>&1
+    
+    local rc=$?
+    
+    if [ $rc -eq 0 ]; then
+        # Helm chart only creates namespace-scoped RBAC; add cluster-wide access
+        _mcp_ensure_cluster_rbac "$target_ns" "$read_only"
+    fi
+    
+    cd - &>/dev/null
+    return $rc
+}
+
+# Helper: Ensure cluster-wide RBAC for MCP server ServiceAccount
+_mcp_ensure_cluster_rbac() {
+    local target_ns="$1"
+    local read_only="${2:-true}"
+    
+    local cluster_role="view"
+    if [ "$read_only" != "true" ]; then
+        cluster_role="edit"
+    fi
+    
+    # Detect the ServiceAccount name (Helm may use release-name based SA)
+    local sa_name=$(oc get sa -n "$target_ns" --no-headers 2>/dev/null | awk '{print $1}' | grep -E "mcp|kubernetes-mcp" | head -1)
+    sa_name="${sa_name:-kubernetes-mcp-server}"
+    
+    local crb_name="kubernetes-mcp-server-${target_ns}"
+    
+    if oc get clusterrolebinding "$crb_name" &>/dev/null; then
+        print_info "ClusterRoleBinding '$crb_name' already exists"
         return 0
     fi
     
-    # Deploy Kubernetes MCP Server
-    print_step "Deploying Kubernetes MCP Server..."
+    print_step "Creating ClusterRoleBinding for cluster-wide $cluster_role access..."
+    cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: $crb_name
+  labels:
+    app: kubernetes-mcp-server
+subjects:
+- kind: ServiceAccount
+  name: $sa_name
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $cluster_role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "ClusterRoleBinding created (SA: $sa_name, Role: $cluster_role)"
+    fi
+}
+
+# Method 2: OpenShift BuildConfig (build on cluster)
+_mcp_deploy_buildconfig() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    print_step "Creating BuildConfig from GitHub..."
+    
+    # Check if build already exists
+    if oc get bc kubernetes-mcp-server -n "$target_ns" &>/dev/null; then
+        print_info "BuildConfig already exists, starting new build..."
+        oc start-build kubernetes-mcp-server -n "$target_ns" --follow 2>&1 || true
+    else
+        # Create build from GitHub repo using Dockerfile.ocp
+        oc new-build "$repo_url" \
+            --name=kubernetes-mcp-server \
+            --strategy=docker \
+            --dockerfile='FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
+WORKDIR /opt/app-root/src
+RUN git clone --depth=1 https://github.com/openshift/openshift-mcp-server.git . && \
+    CGO_ENABLED=0 go build -o /opt/app-root/kubernetes-mcp-server ./cmd/kubernetes-mcp-server/
+FROM registry.access.redhat.com/ubi9-micro:latest
+COPY --from=builder /opt/app-root/kubernetes-mcp-server /usr/local/bin/kubernetes-mcp-server
+USER 1001
+ENTRYPOINT ["kubernetes-mcp-server"]' \
+            -n "$target_ns" 2>&1
+        
+        print_step "Waiting for build to complete (this may take 2-3 minutes)..."
+        oc logs -f bc/kubernetes-mcp-server -n "$target_ns" 2>&1 | tail -5
+    fi
+    
+    # Wait for ImageStream to be available
+    local elapsed=0
+    while [ $elapsed -lt 30 ]; do
+        if oc get istag kubernetes-mcp-server:latest -n "$target_ns" &>/dev/null; then
+            break
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    
+    # Create deployment from built image
+    print_step "Deploying from built image..."
+    
+    local args="--port=8080 --stateless"
+    if [ "$read_only" = "true" ]; then
+        args="$args --read-only"
+    fi
+    args="$args --toolsets=$toolsets"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-${target_ns}
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-mcp-server
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $([ "$read_only" = "true" ] && echo "view" || echo "edit")
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      containers:
+      - name: server
+        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/kubernetes-mcp-server:latest
+        args: [$(echo "$args" | sed 's/ /", "/g' | sed 's/^/"/;s/$/"/')]
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+EOF
+    
+    return $?
+}
+
+# Method 3: Local podman/docker build + push to cluster registry
+_mcp_deploy_local_build() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    local container_cmd=""
+    if command -v podman &>/dev/null; then
+        container_cmd="podman"
+    elif command -v docker &>/dev/null; then
+        container_cmd="docker"
+    else
+        print_error "Neither podman nor docker found"
+        return 1
+    fi
+    
+    print_step "Cloning repository..."
+    local tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+    
+    git clone --depth=1 "$repo_url" "$tmpdir/repo" 2>&1 | tail -1
+    
+    if [ ! -f "$tmpdir/repo/Dockerfile.ocp" ] && [ ! -f "$tmpdir/repo/Dockerfile" ]; then
+        print_error "Dockerfile not found in cloned repo"
+        return 1
+    fi
+    
+    local dockerfile="Dockerfile.ocp"
+    [ ! -f "$tmpdir/repo/$dockerfile" ] && dockerfile="Dockerfile"
+    
+    print_step "Building image with $container_cmd..."
+    $container_cmd build -f "$tmpdir/repo/$dockerfile" -t kubernetes-mcp-server:latest "$tmpdir/repo" 2>&1 | tail -5
+    
+    if [ $? -ne 0 ]; then
+        print_error "Container build failed"
+        return 1
+    fi
+    
+    # Get cluster registry route
+    print_step "Pushing to cluster internal registry..."
+    local registry=""
+    registry=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    if [ -z "$registry" ]; then
+        # Try to expose the registry if not exposed
+        oc patch configs.imageregistry.operator.openshift.io/cluster --type merge \
+            -p '{"spec":{"defaultRoute":true}}' 2>/dev/null || true
+        sleep 5
+        registry=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null)
+    fi
+    
+    if [ -z "$registry" ]; then
+        print_error "Could not get cluster registry route"
+        print_info "Expose it with: oc patch configs.imageregistry.operator.openshift.io/cluster --type merge -p '{\"spec\":{\"defaultRoute\":true}}'"
+        return 1
+    fi
+    
+    $container_cmd login -u "$(oc whoami)" -p "$(oc whoami -t)" "$registry" --tls-verify=false 2>&1
+    $container_cmd tag kubernetes-mcp-server:latest "$registry/$target_ns/kubernetes-mcp-server:latest"
+    $container_cmd push "$registry/$target_ns/kubernetes-mcp-server:latest" --tls-verify=false 2>&1
+    
+    if [ $? -ne 0 ]; then
+        print_error "Push to registry failed"
+        return 1
+    fi
+    
+    print_success "Image pushed to cluster registry"
+    
+    # Deploy using the same manifest as BuildConfig method
+    local args="--port=8080 --stateless"
+    if [ "$read_only" = "true" ]; then
+        args="$args --read-only"
+    fi
+    args="$args --toolsets=$toolsets"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-${target_ns}
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-mcp-server
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $([ "$read_only" = "true" ] && echo "view" || echo "edit")
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      containers:
+      - name: server
+        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/kubernetes-mcp-server:latest
+        args: [$(echo "$args" | sed 's/ /", "/g' | sed 's/^/"/;s/$/"/')]
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+EOF
+    
+    cd - &>/dev/null
+    return $?
+}
+
+# Method 4: Static manifest fallback (offline/air-gapped)
+_mcp_deploy_manifest() {
+    local target_ns="$1"
     
     local manifest_file="$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml"
     
     if [ -f "$manifest_file" ]; then
+        print_step "Applying bundled manifest (legacy image)..."
         oc apply -f "$manifest_file" -n "$target_ns"
+        return $?
     else
-        print_error "Kubernetes MCP manifest not found: $manifest_file"
+        print_error "Manifest not found: $manifest_file"
         return 1
     fi
-    
-    print_step "Waiting for Kubernetes MCP Server to be ready..."
-    if oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s; then
-        print_success "Kubernetes MCP Server deployed"
-    else
-        print_warning "MCP server may still be starting"
-    fi
-    
-    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
-    
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║  ✅ Kubernetes MCP Server Deployed Successfully!               ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${CYAN}📋 MCP Endpoint:${NC}"
-    echo "   $mcp_url"
-    echo ""
-    echo -e "${CYAN}🔧 Available Tools:${NC}"
-    echo "   • list_pods - List pods in namespace"
-    echo "   • describe_pod - Get pod details"
-    echo "   • get_pod_logs - Get container logs"
-    echo "   • list_deployments - List deployments"
-    echo "   • list_services - List services"
-    echo "   • list_inferenceservices - List RHOAI models"
-    echo ""
-    echo -e "${YELLOW}📝 To use with LlamaStack, add to config:${NC}"
-    echo "   tool_groups:"
-    echo "   - toolgroup_id: mcp::kubernetes"
-    echo "     provider_id: model-context-protocol"
-    echo "     mcp_endpoint:"
-    echo "       uri: $mcp_url"
-    echo ""
-    
-    return 0
 }
 
 ################################################################################
@@ -3878,7 +4310,7 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -p "Select an option (1-5, 0): " ai_choice
+        read -p "Select an option (1-7, 0): " ai_choice
         
         case $ai_choice in
             1)
@@ -3915,6 +4347,16 @@ ai_services_submenu() {
                 feast_submenu
                 ;;
             5)
+                setup_model_registry
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                setup_pipeline_server
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
                 setup_mcp_servers_interactive
                 ;;
             0)

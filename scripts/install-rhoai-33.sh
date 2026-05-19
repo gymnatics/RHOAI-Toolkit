@@ -314,6 +314,11 @@ check_prerequisites() {
         exit 1
     fi
     
+    if [ "$ENABLE_LLMD" = true ] && [[ "$ocp_version" < "4.20" ]]; then
+        print_warning "Distributed inference with llm-d requires OCP 4.20+. Current: $ocp_version"
+        print_warning "llm-d will be installed but multi-node inference may not work correctly."
+    fi
+    
     print_success "Prerequisites check passed"
 }
 
@@ -515,12 +520,13 @@ EOF
 install_servicemesh_operator() {
     print_step "Installing OpenShift Service Mesh 3 Operator..."
     
-    # Check if already installed
-    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3"; then
-        print_info "Service Mesh 3 Operator already installed"
+    # Check if already installed and Succeeded
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; then
+        print_info "Service Mesh 3 Operator already installed and ready"
     else
-        # Create subscription for Service Mesh 3
-        oc apply -f - <<EOF
+        # Create subscription if it doesn't exist
+        if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
+            oc apply -f - <<EOF
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -533,49 +539,69 @@ spec:
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
+        fi
         
-        print_step "Waiting for Service Mesh InstallPlan..."
-        sleep 10
+        # Wait for InstallPlan to appear (retry up to 60s)
+        print_step "Waiting for Service Mesh InstallPlan to be created..."
+        local ip_wait=0
+        local ip_timeout=60
+        while [ $ip_wait -lt $ip_timeout ]; do
+            local has_plan=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
+                jq -r '[.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | test("servicemesh|kiali"))] | length' 2>/dev/null)
+            if [ -n "$has_plan" ] && [ "$has_plan" -gt 0 ]; then
+                print_info "Found pending InstallPlan(s)"
+                break
+            fi
+            sleep 5
+            ip_wait=$((ip_wait + 5))
+        done
+        
+        # Approve all pending Service Mesh related InstallPlans
+        approve_servicemesh_installplans
+        
+        # Wait for operator with periodic re-approval
+        print_step "Waiting for Service Mesh operator to be ready..."
+        local timeout=300
+        local elapsed=0
+        until oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Service Mesh operator not ready after ${timeout}s (continuing anyway)"
+                break
+            fi
+            approve_servicemesh_installplans 2>/dev/null || true
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
     fi
     
-    # Check for pending InstallPlans and approve them
-    approve_servicemesh_installplans
-    
-    # Wait for operator to be ready
-    wait_for_operator "servicemeshoperator3" "openshift-operators" 300
+    # Final check for any lingering unapproved InstallPlans
+    approve_servicemesh_installplans 2>/dev/null || true
     
     print_success "Service Mesh 3 Operator installed"
 }
 
 approve_servicemesh_installplans() {
-    print_step "Checking for pending Service Mesh InstallPlans..."
+    local approved_any=false
     
-    # Find all pending Service Mesh InstallPlans
-    local pending_plans=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-        jq -r '.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | contains("servicemeshoperator3")) | .metadata.name' 2>/dev/null)
-    
-    if [ -n "$pending_plans" ]; then
-        for plan in $pending_plans; do
-            print_step "Approving InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
-            print_success "Approved InstallPlan: $plan"
-        done
-        
-        # Wait for approval to take effect
-        sleep 15
-    else
-        print_info "No pending Service Mesh InstallPlans found"
-    fi
-    
-    # Also check for any other pending InstallPlans for Service Mesh
-    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | grep -i "false" | awk '{print $1}')
+    # Find ALL pending InstallPlans in openshift-operators that relate to
+    # Service Mesh or its dependencies (kiali, sail, istio)
+    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
     for plan in $all_pending; do
-        local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
-        if echo "$csv_names" | grep -qi "servicemesh"; then
-            print_step "Approving additional InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
+        if [ "$is_approved" = "false" ]; then
+            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
+            if echo "$csv_names" | grep -qiE "servicemesh|kiali|sail"; then
+                print_step "Approving InstallPlan: $plan (CSVs: $csv_names)"
+                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+                print_success "Approved InstallPlan: $plan"
+                approved_any=true
+            fi
         fi
     done
+    
+    if [ "$approved_any" = true ]; then
+        sleep 10
+    fi
 }
 
 setup_istio_for_kuadrant() {
@@ -726,13 +752,63 @@ install_rhcl_operator() {
     
     sleep 10
     
-    # Configure Authorino TLS
+    # Create TLS certificate BEFORE Authorino CR to avoid deadlock:
+    # Authorino won't start without the cert, but the service annotation
+    # approach needs the service (which requires Authorino to be running).
+    print_step "Creating Authorino TLS certificate..."
+    if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+        oc apply -f - <<'CERTEOF'
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: authorino-selfsigned
+  namespace: kuadrant-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-server-cert
+  namespace: kuadrant-system
+spec:
+  secretName: authorino-server-cert
+  isCA: false
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: authorino-selfsigned
+    kind: Issuer
+  commonName: authorino-authorino
+  dnsNames:
+    - authorino-authorino
+    - authorino-authorino.kuadrant-system
+    - authorino-authorino.kuadrant-system.svc
+    - authorino-authorino.kuadrant-system.svc.cluster.local
+  usages:
+    - server auth
+CERTEOF
+        local cert_wait=0
+        while [ $cert_wait -lt 30 ]; do
+            if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+                print_success "Authorino TLS certificate created"
+                break
+            fi
+            sleep 3
+            cert_wait=$((cert_wait + 3))
+        done
+    else
+        print_info "Authorino TLS secret already exists"
+    fi
+    
+    # Apply Authorino CR with TLS enabled
     print_step "Configuring Authorino TLS..."
+    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-tls.yaml"
+    
+    # Annotate service if it exists (for cert rotation)
     oc annotate svc/authorino-authorino-authorization \
         service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-        -n kuadrant-system 2>/dev/null || true
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-tls.yaml"
+        -n kuadrant-system --overwrite 2>/dev/null || true
     
     # Setup Istio for Kuadrant (required for AuthPolicy/RateLimitPolicy enforcement)
     setup_istio_for_kuadrant
@@ -899,7 +975,7 @@ spec:
     - allowedRoutes:
         namespaces:
           from: All
-      hostname: maas-api.apps.${CLUSTER_DOMAIN}
+      hostname: maas.apps.${CLUSTER_DOMAIN}
       name: https
       port: 443
       protocol: HTTPS
@@ -949,7 +1025,7 @@ spec:
 EOF
     
     print_success "Gateways created"
-    print_info "MaaS endpoint: https://maas-api.apps.${CLUSTER_DOMAIN}"
+    print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
     print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"
 }
 
@@ -1098,11 +1174,15 @@ main() {
     fi
     
     # Install RHCL for MaaS/llm-d auth
-    if [ "$SKIP_RHCL" = false ]; then
+    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
         install_rhcl_operator
         
         # Create gateways BEFORE DSC (MaaS requires maas-default-gateway to exist)
         create_inference_gateway
+    elif [ "$SKIP_RHCL" = false ]; then
+        install_rhcl_operator
+    else
+        print_info "Skipping RHCL/MaaS (--skip-rhcl or --skip-maas)"
     fi
     
     # Enable monitoring

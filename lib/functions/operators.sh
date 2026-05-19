@@ -328,20 +328,69 @@ wait_for_authorino_service() {
 
 # Configure Authorino with TLS
 configure_authorino_tls() {
-    if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
-        print_step "Configuring Authorino with TLS..."
+    print_step "Configuring Authorino with TLS..."
+    
+    # Create the TLS certificate BEFORE applying Authorino CR to avoid deadlock:
+    # Authorino needs the cert to start, but the service annotation approach needs
+    # Authorino's service to exist first (which requires Authorino to be running).
+    if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+        print_step "Creating Authorino TLS certificate via cert-manager..."
+        cat <<'CERTEOF' | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: authorino-selfsigned
+  namespace: kuadrant-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-server-cert
+  namespace: kuadrant-system
+spec:
+  secretName: authorino-server-cert
+  isCA: false
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: authorino-selfsigned
+    kind: Issuer
+  commonName: authorino-authorino
+  dnsNames:
+    - authorino-authorino
+    - authorino-authorino.kuadrant-system
+    - authorino-authorino.kuadrant-system.svc
+    - authorino-authorino.kuadrant-system.svc.cluster.local
+  usages:
+    - server auth
+CERTEOF
         
-        # Annotate service for TLS certificate
+        # Wait for cert-manager to issue the certificate
+        local cert_wait=0
+        while [ $cert_wait -lt 30 ]; do
+            if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+                print_success "Authorino TLS certificate created"
+                break
+            fi
+            sleep 3
+            cert_wait=$((cert_wait + 3))
+        done
+    else
+        print_info "Authorino TLS secret already exists"
+    fi
+    
+    # Apply the Authorino CR with TLS enabled
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/authorino-tls.yaml" "Authorino TLS configuration"
+    
+    # Annotate the service if it exists (for cert rotation via OpenShift serving-cert)
+    if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
         oc annotate svc/authorino-authorino-authorization \
             service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-            -n kuadrant-system --overwrite
-        
-        sleep 10
-        
-        # Enable TLS in Authorino
-        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/authorino-tls.yaml" "Authorino TLS configuration"
-        
-        print_success "Authorino configured with TLS"
+            -n kuadrant-system --overwrite 2>/dev/null || true
     fi
+    
+    print_success "Authorino configured with TLS"
 }
 

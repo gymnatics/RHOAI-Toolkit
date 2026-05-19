@@ -1762,62 +1762,39 @@ deploy_banking_demo() {
     # Create FeatureStore with version-appropriate configuration
     print_step "Creating FeatureStore 'banking' in namespace '$namespace'..."
     
+    # Two-step approach (from CAI guide): create with restAPI: false first,
+    # wait for pod, then flip to true. Avoids race condition during startup.
+    local feast_labels="    feature-store-ui: enabled"
     if [ "$rhoai_33_plus" = true ]; then
-        # RHOAI 3.3+ configuration with additional labels
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-    opendatahub.io/dashboard: "true"
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
-    else
-        # RHOAI 3.2 and earlier configuration
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
+        feast_labels="    feature-store-ui: enabled
+    opendatahub.io/dashboard: \"true\""
     fi
+
+    cat <<EOF | oc apply -n "$namespace" -f -
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+${feast_labels}
+  name: $feast_project
+spec:
+  feastProject: $feast_project
+  feastProjectDir:
+    git:
+      ref: $git_ref
+      url: '$git_url'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: false
+EOF
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -1858,6 +1835,13 @@ EOF
     fi
     
     print_success "Feast pod is running: $feast_pod"
+
+    # Step 2: Now enable restAPI (two-step pattern from CAI guide)
+    print_step "Enabling registry REST API (step 2 of 2)..."
+    oc patch featurestore "$feast_project" -n "$namespace" --type=merge \
+        -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+    print_success "Registry REST API enabled"
+    sleep 10
     
     # Run feast apply
     echo ""
@@ -2466,5 +2450,866 @@ run_maas_demo() {
             print_error "Invalid option"
             ;;
     esac
+}
+
+################################################################################
+# Model Registry Setup
+################################################################################
+
+# Full idempotent Model Registry setup workflow.
+# Per RHAIE 3.3 Guide: enables the component, creates namespace, deploys MySQL,
+# creates ModelRegistry CR, enables dashboard visibility, verifies.
+# Skips any step that is already completed.
+# Usage: setup_model_registry [registry-name]
+setup_model_registry() {
+    local registry_name="${1:-}"
+    local registry_ns="rhoai-model-registries"
+    
+    print_header "Setup Model Registry"
+    echo "  Full workflow per RHAIE 3.3 Guide Chapter 2-3"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Enable modelregistry component in DSC
+    ############################################################################
+    print_step "Step 1: Checking modelregistry component in DataScienceCluster..."
+    
+    local mr_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.modelregistry.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$mr_state" = "Managed" ]; then
+        print_success "modelregistry already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling modelregistry in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "modelregistry": {
+                        "managementState": "Managed",
+                        "registriesNamespace": "rhoai-model-registries"
+                    }
+                }
+            }
+        }'
+        print_success "modelregistry enabled in DSC"
+        
+        # Wait for operator to reconcile
+        print_step "Waiting for Model Registry operator to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get modelregistry default-modelregistry -o jsonpath='{.status.phase}' 2>/dev/null | grep -q "Ready"; then
+                print_success "Model Registry operator is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+    fi
+    
+    ############################################################################
+    # Step 2: Enable Model Registry in dashboard
+    ############################################################################
+    print_step "Step 2: Checking dashboard configuration..."
+    
+    local mr_disabled=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig.disableModelRegistry}' 2>/dev/null || echo "true")
+    
+    if [ "$mr_disabled" = "false" ]; then
+        print_success "Model Registry enabled in dashboard [SKIP]"
+    else
+        print_step "Enabling Model Registry in dashboard..."
+        oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+            --type=merge -p '{"spec":{"dashboardConfig":{"disableModelRegistry":false}}}'
+        print_success "Model Registry enabled in dashboard"
+    fi
+    
+    ############################################################################
+    # Step 3: Ensure registries namespace exists
+    ############################################################################
+    print_step "Step 3: Checking namespace '$registry_ns'..."
+    
+    if oc get namespace "$registry_ns" &>/dev/null; then
+        print_success "Namespace '$registry_ns' exists [SKIP]"
+    else
+        oc create namespace "$registry_ns"
+        print_success "Namespace '$registry_ns' created"
+    fi
+    
+    ############################################################################
+    # Step 4: Get registry name (interactive or argument)
+    ############################################################################
+    if [ -z "$registry_name" ]; then
+        echo ""
+        # Show existing registries if any
+        local existing=$(oc get modelregistry.modelregistry.opendatahub.io -n "$registry_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+        if [ -n "$existing" ]; then
+            print_info "Existing registries: $existing"
+        fi
+        
+        echo -e "${BLUE}Enter a name for the Model Registry:${NC}"
+        echo "  Examples: team-models, production-registry, shared-registry"
+        echo ""
+        read -p "Registry name [model-registry]: " registry_name
+        registry_name="${registry_name:-model-registry}"
+    fi
+    
+    # Sanitize name (lowercase, alphanumeric + hyphens only)
+    registry_name=$(echo "$registry_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/^-//;s/-$//')
+    
+    ############################################################################
+    # Step 5: Check if this registry already exists and is ready
+    ############################################################################
+    print_step "Step 5: Checking if registry '$registry_name' exists..."
+    
+    local mr_exists=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+    
+    if [ "$mr_exists" = "True" ]; then
+        print_success "Model Registry '$registry_name' already exists and is ready [SKIP]"
+        _show_model_registry_summary "$registry_name" "$registry_ns"
+        return 0
+    fi
+    
+    ############################################################################
+    # Step 6: Deploy MySQL database (if not already running for this registry)
+    ############################################################################
+    local mysql_deploy_name="${registry_name}-mysql"
+    local mysql_svc_name="${registry_name}-mysql"
+    local mysql_db="mlmddb"
+    local mysql_user="mlmd"
+    local mysql_password=""
+    local mysql_root_password=""
+    local password_source="generated"
+    
+    print_step "Step 6: Deploying MySQL 8.0 database..."
+    
+    # Check if MySQL is already running for this registry
+    if oc get deployment "$mysql_deploy_name" -n "$registry_ns" &>/dev/null; then
+        local mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$mysql_ready" = "True" ]; then
+            print_success "MySQL '$mysql_deploy_name' already running [SKIP]"
+        else
+            print_info "MySQL deployment exists but not ready, waiting..."
+            local elapsed=0
+            while [ $elapsed -lt 90 ]; do
+                mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$mysql_ready" = "True" ]; then
+                    print_success "MySQL is ready"
+                    break
+                fi
+                sleep 5
+                elapsed=$((elapsed + 5))
+            done
+        fi
+    else
+        # Check if credentials secret already exists (re-use if so)
+        if oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
+            print_info "Re-using existing MySQL credentials secret"
+            password_source="existing-secret"
+        else
+            # Prompt for password or generate random
+            echo ""
+            local default_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "mlmd$(date +%s | tail -c 8)")
+            echo -e "${BLUE}MySQL password configuration:${NC}"
+            echo "  User: $mysql_user | Database: $mysql_db"
+            echo ""
+            read -p "MySQL password (leave empty for auto-generated): " user_password
+            
+            if [ -n "$user_password" ]; then
+                mysql_password="$user_password"
+                password_source="user-provided"
+            else
+                mysql_password="$default_pw"
+                password_source="generated"
+            fi
+            
+            local default_root_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "root$(date +%s | tail -c 8)")
+            read -p "MySQL root password (leave empty for auto-generated): " user_root_password
+            
+            if [ -n "$user_root_password" ]; then
+                mysql_root_password="$user_root_password"
+            else
+                mysql_root_password="$default_root_pw"
+            fi
+            
+            cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${mysql_deploy_name}-credentials
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+type: Opaque
+stringData:
+  MYSQL_DATABASE: "$mysql_db"
+  MYSQL_USER: "$mysql_user"
+  MYSQL_PASSWORD: "$mysql_password"
+  MYSQL_ROOT_PASSWORD: "$mysql_root_password"
+EOF
+            print_success "MySQL credentials secret created"
+        fi
+        
+        cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $mysql_deploy_name
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $mysql_deploy_name
+  template:
+    metadata:
+      labels:
+        app: $mysql_deploy_name
+    spec:
+      containers:
+      - name: mysql
+        image: registry.redhat.io/rhel9/mysql-80:latest
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: ${mysql_deploy_name}-credentials
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 30
+          periodSeconds: 20
+      volumes:
+      - name: mysql-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: $mysql_svc_name
+  namespace: $registry_ns
+  labels:
+    app: $mysql_deploy_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+  selector:
+    app: $mysql_deploy_name
+EOF
+        
+        print_step "Waiting for MySQL to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 120 ]; do
+            if oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MySQL is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+            echo "  Waiting for MySQL... (${elapsed}s elapsed)"
+        done
+        
+        if [ $elapsed -ge 120 ]; then
+            print_warning "MySQL may not be fully ready yet (continuing)"
+        fi
+    fi
+    
+    ############################################################################
+    # Step 7: Create ModelRegistry CR
+    ############################################################################
+    print_step "Step 7: Creating ModelRegistry '$registry_name'..."
+    
+    if oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" &>/dev/null; then
+        print_info "ModelRegistry CR already exists, checking status..."
+    else
+        cat <<EOF | oc apply -f -
+apiVersion: modelregistry.opendatahub.io/v1beta1
+kind: ModelRegistry
+metadata:
+  name: $registry_name
+  namespace: $registry_ns
+  labels:
+    app: $registry_name
+    app.kubernetes.io/part-of: model-registry
+spec:
+  grpc:
+    port: 9090
+  rest:
+    port: 8080
+    serviceRoute: enabled
+  mysql:
+    host: ${mysql_svc_name}.${registry_ns}.svc.cluster.local
+    port: 3306
+    database: $mysql_db
+    username: $mysql_user
+    passwordSecret:
+      name: ${mysql_deploy_name}-credentials
+      key: MYSQL_PASSWORD
+EOF
+    fi
+    
+    # Wait for ModelRegistry to be ready
+    print_step "Waiting for Model Registry to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        local mr_ready=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mr_ready" = "True" ]; then
+            print_success "Model Registry '$registry_name' is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        echo "  Waiting for Model Registry... (${elapsed}s elapsed)"
+    done
+    
+    ############################################################################
+    # Step 8: Verify and show summary
+    ############################################################################
+    _show_model_registry_summary "$registry_name" "$registry_ns" "$mysql_svc_name" "$mysql_db" "$mysql_user" "$mysql_password" "$mysql_root_password" "$password_source"
+}
+
+# Internal helper: display model registry summary
+_show_model_registry_summary() {
+    local registry_name="$1"
+    local registry_ns="$2"
+    local mysql_svc="${3:-}"
+    local mysql_db="${4:-}"
+    local mysql_user="${5:-}"
+    local mysql_password="${6:-}"
+    local mysql_root_password="${7:-}"
+    local password_source="${8:-}"
+    
+    echo ""
+    print_header "Model Registry Setup Complete"
+    echo ""
+    echo -e "${BLUE}Registry Name:${NC}  $registry_name"
+    echo -e "${BLUE}Namespace:${NC}      $registry_ns"
+    echo ""
+    
+    # Show pods
+    echo -e "${BLUE}Pods:${NC}"
+    oc get pods -n "$registry_ns" -l "app.kubernetes.io/instance=$registry_name" --no-headers 2>/dev/null | sed 's/^/  /'
+    oc get pods -n "$registry_ns" -l "app=${registry_name}-mysql" --no-headers 2>/dev/null | sed 's/^/  /'
+    echo ""
+    
+    # Show REST route
+    local rest_route=$(oc get route -n "$registry_ns" --no-headers 2>/dev/null | grep "$registry_name" | awk '{print $2}' | head -1)
+    if [ -n "$rest_route" ]; then
+        echo -e "${BLUE}REST API:${NC}       https://$rest_route"
+        echo ""
+    fi
+    
+    # MySQL connection details
+    if [ -n "$mysql_svc" ]; then
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${MAGENTA}MySQL Connection Details${NC}"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${BLUE}Host:${NC}          ${mysql_svc}.${registry_ns}.svc.cluster.local"
+        echo -e "  ${BLUE}Port:${NC}          3306"
+        echo -e "  ${BLUE}Database:${NC}      $mysql_db"
+        echo -e "  ${BLUE}User:${NC}          $mysql_user"
+        if [ -n "$mysql_password" ] && [ "$password_source" != "existing-secret" ]; then
+            echo -e "  ${BLUE}Password:${NC}      $mysql_password"
+            echo -e "  ${BLUE}Root Password:${NC} $mysql_root_password"
+            echo ""
+            echo -e "  ${YELLOW}⚠ Save these credentials! They are stored in:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o yaml"
+        else
+            echo -e "  ${BLUE}Password:${NC}      (stored in secret ${registry_name}-mysql-credentials)"
+            echo ""
+            echo -e "  ${CYAN}Retrieve credentials:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_PASSWORD}' | base64 -d"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_ROOT_PASSWORD}' | base64 -d"
+        fi
+        echo ""
+        echo -e "  ${CYAN}Connect from a pod:${NC}"
+        echo "    mysql -h ${mysql_svc}.${registry_ns}.svc.cluster.local -u $mysql_user -p $mysql_db"
+        echo ""
+        echo -e "  ${CYAN}Port-forward for local access:${NC}"
+        echo "    oc port-forward svc/${mysql_svc} 3306:3306 -n $registry_ns"
+        echo "    mysql -h 127.0.0.1 -u $mysql_user -p $mysql_db"
+        echo ""
+    fi
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Dashboard Access:${NC}"
+    echo "  Settings → Model resources and operations → AI registry settings"
+    echo ""
+    echo -e "${YELLOW}CLI:${NC}"
+    echo "  oc get modelregistry.modelregistry.opendatahub.io -n $registry_ns"
+    echo ""
+    echo -e "${YELLOW}Python SDK:${NC}"
+    if [ -n "$rest_route" ]; then
+        echo "  from model_registry import ModelRegistry"
+        echo "  registry = ModelRegistry(server_address=\"https://$rest_route\", author=\"user@example.com\")"
+    else
+        echo "  # Get route: oc get route -n $registry_ns | grep $registry_name"
+    fi
+    echo ""
+    echo -e "${YELLOW}Permissions:${NC}"
+    echo "  # Add users to auto-created group:"
+    echo "  oc adm groups add-users ${registry_name}-users <username>"
+    echo ""
+}
+
+################################################################################
+# Pipeline Server Setup
+################################################################################
+
+# Setup Data Science Pipelines Application (DSPA) with S3 storage.
+# Per RHAIE 3.3 Guide Chapter 1: configuring a pipeline server requires S3 storage.
+# Offers: reuse existing MinIO or deploy new one.
+# Usage: setup_pipeline_server [namespace]
+setup_pipeline_server() {
+    local target_ns="${1:-}"
+    
+    print_header "Setup Pipeline Server"
+    echo "  Per RHAIE 3.3 Guide: Data Science Pipelines with S3 storage"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Check aipipelines is enabled in DSC
+    ############################################################################
+    print_step "Step 1: Checking aipipelines component in DSC..."
+    
+    local pipelines_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aipipelines.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$pipelines_state" = "Managed" ]; then
+        print_success "aipipelines already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling aipipelines in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "aipipelines": {
+                        "managementState": "Managed"
+                    }
+                }
+            }
+        }'
+        print_success "aipipelines enabled in DSC"
+        sleep 10
+    fi
+    
+    ############################################################################
+    # Step 2: Select target namespace
+    ############################################################################
+    if [ -z "$target_ns" ]; then
+        echo ""
+        print_step "Step 2: Select project namespace for pipeline server"
+        
+        local current_project=$(oc project -q 2>/dev/null)
+        echo "  Current project: $current_project"
+        echo ""
+        read -p "Deploy pipeline server in namespace [$current_project]: " target_ns
+        target_ns="${target_ns:-$current_project}"
+    fi
+    
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (Y/n): " create_ns
+        if [[ ! "$create_ns" =~ ^[Nn]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+            print_success "Namespace '$target_ns' created"
+        else
+            return 1
+        fi
+    fi
+    
+    # Ensure dashboard label
+    oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+    
+    ############################################################################
+    # Step 3: Check if DSPA already exists
+    ############################################################################
+    print_step "Step 3: Checking for existing pipeline server..."
+    
+    if oc get dspa -n "$target_ns" -o name &>/dev/null 2>&1; then
+        local existing_dspa=$(oc get dspa -n "$target_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$existing_dspa" ]; then
+            local dspa_ready=$(oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+            if [ "$dspa_ready" = "True" ]; then
+                print_success "Pipeline server '$existing_dspa' already running [SKIP]"
+                _show_pipeline_server_summary "$target_ns" "$existing_dspa"
+                return 0
+            else
+                print_warning "DSPA '$existing_dspa' exists but not ready"
+                print_info "Checking status..."
+                oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions}' 2>/dev/null | python3 -m json.tool 2>/dev/null | head -20
+                echo ""
+                read -p "Delete and recreate? (y/N): " recreate
+                if [[ "$recreate" =~ ^[Yy]$ ]]; then
+                    oc delete dspa "$existing_dspa" -n "$target_ns"
+                    sleep 5
+                else
+                    return 0
+                fi
+            fi
+        fi
+    fi
+    
+    ############################################################################
+    # Step 4: S3 Storage Configuration
+    ############################################################################
+    echo ""
+    print_step "Step 4: S3 Storage for Pipeline Artifacts"
+    echo ""
+    echo -e "${BLUE}Pipeline server requires S3-compatible storage for artifacts.${NC}"
+    echo ""
+    
+    # Detect existing MinIO deployments
+    local existing_minio_ns=""
+    local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | grep -i minio | awk '{print $1 "\t" $2}')
+    
+    if [ -n "$minio_deployments" ]; then
+        echo -e "${CYAN}Existing MinIO deployments found:${NC}"
+        echo "$minio_deployments" | while IFS=$'\t' read -r ns name; do
+            local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            echo "  - $ns / $name (service: $minio_svc)"
+        done
+        echo ""
+    fi
+    
+    echo -e "${YELLOW}Storage options:${NC}"
+    echo "  1) Use existing MinIO (create new bucket for pipelines)"
+    echo "  2) Deploy new MinIO in this namespace"
+    echo ""
+    read -p "Select option [1]: " storage_choice
+    storage_choice="${storage_choice:-1}"
+    
+    local s3_endpoint=""
+    local s3_bucket="pipelines"
+    local s3_access_key=""
+    local s3_secret_key=""
+    local s3_scheme="http"
+    local s3_host=""
+    local s3_port="9000"
+    local credentials_secret_name="pipelines-s3-credentials"
+    
+    if [ "$storage_choice" = "1" ]; then
+        # Reuse existing MinIO
+        echo ""
+        echo -e "${CYAN}Enter existing MinIO details:${NC}"
+        
+        # Try to auto-detect from model-storage namespace
+        local default_ns=$(echo "$minio_deployments" | head -1 | awk '{print $1}')
+        default_ns="${default_ns:-model-storage}"
+        
+        read -p "  MinIO namespace [$default_ns]: " minio_ns
+        minio_ns="${minio_ns:-$default_ns}"
+        
+        # Find service name
+        local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+        detected_svc="${detected_svc:-minio}"
+        
+        read -p "  MinIO service name [$detected_svc]: " minio_svc
+        minio_svc="${minio_svc:-$detected_svc}"
+        
+        s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+        
+        read -p "  MinIO port [$s3_port]: " input_port
+        s3_port="${input_port:-$s3_port}"
+        
+        read -p "  Pipeline bucket name [$s3_bucket]: " input_bucket
+        s3_bucket="${input_bucket:-$s3_bucket}"
+        
+        # Get credentials
+        local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
+        
+        if [ -n "$detected_secret" ]; then
+            print_info "Found credentials secret: $detected_secret in $minio_ns"
+            read -p "  Use these credentials? (Y/n): " use_existing
+            if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
+                s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
+                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
+                s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
+                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+            fi
+        fi
+        
+        if [ -z "$s3_access_key" ]; then
+            read -p "  MinIO access key [minio]: " s3_access_key
+            s3_access_key="${s3_access_key:-minio}"
+            read -p "  MinIO secret key [minio123]: " s3_secret_key
+            s3_secret_key="${s3_secret_key:-minio123}"
+        fi
+        
+        print_success "Using existing MinIO: $s3_host:$s3_port"
+        
+    else
+        # Deploy new MinIO
+        echo ""
+        print_step "Deploying new MinIO in '$target_ns'..."
+        
+        s3_host="minio.${target_ns}.svc.cluster.local"
+        s3_access_key="minio"
+        s3_secret_key=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "minio$(date +%s | tail -c 8)")
+        
+        read -p "  MinIO password (leave empty for auto-generated): " user_secret
+        if [ -n "$user_secret" ]; then
+            s3_secret_key="$user_secret"
+        fi
+        
+        read -p "  Storage size [50Gi]: " storage_size
+        storage_size="${storage_size:-50Gi}"
+        
+        cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pipelines-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $storage_size
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:latest
+        args:
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        env:
+        - name: MINIO_ROOT_USER
+          value: "$s3_access_key"
+        - name: MINIO_ROOT_PASSWORD
+          value: "$s3_secret_key"
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-pipelines-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  selector:
+    app: minio
+EOF
+        
+        # Wait for MinIO
+        print_step "Waiting for MinIO to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$target_ns" -l app=minio -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MinIO is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        
+        print_info "MinIO credentials: $s3_access_key / $s3_secret_key"
+    fi
+    
+    ############################################################################
+    # Step 5: Create S3 credentials secret in target namespace
+    ############################################################################
+    print_step "Step 5: Creating S3 credentials secret..."
+    
+    if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
+        print_success "Credentials secret already exists [SKIP]"
+    else
+        cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $credentials_secret_name
+  labels:
+    app.kubernetes.io/part-of: pipelines
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "$s3_access_key"
+  AWS_SECRET_ACCESS_KEY: "$s3_secret_key"
+EOF
+        print_success "Credentials secret created"
+    fi
+    
+    ############################################################################
+    # Step 6: Create DataSciencePipelinesApplication CR
+    ############################################################################
+    print_step "Step 6: Creating DataSciencePipelinesApplication..."
+    
+    local dspa_name="dspa"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: $dspa_name
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    pipelineStore: kubernetes
+  objectStorage:
+    externalStorage:
+      host: "$s3_host"
+      port: "$s3_port"
+      bucket: "$s3_bucket"
+      scheme: "$s3_scheme"
+      s3CredentialsSecret:
+        secretName: "$credentials_secret_name"
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+EOF
+    
+    ############################################################################
+    # Step 7: Wait for pipeline server to be ready
+    ############################################################################
+    print_step "Step 7: Waiting for pipeline server to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 180 ]; do
+        local ready=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            print_success "Pipeline server is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [ $((elapsed % 15)) -eq 0 ]; then
+            local reason=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+            echo "  Waiting... status: ${reason:-pending} (${elapsed}s elapsed)"
+        fi
+    done
+    
+    if [ $elapsed -ge 180 ]; then
+        print_warning "Pipeline server may not be fully ready yet"
+        print_info "Check: oc get dspa $dspa_name -n $target_ns -o yaml"
+    fi
+    
+    ############################################################################
+    # Step 8: Show summary
+    ############################################################################
+    _show_pipeline_server_summary "$target_ns" "$dspa_name"
+}
+
+# Internal helper: display pipeline server summary
+_show_pipeline_server_summary() {
+    local target_ns="$1"
+    local dspa_name="${2:-dspa}"
+    
+    echo ""
+    print_header "Pipeline Server Summary"
+    echo ""
+    echo -e "${BLUE}Namespace:${NC}     $target_ns"
+    echo -e "${BLUE}DSPA Name:${NC}     $dspa_name"
+    echo ""
+    
+    # Get route
+    local pipeline_route=$(oc get route "ds-pipeline-${dspa_name}" -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$pipeline_route" ]; then
+        echo -e "${BLUE}Pipeline API:${NC}  https://$pipeline_route"
+    else
+        echo -e "${BLUE}Pipeline API:${NC}  (route not yet available, check: oc get route -n $target_ns)"
+    fi
+    echo ""
+    
+    # Pods
+    echo -e "${CYAN}Pods:${NC}"
+    oc get pods -n "$target_ns" --no-headers 2>/dev/null | grep -E "ds-pipeline|mariadb" | sed 's/^/  /'
+    echo ""
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo ""
+    echo "  1. Import a pipeline via Dashboard:"
+    echo "     Projects → $target_ns → Pipelines → Import pipeline"
+    echo ""
+    echo "  2. Import via Python SDK:"
+    echo "     from kfp import Client"
+    echo "     token = !oc whoami -t"
+    if [ -n "$pipeline_route" ]; then
+        echo "     client = Client(host='https://$pipeline_route', existing_token=token[0], ssl_ca_cert=False)"
+    else
+        echo "     client = Client(host='https://ds-pipeline-${dspa_name}-${target_ns}.apps.<cluster>', existing_token=token[0])"
+    fi
+    echo "     client.list_pipelines()"
+    echo ""
+    echo "  3. Compile + upload a pipeline:"
+    echo "     from kfp import compiler, dsl"
+    echo "     compiler.Compiler().compile(my_pipeline, 'pipeline.yaml')"
+    echo "     client.upload_pipeline('pipeline.yaml', pipeline_name='my-pipeline')"
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 }
 

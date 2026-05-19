@@ -14,10 +14,14 @@
 # 2. Update feature_repo/permissions.py line 47 with your namespace
 # 3. Push changes to your fork
 #
-# After applying:
-# 1. Wait for feast pod to be running
-# 2. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast apply
-# 3. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast materialize 2025-01-01T00:00:00 $(date -u +'%Y-%m-%dT%H:%M:%S')
+# After applying (two-step approach from CAI guide):
+# 1. Apply this YAML (restAPI starts as false)
+# 2. Wait for feast pod to be running
+# 3. Flip restAPI to true:
+#    oc patch featurestore banking -n <namespace> --type=merge \
+#      -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+# 4. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast apply
+# 5. Run: oc exec -n <namespace> <feast-pod> -c registry -- feast materialize 2025-01-01T00:00:00 $(date -u +'%Y-%m-%dT%H:%M:%S')
 #
 # RHOAI Version Compatibility:
 # - RHOAI 3.2: Works with this configuration
@@ -56,4 +60,4 @@ spec:
     registry:
       local:
         server:
-          restAPI: true
+          restAPI: false

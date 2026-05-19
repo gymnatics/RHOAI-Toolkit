@@ -696,6 +696,10 @@ if [ "$SHOULD_APPLY" = true ]; then
     if [ $? -eq 0 ]; then
         echo ""
         print_success "✅ MachineSet applied successfully!"
+
+        # Clean up the generated YAML since it contains cluster-specific data
+        rm -f "$OUTPUT_FILE"
+        print_info "Cleaned up generated YAML ($OUTPUT_FILE)"
         echo ""
         
         # Check if GPU ClusterPolicy needs to be created
@@ -781,6 +785,9 @@ else
     echo ""
     echo "Monitor machines:"
     echo "  oc get machines -n openshift-machine-api -w"
+    echo ""
+    print_warning "The YAML contains cluster-specific data (AMI, subnets, IAM)."
+    print_warning "Delete it after applying: rm $OUTPUT_FILE"
     echo ""
 fi
 

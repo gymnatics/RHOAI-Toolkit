@@ -11,6 +11,7 @@ kind: FeatureStore
 metadata:
   labels:
     feature-store-ui: enabled
+    opendatahub.io/dashboard: "true"
   name: ${FEAST_PROJECT}
   namespace: ${NAMESPACE}
 spec:
