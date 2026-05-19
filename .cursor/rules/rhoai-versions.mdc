@@ -1,0 +1,73 @@
+---
+description: RHOAI version compatibility, channels, and component dependencies
+globs: "**/*rhoai*,**/*maas*,**/*llmd*,**/*llm-d*,lib/utils/rhoai-version.sh,scripts/install-rhoai-*.sh,scripts/setup-maas.sh"
+alwaysApply: false
+---
+
+# RHOAI Version Compatibility
+
+## Supported Versions
+
+| Version | Channel Options | Use Case |
+|---------|-----------------|----------|
+| RHOAI 3.3 | `fast-3.x`, `stable-3.3` | Latest — MaaS, llm-d, Llama Stack 0.4.2 |
+| RHOAI 3.2 | `fast-3.x`, `stable-3.2` | Production with GenAI, MaaS |
+| RHOAI 2.25 | `stable` | Workshops, demos |
+| RHOAI 2.22, 2.19 | `stable-X.Y` | Legacy |
+
+Channels vary by cluster. Check with:
+```bash
+oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'
+```
+
+## RHOAI 3.3 Changes (vs 3.2)
+
+- **Kubeflow Trainer v2** — GA, requires JobSet operator, use `trainer` not `trainingoperator`
+- **MLServer ServingRuntime** — Tech Preview for scikit-learn, XGBoost
+- **Llama Stack 0.4.2** — OpenAI-compatible RAG annotations
+- **MaaS Zero-Touch** — via `modelsAsService` in DSC
+- **NVIDIA NIM** — `kserve.nim.managementState: Managed`
+- **MLflow Operator** — experiment tracking
+- **Dashboard URL** — `data-science-gateway.apps.<cluster>` (was `rhods-dashboard`)
+- **CodeFlare removed** — use KubeRay directly
+- **Resource naming** — `data-science-` prefix
+- **Feature Store** — stricter label/restAPI requirements for dashboard visibility
+
+## Component Dependency Matrix
+
+| Component | Required Dependencies |
+|-----------|----------------------|
+| Workbenches | None |
+| AI Pipelines | S3-compatible storage |
+| Kueue/Distributed Workloads | Kueue Operator, cert-manager |
+| Model Serving (KServe) | cert-manager |
+| Distributed Inference (llm-d) | cert-manager, RHCL, LWS |
+| Llama Stack/RAG | Llama Stack Op, Service Mesh 3, cert-manager, NFD, GPU Op |
+| Model Registry | MySQL 5.x/8.x, S3 storage |
+| GPU Acceleration | NVIDIA GPU Operator, NFD |
+| Trainer (Kubeflow v2) | JobSet operator |
+
+## Operator Channels & Packages
+
+| Operator | Package Name | Channel | Namespace |
+|----------|-------------|---------|-----------|
+| NFD | `nfd` | `stable` | `openshift-nfd` |
+| GPU | `gpu-operator-certified` | `v25.10` | `nvidia-gpu-operator` |
+| Kueue | `kueue-operator` | `stable-v1.3` | `openshift-operators` |
+| LWS | `leader-worker-set` | `stable-v1.0` | `openshift-lws-operator` |
+| cert-manager | `openshift-cert-manager-operator` | `stable-v1` | `cert-manager-operator` |
+| RHCL/Kuadrant | `connectivity-link-operator` | `stable-1.3` | `redhat-connectivity-link-operator` |
+
+## MaaS Version Differences
+
+- **RHOAI 3.3+**: Integrated MaaS (`modelsAsService` in DataScienceCluster)
+  - Endpoint: `inference-gateway.apps.<cluster>`
+  - Gateway in `openshift-ingress`
+- **RHOAI 3.2-**: Legacy kustomize-based (`maas-api` namespace)
+  - Endpoint: `maas.<cluster>/maas-api/v1/...`
+  - Setup script auto-detects version
+
+## Dashboard URL by Version
+
+- **RHOAI 3.3+**: `data-science-gateway.apps.<cluster>`
+- **RHOAI 3.2-**: `rhods-dashboard-redhat-ods-applications.apps.<cluster>`

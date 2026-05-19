@@ -1,0 +1,5 @@
+docs/reference/RHAIE 3.3 Guide/
+docs/reference/*.json
+docs/reference/*.bz2
+docs/reference/*.pdf
+demo/maas-demo/__pycache__/

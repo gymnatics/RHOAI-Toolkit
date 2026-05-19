@@ -46,3 +46,18 @@ kubeconfig
 docs/PRD-rhoai-feature-store-model-registry.md
 docs/PRD-GUARDRAILS-DEMO.md
 docs/PRD-MAAS-DEMO.md
+
+# Vendor reference docs (kept locally, not tracked)
+docs/reference/RHAIE 3.3 Guide/
+docs/reference/rhoai-3.0.json
+docs/reference/rhoai-3.0.json.bz2
+docs/reference/Red_Hat_OpenShift_AI_Cloud_Service-*.pdf
+docs/reference/CAI's guide to RHOAI 3.0.txt
+
+# Draft/working docs
+docs/guides/(DRAFTY)*
+docs/reference/(DRAFTY)*
+
+# Python cache
+__pycache__/
+*.pyc
