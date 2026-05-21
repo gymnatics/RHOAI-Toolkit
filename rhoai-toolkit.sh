@@ -81,8 +81,10 @@ show_main_menu() {
     echo -e "${MAGENTA}RHOAI 3.x (Current):${NC}"
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 3.3 ${GREEN}[NEW - Recommended]${NC}"
-    echo "    Full 3.3 install with MaaS, llm-d, Llama Stack"
+    echo -e "${YELLOW}3)${NC} Install RHOAI 3.4 ${GREEN}[NEW - Recommended]${NC}"
+    echo "    Full 3.4 install: MaaS (core GA), NeMo Guardrails (GA), llm-d, AutoML/AutoRAG (TP)"
+    echo -e "${YELLOW}3b)${NC} Install RHOAI 3.3"
+    echo "    Full 3.3 install with MaaS (TP), llm-d, Llama Stack"
     echo ""
     echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
@@ -5997,7 +5999,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-9, h, 0): " choice
+        read -p "Select an option (1-9, 3b, h, 0): " choice
         
         case $choice in
             1)
@@ -6007,7 +6009,36 @@ main() {
                 run_minimal_setup
                 ;;
             3)
-                # RHOAI 3.3 installation
+                # RHOAI 3.4 installation
+                print_header "RHOAI 3.4 Installation"
+                echo ""
+                echo -e "${CYAN}This will install RHOAI 3.4 with all features:${NC}"
+                echo "  • NFD, GPU Operator, Kueue, cert-manager"
+                echo "  • RHCL (Kuadrant) for MaaS/llm-d authentication"
+                echo "  • LWS for multi-node inference"
+                echo "  • Full DataScienceCluster with all components"
+                echo "  • Inference Gateway for llm-d/MaaS"
+                echo "  • Default GPU hardware profile"
+                echo ""
+                echo -e "${GREEN}What's New in 3.4:${NC}"
+                echo "  • MaaS core platform now GA (subscriptions, API keys, llm-d)"
+                echo "    Sub-features still TP: vLLM runtime, external OIDC, observability, external model egress"
+                echo "  • NeMo Guardrails now GA"
+                echo "  • MLflow Operator managed DSC component"
+                echo "  • AutoML & AutoRAG (Technology Preview)"
+                echo "  • llm-d: Prometheus metrics, WVA autoscaling (TP)"
+                echo "  • vLLM runtime for MaaS (Technology Preview)"
+                echo "  • MLServer ServingRuntime GA (scikit-learn, XGBoost)"
+                echo ""
+                read -p "Proceed with RHOAI 3.4 installation? (Y/n): " confirm_34
+                if [[ ! "$confirm_34" =~ ^[Nn]$ ]]; then
+                    "$SCRIPT_DIR/scripts/install-rhoai-34.sh"
+                fi
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
+            3b|3B)
+                # RHOAI 3.3 installation (previous version)
                 print_header "RHOAI 3.3 Installation"
                 echo ""
                 echo -e "${CYAN}This will install RHOAI 3.3 with all features:${NC}"

@@ -2372,6 +2372,204 @@ deploy_guardrails_demo() {
 }
 
 ################################################################################
+# MaaS 3.4 Management Functions
+# RHOAI 3.4 uses subscription-based MaaS (replaces 3.3 tier-based model)
+# New CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+################################################################################
+
+# Configure MaaS TLS using OpenShift service-ca (RHOAI 3.4 method)
+# This replaces the cert-manager Certificate approach used in 3.3
+configure_maas_tls_34() {
+    print_header "Configuring MaaS TLS (RHOAI 3.4 service-ca method)"
+
+    print_step "Step 1: Annotating Authorino service for service-ca cert generation..."
+    oc annotate service authorino-authorino-authorization \
+        -n kuadrant-system \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        --overwrite
+
+    print_step "Step 2: Waiting for authorino-server-cert secret..."
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+            print_success "authorino-server-cert secret generated"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_step "Step 3: Patching Authorino CR for TLS listener..."
+    oc patch authorino authorino -n kuadrant-system --type=merge --patch '{
+      "spec": {
+        "listener": {
+          "tls": {
+            "enabled": true,
+            "certSecretRef": {
+              "name": "authorino-server-cert"
+            }
+          }
+        }
+      }
+    }'
+
+    print_step "Step 4: Setting TLS cert validation env vars on Authorino deployment..."
+    oc -n kuadrant-system set env deployment/authorino \
+        SSL_CERT_FILE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
+        REQUESTS_CA_BUNDLE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt
+
+    print_step "Step 5: Annotating maas-default-gateway for TLS bootstrap..."
+    oc annotate gateway maas-default-gateway \
+        -n openshift-ingress \
+        security.opendatahub.io/authorino-tls-bootstrap="true" \
+        --overwrite
+
+    print_success "MaaS TLS configuration complete (service-ca method)"
+}
+
+# Verify the full MaaS 3.4 deployment
+verify_maas_34() {
+    print_header "Verifying MaaS 3.4 Deployment"
+
+    local all_ok=true
+
+    # PostgreSQL DB secret
+    print_step "Checking maas-db-config secret..."
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        local has_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null)
+        if [ -n "$has_url" ]; then
+            print_success "  maas-db-config secret with DB_CONNECTION_URL"
+        else
+            print_warning "  maas-db-config exists but missing DB_CONNECTION_URL key"
+            all_ok=false
+        fi
+    else
+        print_warning "  maas-db-config secret not found (MaaS Tenant will be Degraded)"
+        all_ok=false
+    fi
+
+    # CRDs
+    print_step "Checking MaaS CRDs..."
+    local expected_crds=("maassubscriptions.maas.opendatahub.io" "maasauthpolicies.maas.opendatahub.io" "maasmodelrefs.maas.opendatahub.io" "externalmodels.maas.opendatahub.io" "tenants.maas.opendatahub.io")
+    for crd in "${expected_crds[@]}"; do
+        if oc get crd "$crd" &>/dev/null; then
+            print_success "  CRD: $crd"
+        else
+            print_warning "  CRD missing: $crd"
+            all_ok=false
+        fi
+    done
+
+    # User Workload Monitoring
+    print_step "Checking User Workload Monitoring..."
+    local uwm=$(oc get configmap cluster-monitoring-config -n openshift-monitoring \
+        -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep -c "enableUserWorkload: true" || echo "0")
+    if [ "$uwm" -gt 0 ]; then
+        print_success "  User Workload Monitoring enabled"
+    else
+        print_warning "  User Workload Monitoring not enabled (MaaS Tenant may show Degraded)"
+        all_ok=false
+    fi
+
+    # Tenant
+    print_step "Checking Tenant CR..."
+    local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$tenant_ready" = "True" ]; then
+        print_success "  Tenant default-tenant is Ready"
+    else
+        local tenant_msg=$(oc get tenant default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+        print_warning "  Tenant status: ${tenant_ready:-not found} - ${tenant_msg:-no message}"
+        all_ok=false
+    fi
+
+    # Gateway annotations
+    print_step "Checking maas-default-gateway annotations..."
+    local gw_managed=$(oc get gateway maas-default-gateway -n openshift-ingress \
+        -o jsonpath='{.metadata.annotations.opendatahub\.io/managed}' 2>/dev/null)
+    local gw_tls=$(oc get gateway maas-default-gateway -n openshift-ingress \
+        -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/authorino-tls-bootstrap}' 2>/dev/null)
+    if [ "$gw_managed" = "false" ] && [ "$gw_tls" = "true" ]; then
+        print_success "  Gateway annotations correct"
+    else
+        print_warning "  Gateway annotations incorrect or missing"
+        all_ok=false
+    fi
+
+    # Authorino TLS
+    print_step "Checking Authorino TLS..."
+    local auth_tls=$(oc get authorino authorino -n kuadrant-system \
+        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
+    if [ "$auth_tls" = "true" ]; then
+        print_success "  Authorino TLS listener enabled"
+    else
+        print_warning "  Authorino TLS listener not enabled"
+        all_ok=false
+    fi
+
+    local auth_cert=$(oc get secret authorino-server-cert -n kuadrant-system &>/dev/null && echo "yes" || echo "no")
+    if [ "$auth_cert" = "yes" ]; then
+        print_success "  authorino-server-cert secret exists"
+    else
+        print_warning "  authorino-server-cert secret not found"
+        all_ok=false
+    fi
+
+    # Dashboard flags
+    print_step "Checking dashboard MaaS flags..."
+    local maas_flag=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.modelAsService}' 2>/dev/null)
+    local auth_policies_flag=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.maasAuthPolicies}' 2>/dev/null)
+    if [ "$maas_flag" = "true" ] && [ "$auth_policies_flag" = "true" ]; then
+        print_success "  Dashboard: modelAsService=true, maasAuthPolicies=true"
+    else
+        print_warning "  Dashboard MaaS flags: modelAsService=$maas_flag, maasAuthPolicies=$auth_policies_flag"
+        all_ok=false
+    fi
+
+    echo ""
+    if [ "$all_ok" = true ]; then
+        print_success "MaaS 3.4 deployment fully verified"
+    else
+        print_warning "MaaS 3.4 deployment has issues - check warnings above"
+    fi
+}
+
+# List MaaS subscriptions
+list_maas_subscriptions() {
+    print_header "MaaS Subscriptions"
+    oc get maassubscriptions -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No subscriptions found or MaaS namespace not created yet"
+}
+
+# List MaaS authorization policies
+list_maas_auth_policies() {
+    print_header "MaaS Authorization Policies"
+    oc get maasauthpolicies -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No authorization policies found"
+}
+
+# List MaaS model references
+list_maas_models() {
+    print_header "MaaS Model References"
+    oc get maasmodelrefs -A -o wide 2>/dev/null || \
+        print_info "No model references found"
+}
+
+# Show MaaS Tenant status
+show_maas_tenant() {
+    print_header "MaaS Tenant Status"
+    oc get tenant -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No tenant found"
+    echo ""
+    oc get tenant default-tenant -n models-as-a-service -o yaml 2>/dev/null | \
+        grep -A 20 "status:" || true
+}
+
+################################################################################
 # MaaS Demo
 ################################################################################
 

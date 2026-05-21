@@ -12,6 +12,7 @@ Read the script header or `--help` for full usage. This rule maps script to purp
 
 | Script | Purpose |
 |--------|---------|
+| `install-rhoai-34.sh` | Full RHOAI 3.4 install (--skip-prerequisites, --skip-rhcl, --skip-maas, --channel, --enable-vllm-maas, --enable-observability, --postgres-connection, --skip-maas-db). Deploys POC PostgreSQL for MaaS by default, uses service-ca TLS, sets maasAuthPolicies. |
 | `install-rhoai-33.sh` | Full RHOAI 3.3 install with all prerequisites (supports --skip-prerequisites, --skip-rhcl, --skip-maas, --channel) |
 | `install-rhoai-minimal.sh` | Minimal RHOAI install (choose operators interactively) |
 | `openshift-installer-master.sh` | OpenShift cluster installation on AWS |

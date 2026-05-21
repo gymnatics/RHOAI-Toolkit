@@ -12,6 +12,7 @@ Automation toolkit for OpenShift + Red Hat OpenShift AI (RHOAI) on AWS with GPU 
 | Script | Purpose |
 |--------|---------|
 | `rhoai-toolkit.sh` | Main interactive menu (start here) |
+| `scripts/install-rhoai-34.sh` | RHOAI 3.4 direct install (recommended) |
 | `scripts/install-rhoai-33.sh` | RHOAI 3.3 direct install |
 | `Makefile` | CLI automation targets |
 
@@ -47,13 +48,21 @@ Deployed models MUST have ALL THREE annotations for dashboard to show correct pr
 - `opendatahub.io/hardware-profile-resource-version` (fetched from HardwareProfile metadata at deploy time)
 
 ### Model Serving CRs — Depends on Runtime, NOT RHOAI Version
-- **llm-d** → `LLMInferenceService` (serving.kserve.io/v1alpha1) — only runtime that supports MaaS
+- **llm-d** → `LLMInferenceService` (serving.kserve.io/v1alpha1) — primary runtime for MaaS
+- **vLLM on MaaS** → `InferenceService` + MaaS (RHOAI 3.4 TP: enable `vLLMDeploymentOnMaaS` dashboard flag)
 - **Everything else** (vLLM, vLLM-Omni, OpenVINO, Caikit-TGIS, NIM, MLServer) → `InferenceService` (serving.kserve.io/v1beta1)
 
 ### MaaS
-- Only `llm-d` works with MaaS through the UI
-- RHOAI 3.3+: integrated via `modelsAsService` in DSC, endpoint `inference-gateway.apps.<cluster>`
-- RHOAI 3.2-: legacy kustomize setup, endpoint `maas.<cluster>/maas-api/v1/...`
+- **RHOAI 3.4**: MaaS core GA. Subscription-based CRDs replace tier ConfigMaps.
+  - TLS: OpenShift service-ca (NOT cert-manager Certificate)
+  - Gateway needs: `opendatahub.io/managed: "false"` + `security.opendatahub.io/authorino-tls-bootstrap: "true"`
+  - Dashboard flags: `modelAsService`, `maasAuthPolicies`, `genAiStudio` (required); `observabilityDashboard`, `vLLMDeploymentOnMaaS` (optional TP)
+  - CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+  - RHCL v1.2+ required. Tenant auto-created in `models-as-a-service` namespace.
+  - Sub-features still TP: vLLM runtime, external OIDC, observability dashboard, external model egress.
+- **RHOAI 3.3**: MaaS Tech Preview. Tier-based ConfigMaps. cert-manager for TLS. Only llm-d runtime.
+- **RHOAI 3.3+**: integrated via `modelsAsService` in DSC, endpoint `inference-gateway.apps.<cluster>`
+- **RHOAI 3.2-**: legacy kustomize setup, endpoint `maas.<cluster>/maas-api/v1/...`
 
 ### Feature Store (Feast) Dashboard Visibility
 Requires: label `feature-store-ui: enabled`, `spec.services.registry.local.server.restAPI: true`, namespace labeled `opendatahub.io/dashboard=true`

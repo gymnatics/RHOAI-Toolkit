@@ -10,7 +10,8 @@ alwaysApply: false
 
 | Version | Channel Options | Use Case |
 |---------|-----------------|----------|
-| RHOAI 3.3 | `fast-3.x`, `stable-3.3` | Latest — MaaS, llm-d, Llama Stack 0.4.2 |
+| RHOAI 3.4 | `fast-3.x`, `stable-3.4` | Latest — MaaS (core GA, some sub-features TP), NeMo Guardrails (GA), AutoML/AutoRAG (TP) |
+| RHOAI 3.3 | `fast-3.x`, `stable-3.3` | Stable — MaaS (TP), llm-d (GA), Llama Stack 0.4.2 |
 | RHOAI 3.2 | `fast-3.x`, `stable-3.2` | Production with GenAI, MaaS |
 | RHOAI 2.25 | `stable` | Workshops, demos |
 | RHOAI 2.22, 2.19 | `stable-X.Y` | Legacy |
@@ -19,6 +20,35 @@ Channels vary by cluster. Check with:
 ```bash
 oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'
 ```
+
+## RHOAI 3.4 Changes (vs 3.3)
+
+### GA Promotions
+- **MaaS (Models-as-a-Service)** — Core platform now GA (subscriptions, API keys, llm-d serving). Sub-features still TP: external OIDC auth, vLLM runtime, observability dashboard, external model egress
+- **NeMo Guardrails** — Now GA with `/v1/guardrails/checks` endpoint, regex rails, multi-replica, OpenTelemetry
+- **MLServer ServingRuntime** — Now GA for scikit-learn, XGBoost, LightGBM, ONNX
+- **MLflow Operator** — Now an official managed DSC component (`mlflowoperator`); dashboard flag deprecated
+
+### New Features (Technology Preview)
+- **AutoML** — Automated ML model training via Kubeflow Pipelines + AutoGluon
+- **AutoRAG** — Automated RAG optimization
+- **vLLM runtime for MaaS** — Enable via `vLLMDeploymentOnMaaS` dashboard flag
+- **External OIDC auth for MaaS** — Enterprise identity provider integration
+- **MaaS observability dashboard** — Usage metrics, token tracking, CSV export
+- **External model egress** — Route to OpenAI, Anthropic etc. via inference gateway
+- **Workload Variant Autoscaler (WVA)** — Inference-aware autoscaling for llm-d
+- **Priority-based flow control** — Mixed workload scheduling for llm-d
+- **Gateway discovery** — Self-service Gateway selection for llm-d
+- **EvalHub** — Evaluation Stack UI + SDK/CLI for model evaluation
+- **Text embedding models** — Dedicated embedding models in Model Catalog
+- **Artifact signing** — Cryptographic signing/verification for model registry
+
+### Enhancements
+- **llm-d** — Prometheus metrics, simplified scheduler via `endpointPickerConfig`, vLLM args via `args` field
+- **Model Registry** — OCI-compliant storage, PostgreSQL backend, default database for testing
+- **Workbench images** — Default to Red Hat Python index (not PyPI)
+- **Llama Stack 0.6.0** — Responses API (TP), Connectors, Conversations API, Garak eval
+- **Trainer** — JIT checkpointing, S3 storage for checkpoints
 
 ## RHOAI 3.3 Changes (vs 3.2)
 
@@ -43,9 +73,14 @@ oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.st
 | Model Serving (KServe) | cert-manager |
 | Distributed Inference (llm-d) | cert-manager, RHCL, LWS |
 | Llama Stack/RAG | Llama Stack Op, Service Mesh 3, cert-manager, NFD, GPU Op |
-| Model Registry | MySQL 5.x/8.x, S3 storage |
+| Model Registry | PostgreSQL (or default DB for testing), S3 storage |
 | GPU Acceleration | NVIDIA GPU Operator, NFD |
 | Trainer (Kubeflow v2) | JobSet operator |
+| AutoML | AI Pipelines (Kubeflow Pipelines), S3 storage |
+| AutoRAG | AI Pipelines (Kubeflow Pipelines), S3 storage |
+| MLflow | MLflow Operator (DSC component) |
+| MaaS (3.4) | RHCL v1.2+, Gateway API, Istio, User Workload Monitoring |
+| MaaS (3.3) | RHCL v1.1+, Gateway API, Istio, cert-manager |
 
 ## Operator Channels & Packages
 
@@ -56,18 +91,35 @@ oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.st
 | Kueue | `kueue-operator` | `stable-v1.3` | `openshift-operators` |
 | LWS | `leader-worker-set` | `stable-v1.0` | `openshift-lws-operator` |
 | cert-manager | `openshift-cert-manager-operator` | `stable-v1` | `cert-manager-operator` |
-| RHCL/Kuadrant | `connectivity-link-operator` | `stable-1.3` | `redhat-connectivity-link-operator` |
+| RHCL/Kuadrant (RHOAI 3.4) | `rhcl-operator` | `stable` | Subscription: `openshift-operators`, Kuadrant CR: `kuadrant-system` (per [RHOAI 3.4 MaaS docs](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service)) |
+| RHCL/Kuadrant (RHOAI 3.3) | `rhcl-operator` | `stable` | All in `kuadrant-system` |
 
 ## MaaS Version Differences
 
-- **RHOAI 3.3+**: Integrated MaaS (`modelsAsService` in DataScienceCluster)
+- **RHOAI 3.4**: MaaS core platform GA (subscriptions replace tiers, API keys, llm-d)
+  - Access model: Subscription CRDs (MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel)
+  - TLS: OpenShift service-ca annotation on Authorino service (NOT cert-manager Certificate)
+  - Gateway: `maas-default-gateway` needs `opendatahub.io/managed: "false"` + `security.opendatahub.io/authorino-tls-bootstrap: "true"`
+  - RHCL: v1.2+ required
+  - Dashboard flags: `modelAsService`, `maasAuthPolicies`, `genAiStudio` (required); `observabilityDashboard`, `vLLMDeploymentOnMaaS` (optional TP)
+  - API key prefix: `sk-oai-`
+  - Tenant CR auto-created in `models-as-a-service` namespace
+  - PostgreSQL 14+ required: `maas-db-config` secret with `DB_CONNECTION_URL` key (format: `postgresql://user:pass@host:5432/db?sslmode=require`)
+  - Sub-features still TP: vLLM runtime, external OIDC, observability dashboard, external model egress
+  - MaaS endpoint: `maas.apps.<cluster>`
+  - Inference endpoint: `inference-gateway.apps.<cluster>`
+- **RHOAI 3.3**: MaaS Tech Preview via `modelsAsService` in DSC
+  - Access model: Tier-based ConfigMaps
+  - TLS: cert-manager Certificate for Authorino
   - Endpoint: `inference-gateway.apps.<cluster>`
   - Gateway in `openshift-ingress`
+  - Only llm-d runtime supported
 - **RHOAI 3.2-**: Legacy kustomize-based (`maas-api` namespace)
   - Endpoint: `maas.<cluster>/maas-api/v1/...`
   - Setup script auto-detects version
 
 ## Dashboard URL by Version
 
-- **RHOAI 3.3+**: `data-science-gateway.apps.<cluster>`
+- **RHOAI 3.4+**: `rh-ai.apps.<cluster>` (legacy `data-science-gateway` auto-redirects)
+- **RHOAI 3.3**: `data-science-gateway.apps.<cluster>`
 - **RHOAI 3.2-**: `rhods-dashboard-redhat-ods-applications.apps.<cluster>`

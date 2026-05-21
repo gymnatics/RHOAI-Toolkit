@@ -1,0 +1,29 @@
+# RHCL 1.2+ Operator for RHOAI 3.4 MaaS
+#
+# Follows RHOAI 3.4 MaaS prerequisite pattern:
+#   "installed the Red Hat Connectivity Link Operator version 1.2 or later
+#    to the openshift-operators namespace and created a Kuadrant custom resource
+#    in the kuadrant-system namespace with ready status."
+#   — Red Hat OpenShift AI Self-Managed 3.4, Govern LLM access with Models-as-a-Service, §1.2
+#
+# Note: RHCL 1.3's own install docs put everything in a single namespace (kuadrant-system).
+# Both patterns work (AllNamespaces mode). We follow the RHOAI-specific prerequisite here
+# because this toolkit deploys RHOAI and that's the tested/supported pattern for MaaS.
+#
+# openshift-operators already has a default OperatorGroup — no need to create one.
+# Kuadrant CR is created separately via kuadrant-instance.yaml in kuadrant-system.
+#
+# Service Mesh 3 (Sail): auto-installed as OLM dependency, uses Manual InstallPlan approval.
+# Prerequisites: cert-manager Operator 1.18+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

@@ -2,7 +2,8 @@
 
 A comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI) 3.x** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
 
-> **Latest:** RHOAI 3.3 is now supported. See [What's New in RHOAI 3.3](docs/guides/RHOAI-33-WHATS-NEW.md) for details.
+> **Latest:** RHOAI 3.4 is now supported. See [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md) for details.
+> MaaS core platform and NeMo Guardrails are now GA. AutoML, AutoRAG, and several MaaS sub-features (vLLM runtime, OIDC, observability, external egress) remain Technology Preview.
 
 ## Quick Start
 
@@ -53,8 +54,10 @@ This single command provides an interactive menu to:
 │   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
 │   ├── setup-maas.sh             # MaaS API gateway (version-aware)
 │   ├── serve-model.sh            # Model deployment
+│   ├── install-rhoai-34.sh       # RHOAI 3.4 full installation (recommended)
 │   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation
 │   ├── install-rhoai-minimal.sh  # Minimal RHOAI install
+│   ├── setup-users.sh            # User management (htpasswd + groups + MaaS subscriptions)
 │   ├── deploy-llmd-model.sh      # llm-d model deployment
 │   └── cleanup-all.sh            # Resource cleanup
 │
@@ -80,16 +83,40 @@ This single command provides an interactive menu to:
 
 ## Usage
 
-### Full Installation
+### Full Installation (RHOAI 3.4 — Recommended)
 
 ```bash
-./rhoai-toolkit.sh
+# Interactive menu
+./rhoai-toolkit.sh            # Select option 3 for RHOAI 3.4
+
+# Direct script (automated)
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# Makefile one-liner
+make setup-rhoai-34
 ```
 
-Select from the menu:
+Select from the interactive menu:
 1. **Complete Setup** - OpenShift + RHOAI 3.x + GPU + MaaS
 2. **Minimal Setup** - Choose which operators to install
-3. **Install RHOAI 3.3** - Recommended for new installs
+3. **Install RHOAI 3.4** - Recommended for new installs
+3b. **Install RHOAI 3.3** - Previous stable release
+
+### Common Script Flags (3.4)
+
+```bash
+# With specific RHOAI channel
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# With external PostgreSQL for MaaS (production)
+./scripts/install-rhoai-34.sh --postgres-connection 'postgresql://user:pass@host:5432/db?sslmode=require'
+
+# Skip if prerequisites already installed
+./scripts/install-rhoai-34.sh --skip-prerequisites --skip-node-scaling
+
+# Enable TP features
+./scripts/install-rhoai-34.sh --enable-vllm-maas --enable-observability
+```
 
 ### Individual Operations
 
@@ -129,10 +156,13 @@ Select from the menu:
 ### Common Commands
 
 ```bash
-# Full installation
+# Full installation (recommended)
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# Or interactive menu
 ./rhoai-toolkit.sh
 
-# RHOAI 3.3 direct install
+# Previous version
 ./scripts/install-rhoai-33.sh
 
 # Add GPU nodes
@@ -194,8 +224,9 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 
 ### Key Guides
 
+- [RHOAI 3.4 Installation](docs/guides/RHOAI-34-INSTALLATION.md) (recommended)
+- [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md)
 - [RHOAI 3.3 Installation](docs/guides/RHOAI-33-INSTALLATION.md)
-- [What's New in RHOAI 3.3](docs/guides/RHOAI-33-WHATS-NEW.md)
 - [Manual Installation Guide](docs/guides/RHOAI-MANUAL-INSTALLATION-GUIDE.md)
 - [Hardware Profile Setup](docs/guides/HARDWARE-PROFILE-SETUP.md)
 - [GPU Taints Configuration](docs/guides/GPU-TAINTS-RHOAI3.md)
@@ -227,7 +258,9 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 
 ## External Resources
 
-- [RHOAI 3.3 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3)
+- [RHOAI 3.4 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4)
+- [RHOAI 3.4 MaaS Guide](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service)
+- [RHCL 1.3 Install Guide](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3/html-single/installing_on_openshift_container_platform/index)
 - [RHOAI Supported Configurations](https://access.redhat.com/articles/rhoai-supported-configs)
 - [OpenShift Documentation](https://docs.openshift.com)
 - [Kueue Documentation](https://kueue.sigs.k8s.io/)

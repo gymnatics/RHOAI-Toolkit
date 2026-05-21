@@ -17,6 +17,8 @@ Step-by-step instructions for common tasks.
 
 | Guide | Description |
 |-------|-------------|
+| [RHOAI 3.4 Installation](guides/RHOAI-34-INSTALLATION.md) | Full RHOAI 3.4 install guide (recommended) |
+| [RHOAI 3.4 What's New](guides/RHOAI-34-WHATS-NEW.md) | Changes from 3.3 to 3.4 (MaaS GA, NeMo GA, AutoML/AutoRAG) |
 | [RHOAI 3.3 Installation](guides/RHOAI-33-INSTALLATION.md) | Full RHOAI 3.3 install guide |
 | [RHOAI 3.3 What's New](guides/RHOAI-33-WHATS-NEW.md) | Changes from 3.2 to 3.3 |
 | [Manual Installation](guides/RHOAI-MANUAL-INSTALLATION-GUIDE.md) | Step-by-step with all YAMLs |
@@ -51,6 +53,12 @@ Step-by-step instructions for common tasks.
 | [MaaS Serving Runtimes](guides/MAAS-SERVING-RUNTIMES.md) | Which runtimes work with MaaS |
 | [MaaS Policy Enforcement](guides/MAAS-POLICY-ENFORCEMENT.md) | Configure MaaS authentication |
 | [MaaS Demo](guides/MAAS-DEMO-GUIDE.md) | Running the MaaS demo |
+
+### Third-Party on OpenShift
+
+| Guide | Description |
+|-------|-------------|
+| [Dify Enterprise — Kaniko Fix](guides/DIFY-OPENSHIFT-KANIKO-TROUBLESHOOTING.md) | Fix Kaniko plugin builder permission errors on OpenShift |
 
 ### MCP & Tool Calling
 

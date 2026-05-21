@@ -11,9 +11,9 @@ Use `Glob` to find specific files. This maps directories to purpose.
 | Directory | Contents |
 |-----------|----------|
 | `lib/manifests/operators/` | NFD, GPU Operator, Kueue, LWS, cert-manager subscriptions and CRs |
-| `lib/manifests/rhoai/` | DataScienceCluster configs for RHOAI 3.x |
+| `lib/manifests/rhoai/` | DataScienceCluster configs for RHOAI 3.x (`datasciencecluster-v3-34.yaml` for 3.4, `datasciencecluster-v3.yaml` for 3.3) |
 | `lib/manifests/rhoai-2x/` | RHOAI 2.x workshop manifests |
-| `lib/manifests/rhcl/` | Kuadrant/Authorino for MaaS (Gateway, AuthPolicy, etc.) |
+| `lib/manifests/rhcl/` | Kuadrant/Authorino for MaaS. `rhcl-operator-34.yaml` (RHOAI 3.4: Subscription→`openshift-operators` per MaaS docs), `rhcl-operator.yaml` (3.3: all in `kuadrant-system`). `kuadrant-instance.yaml` creates Kuadrant CR in `kuadrant-system`. `authorino-tls.yaml` configures TLS. |
 | `lib/manifests/templates/` | envsubst YAML templates (InferenceService, ServingRuntime, etc.) |
 | `lib/manifests/feast/` | Feature Store (Feast) demo manifests |
 | `lib/manifests/demo/` | Open WebUI, GuideLLM, etc. |

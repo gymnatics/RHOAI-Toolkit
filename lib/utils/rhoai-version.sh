@@ -50,9 +50,29 @@ detect_rhoai_version() {
         # Fallback: detect based on features
         if oc get crd llminferenceservices.serving.kserve.io &>/dev/null 2>&1; then
             # LLMInferenceService CRD exists - this is 3.x
-            # Check for 3.3+ features
             local dsc_spec=$(oc get datasciencecluster default-dsc -o json 2>/dev/null)
             if echo "$dsc_spec" | grep -q "modelsAsService" 2>/dev/null; then
+                # Check for 3.4-specific indicators:
+                # 1. MaaS subscription CRDs (only in 3.4+)
+                # 2. Channel contains "3.4"
+                # 3. Tenant CRD exists
+                if oc get crd maassubscriptions.maas.opendatahub.io &>/dev/null 2>&1; then
+                    RHOAI_VERSION="3.4.x"
+                    RHOAI_MAJOR_VERSION="3"
+                    RHOAI_MINOR_VERSION="4"
+                else
+                    local channel=$(oc get subscription rhods-operator -n redhat-ods-operator -o jsonpath='{.spec.channel}' 2>/dev/null)
+                    if echo "$channel" | grep -q "3.4" 2>/dev/null; then
+                        RHOAI_VERSION="3.4.x"
+                        RHOAI_MAJOR_VERSION="3"
+                        RHOAI_MINOR_VERSION="4"
+                    else
+                        RHOAI_VERSION="3.3.x"
+                        RHOAI_MAJOR_VERSION="3"
+                        RHOAI_MINOR_VERSION="3"
+                    fi
+                fi
+            elif echo "$dsc_spec" | grep -q "modelsAsService" 2>/dev/null; then
                 RHOAI_VERSION="3.3.x"
                 RHOAI_MAJOR_VERSION="3"
                 RHOAI_MINOR_VERSION="3"
@@ -91,6 +111,19 @@ get_rhoai_major_minor() {
 ################################################################################
 # Version Comparison Functions
 ################################################################################
+
+# Check if RHOAI version is 3.4 or higher
+# Returns: 0 if >= 3.4, 1 otherwise
+is_rhoai_34_or_higher() {
+    detect_rhoai_version
+
+    if [ "$RHOAI_MAJOR_VERSION" -gt 3 ]; then
+        return 0
+    elif [ "$RHOAI_MAJOR_VERSION" -eq 3 ] && [ "$RHOAI_MINOR_VERSION" -ge 4 ]; then
+        return 0
+    fi
+    return 1
+}
 
 # Check if RHOAI version is 3.3 or higher
 # Returns: 0 if >= 3.3, 1 otherwise
@@ -145,23 +178,54 @@ get_maas_endpoint() {
     MAAS_ENDPOINT=""
     MAAS_NAMESPACE=""
     
-    if is_rhoai_33_or_higher; then
-        # RHOAI 3.3+: MaaS is integrated, uses inference gateway
-        echo -e "${BLUE}Checking RHOAI 3.3+ integrated MaaS...${NC}"
+    if is_rhoai_34_or_higher; then
+        # RHOAI 3.4+: MaaS uses subscription CRDs, maas-default-gateway, models-as-a-service namespace
+        echo -e "${BLUE}Checking RHOAI 3.4+ MaaS (subscription-based)...${NC}"
         
-        # Check if MaaS is enabled in DSC
+        local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null)
+        
+        if [ "$maas_state" = "Managed" ]; then
+            MAAS_NAMESPACE="models-as-a-service"
+            
+            # 3.4 uses maas-default-gateway
+            local gateway_host=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
+            
+            if [ -n "$gateway_host" ]; then
+                MAAS_ENDPOINT="$gateway_host"
+            else
+                local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+                if [ -n "$cluster_domain" ]; then
+                    MAAS_ENDPOINT="maas.${cluster_domain}"
+                fi
+            fi
+            
+            if [ -n "$MAAS_ENDPOINT" ]; then
+                # Check Tenant status
+                local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                local tenant_info=""
+                [ "$tenant_ready" = "True" ] && tenant_info=" (Tenant: Ready)" || tenant_info=" (Tenant: ${tenant_ready:-pending})"
+                echo -e "${GREEN}✓ MaaS endpoint (3.4+ subscription-based): $MAAS_ENDPOINT${tenant_info}${NC}"
+                return 0
+            fi
+        else
+            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.4+${NC}"
+            echo "Enable with: modelsAsService.managementState: Managed in DataScienceCluster"
+        fi
+    elif is_rhoai_33_or_higher; then
+        # RHOAI 3.3: MaaS Tech Preview, tier-based, uses inference gateway
+        echo -e "${BLUE}Checking RHOAI 3.3 integrated MaaS (tier-based)...${NC}"
+        
         local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null)
         
         if [ "$maas_state" = "Managed" ]; then
             MAAS_NAMESPACE="redhat-ods-applications"
             
-            # Get inference gateway hostname
             local gateway_host=$(oc get gateway openshift-ai-inference -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
             
             if [ -n "$gateway_host" ]; then
                 MAAS_ENDPOINT="$gateway_host"
             else
-                # Construct from cluster domain
                 local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
                 if [ -n "$cluster_domain" ]; then
                     MAAS_ENDPOINT="inference-gateway.${cluster_domain}"
@@ -169,11 +233,11 @@ get_maas_endpoint() {
             fi
             
             if [ -n "$MAAS_ENDPOINT" ]; then
-                echo -e "${GREEN}✓ MaaS endpoint (3.3+ integrated): $MAAS_ENDPOINT${NC}"
+                echo -e "${GREEN}✓ MaaS endpoint (3.3 tier-based): $MAAS_ENDPOINT${NC}"
                 return 0
             fi
         else
-            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.3+${NC}"
+            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.3${NC}"
             echo "Enable with: modelsAsService.managementState: Managed in DataScienceCluster"
         fi
     else
@@ -208,8 +272,12 @@ get_dashboard_url() {
     
     local dashboard_url=""
     
-    if is_rhoai_33_or_higher; then
-        # RHOAI 3.3+: New dashboard URL format
+    if is_rhoai_34_or_higher; then
+        # RHOAI 3.4+: Dashboard URL changed to rh-ai (data-science-gateway redirects)
+        local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+        dashboard_url="https://rh-ai.${cluster_domain}"
+    elif is_rhoai_33_or_higher; then
+        # RHOAI 3.3: data-science-gateway URL format
         local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
         dashboard_url="https://data-science-gateway.${cluster_domain}"
     else
@@ -497,8 +565,27 @@ print_rhoai_info() {
     
     if is_rhoai_33_or_higher; then
         local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null || echo "Unknown")
-        echo -e "    MaaS:           $([ "$maas_state" = "Managed" ] && echo "${GREEN}$maas_state${NC}" || echo "${YELLOW}$maas_state${NC}")"
+        local maas_label="MaaS"
+        if is_rhoai_34_or_higher; then
+            maas_label="MaaS (GA)"
+        else
+            maas_label="MaaS (TP)"
+        fi
+        echo -e "    ${maas_label}:       $([ "$maas_state" = "Managed" ] && echo "${GREEN}$maas_state${NC}" || echo "${YELLOW}$maas_state${NC}")"
+
+        if is_rhoai_34_or_higher && [ "$maas_state" = "Managed" ]; then
+            # 3.4-specific: check Tenant and CRD status
+            local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "N/A")
+            echo -e "    MaaS Tenant:    $([ "$tenant_ready" = "True" ] && echo "${GREEN}Ready${NC}" || echo "${YELLOW}${tenant_ready}${NC}")"
+
+            local sub_count=$(oc get maassubscriptions -n models-as-a-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            echo -e "    Subscriptions:  ${BLUE}${sub_count}${NC}"
+        fi
     fi
+
+    local mlflow_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.mlflowoperator.managementState}' 2>/dev/null || echo "Unknown")
+    echo -e "    MLflow:         $([ "$mlflow_state" = "Managed" ] && echo "${GREEN}$mlflow_state${NC}" || echo "${YELLOW}$mlflow_state${NC}")"
     
     echo ""
 }

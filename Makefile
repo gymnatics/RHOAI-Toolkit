@@ -27,6 +27,9 @@ help:
 	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
 	@echo -e "$(YELLOW)Installation:$(NC)"
+	@echo "  make setup-rhoai-34        Install RHOAI 3.4 with all prerequisites"
+	@echo "  make setup-users           Create demo users with htpasswd + groups"
+	@echo "  make setup-rhoai-33        Install RHOAI 3.3 with all prerequisites"
 	@echo "  make setup-rhoai           Install RHOAI 3.0 with all operators"
 	@echo "  make setup-operators       Install only operators (NFD, GPU, Kueue, LWS)"
 	@echo "  make setup-llmd            Setup llm-d infrastructure (Gateway, LWS, Kuadrant)"
@@ -72,6 +75,24 @@ interactive:
 # =============================================================================
 # Installation Targets
 # =============================================================================
+
+.PHONY: setup-rhoai-34
+setup-rhoai-34:
+	@echo -e "$(GREEN)▶ Installing RHOAI 3.4...$(NC)"
+	@$(BASE)/scripts/install-rhoai-34.sh
+	@echo -e "$(GREEN)✓ RHOAI 3.4 installation complete$(NC)"
+
+.PHONY: setup-users
+setup-users:
+	@echo -e "$(GREEN)▶ Setting up demo users...$(NC)"
+	@$(BASE)/scripts/setup-users.sh $(ARGS)
+	@echo -e "$(GREEN)✓ User setup complete$(NC)"
+
+.PHONY: setup-rhoai-33
+setup-rhoai-33:
+	@echo -e "$(GREEN)▶ Installing RHOAI 3.3...$(NC)"
+	@$(BASE)/scripts/install-rhoai-33.sh
+	@echo -e "$(GREEN)✓ RHOAI 3.3 installation complete$(NC)"
 
 .PHONY: setup-rhoai
 setup-rhoai: setup-operators
