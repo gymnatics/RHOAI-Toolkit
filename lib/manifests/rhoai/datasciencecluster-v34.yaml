@@ -1,0 +1,87 @@
+# DataScienceCluster for RHOAI 3.4
+# Based on official 3.4 GA documentation:
+#   https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/
+#   installing_and_uninstalling_openshift_ai_self-managed/installing-and-deploying-openshift-ai_install
+#
+# Key changes from 3.3:
+#   - MaaS (modelsAsService) is now GA (was Tech Preview)
+#   - MLflow Operator is now a managed DSC component (GA, was TP)
+#   - Ray-based multi-node vLLM removed; native vLLM multiprocessing used instead
+#   - Embedded Kueue component removed from operator; use standalone RHBOK
+#   - llm-d distributed inference requires OCP 4.20+
+#   - DataSciencePipelinesApplication v1alpha1 removed; only v1 supported
+#
+# Requires: NFD, GPU Operator, Kueue (RHBOK), cert-manager, RHCL (for MaaS), LWS (for llm-d)
+# Optional: JobSet operator (required if trainingoperator.managementState: Managed)
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    # Dashboard - OpenShift AI web interface
+    dashboard:
+      managementState: Managed
+
+    # Workbenches - Jupyter notebooks and IDEs
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+
+    # AI Pipelines - ML workflow automation (v1 API only in 3.4)
+    aipipelines:
+      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
+
+    # KServe - Model serving platform (required for vLLM, llm-d)
+    kserve:
+      managementState: Managed
+      # MaaS - Models as a Service (GA in 3.4)
+      # Requires: RHCL operator, Gateway API
+      modelsAsService:
+        managementState: Managed
+
+    # Kueue - Workload scheduling
+    # In 3.4 the embedded Kueue component is removed from the operator.
+    # Use Unmanaged when standalone Red Hat Build of Kueue (RHBOK) is installed.
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+
+    # Ray - Distributed computing framework
+    # Note: Ray-based multi-node vLLM is removed in 3.4;
+    # multi-node inference now uses native vLLM multiprocessing.
+    ray:
+      managementState: Managed
+
+    # Training Operator - Kubeflow Training Operator
+    # Requires JobSet operator if set to Managed
+    trainingoperator:
+      managementState: Removed
+
+    # Model Registry - Model versioning and tracking
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+
+    # TrustyAI - Model explainability and fairness
+    trustyai:
+      managementState: Managed
+
+    # Feast Operator - Feature Store (GA in 3.4)
+    feastoperator:
+      managementState: Managed
+
+    # Llama Stack Operator - GenAI orchestration, RAG (TP, version 0.9.0)
+    llamastackoperator:
+      managementState: Managed
+
+    # MLflow Operator - Experiment tracking (GA in 3.4, was TP in 3.3)
+    # Dashboard visibility is now determined by component state;
+    # the deprecated 'mlflow' dashboard feature flag is no longer required.
+    mlflowoperator:
+      managementState: Managed

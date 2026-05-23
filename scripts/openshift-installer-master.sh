@@ -510,47 +510,104 @@ get_pull_secret() {
         fi
     fi
     
+    # Check common pull secret file locations
+    local found_files=()
+    for f in "$HOME/pull-secret.txt" "$HOME/pull-secret.json" "$HOME/Downloads/pull-secret.txt" "$HOME/Downloads/pull-secret.json"; do
+        [ -f "$f" ] && found_files+=("$f")
+    done
+
     # Prompt for input method
     echo ""
     echo "How would you like to provide the pull secret?"
-    echo "  1) Paste pull secret directly (recommended)"
-    echo "  2) Provide path to pull secret file"
+    echo "  1) Provide path to pull secret file (recommended)"
+    echo "  2) Paste pull secret directly"
+    if [ ${#found_files[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${GREEN}  Found pull secret file(s):${NC}"
+        for i in "${!found_files[@]}"; do
+            echo "    $((i+3))) ${found_files[$i]}"
+        done
+    fi
     echo ""
     read -p "$(echo -e ${BLUE}Select option${NC} [1]: )" secret_method
     secret_method="${secret_method:-1}"
-    
+
+    # Handle quick-select of found files
+    if [[ "$secret_method" =~ ^[3-9]$ ]] && [ ${#found_files[@]} -gt 0 ]; then
+        local idx=$((secret_method - 3))
+        if [ $idx -lt ${#found_files[@]} ]; then
+            PULL_SECRET=$(cat "${found_files[$idx]}")
+            PULL_SECRET_PATH="${found_files[$idx]}"
+            print_success "Using pull secret from: ${found_files[$idx]}"
+            if [ -n "$PULL_SECRET" ] && [[ "$PULL_SECRET" =~ ^\{.*\}$ ]]; then
+                print_success "Pull secret validated ($(echo -n "$PULL_SECRET" | wc -c | tr -d ' ') chars)"
+                return 0
+            fi
+        fi
+    fi
+
     case $secret_method in
         1)
             echo ""
+            if [ ${#found_files[@]} -gt 0 ]; then
+                print_info "Detected file: ${found_files[0]}"
+                read -p "$(echo -e ${BLUE}Enter path to pull secret file${NC} [${found_files[0]}]: )" pull_secret_path
+                pull_secret_path="${pull_secret_path:-${found_files[0]}}"
+            else
+                read -p "$(echo -e ${BLUE}Enter path to pull secret file${NC}: )" pull_secret_path
+            fi
+
+            # Expand tilde to home directory
+            pull_secret_path="${pull_secret_path/#\~/$HOME}"
+
+            if [ ! -f "$pull_secret_path" ]; then
+                print_error "Pull secret file not found: $pull_secret_path"
+                exit 1
+            fi
+
+            PULL_SECRET=$(cat "$pull_secret_path")
+            PULL_SECRET_PATH="$pull_secret_path"
+
+            if [ -z "$PULL_SECRET" ]; then
+                print_error "Pull secret file is empty"
+                exit 1
+            fi
+
+            print_success "Pull secret loaded from: $pull_secret_path ($(echo -n "$PULL_SECRET" | wc -c | tr -d ' ') chars)"
+            ;;
+        2)
+            echo ""
             print_info "Paste your pull secret below and press Enter:"
             print_info "(The secret should be a JSON string starting with '{\"auths\"...')"
-            print_warning "Note: After pasting, press Enter to continue"
+            print_warning "Tip: If paste hangs, use Ctrl+C and try option 1 (file path) instead"
             echo ""
+
+            # Use a temp file approach to handle very long strings safely
+            local tmp_secret
+            tmp_secret=$(mktemp)
+            trap "rm -f '$tmp_secret'" RETURN
+
             echo -n "> "
-            
-            # Read the pull secret with IFS to handle special characters
-            IFS= read -r PULL_SECRET
-            
-            # Trim whitespace
-            PULL_SECRET=$(echo "$PULL_SECRET" | xargs)
-            
-            # Debug: Show first 50 characters
+            if IFS= read -r PULL_SECRET; then
+                # Trim whitespace
+                PULL_SECRET=$(echo "$PULL_SECRET" | tr -d '\r' | xargs)
+            fi
+
             echo ""
-            print_info "Received $(echo -n "$PULL_SECRET" | wc -c) characters"
-            print_info "First 50 chars: ${PULL_SECRET:0:50}..."
-            
-            # Validate that it's not empty
             if [ -z "$PULL_SECRET" ]; then
                 print_error "Pull secret cannot be empty"
                 echo ""
                 echo "Troubleshooting:"
-                echo "  1. Make sure you copied the entire pull secret"
-                echo "  2. Try using Option 2 (file path) instead"
+                echo "  1. Pull secret is very long — try saving to a file first:"
+                echo "     pbpaste > ~/pull-secret.txt   (macOS)"
+                echo "  2. Re-run and select option 1 (file path)"
                 echo ""
                 press_any_key
                 return 1
             fi
-            
+
+            print_info "Received $(echo -n "$PULL_SECRET" | wc -c | tr -d ' ') characters"
+
             # Basic validation - check if it looks like JSON
             if [[ ! "$PULL_SECRET" =~ ^\{.*\}$ ]]; then
                 print_warning "Pull secret doesn't appear to be valid JSON"
@@ -560,28 +617,29 @@ get_pull_secret() {
                 if [[ "$continue_anyway" != "y" && "$continue_anyway" != "Y" ]]; then
                     print_error "Pull secret validation failed"
                     echo ""
-                    echo "Tip: Try using Option 2 to provide a file path instead"
+                    echo "Tip: Save to file first, then use option 1:"
+                    echo "  pbpaste > ~/pull-secret.txt"
                     press_any_key
                     return 1
                 fi
             fi
-            
+
             print_success "Pull secret received and validated"
             ;;
-        2)
+        *)
             echo ""
             read -p "$(echo -e ${BLUE}Enter path to pull secret file${NC}: )" pull_secret_path
-            
+
             # Expand tilde to home directory
             pull_secret_path="${pull_secret_path/#\~/$HOME}"
-            
+
             if [ ! -f "$pull_secret_path" ]; then
                 print_error "Pull secret file not found: $pull_secret_path"
                 exit 1
             fi
-            
+
             PULL_SECRET=$(cat "$pull_secret_path")
-            
+
             if [ -z "$PULL_SECRET" ]; then
                 print_error "Pull secret file is empty"
                 exit 1
@@ -986,7 +1044,42 @@ configure_cluster() {
     echo ""
     
     prompt_with_default "Enter cluster name" "openshift-cluster" CLUSTER_NAME
-    prompt_with_default "Enter base domain" "example.com" BASE_DOMAIN
+
+    # Auto-detect base domain from Route53
+    local detected_domain=""
+    local route53_domains
+    route53_domains=$(aws route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].Name' --output text 2>/dev/null | tr '\t' '\n' | sed 's/\.$//' | head -5)
+    if [ -n "$route53_domains" ]; then
+        local domain_count=$(echo "$route53_domains" | wc -l | tr -d ' ')
+        if [ "$domain_count" -eq 1 ]; then
+            detected_domain="$route53_domains"
+            print_info "Detected Route53 domain: $detected_domain"
+        else
+            echo ""
+            echo -e "${CYAN}Available Route53 domains:${NC}"
+            local i=1
+            while IFS= read -r d; do
+                echo "  $i) $d"
+                i=$((i+1))
+            done <<< "$route53_domains"
+            echo ""
+            read -p "$(echo -e ${BLUE}Select domain [1]${NC}: )" domain_choice
+            domain_choice="${domain_choice:-1}"
+            detected_domain=$(echo "$route53_domains" | sed -n "${domain_choice}p")
+        fi
+    fi
+
+    if [ -n "$detected_domain" ]; then
+        prompt_with_default "Enter base domain" "$detected_domain" BASE_DOMAIN
+    else
+        print_warning "No Route53 public hosted zone detected"
+        echo -e "${YELLOW}Enter your Route53 base domain (NOT example.com):${NC}"
+        read -p "$(echo -e ${BLUE}Base domain${NC}: )" BASE_DOMAIN
+        if [ -z "$BASE_DOMAIN" ] || [ "$BASE_DOMAIN" = "example.com" ]; then
+            print_error "A valid Route53 base domain is required"
+            return 1
+        fi
+    fi
     
     echo ""
     print_info "Availability Zone Configuration"
@@ -1333,6 +1426,33 @@ generate_install_config() {
     print_info "Generating install-config.yaml..."
     
     INSTALL_DIR="${CLUSTER_NAME}-install"
+
+    # Check for leftover install directory from previous attempt
+    if [ -d "$INSTALL_DIR" ]; then
+        echo ""
+        print_warning "Previous install directory found: $INSTALL_DIR"
+        echo ""
+        echo -e "${CYAN}Options:${NC}"
+        echo "  1) Delete and start fresh (recommended)"
+        echo "  2) Cancel"
+        echo ""
+        read -p "Select option [1-2] (default: 1): " cleanup_choice
+        cleanup_choice="${cleanup_choice:-1}"
+        if [ "$cleanup_choice" = "1" ]; then
+            # Backup metadata.json if it exists (contains cluster ID for cleanup)
+            if [ -f "$INSTALL_DIR/metadata.json" ]; then
+                cp "$INSTALL_DIR/metadata.json" "${INSTALL_DIR}.metadata-backup.json"
+                print_info "Backed up metadata.json for cleanup reference"
+            fi
+            rm -rf "$INSTALL_DIR"
+            print_success "Cleaned up previous install directory"
+        else
+            print_warning "Cancelled. If a previous install partially created AWS resources,"
+            echo "  run: ./openshift-install destroy cluster --dir=$INSTALL_DIR"
+            return 1
+        fi
+    fi
+
     mkdir -p "$INSTALL_DIR"
     
     cat > "$INSTALL_DIR/install-config.yaml" <<EOF
@@ -1882,12 +2002,22 @@ if [ "$#" -gt 0 ]; then
             installation_only
             exit 0
             ;;
+        --download)
+            download_installer
+            exit 0
+            ;;
+        --source-only)
+            # Sourced by another script to reuse functions (e.g. download_installer)
+            return 0 2>/dev/null || exit 0
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTION]"
             echo ""
             echo "Options:"
             echo "  --full-install, --full     Run full installation (download + install)"
             echo "  --install-only, --install  Run installation only (skip download)"
+            echo "  --download                 Download installer binary only"
+            echo "  --source-only              Source this script without running (for reuse)"
             echo "  --help, -h                 Show this help message"
             echo ""
             echo "If no option is provided, the interactive menu will be shown."

@@ -196,10 +196,10 @@ install_openshift() {
         print_info "No existing OpenShift cluster connection detected"
     fi
     
-    # Proceed with installation
+    # Proceed with installation (--full-install downloads binary if missing, then installs)
     if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
         print_step "Calling OpenShift installer script..."
-        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --install-only
+        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --full-install
     else
         print_warning "OpenShift installer script not found"
         print_info "Please install OpenShift manually or run: ./scripts/openshift-installer-master.sh"
@@ -242,8 +242,9 @@ install_gpu_nodes() {
     echo -e "${YELLOW}GPU nodes can be created now or later.${NC}"
     echo "You can always create GPU nodes later using: ./scripts/create-gpu-machineset.sh"
     echo ""
-    read -p "Create GPU nodes now? (y/n): " create_gpu
-    
+    read -p "Create GPU nodes now? [Y/n]: " create_gpu
+    create_gpu="${create_gpu:-y}"
+
     if [[ "$create_gpu" =~ ^[Yy]$ ]]; then
         local gpu_script_path="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
         if [ -f "$gpu_script_path" ]; then

@@ -73,8 +73,8 @@ show_main_menu() {
     echo -e "${MAGENTA}RHOAI 3.x (Current):${NC}"
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 3.3 ${GREEN}[NEW - Recommended]${NC}"
-    echo "    Full 3.3 install with MaaS, llm-d, Llama Stack"
+    echo -e "${YELLOW}3)${NC} Install RHOAI 3.x ${GREEN}[Recommended]${NC}"
+    echo "    Choose version (3.4 latest, 3.3) with MaaS, llm-d, Llama Stack"
     echo ""
     echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
@@ -5160,6 +5160,85 @@ check_prerequisites() {
         esac
     fi
     
+    # Check for openshift-install binary (required for new cluster installation)
+    if [ "$SKIP_OPENSHIFT" = false ] && [ "$MAAS_ONLY" = false ]; then
+        if ! command -v openshift-install &>/dev/null && [ ! -f "./openshift-install" ]; then
+            echo ""
+            print_warning "openshift-install binary not found!"
+            echo -e "${YELLOW}Complete Setup requires the openshift-install binary to create a new cluster.${NC}"
+            echo ""
+            echo -e "${CYAN}Options:${NC}"
+            echo "  1) Download automatically now (recommended)"
+            echo "  2) Cancel and install manually"
+            echo ""
+            read -p "Select option [1-2] (default: 1): " dl_choice
+            dl_choice="${dl_choice:-1}"
+
+            if [ "$dl_choice" = "1" ]; then
+                if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
+                    source "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --source-only 2>/dev/null || true
+                    if type download_installer &>/dev/null; then
+                        download_installer
+                    else
+                        # Fallback: call the script's download function directly
+                        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --download
+                    fi
+                else
+                    _download_openshift_install
+                fi
+
+                # Verify after download
+                if ! command -v openshift-install &>/dev/null && [ ! -f "./openshift-install" ]; then
+                    print_error "Download failed or was cancelled. Cannot proceed."
+                    read -p "Press Enter to return to menu..."
+                    return 1
+                fi
+            else
+                echo ""
+                echo -e "${CYAN}Manual install:${NC}"
+                local arch=$(uname -m)
+                if [ "$(uname)" = "Darwin" ]; then
+                    if [ "$arch" = "arm64" ]; then
+                        echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-mac-arm64.tar.gz -o openshift-install.tar.gz"
+                    else
+                        echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-mac.tar.gz -o openshift-install.tar.gz"
+                    fi
+                else
+                    echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux.tar.gz -o openshift-install.tar.gz"
+                fi
+                echo "  tar xzf openshift-install.tar.gz"
+                echo "  sudo mv openshift-install /usr/local/bin/"
+                echo "  rm openshift-install.tar.gz"
+                echo ""
+                read -p "Press Enter to return to menu..."
+                return 1
+            fi
+        fi
+
+        # Show found version
+        if command -v openshift-install &>/dev/null; then
+            print_success "openshift-install found: $(openshift-install version 2>/dev/null | head -1)"
+        elif [ -f "./openshift-install" ]; then
+            print_success "openshift-install found (local): $(./openshift-install version 2>/dev/null | head -1)"
+        fi
+
+        # Check for SSH key (needed by openshift-install)
+        if [ ! -f "$HOME/.ssh/id_rsa.pub" ] && [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
+            echo ""
+            print_warning "No SSH public key found (~/.ssh/id_rsa.pub or ~/.ssh/id_ed25519.pub)"
+            echo -e "${CYAN}Generate one with:${NC}"
+            echo "  ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N \"\""
+            echo ""
+            read -p "Continue anyway? [y/N]: " ssh_continue
+            if [[ ! "$ssh_continue" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
+        else
+            local ssh_key=$(ls "$HOME/.ssh/id_ed25519.pub" 2>/dev/null || ls "$HOME/.ssh/id_rsa.pub" 2>/dev/null)
+            print_success "SSH public key found: $ssh_key"
+        fi
+    fi
+
     # Check for required workflow script
     if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
         print_error "integrated-workflow-v2.sh not found"
@@ -5248,12 +5327,10 @@ display_setup_plan() {
         step=$((step + 1))
         
         # MaaS setup
-        if [ "$SETUP_MAAS" = "yes" ]; then
-            echo "  $step. ✅ Set up MaaS API infrastructure"
-        elif [ "$SETUP_MAAS" = "no" ]; then
+        if [ "$SETUP_MAAS" = "no" ]; then
             echo "  $step. ⏭️  Skip MaaS setup"
         else
-            echo "  $step. ❓ Prompt for MaaS setup"
+            echo "  $step. ✅ Set up MaaS API infrastructure"
         fi
     fi
     
@@ -5565,21 +5642,8 @@ main() {
                 run_minimal_setup
                 ;;
             3)
-                # RHOAI 3.3 installation
-                print_header "RHOAI 3.3 Installation"
-                echo ""
-                echo -e "${CYAN}This will install RHOAI 3.3 with all features:${NC}"
-                echo "  • NFD, GPU Operator, Kueue, cert-manager"
-                echo "  • RHCL (Kuadrant) for MaaS/llm-d authentication"
-                echo "  • LWS for multi-node inference"
-                echo "  • Full DataScienceCluster with all components"
-                echo "  • Inference Gateway for llm-d/MaaS"
-                echo "  • Default GPU hardware profile"
-                echo ""
-                read -p "Proceed with RHOAI 3.3 installation? (Y/n): " confirm_33
-                if [[ ! "$confirm_33" =~ ^[Nn]$ ]]; then
-                    "$SCRIPT_DIR/scripts/install-rhoai-33.sh"
-                fi
+                # RHOAI 3.x installation - delegates to router script
+                "$SCRIPT_DIR/scripts/install-rhoai.sh"
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
@@ -5634,9 +5698,9 @@ run_non_interactive_mode() {
         echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
     fi
     echo ""
-    read -p "Continue? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Continue? [Y/n]: " continue_confirm
+    continue_confirm="${continue_confirm:-y}"
+    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         exit 0
     fi
@@ -5695,9 +5759,9 @@ run_complete_setup() {
     # Confirm before proceeding
     echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
     echo ""
-    read -p "Continue? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Continue? [Y/n]: " continue_confirm
+    continue_confirm="${continue_confirm:-y}"
+    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         return 0
     fi
@@ -6781,9 +6845,9 @@ run_complete_workshop_setup() {
     echo "  • Grafana with dashboards"
     echo "  • Admin model (qwen3-4b) + MCP Server"
     echo ""
-    read -p "Continue? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Continue? [Y/n]: " continue_confirm
+    continue_confirm="${continue_confirm:-y}"
+    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled"
         return 0
     fi
@@ -7037,9 +7101,9 @@ run_maas_only_setup() {
     echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
     echo -e "${YELLOW}Assumes RHOAI is already installed.${NC}"
     echo ""
-    read -p "Continue? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Continue? [Y/n]: " continue_confirm
+    continue_confirm="${continue_confirm:-y}"
+    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         return 0
     fi

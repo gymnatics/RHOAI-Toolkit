@@ -298,23 +298,63 @@ check_existing_resources() {
 check_openshift_installer() {
     echo ""
     echo -e "${CYAN}Checking OpenShift Installer...${NC}"
-    
-    if [ ! -f "./openshift-install" ]; then
-        echo -e "${RED}✗ openshift-install binary not found${NC}"
+
+    # Check both current directory and PATH
+    local installer_bin=""
+    if [ -f "./openshift-install" ]; then
+        installer_bin="./openshift-install"
+    elif command -v openshift-install &>/dev/null; then
+        installer_bin="$(command -v openshift-install)"
+    fi
+
+    if [ -z "$installer_bin" ]; then
+        echo -e "${YELLOW}⚠ openshift-install binary not found${NC}"
         echo ""
-        echo "Download from: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/"
-        return 1
+        echo -e "${CYAN}Options:${NC}"
+        echo "  1) Download automatically now (recommended)"
+        echo "  2) Skip (will be downloaded during installation)"
+        echo ""
+        read -p "Select option [1-2] (default: 2): " dl_choice
+        dl_choice="${dl_choice:-2}"
+
+        if [ "$dl_choice" = "1" ]; then
+            local script_dir
+            script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+            if [ -f "$script_dir/scripts/openshift-installer-master.sh" ]; then
+                "$script_dir/scripts/openshift-installer-master.sh" --download
+            else
+                echo -e "${RED}✗ Installer download script not found${NC}"
+                echo "  Download manually: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/"
+                return 1
+            fi
+
+            # Re-check after download
+            if [ -f "./openshift-install" ]; then
+                installer_bin="./openshift-install"
+            elif command -v openshift-install &>/dev/null; then
+                installer_bin="$(command -v openshift-install)"
+            fi
+
+            if [ -z "$installer_bin" ]; then
+                echo -e "${RED}✗ Download failed or was cancelled${NC}"
+                return 1
+            fi
+        else
+            echo -e "${YELLOW}⚠ Skipped — will be downloaded during Complete Setup${NC}"
+            return 0
+        fi
     fi
-    
-    if [ ! -x "./openshift-install" ]; then
+
+    if [ ! -x "$installer_bin" ]; then
         echo -e "${YELLOW}⚠ openshift-install not executable, fixing...${NC}"
-        chmod +x ./openshift-install
+        chmod +x "$installer_bin"
     fi
-    
-    local version=$(./openshift-install version 2>/dev/null | head -1 || echo "unknown")
+
+    local version=$("$installer_bin" version 2>/dev/null | head -1 || echo "unknown")
     echo -e "${GREEN}✓ OpenShift installer found${NC}"
+    echo "  Path: $installer_bin"
     echo "  Version: $version"
-    
+
     return 0
 }
 
