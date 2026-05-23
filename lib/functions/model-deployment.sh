@@ -1,9 +1,19 @@
 #!/bin/bash
 ################################################################################
-# Interactive Model Deployment
+# Model Deployment Library
 ################################################################################
-# This function provides an interactive menu for deploying models using
-# available serving runtimes (llm-d, vLLM, etc.)
+# Shared functions for model deployment via KServe.
+#
+# Provides:
+#   deploy_model_interactive()  - Full interactive wizard
+#   _deploy_model_execute()     - Core deployment (ServingRuntime + InferenceService)
+#   ensure_hf_token_secret()    - Create K8s secret from HF token
+#   wait_and_test_model()       - Wait for readiness + test prompt
+#
+# Usage from scripts:
+#   source lib/functions/model-deployment.sh
+#   _deploy_model_execute <runtime> <name> <uri> <namespace> <gpu> <cpu> <mem> \
+#       <vllm_args> <auth_annotation> <auth_enabled> <sa_name> <profile> <profile_ns>
 ################################################################################
 
 # Source OS compatibility library
@@ -11,18 +21,113 @@
 _MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
 
+################################################################################
+# HF Token Secret Management
+################################################################################
+ensure_hf_token_secret() {
+    local ns="$1"
+    local secret_name="${2:-hf-token}"
+    local token="$3"
+
+    if oc get secret "$secret_name" -n "$ns" &>/dev/null; then
+        print_info "HF token secret '$secret_name' already exists in namespace '$ns'"
+        return 0
+    fi
+
+    if [ -z "$token" ]; then
+        return 1
+    fi
+
+    print_step "Creating HF token secret: $secret_name"
+    if oc create secret generic "$secret_name" --from-literal=HF_TOKEN="$token" -n "$ns"; then
+        print_success "HF token secret created"
+        return 0
+    else
+        print_error "Failed to create HF token secret"
+        return 1
+    fi
+}
+
+################################################################################
+# Wait for model readiness + test prompt
+################################################################################
+wait_and_test_model() {
+    local name="$1"
+    local ns="$2"
+    local timeout="${3:-600}"
+    local run_test="${4:-false}"
+
+    echo ""
+    print_step "Waiting for model to be ready (timeout: ${timeout}s)..."
+    echo "  This may take several minutes for large models..."
+
+    if oc wait --for=condition=Ready isvc/${name} -n ${ns} --timeout=${timeout}s 2>/dev/null; then
+        print_success "Model is ready!"
+        echo ""
+
+        local url
+        url=$(oc get isvc ${name} -n ${ns} -o jsonpath='{.status.url}' 2>/dev/null || echo "")
+        if [ -n "$url" ]; then
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${GREEN}  BASE_URL: ${url}${NC}"
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+
+            echo "  Test commands:"
+            echo "    curl -sk ${url}/v1/models | jq '.data[].id'"
+            echo ""
+            echo "    curl -sk -X POST ${url}/v1/chat/completions \\"
+            echo "      -H 'Content-Type: application/json' \\"
+            echo "      -d '{\"model\":\"${name}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"
+            echo ""
+
+            if [ "$run_test" = true ]; then
+                print_step "Running test prompt: 'What is your name?'"
+                echo ""
+                local response
+                response=$(curl -sk -X POST "${url}/v1/chat/completions" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"model\":\"${name}\",\"messages\":[{\"role\":\"user\",\"content\":\"What is your name?\"}],\"max_tokens\":100}" 2>&1)
+
+                if echo "$response" | jq -e '.choices[0].message.content' &>/dev/null 2>&1; then
+                    echo -e "${GREEN}Response:${NC}"
+                    echo "$response" | jq -r '.choices[0].message.content'
+                    echo ""
+                    print_success "Model is working correctly!"
+                else
+                    print_warning "Test prompt failed. Model may still be loading."
+                    echo "  Response: $(echo "$response" | head -3)"
+                fi
+            fi
+        fi
+        return 0
+    else
+        print_error "Model deployment timed out or failed"
+        echo ""
+        echo "  Check status:"
+        echo "    oc get isvc ${name} -n ${ns}"
+        echo "    oc describe isvc ${name} -n ${ns}"
+        echo "    oc logs -l serving.kserve.io/inferenceservice=${name} -n ${ns} --tail=50"
+        return 1
+    fi
+}
+
+################################################################################
+# Shared deployment executor
+################################################################################
+
 # Interactive model deployment function (runtime-agnostic)
 deploy_model_interactive() {
     print_header "Interactive Model Deployment"
     
     echo -e "${YELLOW}Would you like to deploy a model now?${NC}"
     echo ""
-    read -p "Deploy a model? (y/N): " deploy_choice
-    deploy_choice=$(echo "$deploy_choice" | tr -d '[:space:]')  # Remove any whitespace
+    read -p "Deploy a model? [Y/n]: " deploy_choice
+    deploy_choice="${deploy_choice:-y}"
     
     if [[ ! "$deploy_choice" =~ ^[Yy]$ ]]; then
         print_info "Skipping model deployment. You can deploy later using:"
-        echo "  ./scripts/deploy-llmd-model.sh"
+        echo "  ./scripts/serve-model.sh"
         return 0
     fi
     
@@ -54,6 +159,16 @@ deploy_model_interactive() {
         runtimes+=("vllm-community")
         runtime_names+=("vLLM (Community Image - CUDA 13+)")
         runtime_descriptions+=("Community vLLM image, newer GPU driver support, security hardened")
+
+        # Custom vLLM for Gemma 4 E2B
+        runtimes+=("vllm-gemma4")
+        runtime_names+=("vLLM Gemma4 (1 GPU)")
+        runtime_descriptions+=("Gemma 4 E2B (5B), tool-calling, FP8 KV cache, single GPU (24GB+)")
+
+        # vLLM Omni for multimodal models (FLUX, etc.)
+        runtimes+=("vllm-omni")
+        runtime_names+=("vLLM Omni (Multimodal)")
+        runtime_descriptions+=("Community vLLM-Omni image for multimodal/image models (FLUX, etc.)")
     fi
     
     # Check for ServingRuntime templates
@@ -106,30 +221,38 @@ deploy_model_interactive() {
     
     # Pre-defined model catalog from quay.io/redhat-ai-services/modelcar-catalog
     # See: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags
-    echo -e "${BLUE}Available models (from Red Hat AI Services Modelcar Catalog):${NC}"
+    echo -e "${BLUE}Available models:${NC}"
     echo ""
-    echo "  1) Qwen3-4B - 4B params, tool calling support ${GREEN}[Recommended for demos]${NC}"
+    echo "  1) Gemma 4 E2B - Google, tool calling, 1 GPU ${GREEN}[5B, Apache 2.0]${NC}"
+    echo "     google/gemma-4-E2B-it (FP8 KV cache)"
+    echo ""
+    echo "  2) Qwen2.5-Coder-7B - 7B params, coding specialist, tool calling"
+    echo "     oci://registry.redhat.io/rhelai1/modelcar-qwen2.5-coder-7b-instruct:1.5"
+    echo ""
+    echo -e "  ${CYAN}--- Red Hat AI Services Modelcar Catalog ---${NC}"
+    echo ""
+    echo "  3) Qwen3-4B - 4B params, tool calling support ${GREEN}[Recommended for demos]${NC}"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
     echo ""
-    echo "  2) Llama 3.2-3B Instruct - 3B params, tool calling support"
+    echo "  4) Llama 3.2-3B Instruct - 3B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
     echo ""
-    echo "  3) Llama 3.1-8B Instruct - 8B params, tool calling support"
+    echo "  5) Llama 3.1-8B Instruct - 8B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
     echo ""
-    echo "  4) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
+    echo "  6) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
     echo ""
-    echo "  5) Granite 3.1-8B Instruct - 8B params, latest Granite"
+    echo "  7) Granite 3.1-8B Instruct - 8B params, latest Granite"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
     echo ""
-    echo "  6) Mistral 7B Instruct v0.3 - 7B params"
+    echo "  8) Mistral 7B Instruct v0.3 - 7B params"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
     echo ""
-    echo "  7) Custom model URI (enter your own)"
+    echo "  9) Custom model URI (enter your own)"
     echo ""
     
-    read -p "Select a model (1-7): " model_choice
+    read -p "Select a model (1-9): " model_choice
     
     local model_uri=""
     local model_name=""
@@ -141,6 +264,29 @@ deploy_model_interactive() {
     
     case "$model_choice" in
         1)
+            model_uri="google/gemma-4-E2B-it"
+            model_name="gemma4-e2b"
+            default_gpu="1"
+            default_cpu="8"
+            default_memory="32Gi"
+            tool_calling_enabled=true
+            tool_parser="gemma4"
+            # Force vllm-gemma4 runtime for this model
+            if [ "$selected_runtime" != "vllm-gemma4" ]; then
+                print_info "Switching to vLLM Gemma4 runtime (required for this model)"
+                selected_runtime="vllm-gemma4"
+            fi
+            ;;
+        2)
+            model_uri="oci://registry.redhat.io/rhelai1/modelcar-qwen2.5-coder-7b-instruct:1.5"
+            model_name="qwen25-coder-7b"
+            default_gpu="1"
+            default_cpu="8"
+            default_memory="32Gi"
+            tool_calling_enabled=true
+            tool_parser="hermes"
+            ;;
+        3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
             model_name="qwen3-4b"
             default_gpu="1"
@@ -149,7 +295,7 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="hermes"
             ;;
-        2)
+        4)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
             model_name="llama-32-3b-instruct"
             default_gpu="1"
@@ -158,7 +304,7 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        3)
+        5)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
             model_name="llama-31-8b-instruct"
             default_gpu="1"
@@ -167,50 +313,115 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        4)
+        6)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
             model_name="granite-30-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        5)
+        7)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
             model_name="granite-31-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        6)
+        8)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
             model_name="mistral-7b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        7)
+        9)
             echo ""
-            print_info "Enter custom model URI"
-            echo "  Examples:"
-            echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:qwen2.5-7b-instruct"
-            echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:phi-3-mini-128k-instruct"
+            print_header "Custom Model Configuration"
             echo ""
-            echo "  Browse available models at:"
-            echo "    https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags"
+            echo -e "${BLUE}Storage type:${NC}"
+            echo "  1) OCI (ModelCar registry)        e.g. oci://quay.io/..."
+            echo "  2) S3 (MinIO / AWS S3)            e.g. Qwen/Qwen3-8B-Instruct"
+            echo "  3) PVC (Persistent Volume)         e.g. meta-llama/Llama-3-8B-Instruct"
+            echo "  4) HuggingFace URL                 e.g. google/gemma-4-E2B-it"
             echo ""
-            read -p "Model URI: " model_uri
-            
+            read -p "Select storage type [1-4] (default: 1): " storage_choice
+            storage_choice="${storage_choice:-1}"
+
+            case "$storage_choice" in
+                1)
+                    echo ""
+                    echo -e "${CYAN}Examples:${NC}"
+                    echo "  oci://quay.io/redhat-ai-services/modelcar-catalog:qwen2.5-7b-instruct"
+                    echo "  oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b:1.5"
+                    echo ""
+                    echo "  Browse: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags"
+                    echo ""
+                    read -p "OCI URI: " model_uri
+                    ;;
+                2)
+                    echo ""
+                    echo -e "${CYAN}Enter the S3 model path (relative to bucket):${NC}"
+                    echo "  Example: Qwen/Qwen3-8B-Instruct"
+                    echo ""
+                    read -p "S3 path: " s3_path
+                    model_uri="s3://${s3_path}"
+                    ;;
+                3)
+                    echo ""
+                    echo -e "${CYAN}Enter the PVC model path:${NC}"
+                    echo "  Example: meta-llama/Llama-3-8B-Instruct"
+                    echo ""
+                    read -p "PVC name [models-pvc]: " pvc_name
+                    pvc_name="${pvc_name:-models-pvc}"
+                    read -p "Model path in PVC: " pvc_path
+                    model_uri="pvc://${pvc_name}/${pvc_path}"
+                    ;;
+                4)
+                    echo ""
+                    echo -e "${CYAN}Enter HuggingFace model ID:${NC}"
+                    echo "  Example: google/gemma-4-E2B-it"
+                    echo ""
+                    read -p "HF model ID: " hf_id
+                    model_uri="hf://${hf_id}"
+                    ;;
+                *)
+                    print_error "Invalid storage type"
+                    return 1
+                    ;;
+            esac
+
             if [ -z "$model_uri" ]; then
                 print_error "No URI provided. Skipping model deployment."
                 return 1
             fi
-            
+
+            echo ""
             print_info "Enter model name (alphanumeric, lowercase, hyphens only):"
             read -p "Model name: " model_name
-            
+
             if [ -z "$model_name" ]; then
                 print_error "No name provided. Skipping model deployment."
                 return 1
+            fi
+
+            echo ""
+            echo -e "${CYAN}Enable tool calling for this model?${NC}"
+            read -p "Enable tool calling? [y/N]: " custom_tool_choice
+            if [[ "$custom_tool_choice" =~ ^[Yy]$ ]]; then
+                tool_calling_enabled=true
+                echo ""
+                echo "  1) hermes   (Qwen, general)"
+                echo "  2) llama3_json (Llama)"
+                echo "  3) mistral  (Mistral)"
+                echo "  4) gemma4   (Gemma)"
+                read -p "Select parser [1]: " parser_choice
+                parser_choice="${parser_choice:-1}"
+                case "$parser_choice" in
+                    2) tool_parser="llama3_json" ;;
+                    3) tool_parser="mistral" ;;
+                    4) tool_parser="gemma4" ;;
+                    *) tool_parser="hermes" ;;
+                esac
             fi
             ;;
         *)
@@ -1202,6 +1413,326 @@ EOF
             print_error "Failed to create InferenceService"
             return 1
         fi
+
+    elif [ "$selected_runtime" = "vllm-gemma4" ]; then
+        # Deploy using vLLM Gemma4 platform runtime (single GPU, FP8 KV cache)
+        print_step "Creating vLLM Gemma4 deployment for '$model_name'..."
+
+        local gemma4_runtime_name="vllm-gemma4-runtime"
+        local gemma4_template="vllm-gemma4-runtime-template"
+
+        # Step 1: Register platform runtime template if not exists
+        if ! oc get template "$gemma4_template" -n redhat-ods-applications &>/dev/null; then
+            print_step "Registering Gemma4 runtime template in RHOAI..."
+            cat <<'TEOF' | oc apply -f -
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: vllm-gemma4-runtime-template
+  namespace: redhat-ods-applications
+  annotations:
+    description: "vLLM Gemma4 ServingRuntime - Google Gemma 4 E2B (5B) optimized, 1 GPU"
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/model-type: '["generative"]'
+    opendatahub.io/modelServingSupport: '["single"]'
+    openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
+    tags: rhoai,kserve,servingruntime,gemma4,vllm
+  labels:
+    opendatahub.io/dashboard: "true"
+objects:
+- apiVersion: serving.kserve.io/v1alpha1
+  kind: ServingRuntime
+  metadata:
+    annotations:
+      opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+      openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
+    labels:
+      opendatahub.io/dashboard: "true"
+    name: vllm-gemma4-runtime
+  spec:
+    annotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8080"
+    containers:
+    - args:
+      - --port=8080
+      - --served-model-name={{.Name}}
+      env:
+      - name: HF_HOME
+        value: /tmp/huggingface
+      - name: HOME
+        value: /tmp
+      image: vllm/vllm-openai:gemma4-0505-cu129
+      name: kserve-container
+      ports:
+      - containerPort: 8080
+        protocol: TCP
+      volumeMounts:
+      - mountPath: /dev/shm
+        name: shm
+    multiModel: false
+    supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+    volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+TEOF
+            print_success "Platform runtime template registered"
+        fi
+
+        # Step 2: Instantiate runtime in project namespace if not exists
+        if ! oc get servingruntime "$gemma4_runtime_name" -n "$target_namespace" &>/dev/null; then
+            print_step "Creating ServingRuntime in $target_namespace..."
+            oc process "$gemma4_template" -n redhat-ods-applications | oc apply -n "$target_namespace" -f -
+            print_success "ServingRuntime created: $gemma4_runtime_name"
+        else
+            print_info "ServingRuntime $gemma4_runtime_name already exists in $target_namespace"
+        fi
+
+        # Step 3: Create InferenceService (vLLM downloads from HF directly)
+        print_step "Creating InferenceService..."
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  annotations:
+    openshift.io/display-name: ${model_name}
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: "true"
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    model:
+      args:
+        - '--model=$model_uri'
+        - '--max-model-len=16384'
+        - '--gpu-memory-utilization=0.90'
+        - '--kv-cache-dtype=fp8'
+        - '--enable-auto-tool-choice'
+        - '--reasoning-parser=gemma4'
+        - '--tool-call-parser=gemma4'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        requests:
+          cpu: "4"
+          memory: "16Gi"
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+          nvidia.com/gpu: "1"
+      runtime: ${gemma4_runtime_name}
+EOF
+
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Deployment configuration:"
+            echo "  Runtime: $gemma4_runtime_name (platform registered)"
+            echo "  Image: vllm/vllm-openai:gemma4-0505-cu129"
+            echo "  Model: $model_uri (5B params, Apache 2.0)"
+            echo "  FP8 KV Cache: enabled"
+            echo "  Max Model Length: 16384"
+            echo "  GPU: 1 (24GB+)"
+
+            echo ""
+            print_step "Creating external route..."
+            sleep 5
+
+            if oc get service ${model_name}-predictor -n $target_namespace &>/dev/null; then
+                oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_success "External route created"
+                    local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
+                    if [ -n "$route_url" ]; then
+                        print_info "Model endpoint: https://$route_url"
+                    fi
+                else
+                    print_warning "Route may already exist or service not ready yet"
+                    print_info "Create route manually:"
+                    echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+                fi
+            else
+                print_info "Service not ready yet. Create route after deployment:"
+                echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+            fi
+
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
+
+    elif [ "$selected_runtime" = "vllm-omni" ]; then
+        # Deploy using vLLM-Omni (multimodal models)
+        print_step "Creating vLLM-Omni deployment for '$model_name'..."
+        print_info "Using vLLM-Omni image for multimodal models"
+
+        # Step 1: Create ServingRuntime
+        print_step "Creating Omni ServingRuntime..."
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${model_name}-omni-runtime
+  namespace: $target_namespace
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
+    openshift.io/display-name: ${model_name}
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--host=0.0.0.0'
+        - '--trust-remote-code'
+      command:
+        - vllm
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: /tmp/flashinfer
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+      image: 'vllm/vllm-omni:v0.18.0'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+EOF
+        print_success "Omni ServingRuntime created"
+
+        # Step 2: Create InferenceService
+        print_step "Creating InferenceService..."
+
+        local cpu_value=$(parse_cpu "$cpu_limit")
+        local cpu_request=$(calc_half "$cpu_value" 1)
+        local mem_value=$(parse_memory_gi "$memory_limit")
+        local mem_half=$(calc_half "$mem_value" 1)
+        local memory_request="${mem_half}Gi"
+
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    $auth_annotation
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    maxReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: '$gpu_limit'
+        requests:
+          cpu: '$cpu_request'
+          memory: ${memory_request}
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: ${model_name}-omni-runtime
+      storageUri: '$model_uri'
+EOF
+
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Deployment configuration:"
+            echo "  Runtime: vLLM-Omni (multimodal)"
+            echo "  Image: vllm/vllm-omni:v0.18.0"
+
+            echo ""
+            print_step "Creating external route..."
+            sleep 5
+            if oc get service ${model_name}-predictor -n $target_namespace &>/dev/null; then
+                oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_success "External route created"
+                    local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
+                    [ -n "$route_url" ] && print_info "Model endpoint: https://$route_url"
+                else
+                    print_warning "Route may already exist"
+                fi
+            else
+                print_info "Service not ready yet. Create route after deployment:"
+                echo "  oc create route edge ${model_name} --service=${model_name}-predictor --port=8080 -n $target_namespace"
+            fi
+
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
     fi
     
     # Create ServiceAccount and RBAC if authentication is enabled
@@ -1299,14 +1830,272 @@ EOF
     print_info "Get model endpoint:"
     echo "  oc get route -n $target_namespace"
     echo ""
-    
+
+    # Optionally wait and test
+    echo ""
+    read -p "Wait for model and run test prompt? [Y/n]: " wait_choice
+    wait_choice="${wait_choice:-y}"
+    if [[ "$wait_choice" =~ ^[Yy]$ ]]; then
+        wait_and_test_model "$model_name" "$target_namespace" 600 true
+    fi
+
     return 0
+}
+
+################################################################################
+# CLI Deployment Executor
+################################################################################
+_deploy_model_execute() {
+    local selected_runtime="$1" model_name="$2" model_uri="$3" target_namespace="$4"
+    local gpu_limit="$5" cpu_limit="$6" memory_limit="$7" vllm_args="$8"
+    local auth_annotation="$9" auth_enabled="${10}" service_account_name="${11}"
+    local selected_profile_name="${12}" selected_profile_namespace="${13}"
+
+    print_header "Deploying Model (CLI)"
+
+    if [ "$selected_runtime" = "vllm-gemma4" ]; then
+        # Gemma4 platform runtime (single GPU, FP8 KV cache)
+        local gemma4_runtime_name="vllm-gemma4-runtime"
+        local gemma4_template="vllm-gemma4-runtime-template"
+
+        # Register platform template if not exists
+        if ! oc get template "$gemma4_template" -n redhat-ods-applications &>/dev/null; then
+            print_step "Registering Gemma4 runtime template..."
+            cat <<'TEOF' | oc apply -f -
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: vllm-gemma4-runtime-template
+  namespace: redhat-ods-applications
+  annotations:
+    description: "vLLM Gemma4 ServingRuntime - Google Gemma 4 E2B (5B) optimized, 1 GPU"
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/model-type: '["generative"]'
+    opendatahub.io/modelServingSupport: '["single"]'
+    openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
+    tags: rhoai,kserve,servingruntime,gemma4,vllm
+  labels:
+    opendatahub.io/dashboard: "true"
+objects:
+- apiVersion: serving.kserve.io/v1alpha1
+  kind: ServingRuntime
+  metadata:
+    annotations:
+      opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+      openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
+    labels:
+      opendatahub.io/dashboard: "true"
+    name: vllm-gemma4-runtime
+  spec:
+    annotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8080"
+    containers:
+    - args:
+      - --port=8080
+      - --served-model-name={{.Name}}
+      env:
+      - name: HF_HOME
+        value: /tmp/huggingface
+      - name: HOME
+        value: /tmp
+      image: vllm/vllm-openai:gemma4-0505-cu129
+      name: kserve-container
+      ports:
+      - containerPort: 8080
+        protocol: TCP
+      volumeMounts:
+      - mountPath: /dev/shm
+        name: shm
+    multiModel: false
+    supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+    volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+TEOF
+        fi
+
+        # Instantiate in project namespace
+        if ! oc get servingruntime "$gemma4_runtime_name" -n "$target_namespace" &>/dev/null; then
+            oc process "$gemma4_template" -n redhat-ods-applications | oc apply -n "$target_namespace" -f -
+        fi
+
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  annotations:
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+    $auth_annotation
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: "true"
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    model:
+      args:
+        - '--model=$model_uri'
+        - '--max-model-len=16384'
+        - '--gpu-memory-utilization=0.90'
+        - '--kv-cache-dtype=fp8'
+        - '--enable-auto-tool-choice'
+        - '--reasoning-parser=gemma4'
+        - '--tool-call-parser=gemma4'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        requests:
+          cpu: "4"
+          memory: "16Gi"
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+          nvidia.com/gpu: "1"
+      runtime: $gemma4_runtime_name
+EOF
+    else
+        # Standard vLLM deployment
+        local args_yaml=""
+        if [ -n "$vllm_args" ]; then
+            for arg in $vllm_args; do
+                args_yaml="${args_yaml}        - '${arg}'
+"
+            done
+        fi
+
+        # Create ServingRuntime
+        print_step "Creating ServingRuntime..."
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${model_name}
+  namespace: $target_namespace
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    openshift.io/display-name: ${model_name}
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command: ["python", "-m", "vllm.entrypoints.openai.api_server"]
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.5'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+      name: shm
+EOF
+
+        # Create InferenceService
+        print_step "Creating InferenceService..."
+        local cpu_request=$(calc_half "$(parse_cpu "$cpu_limit")" 1)
+        local mem_request="$(calc_half "$(parse_memory_gi "$memory_limit")" 1)Gi"
+
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  annotations:
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+    $auth_annotation
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: "true"
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    model:
+      args:
+        - '--max-model-len'
+        - '4096'
+${args_yaml}
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: '$gpu_limit'
+        requests:
+          cpu: '$cpu_request'
+          memory: $mem_request
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: ${model_name}
+      storageUri: '$model_uri'
+EOF
+    fi
+
+    if [ $? -eq 0 ]; then
+        print_success "Model deployed: $model_name in $target_namespace"
+        echo ""
+        print_info "Monitor deployment:"
+        echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+    else
+        print_error "Deployment failed"
+        return 1
+    fi
+
+    # Create ServiceAccount if auth enabled
+    if [ "$auth_enabled" = true ] && [ -n "$service_account_name" ]; then
+        print_step "Creating ServiceAccount: $service_account_name"
+        oc create serviceaccount "$service_account_name" -n "$target_namespace" 2>/dev/null || true
+        print_success "ServiceAccount ready"
+    fi
 }
 
 ################################################################################
 # Backward Compatibility Alias
 ################################################################################
-# Maintain backward compatibility with old function name
 deploy_llmd_model_interactive() {
     deploy_model_interactive "$@"
 }

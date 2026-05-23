@@ -14,6 +14,11 @@ AWS 환경에서 OpenShift 클러스터 설치부터 RHOAI 3.4 설치, GPU 설�
   - 다운로드: https://console.redhat.com/openshift/install/pull-secret
 - [ ] **AWS Route53 도메인** (예: `.sandbox1785.opentlc.com`)
 - [ ] **AWS Region** (예: `us-east-2`)
+- [ ] **HuggingFace Token** (gated 모델 사용 시 필수, 선택사항)
+  - Gemma 4 E2B (`google/gemma-4-E2B-it`) — Apache 2.0, 토큰 **불필요**
+  - Llama, Mistral 등 gated 모델 — 토큰 **필수**
+  - 발급: https://huggingface.co/settings/tokens
+  - 설정: `export HF_TOKEN=hf_your_token_here` (`.bashrc` 또는 `.zshrc`에 추가 권장)
 
 ---
 
@@ -322,12 +327,73 @@ watch "oc get nodes -l nvidia.com/gpu.present=true"
 
 ## Step 5: 모델 배포 (선택)
 
-### 5-1. Quick Start Wizard 사용
+### 5-1. 프리셋 모델 빠른 배포
+
+```bash
+./scripts/serve-model.sh
+```
+
+인수 없이 실행하면 프리셋 메뉴가 나옵니다:
+
+```
+1) Gemma 4 E2B (google/gemma-4-E2B-it)  — 1 GPU, 5B, Apache 2.0
+2) Qwen2.5-Coder-7B (OCI ModelCar)            — 코딩 특화, 1 GPU
+3) Custom S3 model
+4) Custom PVC model
+5) Custom OCI model
+```
+
+### 5-2. 인터랙티브 배포 (더 많은 옵션)
 
 ```bash
 ./rhoai-toolkit.sh
-# 6) RHOAI Management
-# 6) Quick Start Wizard ✨
+# 6) RHOAI Management → 1) Deploy Model
+```
+
+런타임 선택 (llm-d, vLLM, vLLM-Community, vLLM-Gemma4, vLLM-Omni)부터 모델 카탈로그 (9개 프리셋), 네임스페이스, 리소스, tool-calling, 인증까지 단계별로 설정합니다.
+
+스토리지 옵션: **OCI, S3 (MinIO), PVC, HuggingFace URL** 모두 지원.
+
+### 5-3. CLI 자동화 (스크립트/파이프라인용)
+
+```bash
+# serve-model.sh CLI 모드 (mode name path [vllm_args])
+./scripts/serve-model.sh oci qwen3-4b oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b
+./scripts/serve-model.sh s3 qwen3-8b Qwen/Qwen3-8B-Instruct
+./scripts/serve-model.sh hf gemma4-e2b google/gemma-4-E2B-it  # Apache 2.0, 토큰 불필요
+
+# 환경변수로 네임스페이스/런타임 지정
+NAMESPACE=my-project RUNTIME=vllm-gemma4 \
+  ./scripts/serve-model.sh hf gemma4-e2b google/gemma-4-E2B-it
+
+# 추가 vLLM 인수
+./scripts/serve-model.sh oci my-model oci://quay.io/... "--max-model-len 8192 --enable-auto-tool-choice"
+```
+
+지원 모드:
+
+| 모드 | 설명 | URI 형식 |
+|------|------|----------|
+| `oci` | OCI ModelCar 레지스트리 | `oci://registry.redhat.io/...` |
+| `s3` | S3 (MinIO/AWS) 스토리지 | 상대 경로 (예: `Qwen/Qwen3-8B`) |
+| `pvc` | PVC 볼륨 | 상대 경로 (예: `meta-llama/...`) |
+| `hf` | HuggingFace 모델 | 모델 ID (예: `google/gemma-4-E2B-it`) |
+
+환경변수: `NAMESPACE` (default: demo), `RUNTIME` (default: vllm), `HF_TOKEN`, `HF_TOKEN_SECRET`
+
+### 5-4. HuggingFace 모델 다운로드 후 S3 배포
+
+```bash
+./scripts/setup-model-storage.sh                          # MinIO 설정
+./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct    # 모델 다운로드
+./scripts/serve-model.sh s3 qwen3-8b Qwen/Qwen3-8B-Instruct  # 배포
+```
+
+### 5-5. Quick Start Wizard
+
+```bash
+./rhoai-toolkit.sh
+# 6) RHOAI Management → 6) Quick Start Wizard ✨
 ```
 
 Wizard가 안내하는 4단계:
@@ -335,17 +401,6 @@ Wizard가 안내하는 4단계:
 2. 모델 배포 (선택)
 3. Playground에 모델 추가 (선택)
 4. MCP Server 설정 (선택)
-
-### 5-2. 또는 직접 모델 배포
-
-```bash
-# OCI 이미지에서 직접 배포 (가장 빠름)
-./scripts/serve-model.sh
-
-# HuggingFace에서 다운로드 후 배포
-./scripts/setup-model-storage.sh         # MinIO 설정
-./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct   # 모델 다운로드
-```
 
 ---
 
