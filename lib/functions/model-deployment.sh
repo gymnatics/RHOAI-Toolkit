@@ -1444,7 +1444,10 @@ objects:
   kind: ServingRuntime
   metadata:
     annotations:
+      opendatahub.io/apiProtocol: REST
       opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+      opendatahub.io/template-name: vllm-gemma4-runtime-template
+      opendatahub.io/template-display-name: "vLLM Gemma4 Runtime (1 GPU)"
       openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
     labels:
       opendatahub.io/dashboard: "true"
@@ -1881,7 +1884,10 @@ objects:
   kind: ServingRuntime
   metadata:
     annotations:
+      opendatahub.io/apiProtocol: REST
       opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+      opendatahub.io/template-name: vllm-gemma4-runtime-template
+      opendatahub.io/template-display-name: "vLLM Gemma4 Runtime (1 GPU)"
       openshift.io/display-name: "vLLM Gemma4 Runtime (1 GPU)"
     labels:
       opendatahub.io/dashboard: "true"
