@@ -991,6 +991,98 @@ EOF
     print_success "Hardware profile created"
 }
 
+generate_rhoai_info() {
+    local info_file="$ROOT_DIR/rhoai-info.txt"
+
+    local dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="data-science-gateway")].spec.host}' 2>/dev/null)
+    if [ -z "$dashboard_url" ]; then
+        dashboard_url="data-science-gateway.apps.${CLUSTER_DOMAIN}"
+    fi
+
+    local console_url="console-openshift-console.apps.${CLUSTER_DOMAIN}"
+    local kubeadmin_pw=""
+    local pw_file="$ROOT_DIR/openshift-cluster-install/auth/kubeadmin-password"
+    [ -f "$pw_file" ] && kubeadmin_pw=$(cat "$pw_file")
+
+    local inference_gw=""
+    if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
+        inference_gw="https://inference-gateway.apps.${CLUSTER_DOMAIN}"
+    fi
+
+    cat > "$info_file" << INFOEOF
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    Red Hat OpenShift AI Information                        ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+Installation completed: $(date)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RHOAI DASHBOARD:
+────────────────
+
+URL:      https://${dashboard_url}
+Username: kubeadmin
+Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GENAI PLAYGROUND:
+─────────────────
+
+Playground: https://${dashboard_url}/gen-ai-studio/playground
+AI Hub:     https://${dashboard_url}/ai-hub
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+API ENDPOINTS:
+──────────────
+
+${inference_gw:+Inference Gateway: ${inference_gw}}
+
+# --- DEPLOYED MODELS (auto-updated) ---
+# Last updated: $(date '+%Y-%m-%d %H:%M')
+
+  (no models deployed yet)
+
+# --- END DEPLOYED MODELS ---
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPENSHIFT CONSOLE:
+──────────────────
+
+URL:      https://${console_url}
+Username: kubeadmin
+Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+QUICK STATUS COMMANDS:
+──────────────────────
+
+export KUBECONFIG=${ROOT_DIR}/openshift-cluster-install/auth/kubeconfig
+oc get datasciencecluster            # RHOAI status
+oc get inferenceservice -A           # Deployed models
+oc get nodes -l nvidia.com/gpu.present=true   # GPU nodes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NOTES:
+──────
+
+- This file contains sensitive information. Keep it secure!
+- RHOAI Dashboard URL changed in 3.3+: uses data-science-gateway instead of rhods-dashboard
+- Deployed models are accessible after cluster restart (pods auto-recover)
+- GPU node may take extra 2-3 min to become Ready after cluster start
+- Model API endpoints are appended below as models are deployed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFOEOF
+
+    print_success "Saved RHOAI info to: $info_file"
+}
+
 print_summary() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -1020,6 +1112,8 @@ print_summary() {
     echo "  oc get csv -n redhat-ods-operator"
     echo "  oc get hardwareprofiles -n redhat-ods-applications"
     echo ""
+
+    generate_rhoai_info
 }
 
 ################################################################################

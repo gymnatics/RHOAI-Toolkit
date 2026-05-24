@@ -444,6 +444,33 @@ oc get inferenceservice -A                          # Deployed models
 
 ---
 
+## Cluster Instance Management (AWS)
+
+In sandbox environments such as the Red Hat Demo Platform, instance states may not sync correctly with the portal. Use the script below to manage all EC2 instances at once.
+
+```bash
+# Check status
+./scripts/restart-cluster-instances.sh status
+
+# Full restart (stop → start → wait for API → operator stabilization)
+./restart-cluster-instances.sh restart
+
+# Stop only
+./restart-cluster-instances.sh stop
+
+# Start only
+./restart-cluster-instances.sh start
+```
+
+> **Restart flow:**
+> 1. Auto-detects cluster infra ID and region from `metadata.json`
+> 2. Gracefully stops all instances (waits until fully stopped)
+> 3. Starts all instances (waits until fully running)
+> 4. Waits for OpenShift API to respond (up to 5 min)
+> 5. Verifies all cluster operators are stable
+
+---
+
 ## Troubleshooting
 
 | Symptom | Diagnostic Command | Resolution |

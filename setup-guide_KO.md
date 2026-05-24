@@ -444,6 +444,33 @@ oc get inferenceservice -A                          # 배포된 모델
 
 ---
 
+## 클러스터 인스턴스 관리 (AWS)
+
+Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈과 동기화되지 않을 수 있습니다. 아래 스크립트로 모든 EC2 인스턴스를 일괄 관리할 수 있습니다.
+
+```bash
+# 상태 확인
+./restart-cluster-instances.sh status
+
+# 전체 재시작 (stop → start → API 대기 → 오퍼레이터 안정화)
+./restart-cluster-instances.sh restart
+
+# 정지만
+./restart-cluster-instances.sh stop
+
+# 시작만
+./restart-cluster-instances.sh start
+```
+
+> **동작 흐름 (restart):**
+> 1. `metadata.json`에서 클러스터 infra ID/리전 자동 감지
+> 2. 모든 인스턴스 graceful stop (완전 정지 대기)
+> 3. 모든 인스턴스 start (완전 시작 대기)
+> 4. OpenShift API 응답 대기 (최대 5분)
+> 5. 클러스터 오퍼레이터 안정화 확인
+
+---
+
 ## 문제 해결
 
 | 증상 | 확인 명령어 | 해결 방법 |

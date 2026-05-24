@@ -9,6 +9,7 @@
 #   _deploy_model_execute()     - Core deployment (ServingRuntime + InferenceService)
 #   ensure_hf_token_secret()    - Create K8s secret from HF token
 #   wait_and_test_model()       - Wait for readiness + test prompt
+#   update_rhoai_endpoints()    - Sync deployed models to rhoai-info.txt
 #
 # Usage from scripts:
 #   source lib/functions/model-deployment.sh
@@ -19,7 +20,106 @@
 # Source OS compatibility library
 # Use a local variable to avoid overwriting caller's SCRIPT_DIR
 _MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_MODEL_DEPLOY_ROOT="$(cd "${_MODEL_DEPLOY_DIR}/../.." && pwd)"
 source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
+
+################################################################################
+# rhoai-info.txt endpoint management
+################################################################################
+
+# Marker lines used to delimit the dynamic endpoints block
+_EP_BEGIN_MARKER="# --- DEPLOYED MODELS (auto-updated) ---"
+_EP_END_MARKER="# --- END DEPLOYED MODELS ---"
+
+update_rhoai_endpoints() {
+    local info_file="${_MODEL_DEPLOY_ROOT}/rhoai-info.txt"
+    [ ! -f "$info_file" ] && return 0
+
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M')
+
+    local endpoints_block=""
+    endpoints_block+="${_EP_BEGIN_MARKER}\n"
+    endpoints_block+="# Last updated: ${timestamp}\n"
+
+    local has_models=false
+    while IFS='|' read -r ns name status url; do
+        [ -z "$name" ] && continue
+        ns=$(echo "$ns" | xargs)
+        name=$(echo "$name" | xargs)
+        status=$(echo "$status" | xargs)
+        url=$(echo "$url" | xargs)
+
+        local route_url=""
+        route_url=$(oc get route "${name}" -n "${ns}" -o jsonpath='{.spec.host}' 2>/dev/null || true)
+        local display_url="${route_url:+https://${route_url}}"
+        [ -z "$display_url" ] && display_url="$url"
+
+        endpoints_block+="\n"
+        endpoints_block+="  Model: ${name}  (ns: ${ns}, status: ${status:-Pending})\n"
+        if [ -n "$display_url" ]; then
+            endpoints_block+="  Endpoint: ${display_url}\n"
+            endpoints_block+="  Test:     curl -sk ${display_url}/v1/models\n"
+        else
+            endpoints_block+="  Endpoint: (not ready yet)\n"
+        fi
+        has_models=true
+    done < <(oc get inferenceservice -A -o jsonpath='{range .items[*]}{.metadata.namespace}|{.metadata.name}|{.status.conditions[?(@.type=="Ready")].status}|{.status.url}{"\n"}{end}' 2>/dev/null || true)
+
+    if [ "$has_models" = false ]; then
+        endpoints_block+="\n  (no models currently deployed)\n"
+    fi
+
+    endpoints_block+="\n${_EP_END_MARKER}"
+
+    if grep -qF "${_EP_BEGIN_MARKER}" "$info_file" 2>/dev/null; then
+        local tmp_file="${info_file}.tmp"
+        awk -v begin="${_EP_BEGIN_MARKER}" -v end="${_EP_END_MARKER}" \
+            'index($0,begin){skip=1; next} index($0,end){skip=0; next} !skip{print}' \
+            "$info_file" > "$tmp_file"
+
+        local insert_done=false
+        local final_file="${info_file}.final"
+        while IFS= read -r line; do
+            echo "$line"
+            if [ "$insert_done" = false ] && echo "$line" | grep -qF "API ENDPOINTS:"; then
+                read -r next_line
+                echo "$next_line"
+                echo ""
+                echo -e "$endpoints_block"
+                insert_done=true
+            fi
+        done < "$tmp_file" > "$final_file"
+
+        if [ "$insert_done" = true ]; then
+            mv "$final_file" "$info_file"
+        else
+            echo -e "\n$endpoints_block" >> "$tmp_file"
+            mv "$tmp_file" "$info_file"
+        fi
+        rm -f "$tmp_file" "$final_file" 2>/dev/null
+    else
+        local tmp_file="${info_file}.tmp"
+        local insert_done=false
+        while IFS= read -r line; do
+            echo "$line"
+            if [ "$insert_done" = false ] && echo "$line" | grep -qF "API ENDPOINTS:"; then
+                read -r next_line
+                echo "$next_line"
+                echo ""
+                echo -e "$endpoints_block"
+                insert_done=true
+            fi
+        done < "$info_file" > "$tmp_file"
+
+        if [ "$insert_done" = true ]; then
+            mv "$tmp_file" "$info_file"
+        else
+            echo -e "\n$endpoints_block" >> "$info_file"
+        fi
+        rm -f "$tmp_file" 2>/dev/null
+    fi
+}
 
 ################################################################################
 # HF Token Secret Management
@@ -72,6 +172,8 @@ wait_and_test_model() {
             echo -e "${GREEN}  BASE_URL: ${url}${NC}"
             echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
             echo ""
+
+            update_rhoai_endpoints
 
             echo "  Test commands:"
             echo "    curl -sk ${url}/v1/models | jq '.data[].id'"
@@ -1077,6 +1179,7 @@ EOF
                     local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
                     if [ -n "$route_url" ]; then
                         print_info "Model endpoint: https://$route_url"
+                        update_rhoai_endpoints
                     fi
                 else
                     print_warning "Route may already exist or service not ready yet"
@@ -1395,6 +1498,7 @@ EOF
                     local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
                     if [ -n "$route_url" ]; then
                         print_info "Model endpoint: https://$route_url"
+                        update_rhoai_endpoints
                     fi
                 else
                     print_warning "Route may already exist or service not ready yet"
@@ -1566,6 +1670,7 @@ EOF
                     local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
                     if [ -n "$route_url" ]; then
                         print_info "Model endpoint: https://$route_url"
+                        update_rhoai_endpoints
                     fi
                 else
                     print_warning "Route may already exist or service not ready yet"
@@ -1720,7 +1825,10 @@ EOF
                 if [ $? -eq 0 ]; then
                     print_success "External route created"
                     local route_url=$(oc get route ${model_name} -n $target_namespace -o jsonpath='{.spec.host}' 2>/dev/null)
-                    [ -n "$route_url" ] && print_info "Model endpoint: https://$route_url"
+                    if [ -n "$route_url" ]; then
+                        print_info "Model endpoint: https://$route_url"
+                        update_rhoai_endpoints
+                    fi
                 else
                     print_warning "Route may already exist"
                 fi
