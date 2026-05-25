@@ -1062,6 +1062,10 @@ QUICK STATUS COMMANDS:
 ──────────────────────
 
 export KUBECONFIG=${ROOT_DIR}/openshift-cluster-install/auth/kubeconfig
+
+# Or login directly:
+oc login https://api.${CLUSTER_DOMAIN}:6443 -u kubeadmin -p ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>} --insecure-skip-tls-verify=true
+
 oc get datasciencecluster            # RHOAI status
 oc get inferenceservice -A           # Deployed models
 oc get nodes -l nvidia.com/gpu.present=true   # GPU nodes

@@ -448,6 +448,10 @@ oc get inferenceservice -A                          # 배포된 모델
 
 Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈과 동기화되지 않을 수 있습니다. 아래 스크립트로 모든 EC2 인스턴스를 일괄 관리할 수 있습니다.
 
+> **전제 조건:** 이 스크립트는 OpenShift를 설치한 디렉토리에서 실행해야 합니다.
+> installer kubeconfig(`openshift-cluster-install/auth/kubeconfig`)의 client certificate를 사용하여
+> 클러스터 재시작 후 OAuth 복구 전에도 인증할 수 있습니다.
+
 ```bash
 # 상태 확인
 ./restart-cluster-instances.sh status
@@ -462,12 +466,14 @@ Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈�
 ./restart-cluster-instances.sh start
 ```
 
-> **동작 흐름 (restart):**
-> 1. `metadata.json`에서 클러스터 infra ID/리전 자동 감지
-> 2. 모든 인스턴스 graceful stop (완전 정지 대기)
-> 3. 모든 인스턴스 start (완전 시작 대기)
-> 4. OpenShift API 응답 대기 (최대 5분)
-> 5. 클러스터 오퍼레이터 안정화 확인
+> **동작 흐름 (start/restart):**
+> 1. Pre-flight: installer kubeconfig(client certificate) 확인
+> 2. `metadata.json`에서 클러스터 infra ID/리전 자동 감지
+> 3. EC2 인스턴스 stop/start
+> 4. Phase 1: API 서버 healthz 대기
+> 5. Phase 2: kubelet CSR 자동 승인 (client cert 인증, OAuth 불필요)
+> 6. Phase 3: OAuth/Ingress 복구 대기
+> 7. Phase 4: oc login + 잔여 CSR 승인 + 오퍼레이터 안정화
 
 ---
 

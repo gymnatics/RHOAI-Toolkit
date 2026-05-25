@@ -1574,14 +1574,19 @@ Password: $KUBEADMIN_PASSWORD
 🔧 COMMAND LINE ACCESS:
 ───────────────────────
 
+API URL:  https://api.${CLUSTER_NAME}.${BASE_DOMAIN}:6443
+
 1. Set the KUBECONFIG environment variable:
    export KUBECONFIG=$KUBECONFIG_PATH
 
-2. Verify cluster access:
+2. Or login directly:
+   oc login https://api.${CLUSTER_NAME}.${BASE_DOMAIN}:6443 -u kubeadmin -p $KUBEADMIN_PASSWORD --insecure-skip-tls-verify=true
+
+3. Verify cluster access:
    oc get nodes
    oc get co
 
-3. View cluster version:
+4. View cluster version:
    oc version
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

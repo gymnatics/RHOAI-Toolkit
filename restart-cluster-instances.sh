@@ -5,6 +5,12 @@
 # Gracefully stop and start all OpenShift cluster EC2 instances.
 # Detects the cluster's infra ID from metadata or running instances.
 #
+# Prerequisites:
+#   - Run from the directory where OpenShift was installed (openshift-install)
+#   - Requires openshift-cluster-install/auth/kubeconfig (with client certificate)
+#   - The client certificate authenticates without OAuth, preventing deadlocks
+#     when the cluster restarts after long downtime (expired tokens, OAuth down)
+#
 # Usage:
 #   ./restart-cluster-instances.sh          # stop → start (default)
 #   ./restart-cluster-instances.sh stop      # stop only
@@ -12,6 +18,7 @@
 #   ./restart-cluster-instances.sh status    # show instance status
 #
 # Environment:
+#   KUBECONFIG   Path to kubeconfig with client certificate (auto-detected)
 #   AWS_REGION   Override region (auto-detected from metadata if not set)
 ################################################################################
 set -euo pipefail
@@ -184,24 +191,91 @@ _oc_with_timeout() {
     fi
 }
 
-wait_for_cluster() {
-    local kubeconfig="$BASE_DIR/openshift-cluster-install/auth/kubeconfig"
-    if [ ! -f "$kubeconfig" ]; then
-        warn "kubeconfig not found, skipping cluster health check"
-        return 0
+preflight_check() {
+    info "Pre-flight: checking kubeconfig..."
+
+    local installer_kc="$BASE_DIR/openshift-cluster-install/auth/kubeconfig"
+    if [ -f "$installer_kc" ]; then
+        export KUBECONFIG="$installer_kc"
+    elif [ -n "${KUBECONFIG:-}" ] && [ -f "$KUBECONFIG" ]; then
+        true
+    else
+        error "No kubeconfig found"
+        echo ""
+        echo "  This script requires the installer kubeconfig (with client certificate)."
+        echo "  Run from the directory where OpenShift was installed, or set:"
+        echo "    export KUBECONFIG=/path/to/openshift-cluster-install/auth/kubeconfig"
+        return 1
     fi
 
-    export KUBECONFIG="$kubeconfig"
+    local has_cert
+    has_cert=$(oc config view --raw -o json 2>/dev/null \
+        | jq -r '.users[] | select(.user["client-certificate-data"] != null) | .name' 2>/dev/null \
+        | head -1)
 
-    local api_url cluster_domain
-    api_url=$(grep 'server:' "$kubeconfig" | head -1 | awk '{print $2}')
+    if [ -z "$has_cert" ]; then
+        error "No client certificate found in kubeconfig"
+        echo ""
+        echo "  A kubeconfig with client certificate is required."
+        echo "  OAuth tokens cannot authenticate before the cluster fully recovers."
+        echo ""
+        echo "  Use the installer kubeconfig:"
+        echo "    export KUBECONFIG=/path/to/openshift-cluster-install/auth/kubeconfig"
+        return 1
+    fi
+
+    success "Kubeconfig: $KUBECONFIG"
+    info "  Auth: client certificate (works without OAuth)"
+    return 0
+}
+
+_approve_pending_csrs() {
+    local csr_approved=0 csr_round=0
+    while [ $csr_round -lt 6 ]; do
+        local pending_csrs
+        pending_csrs=$(oc get csr --no-headers --request-timeout=15s 2>/dev/null \
+            | awk '/Pending/ {print $1}')
+
+        if [ -z "$pending_csrs" ]; then
+            [ $csr_round -eq 0 ] && echo "  No pending CSRs"
+            break
+        fi
+
+        local count
+        count=$(echo "$pending_csrs" | wc -l | tr -d ' ')
+        echo "  Approving $count pending CSR(s)... (round $((csr_round+1)))"
+
+        while read -r csr_name; do
+            [ -z "$csr_name" ] && continue
+            if oc adm certificate approve "$csr_name" --request-timeout=10s &>/dev/null; then
+                csr_approved=$((csr_approved + 1))
+            fi
+        done <<< "$pending_csrs"
+
+        sleep 20
+        csr_round=$((csr_round + 1))
+    done
+
+    if [ $csr_approved -gt 0 ]; then
+        success "Approved $csr_approved CSR(s)"
+        echo "  Waiting 30s for nodes to reconnect..."
+        sleep 30
+    fi
+}
+
+wait_for_cluster() {
+    local api_url cluster_domain pw_file oauth_url
+    api_url=$(oc config view --raw -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+    if [ -z "$api_url" ]; then
+        error "Could not read API URL from kubeconfig"
+        return 0
+    fi
     cluster_domain=$(echo "$api_url" | sed 's|https://api\.||;s|:6443||')
-
-    local pw_file="$BASE_DIR/openshift-cluster-install/auth/kubeadmin-password"
-    local oauth_url="https://oauth-openshift.apps.${cluster_domain}/.well-known/oauth-authorization-server"
+    pw_file="$BASE_DIR/openshift-cluster-install/auth/kubeadmin-password"
+    oauth_url="https://oauth-openshift.apps.${cluster_domain}/.well-known/oauth-authorization-server"
 
     # --- Phase 1: API server healthz (no auth needed) ---
-    info "Phase 1/5: Waiting for API server..."
+    info "Phase 1/4: Waiting for API server..."
     echo "  API: $api_url"
 
     local max_wait=300 elapsed=0
@@ -225,83 +299,19 @@ wait_for_cluster() {
     echo ""
     success "API server is healthy"
 
-    # --- Phase 2: Approve pending kubelet CSRs (client cert, no OAuth needed) ---
-    info "Phase 2/5: Checking for pending kubelet CSRs..."
+    # --- Phase 2: CSR approval (if auth is available) ---
+    info "Phase 2/4: Checking for pending kubelet CSRs..."
 
-    local current_user
-    current_user=$(oc config view --raw -o jsonpath='{.contexts[?(@.name=="'$(oc config current-context 2>/dev/null)'")].context.user}' 2>/dev/null || echo "")
-    [ -z "$current_user" ] && current_user=$(oc config view --raw -o jsonpath='{.users[0].name}' 2>/dev/null || echo "")
-
-    local cert_data key_data
-    if [ -n "$current_user" ]; then
-        cert_data=$(oc config view --raw -o jsonpath='{.users[?(@.name=="'"$current_user"'")].user.client-certificate-data}' 2>/dev/null | base64 -d)
-        key_data=$(oc config view --raw -o jsonpath='{.users[?(@.name=="'"$current_user"'")].user.client-key-data}' 2>/dev/null | base64 -d)
-    fi
-    if [ -z "$cert_data" ] || [ -z "$key_data" ]; then
-        cert_data=$(oc config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' 2>/dev/null | base64 -d)
-        key_data=$(oc config view --raw -o jsonpath='{.users[0].user.client-key-data}' 2>/dev/null | base64 -d)
-    fi
-
-    if [ -n "$cert_data" ] && [ -n "$key_data" ]; then
-        local cert_file key_file
-        cert_file=$(mktemp)
-        key_file=$(mktemp)
-        trap 'rm -f "$cert_file" "$key_file"' EXIT
-        echo "$cert_data" > "$cert_file"
-        chmod 600 "$cert_file"
-        echo "$key_data" > "$key_file"
-        chmod 600 "$key_file"
-
-        local csr_approved=0 csr_round=0
-        while [ $csr_round -lt 6 ]; do
-            local pending_csrs
-            pending_csrs=$(curl -sk --cert "$cert_file" --key "$key_file" --max-time 15 \
-                "${api_url}/apis/certificates.k8s.io/v1/certificatesigningrequests" 2>/dev/null \
-                | jq -r '.items[] | select(.status.conditions == null or (.status.conditions | length == 0)) | select(.spec.signerName | contains("kubelet")) | .metadata.name' 2>/dev/null)
-
-            if [ -z "$pending_csrs" ]; then
-                [ $csr_round -eq 0 ] && echo "  No pending CSRs"
-                break
-            fi
-
-            local count
-            count=$(echo "$pending_csrs" | wc -l | tr -d ' ')
-            echo "  Approving $count pending kubelet CSR(s)... (round $((csr_round+1)))"
-
-            while read -r csr_name; do
-                [ -z "$csr_name" ] && continue
-                local http_status
-                http_status=$(curl -sk --cert "$cert_file" --key "$key_file" --max-time 10 \
-                    -o /dev/null -w "%{http_code}" \
-                    -X PUT "${api_url}/apis/certificates.k8s.io/v1/certificatesigningrequests/${csr_name}/approval" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"apiVersion\":\"certificates.k8s.io/v1\",\"kind\":\"CertificateSigningRequest\",\"metadata\":{\"name\":\"${csr_name}\"},\"status\":{\"conditions\":[{\"type\":\"Approved\",\"status\":\"True\",\"reason\":\"AutoApproved\",\"message\":\"Approved by restart-cluster-instances.sh\"}]}}" \
-                    2>/dev/null)
-                if [ "$http_status" = "200" ] || [ "$http_status" = "201" ]; then
-                    csr_approved=$((csr_approved + 1))
-                else
-                    warn "  CSR $csr_name approval returned HTTP $http_status"
-                fi
-            done <<< "$pending_csrs"
-
-            sleep 20
-            csr_round=$((csr_round + 1))
-        done
-
-        rm -f "$cert_file" "$key_file"
-        trap - EXIT
-
-        if [ $csr_approved -gt 0 ]; then
-            success "Approved $csr_approved CSR(s) - kubelet certificates renewed"
-            echo "  Waiting 30s for nodes to reconnect..."
-            sleep 30
-        fi
+    if _oc_with_timeout 10 whoami &>/dev/null; then
+        success "Auth verified: $(oc whoami 2>/dev/null)"
+        _approve_pending_csrs
     else
-        warn "Could not extract client cert from kubeconfig, skipping CSR approval"
+        echo "  Auth not available (token may be expired after long downtime)"
+        echo "  CSR approval deferred to after OAuth recovery"
     fi
 
     # --- Phase 3: OAuth / Ingress recovery (no auth needed) ---
-    info "Phase 3/5: Waiting for OAuth & Ingress to recover..."
+    info "Phase 3/4: Waiting for OAuth & Ingress..."
     echo "  OAuth: $oauth_url"
 
     local oauth_wait=0 oauth_max=600
@@ -311,45 +321,49 @@ wait_for_cluster() {
         if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 500 ] 2>/dev/null; then
             break
         fi
-        printf "\r  OAuth/Ingress recovering... (%ds/%ds, HTTP %s)" "$oauth_wait" "$oauth_max" "$http_code"
+        printf "\r  OAuth recovering... (%ds/%ds, HTTP %s)" "$oauth_wait" "$oauth_max" "$http_code"
         sleep 15
         oauth_wait=$((oauth_wait + 15))
     done
 
     if [ "$oauth_wait" -ge "$oauth_max" ]; then
         echo ""
-        warn "OAuth not ready after ${oauth_max}s. Ingress may need manual inspection."
+        warn "OAuth not ready after ${oauth_max}s."
         echo "  Check: curl -sk $oauth_url"
         show_access_info
         return 0
     fi
     echo ""
-    success "OAuth & Ingress are responding"
+    success "OAuth & Ingress responding"
 
-    # --- Phase 4: oc login ---
-    info "Phase 4/5: Authenticating..."
+    # --- Phase 4: Login + finalize ---
+    info "Phase 4/4: Authenticating & finalizing..."
 
-    if ! _oc_with_timeout 15 get nodes --no-headers &>/dev/null; then
+    if ! _oc_with_timeout 10 whoami &>/dev/null; then
         if [ -f "$pw_file" ]; then
             local password
             password=$(cat "$pw_file")
             if _oc_with_timeout 20 login "$api_url" -u kubeadmin -p "$password" --insecure-skip-tls-verify=true 2>/dev/null; then
                 success "Logged in as kubeadmin"
             else
-                warn "Login failed. Try manually:"
-                echo "  export KUBECONFIG=$kubeconfig"
-                echo "  oc login $api_url -u kubeadmin"
+                warn "Auto-login failed. Login manually:"
+                echo "  oc login $api_url"
                 show_access_info
                 return 0
             fi
         else
-            warn "kubeadmin-password not found, cannot re-login"
+            warn "Not authenticated. Login manually:"
+            echo "  oc login $api_url"
             show_access_info
             return 0
         fi
     else
-        success "Already authenticated"
+        success "Authenticated as $(oc whoami 2>/dev/null)"
     fi
+
+    # Approve any remaining/new CSRs after login
+    info "Checking for remaining pending CSRs..."
+    _approve_pending_csrs
 
     echo ""
     info "Node status:"
@@ -357,9 +371,8 @@ wait_for_cluster() {
         echo "  $line"
     done
 
-    # --- Phase 5: Cluster operator stabilization ---
     echo ""
-    info "Phase 5/5: Waiting for cluster operators to stabilize (up to 5 min)..."
+    info "Waiting for cluster operators to stabilize (up to 5 min)..."
     local op_wait=0
     while [ $op_wait -lt 300 ]; do
         local degraded progressing
@@ -406,6 +419,8 @@ main() {
             show_status
             ;;
         start)
+            preflight_check || exit 1
+            echo ""
             show_status
             echo ""
             start_instances
@@ -415,6 +430,8 @@ main() {
             wait_for_cluster
             ;;
         restart)
+            preflight_check || exit 1
+            echo ""
             show_status
             echo ""
             read -p "Restart all instances (stop → start)? [y/N]: " confirm

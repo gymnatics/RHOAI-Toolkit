@@ -448,9 +448,13 @@ oc get inferenceservice -A                          # Deployed models
 
 In sandbox environments such as the Red Hat Demo Platform, instance states may not sync correctly with the portal. Use the script below to manage all EC2 instances at once.
 
+> **Prerequisite:** Run this script from the directory where OpenShift was installed.
+> It uses the installer kubeconfig (`openshift-cluster-install/auth/kubeconfig`) with a client certificate
+> to authenticate before OAuth recovers after cluster restart.
+
 ```bash
 # Check status
-./scripts/restart-cluster-instances.sh status
+./restart-cluster-instances.sh status
 
 # Full restart (stop → start → wait for API → operator stabilization)
 ./restart-cluster-instances.sh restart
@@ -462,12 +466,14 @@ In sandbox environments such as the Red Hat Demo Platform, instance states may n
 ./restart-cluster-instances.sh start
 ```
 
-> **Restart flow:**
-> 1. Auto-detects cluster infra ID and region from `metadata.json`
-> 2. Gracefully stops all instances (waits until fully stopped)
-> 3. Starts all instances (waits until fully running)
-> 4. Waits for OpenShift API to respond (up to 5 min)
-> 5. Verifies all cluster operators are stable
+> **Start/restart flow:**
+> 1. Pre-flight: verify installer kubeconfig (client certificate)
+> 2. Auto-detect cluster infra ID and region from `metadata.json`
+> 3. Stop/start EC2 instances
+> 4. Phase 1: Wait for API server healthz
+> 5. Phase 2: Auto-approve kubelet CSRs (client cert auth, no OAuth needed)
+> 6. Phase 3: Wait for OAuth/Ingress recovery
+> 7. Phase 4: oc login + approve remaining CSRs + operator stabilization
 
 ---
 
