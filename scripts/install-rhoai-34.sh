@@ -785,7 +785,35 @@ install_rhcl_operator() {
         # when dependency operators like Authorino/DNS/Limitador are being upgraded)
         approve_rhcl_installplans
 
-        wait_for_operator "rhcl-operator" "openshift-operators" 300
+        # Wait for operator with periodic re-approval (InstallPlan may appear late)
+        print_step "Waiting for rhcl-operator to be ready..."
+        local rhcl_elapsed=0
+        local rhcl_timeout=300
+        while [ $rhcl_elapsed -lt $rhcl_timeout ]; do
+            local rhcl_csv=$(oc get csv -n openshift-operators 2>/dev/null | grep "rhcl-operator" | head -1)
+            local rhcl_status=$(echo "$rhcl_csv" | awk '{print $NF}')
+            
+            if [ "$rhcl_status" = "Succeeded" ]; then
+                print_success "rhcl-operator is ready"
+                break
+            fi
+            
+            # Re-approve any pending InstallPlans on each iteration
+            approve_rhcl_installplans 2>/dev/null || true
+            
+            if [ -z "$rhcl_csv" ] && [ $((rhcl_elapsed % 30)) -eq 0 ] && [ $rhcl_elapsed -gt 0 ]; then
+                echo "  rhcl-operator: CSV not yet created — ${rhcl_elapsed}s elapsed"
+            elif [ -n "$rhcl_status" ] && [ "$rhcl_status" != "Succeeded" ]; then
+                echo "  rhcl-operator: $rhcl_status — ${rhcl_elapsed}s elapsed"
+            fi
+            
+            sleep 10
+            rhcl_elapsed=$((rhcl_elapsed + 10))
+        done
+        
+        if [ $rhcl_elapsed -ge $rhcl_timeout ]; then
+            print_warning "rhcl-operator may not be fully ready (continuing)"
+        fi
     fi
 
     # Verify RHCL component operators (Authorino, DNS, Limitador)
