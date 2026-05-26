@@ -84,7 +84,7 @@ metadata:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
     opendatahub.io/managed: 'false'
   labels:
     app.opendatahub.io/hardwareprofile: 'true'
@@ -109,6 +109,15 @@ spec:
       maxCount: 8
       minCount: 1
       resourceType: Accelerator
+  scheduling:
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
 EOF
 
 echo ""

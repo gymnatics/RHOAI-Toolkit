@@ -102,6 +102,14 @@ if [ -n "$EXTRA_VLLM_ARGS" ]; then
     done
 fi
 
+# Detect hardware profile for correct dashboard display
+HW_PROFILE_NAME="gpu-profile"
+HW_PROFILE_NS="redhat-ods-applications"
+HW_PROFILE_RV=""
+if oc get hardwareprofile "$HW_PROFILE_NAME" -n "$HW_PROFILE_NS" &>/dev/null; then
+    HW_PROFILE_RV=$(oc get hardwareprofile "$HW_PROFILE_NAME" -n "$HW_PROFILE_NS" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)
+fi
+
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║                    Deploying Model                             ║${NC}"
@@ -246,8 +254,9 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   annotations:
-    opendatahub.io/hardware-profile-name: nvidia-gpu
-    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
+    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
+    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
     openshift.io/display-name: ${NAME}
     serving.kserve.io/deploymentMode: RawDeployment
     opendatahub.io/model-type: generative
@@ -292,8 +301,9 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   annotations:
-    opendatahub.io/hardware-profile-name: nvidia-gpu
-    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
+    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
+    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
     openshift.io/display-name: ${NAME}
     serving.kserve.io/deploymentMode: RawDeployment
     opendatahub.io/model-type: generative
@@ -336,8 +346,9 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   annotations:
-    opendatahub.io/hardware-profile-name: nvidia-gpu
-    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
+    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
+    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
     openshift.io/display-name: ${NAME}
     serving.kserve.io/deploymentMode: RawDeployment
     opendatahub.io/model-type: generative

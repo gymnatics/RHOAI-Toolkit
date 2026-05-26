@@ -11,6 +11,116 @@
 _MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
 
+################################################################################
+# Helper Functions
+################################################################################
+
+# Create a K8s secret for HuggingFace gated model access
+# Usage: ensure_hf_token_secret <namespace> [secret_name] [token]
+ensure_hf_token_secret() {
+    local namespace="$1"
+    local secret_name="${2:-hf-token}"
+    local token="${3:-${HF_TOKEN:-}}"
+    
+    if [ -z "$namespace" ]; then
+        print_error "Usage: ensure_hf_token_secret <namespace> [secret_name] [token]"
+        return 1
+    fi
+    
+    if oc get secret "$secret_name" -n "$namespace" &>/dev/null; then
+        print_info "HF token secret '$secret_name' already exists in $namespace"
+        return 0
+    fi
+    
+    if [ -z "$token" ]; then
+        print_warning "No HF_TOKEN provided. Set HF_TOKEN env or pass as argument."
+        return 1
+    fi
+    
+    oc create secret generic "$secret_name" \
+        --from-literal=HF_TOKEN="$token" \
+        -n "$namespace"
+    
+    print_success "HF token secret '$secret_name' created in $namespace"
+    return 0
+}
+
+# Wait for model to be ready and optionally test it
+# Usage: wait_and_test_model <name> <namespace> [timeout] [run_test]
+wait_and_test_model() {
+    local name="$1"
+    local namespace="$2"
+    local timeout="${3:-600}"
+    local run_test="${4:-false}"
+    
+    if [ -z "$name" ] || [ -z "$namespace" ]; then
+        print_error "Usage: wait_and_test_model <name> <namespace> [timeout] [run_test]"
+        return 1
+    fi
+    
+    print_step "Waiting for model '$name' to be ready (timeout: ${timeout}s)..."
+    
+    if oc wait --for=condition=Ready inferenceservice/"$name" -n "$namespace" --timeout="${timeout}s" 2>/dev/null; then
+        print_success "Model '$name' is ready!"
+        
+        local base_url=$(oc get inferenceservice "$name" -n "$namespace" -o jsonpath='{.status.url}' 2>/dev/null)
+        local route_host=$(oc get route "$name" -n "$namespace" -o jsonpath='{.spec.host}' 2>/dev/null)
+        
+        local endpoint=""
+        if [ -n "$route_host" ]; then
+            endpoint="https://$route_host"
+        elif [ -n "$base_url" ]; then
+            endpoint="$base_url"
+        fi
+        
+        if [ -n "$endpoint" ]; then
+            echo ""
+            echo -e "${CYAN}Model Endpoint:${NC} $endpoint"
+            echo ""
+            echo -e "${YELLOW}Test commands:${NC}"
+            echo "  curl -sk $endpoint/v1/models"
+            echo "  curl -sk $endpoint/v1/chat/completions \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"model\":\"$name\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"
+        fi
+        
+        if [ "$run_test" = "true" ] && [ -n "$endpoint" ]; then
+            echo ""
+            print_step "Running quick test..."
+            local response=$(curl -sk "$endpoint/v1/chat/completions" \
+                -H "Content-Type: application/json" \
+                -d "{\"model\":\"$name\",\"messages\":[{\"role\":\"user\",\"content\":\"What is your name? Reply in one sentence.\"}],\"max_tokens\":50}" 2>/dev/null)
+            
+            if [ -n "$response" ]; then
+                local content=$(echo "$response" | jq -r '.choices[0].message.content' 2>/dev/null)
+                if [ -n "$content" ] && [ "$content" != "null" ]; then
+                    print_success "Model responded: $content"
+                else
+                    print_warning "Got response but couldn't parse content"
+                    echo "$response" | head -c 200
+                fi
+            else
+                print_warning "No response from model (may need auth token)"
+            fi
+        fi
+        
+        return 0
+    else
+        print_warning "Model '$name' not ready after ${timeout}s"
+        echo ""
+        echo "Debug commands:"
+        echo "  oc get inferenceservice $name -n $namespace"
+        echo "  oc describe inferenceservice $name -n $namespace"
+        echo "  oc get pods -n $namespace | grep $name"
+        echo "  oc logs -n $namespace -l serving.kserve.io/inferenceservice=$name --tail=50"
+        return 1
+    fi
+}
+
+################################################################################
+# Interactive Model Deployment
+################################################################################
+
 # Interactive model deployment function (runtime-agnostic)
 deploy_model_interactive() {
     print_header "Interactive Model Deployment"
@@ -59,6 +169,11 @@ deploy_model_interactive() {
         runtimes+=("vllm-omni")
         runtime_names+=("vLLM-Omni (Multimodal - Image/Audio)")
         runtime_descriptions+=("Diffusion models (FLUX, SD3, Wan2.2), audio, uses vllm/vllm-omni:v0.18.0")
+        
+        # vLLM-Gemma4 for Gemma 4 models (dedicated optimized image)
+        runtimes+=("vllm-gemma4")
+        runtime_names+=("vLLM-Gemma4 (Gemma 4 Optimized)")
+        runtime_descriptions+=("Gemma 4 E2B/4B/26B/31B, FP8 KV cache, tool calling, uses vllm/vllm-openai:gemma4")
     fi
     
     # Check for ServingRuntime templates
@@ -109,32 +224,37 @@ deploy_model_interactive() {
     echo ""
     print_header "Model Selection"
     
-    # Pre-defined model catalog from quay.io/redhat-ai-services/modelcar-catalog
-    # See: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags
-    echo -e "${BLUE}Available models (from Red Hat AI Services Modelcar Catalog):${NC}"
+    # Pre-defined model catalog
+    echo -e "${BLUE}Available models:${NC}"
     echo ""
-    echo "  1) Qwen3-4B - 4B params, tool calling support ${GREEN}[Recommended for demos]${NC}"
+    echo "  1) Gemma 4 E2B - 5B effective, multimodal, tool calling ${GREEN}[NEW - Requires vllm-gemma4 runtime]${NC}"
+    echo "     HuggingFace: google/gemma-4-E2B-it"
+    echo ""
+    echo "  2) Qwen2.5-Coder-7B - 7B params, coding, tool calling"
+    echo "     oci://registry.redhat.io/rhelai1/modelcar-qwen2.5-coder-7b-instruct:1.5"
+    echo ""
+    echo "  3) Qwen3-4B - 4B params, tool calling support ${GREEN}[Recommended for demos]${NC}"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
     echo ""
-    echo "  2) Llama 3.2-3B Instruct - 3B params, tool calling support"
+    echo "  4) Llama 3.2-3B Instruct - 3B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
     echo ""
-    echo "  3) Llama 3.1-8B Instruct - 8B params, tool calling support"
+    echo "  5) Llama 3.1-8B Instruct - 8B params, tool calling support"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
     echo ""
-    echo "  4) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
+    echo "  6) Granite 3.0-8B Instruct - 8B params, IBM Granite model"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
     echo ""
-    echo "  5) Granite 3.1-8B Instruct - 8B params, latest Granite"
+    echo "  7) Granite 3.1-8B Instruct - 8B params, latest Granite"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
     echo ""
-    echo "  6) Mistral 7B Instruct v0.3 - 7B params"
+    echo "  8) Mistral 7B Instruct v0.3 - 7B params"
     echo "     oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
     echo ""
-    echo "  7) Custom model URI (enter your own)"
+    echo "  9) Custom model URI (enter your own)"
     echo ""
     
-    read -p "Select a model (1-7): " model_choice
+    read -p "Select a model (1-9): " model_choice
     
     local model_uri=""
     local model_name=""
@@ -146,6 +266,29 @@ deploy_model_interactive() {
     
     case "$model_choice" in
         1)
+            model_uri="google/gemma-4-E2B-it"
+            model_name="gemma4-e2b"
+            default_gpu="1"
+            default_cpu="4"
+            default_memory="24Gi"
+            tool_calling_enabled=true
+            tool_parser="gemma4"
+            # Force vllm-gemma4 runtime for Gemma 4
+            if [ "$selected_runtime" != "vllm-gemma4" ]; then
+                print_warning "Gemma 4 requires vllm-gemma4 runtime. Auto-switching..."
+                selected_runtime="vllm-gemma4"
+            fi
+            ;;
+        2)
+            model_uri="oci://registry.redhat.io/rhelai1/modelcar-qwen2.5-coder-7b-instruct:1.5"
+            model_name="qwen25-coder-7b"
+            default_gpu="1"
+            default_cpu="4"
+            default_memory="16Gi"
+            tool_calling_enabled=true
+            tool_parser="hermes"
+            ;;
+        3)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
             model_name="qwen3-4b"
             default_gpu="1"
@@ -154,7 +297,7 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="hermes"
             ;;
-        2)
+        4)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
             model_name="llama-32-3b-instruct"
             default_gpu="1"
@@ -163,7 +306,7 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        3)
+        5)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct"
             model_name="llama-31-8b-instruct"
             default_gpu="1"
@@ -172,33 +315,34 @@ deploy_model_interactive() {
             tool_calling_enabled=true
             tool_parser="llama3_json"
             ;;
-        4)
+        6)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.0-8b-instruct"
             model_name="granite-30-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        5)
+        7)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:granite-3.1-8b-instruct"
             model_name="granite-31-8b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        6)
+        8)
             model_uri="oci://quay.io/redhat-ai-services/modelcar-catalog:mistral-7b-instruct-v0.3"
             model_name="mistral-7b-instruct"
             default_gpu="1"
             default_cpu="8"
             default_memory="32Gi"
             ;;
-        7)
+        9)
             echo ""
             print_info "Enter custom model URI"
             echo "  Examples:"
             echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:qwen2.5-7b-instruct"
-            echo "    oci://quay.io/redhat-ai-services/modelcar-catalog:phi-3-mini-128k-instruct"
+            echo "    oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b:1.5"
+            echo "    google/gemma-4-E2B-it (HuggingFace - requires HF token)"
             echo ""
             echo "  Browse available models at:"
             echo "    https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags"
@@ -1388,6 +1532,162 @@ EOF
             echo "  curl -X POST <URL>/v1/images/generations \\"
             echo "    -H 'Content-Type: application/json' \\"
             echo "    -d '{\"model\": \"$model_name\", \"prompt\": \"A red panda\", \"size\": \"1024x1024\"}'"
+            echo ""
+            print_info "Monitor deployment:"
+            echo "  oc get inferenceservice $model_name -n $target_namespace -w"
+        else
+            print_error "Failed to create InferenceService"
+            return 1
+        fi
+        
+    elif [ "$selected_runtime" = "vllm-gemma4" ]; then
+        # Deploy using vLLM-Gemma4 optimized image
+        print_step "Creating vLLM-Gemma4 deployment for '$model_name' in namespace '$target_namespace'..."
+        
+        # Step 1: Create ServingRuntime for Gemma4
+        print_step "Creating Gemma4 ServingRuntime..."
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-gemma4-runtime
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM Gemma4 ServingRuntime
+    openshift.io/display-name: vLLM Gemma4 Runtime
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - name: kserve-container
+      image: 'vllm/vllm-openai:gemma4-0505-cu129'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+        - '--kv-cache-dtype=fp8'
+        - '--trust-remote-code'
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
+EOF
+        print_success "Gemma4 ServingRuntime created"
+        
+        # Step 2: Create HuggingFace token secret if needed
+        if [[ "$model_uri" != oci://* ]] && [[ "$model_uri" != s3://* ]]; then
+            local hf_token="${HF_TOKEN:-}"
+            if [ -z "$hf_token" ]; then
+                echo ""
+                print_warning "Gemma 4 requires a HuggingFace token (gated model)"
+                read -p "Enter HF token (or set HF_TOKEN env): " hf_token
+            fi
+            if [ -n "$hf_token" ]; then
+                oc create secret generic hf-token \
+                    --from-literal=HF_TOKEN="$hf_token" \
+                    -n "$target_namespace" 2>/dev/null || true
+                print_success "HF token secret created"
+            fi
+        fi
+        
+        # Step 3: Create InferenceService
+        print_step "Creating InferenceService..."
+        
+        local hw_profile_annotations_gemma4=""
+        if [ -n "$selected_profile_name" ]; then
+            hw_profile_annotations_gemma4="    opendatahub.io/hardware-profile-namespace: $selected_profile_namespace
+    opendatahub.io/hardware-profile-name: $selected_profile_name"
+            if [ -n "$selected_profile_resource_version" ]; then
+                hw_profile_annotations_gemma4="$hw_profile_annotations_gemma4
+    opendatahub.io/hardware-profile-resource-version: \"$selected_profile_resource_version\""
+            fi
+        fi
+        
+        # Build vllm args for Gemma4
+        local gemma4_args="      args:
+        - '--kv-cache-dtype=fp8'
+        - '--max-model-len=16384'
+        - '--gpu-memory-utilization=0.90'
+        - '--enable-auto-tool-choice'
+        - '--tool-call-parser=gemma4'
+        - '--reasoning-parser=gemma4'"
+        
+        cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    $auth_annotation
+    openshift.io/display-name: $model_name
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+$hw_profile_annotations_gemma4
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+$gemma4_args
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '$cpu_limit'
+          memory: $memory_limit
+          nvidia.com/gpu: '$gpu_limit'
+        requests:
+          cpu: '2'
+          memory: 12Gi
+          nvidia.com/gpu: '$gpu_limit'
+      runtime: vllm-gemma4-runtime
+      storageUri: 'hf://$model_uri'
+EOF
+        
+        if [ $? -eq 0 ]; then
+            print_success "InferenceService created!"
+            echo ""
+            print_info "Gemma 4 deployment:"
+            echo "  Runtime: vLLM-Gemma4 (vllm/vllm-openai:gemma4-0505-cu129)"
+            echo "  Features: FP8 KV cache, tool calling (gemma4 parser), reasoning"
             echo ""
             print_info "Monitor deployment:"
             echo "  oc get inferenceservice $model_name -n $target_namespace -w"

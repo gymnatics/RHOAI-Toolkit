@@ -61,3 +61,4 @@ docs/reference/(DRAFTY)*
 # Python cache
 __pycache__/
 *.pyc
+rhoai-info.txt
