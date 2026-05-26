@@ -30,7 +30,7 @@ Read the script header or `--help` for full usage. This rule maps script to purp
 
 | Script | Purpose |
 |--------|---------|
-| `serve-model.sh` | Deploy model from S3/OCI with vLLM or llm-d |
+| `serve-model.sh` | Deploy model from S3/OCI with vLLM or llm-d. `MAAS_PUBLISH=true` publishes to MaaS (3.4+) |
 | `deploy-llmd-model.sh` | Deploy LLMInferenceService for MaaS |
 | `add-model-to-playground.sh` | Add model endpoint to GenAI playground |
 | `setup-model-storage.sh` | Deploy MinIO for model storage |

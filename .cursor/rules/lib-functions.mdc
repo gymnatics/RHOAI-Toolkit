@@ -27,7 +27,8 @@ When editing `lib/functions/`, read the actual file for full signatures. This ru
 ## model-deployment.sh — Interactive model deployment wizard
 
 - **Entry**: deploy_model_interactive (supports llm-d, vLLM Red Hat, vLLM Community, vLLM-Omni)
-- Flow: runtime selection → model selection → namespace → resources/hardware profile → tool calling → auth → deploy
+- **MaaS**: publish_model_to_maas (creates MaaSModelRef + MaaSSubscription + MaaSAuthPolicy for RHOAI 3.4+)
+- Flow: runtime selection → deployment mode (MaaS vs Legacy on 3.4+) → model selection → namespace → resources/hardware profile → tool calling → auth → deploy → publish to MaaS prompt
 - Hardware profile annotations (all 3 required): hardware-profile-name, hardware-profile-namespace, hardware-profile-resource-version
 
 ## utils (lib/utils/)

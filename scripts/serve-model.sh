@@ -21,9 +21,13 @@
 #   # For multimodal/image models (FLUX, etc.) use RUNTIME=omni:
 #   RUNTIME=omni ./serve-model.sh s3 flux2-klein black-forest-labs/FLUX.2-klein-4B "--gpu-memory-utilization 0.90"
 #
+#   # Publish model to MaaS after deployment (RHOAI 3.4+):
+#   MAAS_PUBLISH=true ./serve-model.sh oci qwen3-4b oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b
+#
 # Environment Variables:
-#   NAMESPACE  - Target namespace (default: demo)
-#   RUNTIME    - Runtime type: vllm (default) or omni (for vLLM-Omni multimodal)
+#   NAMESPACE     - Target namespace (default: demo)
+#   RUNTIME       - Runtime type: vllm (default) or omni (for vLLM-Omni multimodal)
+#   MAAS_PUBLISH  - Publish model to MaaS after deployment (default: false, RHOAI 3.4+ only)
 ################################################################################
 
 set -e
@@ -50,6 +54,7 @@ fi
 # Configuration
 NAMESPACE="${NAMESPACE:-demo}"
 RUNTIME="${RUNTIME:-vllm}"
+MAAS_PUBLISH="${MAAS_PUBLISH:-false}"
 MODE="${1:-s3}"
 NAME="${2:-}"
 MODEL_PATH="${3:-}"
@@ -70,9 +75,13 @@ if [ -z "$NAME" ] || [ -z "$MODEL_PATH" ]; then
     echo "For multimodal/image models (FLUX, etc.):"
     echo "  RUNTIME=omni $0 s3 flux2-klein black-forest-labs/FLUX.2-klein-4B"
     echo ""
+    echo "Publish to MaaS after deployment (RHOAI 3.4+):"
+    echo "  MAAS_PUBLISH=true $0 oci qwen3-4b oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b"
+    echo ""
     echo "Environment Variables:"
-    echo "  NAMESPACE  - Target namespace (default: demo)"
-    echo "  RUNTIME    - Runtime type: vllm (default) or omni (vLLM-Omni multimodal)"
+    echo "  NAMESPACE     - Target namespace (default: demo)"
+    echo "  RUNTIME       - Runtime type: vllm (default) or omni (vLLM-Omni multimodal)"
+    echo "  MAAS_PUBLISH  - Publish model to MaaS after deployment (default: false)"
     exit 1
 fi
 
@@ -120,6 +129,9 @@ printf "%-15s | %s\n" "Storage Mode" "$MODE"
 printf "%-15s | %s\n" "Model Path" "$MODEL_PATH"
 printf "%-15s | %s\n" "Namespace" "$NAMESPACE"
 printf "%-15s | %s\n" "Runtime" "$RUNTIME"
+if [ "$MAAS_PUBLISH" = "true" ]; then
+    printf "%-15s | %s\n" "MaaS Publish" "Yes"
+fi
 if [ -n "$EXTRA_VLLM_ARGS" ]; then
     printf "%-15s | %s\n" "Extra Args" "$EXTRA_VLLM_ARGS"
 fi
@@ -419,6 +431,20 @@ if oc wait --for=condition=Ready isvc/${NAME} -n ${NAMESPACE} --timeout=600s 2>/
             echo "  curl -X POST ${URL}/v1/chat/completions \\"
             echo "    -H 'Content-Type: application/json' \\"
             echo "    -d '{\"model\": \"${NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
+        fi
+    fi
+
+    # Publish to MaaS if requested
+    if [ "$MAAS_PUBLISH" = "true" ]; then
+        echo ""
+        if [ -f "$BASE_DIR/lib/functions/model-deployment.sh" ]; then
+            source "$BASE_DIR/lib/functions/model-deployment.sh"
+            publish_model_to_maas "$NAME" "$NAMESPACE"
+        else
+            print_error "model-deployment.sh not found — cannot publish to MaaS"
+            print_info "Publish manually:"
+            echo "  source lib/functions/model-deployment.sh"
+            echo "  publish_model_to_maas $NAME $NAMESPACE"
         fi
     fi
 else

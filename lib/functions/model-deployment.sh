@@ -10,6 +10,7 @@
 # Use a local variable to avoid overwriting caller's SCRIPT_DIR
 _MODEL_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_MODEL_DEPLOY_DIR}/../utils/os-compat.sh"
+source "${_MODEL_DEPLOY_DIR}/../utils/rhoai-version.sh" 2>/dev/null || true
 
 ################################################################################
 # Helper Functions
@@ -118,6 +119,177 @@ wait_and_test_model() {
 }
 
 ################################################################################
+# MaaS Publishing (RHOAI 3.4+)
+################################################################################
+
+# Publish a deployed LLMInferenceService to MaaS by creating the three
+# required CRs: MaaSModelRef, MaaSSubscription, and MaaSAuthPolicy.
+# Usage: publish_model_to_maas <model_name> <namespace>
+publish_model_to_maas() {
+    local model_name="$1"
+    local namespace="$2"
+
+    if [ -z "$model_name" ] || [ -z "$namespace" ]; then
+        print_error "Usage: publish_model_to_maas <model_name> <namespace>"
+        return 1
+    fi
+
+    # Verify MaaS CRDs exist
+    if ! oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
+        print_error "MaaS CRDs not found. Ensure RHOAI 3.4+ is installed with MaaS enabled."
+        return 1
+    fi
+
+    # Verify models-as-a-service namespace exists
+    if ! oc get namespace models-as-a-service &>/dev/null; then
+        print_error "Namespace 'models-as-a-service' not found."
+        echo "Ensure DataScienceCluster has modelsAsService.managementState: Managed"
+        return 1
+    fi
+
+    print_header "Publish Model to MaaS"
+
+    # Step 1: Create MaaSModelRef
+    print_step "Creating MaaSModelRef for '$model_name' in namespace '$namespace'..."
+
+    cat <<EOF | oc apply -f -
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: $model_name
+  namespace: $namespace
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: $model_name
+EOF
+
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create MaaSModelRef"
+        return 1
+    fi
+    print_success "MaaSModelRef created"
+
+    # Step 2: Prompt for subscription details
+    echo ""
+    print_header "MaaS Subscription Configuration"
+
+    local default_group="rhods-users"
+    echo -e "${BLUE}OpenShift group that will access this model:${NC}"
+    echo "  The group must already exist (oc adm groups new <name>)."
+    echo ""
+    read -p "Group name (default: $default_group): " maas_group
+    maas_group="${maas_group:-$default_group}"
+
+    local default_priority="1"
+    read -p "Priority (0=highest, default: $default_priority): " maas_priority
+    maas_priority="${maas_priority:-$default_priority}"
+
+    local default_token_limit="10000"
+    local default_token_window="5m"
+    echo ""
+    echo -e "${BLUE}Token rate limits:${NC}"
+    read -p "Token limit per window (default: $default_token_limit): " token_limit
+    token_limit="${token_limit:-$default_token_limit}"
+
+    read -p "Rate limit window (default: $default_token_window): " token_window
+    token_window="${token_window:-$default_token_window}"
+
+    local sub_name="${model_name}-sub"
+    local policy_name="${model_name}-auth"
+
+    # Step 3: Create MaaSSubscription
+    echo ""
+    print_step "Creating MaaSSubscription '$sub_name' in models-as-a-service..."
+
+    cat <<EOF | oc apply -f -
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: $sub_name
+  namespace: models-as-a-service
+  annotations:
+    openshift.io/display-name: "$model_name subscription for $maas_group"
+spec:
+  modelRefs:
+    - name: $model_name
+      namespace: $namespace
+      tokenRateLimits:
+        - limit: $token_limit
+          window: $token_window
+  owner:
+    groups:
+      - name: $maas_group
+  priority: $maas_priority
+EOF
+
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create MaaSSubscription"
+        return 1
+    fi
+    print_success "MaaSSubscription created"
+
+    # Step 4: Create MaaSAuthPolicy
+    print_step "Creating MaaSAuthPolicy '$policy_name' in models-as-a-service..."
+
+    cat <<EOF | oc apply -f -
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: $policy_name
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: $model_name
+      namespace: $namespace
+  subjects:
+    groups:
+      - name: $maas_group
+EOF
+
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create MaaSAuthPolicy"
+        return 1
+    fi
+    print_success "MaaSAuthPolicy created"
+
+    # Step 5: Summary
+    echo ""
+    print_header "MaaS Publishing Summary"
+
+    local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    local maas_endpoint="maas.${cluster_domain}"
+    local dashboard_url=$(get_dashboard_url 2>/dev/null || echo "https://rh-ai.${cluster_domain}")
+
+    echo -e "${GREEN}Model published to MaaS successfully!${NC}"
+    echo ""
+    echo -e "${BLUE}Resources created:${NC}"
+    echo "  MaaSModelRef:     $model_name (in $namespace)"
+    echo "  MaaSSubscription: $sub_name (in models-as-a-service)"
+    echo "  MaaSAuthPolicy:   $policy_name (in models-as-a-service)"
+    echo ""
+    echo -e "${BLUE}MaaS Endpoint:${NC}"
+    echo "  https://${maas_endpoint}/${namespace}/${model_name}/v1/chat/completions"
+    echo ""
+    echo -e "${BLUE}Generate API Key:${NC}"
+    echo "  Dashboard: ${dashboard_url} > Gen AI Studio > API keys > Create API key"
+    echo ""
+    echo -e "${BLUE}Test (after obtaining API key):${NC}"
+    echo "  curl -sk https://${maas_endpoint}/${namespace}/${model_name}/v1/chat/completions \\"
+    echo "    -H 'Authorization: Bearer YOUR_API_KEY' \\"
+    echo "    -H 'Content-Type: application/json' \\"
+    echo "    -d '{\"model\":\"${model_name}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"
+    echo ""
+    echo -e "${BLUE}Verify:${NC}"
+    echo "  oc get maasmodelref -n $namespace"
+    echo "  oc get maassubscription -n models-as-a-service"
+    echo "  oc get maasauthpolicy -n models-as-a-service"
+    echo ""
+
+    return 0
+}
+
+################################################################################
 # Interactive Model Deployment
 ################################################################################
 
@@ -220,6 +392,46 @@ deploy_model_interactive() {
     
     local selected_runtime="${runtimes[$((runtime_choice - 1))]}"
     print_success "Selected runtime: ${runtime_names[$((runtime_choice - 1))]}"
+    
+    # Deployment mode prompt: MaaS-compatible vs Legacy (RHOAI 3.4+ only)
+    local deploy_mode="legacy"
+    if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
+        if [[ "$selected_runtime" =~ ^(vllm|vllm-community|vllm-gemma4)$ ]]; then
+            echo ""
+            print_header "Deployment Mode"
+
+            echo -e "${BLUE}RHOAI 3.4 detected. Choose deployment mode:${NC}"
+            echo ""
+            echo -e "${YELLOW}1)${NC} MaaS-compatible (LLMInferenceService) ${GREEN}[Recommended]${NC}"
+            echo "   Integrates with MaaS gateway, supports subscriptions + API keys"
+            echo ""
+            echo -e "${YELLOW}2)${NC} Legacy (InferenceService + ServingRuntime)"
+            echo "   Direct route access, no MaaS integration"
+            echo ""
+
+            local mode_choice=""
+            read -p "Select deployment mode (1-2) [1]: " mode_choice
+            mode_choice="${mode_choice:-1}"
+
+            if [ "$mode_choice" = "1" ]; then
+                deploy_mode="maas"
+                print_success "Deployment mode: MaaS-compatible (LLMInferenceService)"
+            else
+                deploy_mode="legacy"
+                print_success "Deployment mode: Legacy (InferenceService)"
+            fi
+        fi
+
+        # llm-d is always MaaS-compatible
+        if [ "$selected_runtime" = "llmd" ]; then
+            deploy_mode="maas"
+        fi
+    else
+        # llm-d uses LLMInferenceService regardless of version
+        if [ "$selected_runtime" = "llmd" ]; then
+            deploy_mode="maas"
+        fi
+    fi
     
     echo ""
     print_header "Model Selection"
@@ -742,9 +954,15 @@ deploy_model_interactive() {
     echo -e "${BLUE}URI:${NC} $model_uri"
     echo -e "${BLUE}Namespace:${NC} $target_namespace"
     echo -e "${BLUE}Resources:${NC} $gpu_limit GPU, $cpu_limit CPU, $memory_limit Memory"
-    
+
+    if [ "$deploy_mode" = "maas" ]; then
+        echo -e "${BLUE}Deploy Mode:${NC} ${GREEN}MaaS-compatible (LLMInferenceService)${NC}"
+    else
+        echo -e "${BLUE}Deploy Mode:${NC} Legacy (InferenceService)"
+    fi
+
     if [ -n "$vllm_args" ]; then
-        echo -e "${BLUE}Tool Calling:${NC} Enabled (hermes parser)"
+        echo -e "${BLUE}Tool Calling:${NC} Enabled ($tool_parser parser)"
     else
         echo -e "${BLUE}Tool Calling:${NC} Disabled"
     fi
@@ -765,10 +983,16 @@ deploy_model_interactive() {
     fi
     
     # Deploy the model based on selected runtime
+    # MaaS mode: vLLM variants use LLMInferenceService instead of InferenceService
+    local effective_runtime="$selected_runtime"
+    if [ "$deploy_mode" = "maas" ] && [[ "$selected_runtime" =~ ^(vllm|vllm-community|vllm-gemma4)$ ]]; then
+        effective_runtime="llmd"
+    fi
+
     echo ""
     print_header "Deploying Model"
     
-    if [ "$selected_runtime" = "llmd" ]; then
+    if [ "$effective_runtime" = "llmd" ]; then
         # Deploy using llm-d (LLMInferenceService)
         print_step "Creating LLMInferenceService '$model_name' in namespace '$target_namespace'..."
         
@@ -836,12 +1060,29 @@ EOF
             echo ""
             print_info "Monitor deployment:"
             echo "  oc get llmisvc $model_name -n $target_namespace -w"
+
+            # Post-deploy: offer to publish to MaaS (RHOAI 3.4+ only)
+            if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
+                if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
+                    echo ""
+                    read -p "Publish this model to MaaS? (Y/n): " publish_choice
+                    publish_choice=$(echo "$publish_choice" | tr -d '[:space:]')
+
+                    if [[ ! "$publish_choice" =~ ^[Nn]$ ]]; then
+                        publish_model_to_maas "$model_name" "$target_namespace"
+                    else
+                        print_info "Skipping MaaS publishing. You can publish later with:"
+                        echo "  source lib/functions/model-deployment.sh"
+                        echo "  publish_model_to_maas $model_name $target_namespace"
+                    fi
+                fi
+            fi
         else
             print_error "Failed to create LLMInferenceService"
             return 1
         fi
         
-    elif [ "$selected_runtime" = "vllm" ]; then
+    elif [ "$effective_runtime" = "vllm" ]; then
         # Deploy using vLLM (InferenceService) - CAI Guide Section 2 format
         print_step "Creating vLLM deployment for '$model_name' in namespace '$target_namespace'..."
         
@@ -1040,7 +1281,7 @@ EOF
             return 1
         fi
         
-    elif [ "$selected_runtime" = "vllm-community" ]; then
+    elif [ "$effective_runtime" = "vllm-community" ]; then
         # Deploy using community vLLM image (CUDA 13+ compatible, security hardened)
         print_step "Creating vLLM deployment with community image for '$model_name'..."
         print_info "Using community vLLM image with CUDA 13+ support and security hardening"
@@ -1362,7 +1603,7 @@ EOF
             return 1
         fi
         
-    elif [ "$selected_runtime" = "vllm-omni" ]; then
+    elif [ "$effective_runtime" = "vllm-omni" ]; then
         # Deploy using vLLM-Omni (InferenceService) for diffusion/multimodal models
         print_step "Creating vLLM-Omni deployment for '$model_name' in namespace '$target_namespace'..."
         
@@ -1540,7 +1781,7 @@ EOF
             return 1
         fi
         
-    elif [ "$selected_runtime" = "vllm-gemma4" ]; then
+    elif [ "$effective_runtime" = "vllm-gemma4" ]; then
         # Deploy using vLLM-Gemma4 optimized image
         print_step "Creating vLLM-Gemma4 deployment for '$model_name' in namespace '$target_namespace'..."
         
