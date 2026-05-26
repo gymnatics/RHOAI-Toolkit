@@ -1191,23 +1191,38 @@ create_datasciencecluster() {
 
     oc apply -f "$ROOT_DIR/lib/manifests/rhoai/datasciencecluster-v3-34.yaml"
 
-    print_step "Waiting for DataScienceCluster to be ready..."
+    print_step "Waiting for DataScienceCluster core components..."
     local elapsed=0
-    local timeout=600
+    local timeout=300
 
     while [ $elapsed -lt $timeout ]; do
         local phase=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.phase}' 2>/dev/null)
         if [ "$phase" = "Ready" ]; then
-            print_success "DataScienceCluster is ready"
+            print_success "DataScienceCluster is fully ready"
             return 0
         fi
+        
+        # Check if core components are ready (MaaS/Kueue may need later config steps)
+        local dashboard_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="DashboardReady")].status}' 2>/dev/null)
+        local kserve_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="KserveReady")].status}' 2>/dev/null)
+        
+        if [ "$dashboard_ready" = "True" ] && [ "$kserve_ready" = "True" ]; then
+            echo ""
+            print_success "Core components ready (Dashboard, KServe)"
+            local not_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+            if [ -n "$not_ready" ]; then
+                print_info "Pending (will be configured in later steps): $not_ready"
+            fi
+            return 0
+        fi
+        
         sleep 10
         elapsed=$((elapsed + 10))
         echo -n "."
     done
 
     echo ""
-    print_warning "DataScienceCluster may not be fully ready yet"
+    print_warning "DataScienceCluster may not be fully ready yet (MaaS/Kueue configured in later steps)"
 }
 
 enable_dashboard_features() {
