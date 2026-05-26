@@ -368,6 +368,125 @@ check_prerequisites() {
     print_success "Prerequisites check passed"
 }
 
+################################################################################
+# Admin User Creation
+################################################################################
+
+create_admin_user() {
+    local admin_user="admin"
+    local admin_pass='R3dh4t1!'
+
+    print_step "Creating OAuth admin user '$admin_user'..."
+
+    # Check if htpasswd CLI is available
+    if ! command -v htpasswd &>/dev/null; then
+        print_error "htpasswd CLI not found. Install httpd-tools (RHEL) or apache2-utils (Debian)."
+        return 1
+    fi
+
+    # Pull existing htpasswd data (preserve other users)
+    local htpasswd_tmp
+    htpasswd_tmp=$(mktemp)
+
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
+        oc get secret htpasswd-secret -n openshift-config \
+            -o jsonpath='{.data.htpasswd}' | base64 -d > "$htpasswd_tmp" 2>/dev/null || true
+    fi
+
+    if grep -q "^${admin_user}:" "$htpasswd_tmp" 2>/dev/null; then
+        print_info "User '$admin_user' already exists in htpasswd"
+    else
+        htpasswd -bB "$htpasswd_tmp" "$admin_user" "$admin_pass"
+        print_success "User '$admin_user' added to htpasswd"
+    fi
+
+    # Update secret
+    oc create secret generic htpasswd-secret \
+        --from-file=htpasswd="$htpasswd_tmp" \
+        -n openshift-config --dry-run=client -o yaml | oc apply -f -
+    rm -f "$htpasswd_tmp"
+
+    # Ensure htpasswd identity provider is configured
+    local has_htpasswd
+    has_htpasswd=$(oc get oauth cluster -o jsonpath='{.spec.identityProviders[?(@.name=="htpasswd")].name}' 2>/dev/null || true)
+    if [ -z "$has_htpasswd" ]; then
+        print_step "Adding htpasswd identity provider to OAuth..."
+        oc patch oauth cluster --type=json -p '[{
+            "op": "add",
+            "path": "/spec/identityProviders/-",
+            "value": {
+                "name": "htpasswd",
+                "type": "HTPasswd",
+                "mappingMethod": "claim",
+                "htpasswd": {
+                    "fileData": {
+                        "name": "htpasswd-secret"
+                    }
+                }
+            }
+        }]' 2>/dev/null || {
+            oc patch oauth cluster --type=merge -p '{
+                "spec": {
+                    "identityProviders": [{
+                        "name": "htpasswd",
+                        "type": "HTPasswd",
+                        "mappingMethod": "claim",
+                        "htpasswd": {
+                            "fileData": {
+                                "name": "htpasswd-secret"
+                            }
+                        }
+                    }]
+                }
+            }' 2>/dev/null
+        }
+        print_success "htpasswd identity provider configured"
+    else
+        print_info "htpasswd identity provider already configured"
+    fi
+
+    # Grant cluster-admin
+    oc adm policy add-cluster-role-to-user cluster-admin "$admin_user" 2>/dev/null || true
+    print_success "cluster-admin granted to '$admin_user'"
+
+    # Create rhods-admins group and add admin
+    if ! oc get group "$ADMIN_GROUP" &>/dev/null 2>&1; then
+        oc adm groups new "$ADMIN_GROUP" 2>/dev/null || true
+    fi
+    oc adm groups add-users "$ADMIN_GROUP" "$admin_user" 2>/dev/null || true
+    print_info "User '$admin_user' added to group '$ADMIN_GROUP'"
+
+    # Wait for OAuth pods to restart so the new user becomes available
+    print_step "Waiting for OAuth pods to restart..."
+    local api_server
+    api_server=$(oc whoami --show-server)
+
+    local elapsed=0
+    local timeout=120
+    local interval=10
+
+    # Give OAuth a moment to begin rolling out
+    sleep 10
+    elapsed=10
+
+    while [ $elapsed -lt $timeout ]; do
+        if oc login -u "$admin_user" -p "$admin_pass" "$api_server" --insecure-skip-tls-verify=true &>/dev/null; then
+            print_success "Logged in as '$admin_user'"
+            echo ""
+            print_info "Session switched from kube:admin to $admin_user (cluster-admin)"
+            print_info "All subsequent operations will run as '$admin_user'"
+            return 0
+        fi
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        echo "  Waiting for OAuth... (${elapsed}s/${timeout}s)"
+    done
+
+    print_warning "Could not log in as '$admin_user' within ${timeout}s"
+    print_info "OAuth may still be restarting. Continuing as $(oc whoami)..."
+    print_info "You can log in manually later: oc login -u $admin_user -p '$admin_pass' $api_server"
+}
+
 scale_cluster_nodes() {
     print_step "Checking and scaling cluster nodes..."
 
@@ -1899,6 +2018,8 @@ print_summary() {
     fi
 
     echo -e "${CYAN}Dashboard URL:${NC} https://${dashboard_url}"
+    echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
+    echo -e "${CYAN}Current User:${NC} $(oc whoami 2>/dev/null)"
 
     if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
         echo -e "${CYAN}MaaS Gateway:${NC} https://maas.apps.${CLUSTER_DOMAIN}"
@@ -2047,6 +2168,7 @@ main() {
     print_banner
     check_prerequisites
     get_cluster_domain
+    create_admin_user
 
     if [ "$SKIP_NODE_SCALING" = false ]; then
         scale_cluster_nodes

@@ -149,59 +149,6 @@ publish_model_to_maas() {
 
     print_header "Publish Model to MaaS"
 
-    # Step 0: Ensure an OAuth admin user exists for MaaS API key access.
-    # kube:admin is certificate-based and cannot use MaaS API keys, so we
-    # create a real htpasswd user with cluster-admin and add it to the group.
-    print_step "Ensuring OAuth admin user for MaaS..."
-
-    local maas_admin_user="admin"
-    local maas_admin_pass='R3dh4t1!'
-
-    local htpasswd_tmp=$(mktemp)
-    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
-        oc get secret htpasswd-secret -n openshift-config \
-            -o jsonpath='{.data.htpasswd}' | base64 -d > "$htpasswd_tmp" 2>/dev/null || true
-    fi
-
-    if grep -q "^${maas_admin_user}:" "$htpasswd_tmp" 2>/dev/null; then
-        print_info "User '$maas_admin_user' already exists in htpasswd"
-    else
-        htpasswd -bB "$htpasswd_tmp" "$maas_admin_user" "$maas_admin_pass"
-        print_success "User '$maas_admin_user' added to htpasswd"
-    fi
-
-    oc create secret generic htpasswd-secret \
-        --from-file=htpasswd="$htpasswd_tmp" \
-        -n openshift-config --dry-run=client -o yaml | oc apply -f -
-    rm -f "$htpasswd_tmp"
-
-    # Ensure htpasswd identity provider exists
-    if ! oc get oauth cluster -o json 2>/dev/null | grep -q '"name":"htpasswd"'; then
-        oc patch oauth cluster --type=merge -p '{
-            "spec": {
-                "identityProviders": [{
-                    "name": "htpasswd",
-                    "type": "HTPasswd",
-                    "mappingMethod": "claim",
-                    "htpasswd": {
-                        "fileData": {
-                            "name": "htpasswd-secret"
-                        }
-                    }
-                }]
-            }
-        }' 2>/dev/null
-        print_success "htpasswd identity provider configured"
-    fi
-
-    # Grant cluster-admin and add to the MaaS group
-    oc adm policy add-cluster-role-to-user cluster-admin "$maas_admin_user" 2>/dev/null || true
-
-    # Create the group if it doesn't exist yet (will be used for subscription below)
-    echo ""
-    print_success "OAuth admin user ready: $maas_admin_user"
-    print_info "Log into the dashboard as '$maas_admin_user' to generate API keys"
-
     # Step 1: Create MaaSModelRef
     print_step "Creating MaaSModelRef for '$model_name' in namespace '$namespace'..."
 
@@ -233,13 +180,15 @@ EOF
     read -p "Group name (default: $default_group): " maas_group
     maas_group="${maas_group:-$default_group}"
 
-    # Ensure the group exists and add the admin user to it
+    # Ensure the group exists and add the current user to it
     if ! oc get group "$maas_group" &>/dev/null; then
         oc adm groups new "$maas_group" 2>/dev/null
         print_success "Group '$maas_group' created"
     fi
-    oc adm groups add-users "$maas_group" "$maas_admin_user" 2>/dev/null || true
-    print_info "User '$maas_admin_user' added to group '$maas_group'"
+    local current_user
+    current_user=$(oc whoami 2>/dev/null)
+    oc adm groups add-users "$maas_group" "$current_user" 2>/dev/null || true
+    print_info "User '$current_user' added to group '$maas_group'"
 
     local default_priority="1"
     read -p "Priority (0=highest, default: $default_priority): " maas_priority
