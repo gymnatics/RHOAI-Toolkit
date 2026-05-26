@@ -951,39 +951,31 @@ deploy_model_interactive() {
         fi
     fi
     
-    # Authentication configuration
-    echo ""
-    print_header "Authentication Configuration"
-    
-    echo -e "${YELLOW}Require authentication for this model?${NC}"
-    echo -e "${CYAN}(Recommended: Yes for production)${NC}"
-    echo ""
-    read -p "Require authentication? (Y/n): " enable_auth
-    enable_auth=$(echo "$enable_auth" | tr -d '[:space:]')
-    
-    local auth_annotation=""
-    local auth_enabled=false
-    local service_account_name=""
-    
-    if [[ ! "$enable_auth" =~ ^[Nn]$ ]]; then
-        auth_enabled=true
-        auth_annotation="security.opendatahub.io/enable-auth: 'true'"
-        
-        # Ask for service account name
-        echo ""
-        local default_sa="${model_name}-sa"
-        read -p "Service account name (default: $default_sa): " service_account_name
-        service_account_name="${service_account_name:-$default_sa}"
-        
-        print_success "Authentication enabled with service account: $service_account_name"
-    else
-        auth_annotation="security.opendatahub.io/enable-auth: 'false'"
-        print_warning "Authentication disabled (model will be publicly accessible)"
-    fi
-    
     # Post-deploy options
     echo ""
     print_header "Post-Deployment Options"
+
+    # MaaS publishing first — if enabled, token auth is handled by MaaS (API keys)
+    local publish_to_maas=false
+    if [ "$deploy_mode" = "maas" ]; then
+        if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
+            if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
+                echo -e "${YELLOW}Publish this model to MaaS?${NC}"
+                echo "  Creates MaaSModelRef, MaaSSubscription, and MaaSAuthPolicy"
+                echo "  so users can access the model via API keys."
+                echo ""
+                read -p "Publish to MaaS? (Y/n): " maas_choice
+                maas_choice=$(echo "$maas_choice" | tr -d '[:space:]')
+                if [[ ! "$maas_choice" =~ ^[Nn]$ ]]; then
+                    publish_to_maas=true
+                    print_success "Will publish to MaaS after deployment"
+                else
+                    print_info "Skipping MaaS publishing"
+                fi
+                echo ""
+            fi
+        fi
+    fi
 
     # GenAI Playground
     local add_to_playground=false
@@ -1001,25 +993,38 @@ deploy_model_interactive() {
         fi
     fi
 
-    # MaaS publishing (RHOAI 3.4+ with LLMInferenceService only)
-    local publish_to_maas=false
-    if [ "$deploy_mode" = "maas" ]; then
-        if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
-            if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
-                echo ""
-                echo -e "${YELLOW}Publish this model to MaaS?${NC}"
-                echo "  Creates MaaSModelRef, MaaSSubscription, and MaaSAuthPolicy"
-                echo "  so users can access the model via API keys."
-                echo ""
-                read -p "Publish to MaaS? (Y/n): " maas_choice
-                maas_choice=$(echo "$maas_choice" | tr -d '[:space:]')
-                if [[ ! "$maas_choice" =~ ^[Nn]$ ]]; then
-                    publish_to_maas=true
-                    print_success "Will publish to MaaS after deployment"
-                else
-                    print_info "Skipping MaaS publishing"
-                fi
-            fi
+    # Authentication configuration
+    # When MaaS is enabled, auth is handled via API keys — skip token auth prompt
+    local auth_annotation=""
+    local auth_enabled=false
+    local service_account_name=""
+
+    if [ "$publish_to_maas" = true ]; then
+        auth_annotation="security.opendatahub.io/enable-auth: 'false'"
+        print_info "Authentication managed by MaaS (API keys) — token auth skipped"
+    else
+        echo ""
+        print_header "Authentication Configuration"
+
+        echo -e "${YELLOW}Require authentication for this model?${NC}"
+        echo -e "${CYAN}(Recommended: Yes for production)${NC}"
+        echo ""
+        read -p "Require authentication? (Y/n): " enable_auth
+        enable_auth=$(echo "$enable_auth" | tr -d '[:space:]')
+
+        if [[ ! "$enable_auth" =~ ^[Nn]$ ]]; then
+            auth_enabled=true
+            auth_annotation="security.opendatahub.io/enable-auth: 'true'"
+
+            echo ""
+            local default_sa="${model_name}-sa"
+            read -p "Service account name (default: $default_sa): " service_account_name
+            service_account_name="${service_account_name:-$default_sa}"
+
+            print_success "Authentication enabled with service account: $service_account_name"
+        else
+            auth_annotation="security.opendatahub.io/enable-auth: 'false'"
+            print_warning "Authentication disabled (model will be publicly accessible)"
         fi
     fi
 
