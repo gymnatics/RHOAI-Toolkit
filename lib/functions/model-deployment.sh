@@ -981,14 +981,33 @@ deploy_model_interactive() {
         print_warning "Authentication disabled (model will be publicly accessible)"
     fi
     
-    # MaaS publishing configuration (RHOAI 3.4+ with LLMInferenceService only)
+    # Post-deploy options
+    echo ""
+    print_header "Post-Deployment Options"
+
+    # GenAI Playground
+    local add_to_playground=false
+    if oc get crd llamastackdistributions.llamastack.io &>/dev/null 2>&1; then
+        echo -e "${YELLOW}Add this model to the GenAI Playground?${NC}"
+        echo "  Creates a LlamaStackDistribution so the model appears in AI Studio."
+        echo ""
+        read -p "Add to GenAI Playground? (Y/n): " playground_choice
+        playground_choice=$(echo "$playground_choice" | tr -d '[:space:]')
+        if [[ ! "$playground_choice" =~ ^[Nn]$ ]]; then
+            add_to_playground=true
+            print_success "Will add to GenAI Playground after deployment"
+        else
+            print_info "Skipping GenAI Playground"
+        fi
+    fi
+
+    # MaaS publishing (RHOAI 3.4+ with LLMInferenceService only)
     local publish_to_maas=false
     if [ "$deploy_mode" = "maas" ]; then
         if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
             if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
                 echo ""
-                print_header "MaaS Publishing"
-                echo -e "${YELLOW}Publish this model to MaaS after deployment?${NC}"
+                echo -e "${YELLOW}Publish this model to MaaS?${NC}"
                 echo "  Creates MaaSModelRef, MaaSSubscription, and MaaSAuthPolicy"
                 echo "  so users can access the model via API keys."
                 echo ""
@@ -1031,6 +1050,8 @@ deploy_model_interactive() {
     else
         echo -e "${BLUE}Authentication:${NC} Disabled"
     fi
+
+    echo -e "${BLUE}GenAI Playground:${NC} $([ "$add_to_playground" = true ] && echo "${GREEN}Yes${NC}" || echo "No")"
 
     if [ "$publish_to_maas" = true ]; then
         echo -e "${BLUE}Publish to MaaS:${NC} ${GREEN}Yes${NC}"
@@ -1126,7 +1147,19 @@ EOF
             print_info "Monitor deployment:"
             echo "  oc get llmisvc $model_name -n $target_namespace -w"
 
-            # Publish to MaaS if user opted in during configuration
+            # Add to GenAI Playground if user opted in
+            if [ "$add_to_playground" = true ]; then
+                echo ""
+                local playground_script="${_MODEL_DEPLOY_DIR}/../../scripts/add-model-to-playground.sh"
+                if [ -f "$playground_script" ]; then
+                    bash "$playground_script" -m "$model_name" -n "$target_namespace" --skip-config
+                else
+                    print_warning "add-model-to-playground.sh not found"
+                    print_info "Run manually: ./scripts/add-model-to-playground.sh -m $model_name -n $target_namespace"
+                fi
+            fi
+
+            # Publish to MaaS if user opted in
             if [ "$publish_to_maas" = true ]; then
                 echo ""
                 publish_model_to_maas "$model_name" "$target_namespace"
