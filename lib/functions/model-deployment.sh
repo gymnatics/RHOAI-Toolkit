@@ -441,6 +441,58 @@ deploy_model_interactive() {
             deploy_mode="maas"
         fi
     fi
+
+    # Runtime config selection for MaaS deployments
+    # The controller needs an LLMInferenceServiceConfig to know which vLLM image to use
+    local selected_llmisvc_config=""
+    local selected_llmisvc_config_display=""
+    if [ "$deploy_mode" = "maas" ]; then
+        echo ""
+        print_header "Runtime Configuration"
+        echo -e "${BLUE}Select the accelerator runtime for vLLM:${NC}"
+        echo ""
+
+        local config_names=()
+        local config_display_names=()
+        while IFS=$'\t' read -r cname cdisplay; do
+            [ -z "$cname" ] && continue
+            config_names+=("$cname")
+            config_display_names+=("${cdisplay:-$cname}")
+        done < <(oc get llminferenceserviceconfig -n redhat-ods-applications \
+            -l opendatahub.io/config-type=accelerator \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.openshift\.io/display-name}{"\n"}{end}' 2>/dev/null)
+
+        if [ ${#config_names[@]} -eq 0 ]; then
+            print_warning "No accelerator runtime configs found. Using default llm-d template."
+        else
+            local default_idx=0
+            for i in "${!config_names[@]}"; do
+                local num=$((i + 1))
+                local marker=""
+                if [[ "${config_names[$i]}" == *nvidia-cuda* ]]; then
+                    marker=" ${GREEN}[Recommended for NVIDIA GPU]${NC}"
+                    default_idx=$i
+                fi
+                echo -e "  ${YELLOW}${num})${NC} ${config_display_names[$i]}${marker}"
+            done
+            echo ""
+
+            local config_choice=""
+            local default_num=$((default_idx + 1))
+            read -p "Select runtime config (1-${#config_names[@]}) [$default_num]: " config_choice
+            config_choice="${config_choice:-$default_num}"
+
+            if [[ "$config_choice" =~ ^[0-9]+$ ]] && [ "$config_choice" -ge 1 ] && [ "$config_choice" -le ${#config_names[@]} ]; then
+                selected_llmisvc_config="${config_names[$((config_choice - 1))]}"
+                selected_llmisvc_config_display="${config_display_names[$((config_choice - 1))]}"
+                print_success "Selected: $selected_llmisvc_config_display"
+            else
+                selected_llmisvc_config="${config_names[$default_idx]}"
+                selected_llmisvc_config_display="${config_display_names[$default_idx]}"
+                print_warning "Invalid choice, using default: $selected_llmisvc_config_display"
+            fi
+        fi
+    fi
     
     echo ""
     print_header "Model Selection"
@@ -1024,6 +1076,9 @@ deploy_model_interactive() {
 
     if [ "$deploy_mode" = "maas" ]; then
         echo -e "${BLUE}Deploy Mode:${NC} ${GREEN}MaaS-compatible (LLMInferenceService)${NC}"
+        if [ -n "$selected_llmisvc_config_display" ]; then
+            echo -e "${BLUE}Runtime Config:${NC} $selected_llmisvc_config_display"
+        fi
     else
         echo -e "${BLUE}Deploy Mode:${NC} Legacy (InferenceService)"
     fi
@@ -1066,7 +1121,47 @@ deploy_model_interactive() {
     print_header "Deploying Model"
     
     if [ "$effective_runtime" = "llmd" ]; then
-        # Deploy using llm-d (LLMInferenceService)
+        # Create LLMInferenceServiceConfig in target namespace (copies the accelerator template)
+        if [ -n "$selected_llmisvc_config" ]; then
+            print_step "Creating LLMInferenceServiceConfig '$model_name' from template '$selected_llmisvc_config_display'..."
+
+            local config_image
+            config_image=$(oc get llminferenceserviceconfig "$selected_llmisvc_config" \
+                -n redhat-ods-applications \
+                -o jsonpath='{.spec.template.containers[0].image}' 2>/dev/null)
+
+            if [ -n "$config_image" ]; then
+                cat <<CFGEOF | oc apply -f -
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceServiceConfig
+metadata:
+  name: $model_name
+  namespace: $target_namespace
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-name: $selected_llmisvc_config
+    openshift.io/description: "$selected_llmisvc_config_display"
+    openshift.io/display-name: "$selected_llmisvc_config_display"
+spec:
+  model:
+    uri: ""
+  template:
+    containers:
+    - image: $config_image
+      name: main
+      resources: {}
+CFGEOF
+                if [ $? -eq 0 ]; then
+                    print_success "LLMInferenceServiceConfig created"
+                else
+                    print_warning "Failed to create LLMInferenceServiceConfig — controller will use default template"
+                fi
+            else
+                print_warning "Could not read image from template '$selected_llmisvc_config' — using default"
+            fi
+        fi
+
+        # Deploy using LLMInferenceService
         print_step "Creating LLMInferenceService '$model_name' in namespace '$target_namespace'..."
         
         local env_section=""
