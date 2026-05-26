@@ -593,11 +593,16 @@ deploy_model_interactive() {
                 echo "  1) hermes  (Qwen, most models)"
                 echo "  2) llama3_json  (Llama 3.x)"
                 echo "  3) mistral  (Mistral)"
+                echo "  4) Custom (enter your own)"
                 echo ""
-                read -p "Parser (1-3) [1]: " parser_choice
+                read -p "Parser (1-4) [1]: " parser_choice
                 case "${parser_choice:-1}" in
                     2) tool_parser="llama3_json" ;;
                     3) tool_parser="mistral" ;;
+                    4)
+                        read -p "Custom parser name: " tool_parser
+                        tool_parser="${tool_parser:-hermes}"
+                        ;;
                     *) tool_parser="hermes" ;;
                 esac
             fi
