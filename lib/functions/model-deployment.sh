@@ -1088,28 +1088,35 @@ deploy_model_interactive() {
         fi
         
         cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
+apiVersion: serving.kserve.io/v1alpha2
 kind: LLMInferenceService
 metadata:
   name: $model_name
   namespace: $target_namespace
   labels:
-    kueue.x-k8s.io/queue-name: default
     opendatahub.io/dashboard: "true"
     opendatahub.io/genai-asset: "true"
   annotations:
+    openshift.io/display-name: $model_name
+    opendatahub.io/model-type: generative
+    serving.kserve.io/stop: "false"
     $auth_annotation
 $hw_profile_annotations_llmd
 spec:
+  baseRefs:
+  - name: $model_name
   replicas: 1
   model:
     uri: $model_uri
-    name: $model_name
   router:
     route: {}
-    gateway: {}
-    scheduler: {}
+    gateway:
+      refs:
+      - name: maas-default-gateway
+        namespace: openshift-ingress
   template:
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
     tolerations:
     - key: nvidia.com/gpu
       operator: Exists
@@ -1123,8 +1130,8 @@ $env_section
           memory: $memory_limit
           nvidia.com/gpu: "$gpu_limit"
         requests:
-          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2)}')'
-          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
+          cpu: '$cpu_limit'
+          memory: $memory_limit
           nvidia.com/gpu: "$gpu_limit"
 EOF
         
