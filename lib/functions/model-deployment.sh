@@ -582,12 +582,34 @@ deploy_model_interactive() {
                 print_error "No name provided. Skipping model deployment."
                 return 1
             fi
+
+            # Ask about tool calling for custom models
+            echo ""
+            read -p "Does this model support tool calling? (y/N): " custom_tool_choice
+            if [[ "$custom_tool_choice" =~ ^[Yy]$ ]]; then
+                tool_calling_enabled=true
+                echo ""
+                echo -e "${BLUE}Select tool call parser:${NC}"
+                echo "  1) hermes  (Qwen, most models)"
+                echo "  2) llama3_json  (Llama 3.x)"
+                echo "  3) mistral  (Mistral)"
+                echo ""
+                read -p "Parser (1-3) [1]: " parser_choice
+                case "${parser_choice:-1}" in
+                    2) tool_parser="llama3_json" ;;
+                    3) tool_parser="mistral" ;;
+                    *) tool_parser="hermes" ;;
+                esac
+            fi
             ;;
         *)
             print_error "Invalid selection. Skipping model deployment."
             return 1
             ;;
     esac
+
+    # Sanitize model name to be K8s-safe (lowercase, alphanumeric, hyphens)
+    model_name=$(echo "$model_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
     
     echo ""
     print_success "Selected model: $model_name"
