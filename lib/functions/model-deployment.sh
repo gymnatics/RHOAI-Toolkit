@@ -981,6 +981,29 @@ deploy_model_interactive() {
         print_warning "Authentication disabled (model will be publicly accessible)"
     fi
     
+    # MaaS publishing configuration (RHOAI 3.4+ with LLMInferenceService only)
+    local publish_to_maas=false
+    if [ "$deploy_mode" = "maas" ]; then
+        if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
+            if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
+                echo ""
+                print_header "MaaS Publishing"
+                echo -e "${YELLOW}Publish this model to MaaS after deployment?${NC}"
+                echo "  Creates MaaSModelRef, MaaSSubscription, and MaaSAuthPolicy"
+                echo "  so users can access the model via API keys."
+                echo ""
+                read -p "Publish to MaaS? (Y/n): " maas_choice
+                maas_choice=$(echo "$maas_choice" | tr -d '[:space:]')
+                if [[ ! "$maas_choice" =~ ^[Nn]$ ]]; then
+                    publish_to_maas=true
+                    print_success "Will publish to MaaS after deployment"
+                else
+                    print_info "Skipping MaaS publishing"
+                fi
+            fi
+        fi
+    fi
+
     # Deployment confirmation
     echo ""
     print_header "Deployment Summary"
@@ -1007,6 +1030,12 @@ deploy_model_interactive() {
         echo -e "${BLUE}Authentication:${NC} Required (ServiceAccount: $service_account_name)"
     else
         echo -e "${BLUE}Authentication:${NC} Disabled"
+    fi
+
+    if [ "$publish_to_maas" = true ]; then
+        echo -e "${BLUE}Publish to MaaS:${NC} ${GREEN}Yes${NC}"
+    elif [ "$deploy_mode" = "maas" ]; then
+        echo -e "${BLUE}Publish to MaaS:${NC} No"
     fi
     
     echo ""
@@ -1097,21 +1126,10 @@ EOF
             print_info "Monitor deployment:"
             echo "  oc get llmisvc $model_name -n $target_namespace -w"
 
-            # Post-deploy: offer to publish to MaaS (RHOAI 3.4+ only)
-            if type is_rhoai_34_or_higher &>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
-                if oc get crd maasmodelrefs.maas.opendatahub.io &>/dev/null; then
-                    echo ""
-                    read -p "Publish this model to MaaS? (Y/n): " publish_choice
-                    publish_choice=$(echo "$publish_choice" | tr -d '[:space:]')
-
-                    if [[ ! "$publish_choice" =~ ^[Nn]$ ]]; then
-                        publish_model_to_maas "$model_name" "$target_namespace"
-                    else
-                        print_info "Skipping MaaS publishing. You can publish later with:"
-                        echo "  source lib/functions/model-deployment.sh"
-                        echo "  publish_model_to_maas $model_name $target_namespace"
-                    fi
-                fi
+            # Publish to MaaS if user opted in during configuration
+            if [ "$publish_to_maas" = true ]; then
+                echo ""
+                publish_model_to_maas "$model_name" "$target_namespace"
             fi
         else
             print_error "Failed to create LLMInferenceService"
