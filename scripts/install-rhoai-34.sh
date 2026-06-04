@@ -388,6 +388,23 @@ wait_for_api_server() {
     return 1
 }
 
+# Retry a command up to N times with API server recovery between attempts
+retry_with_api_wait() {
+    local max_retries=${1:-3}
+    shift
+    local attempt=1
+    while [ $attempt -le $max_retries ]; do
+        if "$@" 2>/dev/null; then
+            return 0
+        fi
+        print_warning "Command failed (attempt $attempt/$max_retries), waiting for API server..."
+        wait_for_api_server 60
+        attempt=$((attempt + 1))
+    done
+    print_error "Command failed after $max_retries attempts: $*"
+    return 1
+}
+
 create_admin_user() {
     local admin_user="admin"
     local admin_pass='R3dh4t1!'
@@ -847,9 +864,14 @@ EOF
         done
     fi
 
+    # API server may bounce during Istio/Sail webhook registration
+    wait_for_api_server 90
+
     if ! oc get gatewayclass openshift-default &>/dev/null; then
         print_step "Creating openshift-default GatewayClass..."
-        oc apply -f - <<EOF
+        local attempt=1
+        while [ $attempt -le 3 ]; do
+            if oc apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -857,6 +879,13 @@ metadata:
 spec:
   controllerName: openshift.io/gateway-controller/v1
 EOF
+            then
+                break
+            fi
+            print_warning "GatewayClass creation failed (attempt $attempt/3), waiting for API server..."
+            wait_for_api_server 60
+            attempt=$((attempt + 1))
+        done
     fi
 
     print_success "Istio setup complete for Kuadrant"
