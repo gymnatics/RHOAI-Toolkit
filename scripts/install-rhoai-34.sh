@@ -405,6 +405,30 @@ retry_with_api_wait() {
     return 1
 }
 
+recover_router_if_crashlooping() {
+    local router_status
+    router_status=$(oc get pods -n openshift-ingress -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+        -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+
+    if [ "$router_status" = "CrashLoopBackOff" ]; then
+        print_warning "Router pod is in CrashLoopBackOff (caused by API server restart)"
+        print_step "Deleting stuck router pod to reset backoff..."
+        oc delete pod -n openshift-ingress \
+            -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+            --wait=false 2>/dev/null || true
+        sleep 10
+        local new_status
+        new_status=$(oc get pods -n openshift-ingress \
+            -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+        if [ "$new_status" = "Running" ]; then
+            print_success "Router pod recovered"
+        else
+            print_info "Router pod restarting (status: $new_status) — it should recover shortly"
+        fi
+    fi
+}
+
 create_admin_user() {
     local admin_user="admin"
     local admin_pass='R3dh4t1!'
@@ -521,6 +545,9 @@ create_admin_user() {
             sleep 15
             wait_for_api_server 90
             print_success "API server is stable"
+
+            # Recover router if it crashed during the API server rollout
+            recover_router_if_crashlooping
             return 0
         fi
         sleep $interval
