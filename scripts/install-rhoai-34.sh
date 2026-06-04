@@ -372,9 +372,33 @@ check_prerequisites() {
 # Admin User Creation
 ################################################################################
 
+wait_for_api_server() {
+    local max_wait=${1:-120}
+    local elapsed=0
+    local interval=5
+    while [ $elapsed -lt $max_wait ]; do
+        if oc get nodes &>/dev/null; then
+            return 0
+        fi
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        echo "  Waiting for API server... (${elapsed}s/${max_wait}s)"
+    done
+    print_warning "API server did not respond within ${max_wait}s"
+    return 1
+}
+
 create_admin_user() {
     local admin_user="admin"
     local admin_pass='R3dh4t1!'
+
+    # Skip if already logged in as admin
+    local current_user
+    current_user=$(oc whoami 2>/dev/null || true)
+    if [ "$current_user" = "$admin_user" ]; then
+        print_info "Already logged in as '$admin_user' — skipping user creation"
+        return 0
+    fi
 
     print_step "Creating OAuth admin user '$admin_user'..."
 
@@ -475,6 +499,11 @@ create_admin_user() {
             echo ""
             print_info "Session switched from kube:admin to $admin_user (cluster-admin)"
             print_info "All subsequent operations will run as '$admin_user'"
+            # Wait for API server to stabilize after OAuth rollout
+            print_step "Waiting for API server to stabilize..."
+            sleep 15
+            wait_for_api_server 90
+            print_success "API server is stable"
             return 0
         fi
         sleep $interval
