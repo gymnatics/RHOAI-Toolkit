@@ -124,8 +124,8 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}6)${NC} Quick Start Wizard ${MAGENTA}✨${NC}"
     echo "    Run typical post-install workflow"
     echo ""
-    echo -e "${YELLOW}7)${NC} Day 2 Operations"
-    echo "    Approve CSRs, cluster maintenance"
+    echo -e "${YELLOW}7)${NC} Day 2 Operations ${BLUE}→${NC}"
+    echo "    Approve CSRs, remove kubeadmin, cluster maintenance"
     echo ""
     echo -e "${YELLOW}8)${NC} Troubleshooting & Fixes ${RED}[Fixes]${NC}"
     echo "    GPU operator issues, CUDA compatibility, common problems"
@@ -534,6 +534,132 @@ approve_pending_csrs() {
     oc get nodes 2>/dev/null || echo "  Unable to get node status"
     
     return 0
+}
+
+################################################################################
+# Remove kubeadmin (Day 2 Operations)
+################################################################################
+
+remove_kubeadmin() {
+    print_header "Remove kubeadmin User"
+
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+
+    local current_user
+    current_user=$(oc whoami 2>/dev/null)
+
+    # Safety: don't allow removal while logged in as kube:admin
+    if [ "$current_user" = "kube:admin" ]; then
+        print_error "You are currently logged in as kube:admin!"
+        echo ""
+        echo "You must log in as a different cluster-admin user before removing kubeadmin."
+        echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+        return 1
+    fi
+
+    # Verify the current user has cluster-admin
+    if ! oc auth can-i '*' '*' --all-namespaces &>/dev/null; then
+        print_error "Current user '$current_user' does not have cluster-admin privileges"
+        return 1
+    fi
+
+    # Check if kubeadmin secret exists
+    if ! oc get secret kubeadmin -n kube-system &>/dev/null; then
+        print_info "kubeadmin has already been removed"
+        return 0
+    fi
+
+    echo -e "${YELLOW}WARNING: This will permanently remove the kubeadmin user.${NC}"
+    echo ""
+    echo "  Current user: $current_user"
+    echo "  You will no longer be able to log in as kube:admin"
+    echo "  Make sure you can log in via htpasswd (admin / R3dh4t1!)"
+    echo ""
+
+    read -p "Are you sure you want to remove kubeadmin? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then
+        print_info "Cancelled"
+        return 0
+    fi
+
+    print_step "Removing kubeadmin..."
+    oc delete secret kubeadmin -n kube-system
+
+    print_success "kubeadmin has been removed"
+    print_info "Log in via: oc login -u admin -p 'R3dh4t1!'"
+}
+
+################################################################################
+# Day 2 Operations Submenu
+################################################################################
+
+day2_operations_submenu() {
+    while true; do
+        echo ""
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║                 Day 2 Operations                               ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${YELLOW}1)${NC} Approve Pending CSRs"
+        echo "    Approve certificate signing requests for new/rebooted nodes"
+        echo ""
+        echo -e "${YELLOW}2)${NC} Remove kubeadmin ${RED}[Destructive]${NC}"
+        echo "    Permanently remove the kubeadmin user (requires htpasswd admin)"
+        echo ""
+        echo -e "${YELLOW}3)${NC} Recover Ingress Router"
+        echo "    Fix router pod stuck in CrashLoopBackOff"
+        echo ""
+        echo -e "${YELLOW}0)${NC} Back"
+        echo ""
+
+        read -p "Select an option (0-3): " day2_choice
+        case $day2_choice in
+            1)
+                approve_pending_csrs
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                remove_kubeadmin
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                print_header "Router Recovery"
+                source "$ROOT_DIR/scripts/install-rhoai-34.sh" --source-only 2>/dev/null || true
+                local router_status
+                router_status=$(oc get pods -n openshift-ingress \
+                    -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                    -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+                if [ "$router_status" = "CrashLoopBackOff" ]; then
+                    print_warning "Router is in CrashLoopBackOff — restarting..."
+                    oc delete pod -n openshift-ingress \
+                        -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                        --wait=false 2>/dev/null
+                    sleep 10
+                    oc get pods -n openshift-ingress --no-headers
+                    print_success "Router pod restarted"
+                else
+                    local phase
+                    phase=$(oc get pods -n openshift-ingress \
+                        -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                        -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Unknown")
+                    print_success "Router is healthy (status: $phase)"
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                print_error "Invalid option"
+                ;;
+        esac
+    done
 }
 
 ################################################################################
@@ -4455,9 +4581,7 @@ rhoai_management_menu() {
                 read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
-                approve_pending_csrs
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
+                day2_operations_submenu
                 ;;
             8)
                 troubleshooting_submenu

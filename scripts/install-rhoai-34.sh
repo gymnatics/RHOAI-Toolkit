@@ -433,17 +433,27 @@ create_admin_user() {
     local admin_user="admin"
     local admin_pass='R3dh4t1!'
 
-    # Skip if already logged in as admin
-    local current_user
-    current_user=$(oc whoami 2>/dev/null || true)
-    if [ "$current_user" = "$admin_user" ]; then
-        print_info "Already logged in as '$admin_user' — skipping user creation"
+    # Check if admin user already exists in htpasswd
+    local admin_exists=false
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
+        if oc get secret htpasswd-secret -n openshift-config \
+            -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null | grep -q "^${admin_user}:"; then
+            admin_exists=true
+        fi
+    fi
+
+    if [ "$admin_exists" = true ]; then
+        print_info "Admin user '$admin_user' already exists — skipping creation"
+        # Ensure group membership is correct even if user already exists
+        if ! oc get group "$ADMIN_GROUP" &>/dev/null 2>&1; then
+            oc adm groups new "$ADMIN_GROUP" 2>/dev/null || true
+        fi
+        oc adm groups add-users "$ADMIN_GROUP" "$admin_user" 2>/dev/null || true
         return 0
     fi
 
     print_step "Creating OAuth admin user '$admin_user'..."
 
-    # Check if htpasswd CLI is available
     if ! command -v htpasswd &>/dev/null; then
         print_error "htpasswd CLI not found. Install httpd-tools (RHEL) or apache2-utils (Debian)."
         return 1
@@ -458,12 +468,8 @@ create_admin_user() {
             -o jsonpath='{.data.htpasswd}' | base64 -d > "$htpasswd_tmp" 2>/dev/null || true
     fi
 
-    if grep -q "^${admin_user}:" "$htpasswd_tmp" 2>/dev/null; then
-        print_info "User '$admin_user' already exists in htpasswd"
-    else
-        htpasswd -bB "$htpasswd_tmp" "$admin_user" "$admin_pass"
-        print_success "User '$admin_user' added to htpasswd"
-    fi
+    htpasswd -bB "$htpasswd_tmp" "$admin_user" "$admin_pass"
+    print_success "User '$admin_user' added to htpasswd"
 
     # Update secret
     oc create secret generic htpasswd-secret \
@@ -521,43 +527,19 @@ create_admin_user() {
     oc adm groups add-users "$ADMIN_GROUP" "$admin_user" 2>/dev/null || true
     print_info "User '$admin_user' added to group '$ADMIN_GROUP'"
 
-    # Wait for OAuth pods to restart so the new user becomes available
-    print_step "Waiting for OAuth pods to restart..."
-    local api_server
-    api_server=$(oc whoami --show-server)
+    # Don't switch sessions — continue using kube:admin for stability
+    # The OAuth config change triggers an API server rollout; avoid disruption
+    # by staying on the current session. User can log in as 'admin' later.
+    print_success "Admin user created. Continuing installation as $(oc whoami)"
+    print_info "Log in as '$admin_user' after installation: oc login -u $admin_user -p '$admin_pass'"
+    echo ""
 
-    local elapsed=0
-    local timeout=120
-    local interval=10
-
-    # Give OAuth a moment to begin rolling out
+    # Wait briefly for the OAuth rollout to settle, then recover router if needed
+    print_step "Waiting for API server to stabilize after OAuth change..."
     sleep 10
-    elapsed=10
-
-    while [ $elapsed -lt $timeout ]; do
-        if oc login -u "$admin_user" -p "$admin_pass" "$api_server" --insecure-skip-tls-verify=true &>/dev/null; then
-            print_success "Logged in as '$admin_user'"
-            echo ""
-            print_info "Session switched from kube:admin to $admin_user (cluster-admin)"
-            print_info "All subsequent operations will run as '$admin_user'"
-            # Wait for API server to stabilize after OAuth rollout
-            print_step "Waiting for API server to stabilize..."
-            sleep 15
-            wait_for_api_server 90
-            print_success "API server is stable"
-
-            # Recover router if it crashed during the API server rollout
-            recover_router_if_crashlooping
-            return 0
-        fi
-        sleep $interval
-        elapsed=$((elapsed + interval))
-        echo "  Waiting for OAuth... (${elapsed}s/${timeout}s)"
-    done
-
-    print_warning "Could not log in as '$admin_user' within ${timeout}s"
-    print_info "OAuth may still be restarting. Continuing as $(oc whoami)..."
-    print_info "You can log in manually later: oc login -u $admin_user -p '$admin_pass' $api_server"
+    wait_for_api_server 90
+    recover_router_if_crashlooping
+    print_success "Cluster stable — continuing installation"
 }
 
 scale_cluster_nodes() {
@@ -2105,6 +2087,10 @@ print_summary() {
     echo -e "${CYAN}Dashboard URL:${NC} https://${dashboard_url}"
     echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
     echo -e "${CYAN}Current User:${NC} $(oc whoami 2>/dev/null)"
+    echo ""
+    echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
+    echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+    echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
 
     if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
         echo -e "${CYAN}MaaS Gateway:${NC} https://maas.apps.${CLUSTER_DOMAIN}"
