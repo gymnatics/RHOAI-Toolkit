@@ -20,6 +20,7 @@ The notebooks in this directory are adapted from:
 |---|---|
 | `guidellm-benchmark.ipynb` | [1_eval_hub_guidellm_benchmark/1_guidellm_benchmark.ipynb](https://github.com/hyogrin/rhoai-lmeval-builder-lab/blob/main/1_eval_hub_guidellm_benchmark/1_guidellm_benchmark.ipynb) |
 | `korean-mcq-benchmark.ipynb` | [2_eval_hub_kmcq_benchmark/1_kmcq_benchmark.ipynb](https://github.com/hyogrin/rhoai-lmeval-builder-lab/blob/main/2_eval_hub_kmcq_benchmark/1_kmcq_benchmark.ipynb) |
+| `english-benchmark.ipynb` | New notebook based on the Korean MCQ pattern, adapted for standard English benchmarks (MMLU, ARC, HellaSwag, Winogrande, TruthfulQA, GSM8K) |
 
 ## Advanced Notebooks (Upstream Only)
 
