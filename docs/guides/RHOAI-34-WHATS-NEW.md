@@ -88,10 +88,13 @@ The MaaS core platform is GA, but several sub-features remain Technology Preview
 - Gateway discovery REST API
 
 ### EvalHub (Evaluation Stack)
-- UI for model evaluations in the dashboard
+- Deployed via TrustyAI Operator `EvalHub` CR (`trustyai.opendatahub.io/v1alpha1`)
+- UI for model evaluations in the dashboard (Develop and train > Evaluations)
 - SDK and CLI (`eval-hub-sdk`) for programmatic evaluation
-- Supports LM-Eval, RAGAS, Garak, GuideLLM frameworks
+- Providers: lm-evaluation-harness, Garak, GuideLLM, LightEval
+- Collections: leaderboard-v2, safety-and-fairness-v1
 - Results tracked in MLflow
+- Supports SQLite (dev) or PostgreSQL (production) backends
 
 ### Other Tech Preview Features
 - **Text embedding models** in Model Catalog (Granite Embedding, Nomic, Qwen3, MiniLM)

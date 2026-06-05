@@ -1,0 +1,66 @@
+# IFEval + BIG-Bench Hard (BBH)
+# Tests instruction following and advanced reasoning
+#
+# Usage:
+#   export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN
+#   envsubst < english-ifeval-bbh.yaml | oc apply -f -
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: LMEvalJob
+metadata:
+  name: eval-ifeval
+  namespace: ${NAMESPACE}
+spec:
+  model: local-completions
+  taskList:
+    taskNames:
+      - ifeval
+  numFewShot: 0
+  batchSize: "auto"
+  logSamples: true
+  pod:
+    container:
+      env:
+        - name: OPENAI_API_KEY
+          value: "${SA_TOKEN}"
+        - name: OPENAI_BASE_URL
+          value: "https://${MODEL_NAME}-predictor.${MODEL_NAMESPACE}.svc:8080/v1"
+        - name: OPENAI_VERIFY_SSL
+          value: "False"
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: LMEvalJob
+metadata:
+  name: eval-bbh
+  namespace: ${NAMESPACE}
+spec:
+  model: local-completions
+  taskList:
+    taskNames:
+      - bbh
+  numFewShot: 3
+  batchSize: "auto"
+  logSamples: true
+  pod:
+    container:
+      env:
+        - name: OPENAI_API_KEY
+          value: "${SA_TOKEN}"
+        - name: OPENAI_BASE_URL
+          value: "https://${MODEL_NAME}-predictor.${MODEL_NAMESPACE}.svc:8080/v1"
+        - name: OPENAI_VERIFY_SSL
+          value: "False"
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi

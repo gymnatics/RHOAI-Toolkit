@@ -1,0 +1,42 @@
+# EvalHub with PostgreSQL backend (production)
+# Use this instead of the default SQLite-based evalhub.yaml for persistent storage.
+#
+# Usage:
+#   1. Deploy PostgreSQL first (or use an existing instance)
+#   2. Create the database secret
+#   3. Apply this CR
+#
+#   export NAMESPACE=lmeval-demo
+#   envsubst < evalhub-postgresql.yaml | oc apply -f -
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: evalhub-db-credentials
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  db-url: "postgres://evalhub:changeme@postgresql.${NAMESPACE}.svc.cluster.local:5432/evalhub"
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: EvalHub
+metadata:
+  name: evalhub
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  database:
+    type: postgresql
+    secret: evalhub-db-credentials
+  providers:
+    - lm-evaluation-harness
+    - garak
+    - guidellm
+    - lighteval
+  collections:
+    - leaderboard-v2
+    - safety-and-fairness-v1
+    - toxicity-and-ethical-principles
+  env:
+    - name: MLFLOW_TRACKING_URI
+      value: "${MLFLOW_TRACKING_URI}"

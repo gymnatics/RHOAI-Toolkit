@@ -202,6 +202,10 @@ show_model_management_submenu() {
     echo -e "${YELLOW}7)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
     echo "    Create pre-configured profiles (Small/Medium/Large)"
     echo ""
+    echo -e "${MAGENTA}Model Catalog:${NC}"
+    echo -e "${YELLOW}8)${NC} Manage Model Catalog ${GREEN}[Add/Remove/List]${NC}"
+    echo "    Add, remove, rename entries in the RHOAI Model Catalog"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
 }
@@ -273,6 +277,39 @@ show_demos_submenu() {
     echo -e "${MAGENTA}API Gateway:${NC}"
     echo -e "${YELLOW}6)${NC} MaaS Demo ${GREEN}[Interactive]${NC}"
     echo "    Chat with models, compare responses, view metrics"
+    echo ""
+    echo -e "${MAGENTA}Additional Demos:${NC}"
+    echo -e "${YELLOW}7)${NC} Financial Loan Demo ${GREEN}[Predictive + GenAI]${NC}"
+    echo "    ML model training + LLM fine-tuning + web app"
+    echo ""
+    echo -e "${YELLOW}8)${NC} Marketing Assistant Demo ${YELLOW}[3x L40S GPU]${NC}"
+    echo "    Multi-agent A2A campaign manager with TrustyAI guardrails"
+    echo ""
+    echo -e "${YELLOW}9)${NC} AI Pipeline Demo ${GREEN}[KFP + Elyra]${NC}"
+    echo "    End-to-end ML pipeline with Model Registry versioning"
+    echo ""
+    echo -e "${YELLOW}10)${NC} NeMo Guardrails Demo ${GREEN}[RHOAI 3.4]${NC}"
+    echo "    CRD-based guardrails with PII detection and self-check rails"
+    echo ""
+    echo -e "${YELLOW}11)${NC} LMEval Builder Lab ${GREEN}[Benchmarks]${NC}"
+    echo "    Korean language benchmarks + GuideLLM + MLflow tracking"
+    echo ""
+    echo -e "${YELLOW}12)${NC} n8n Workflow Automation"
+    echo "    Deploy n8n workflow automation tool"
+    echo ""
+    echo -e "${YELLOW}13)${NC} MaaS Rate Limiting Demo ${GREEN}[API Keys + 429]${NC}"
+    echo "    Workbench with notebook to test API key auth and token rate limits"
+    echo ""
+    echo -e "${MAGENTA}Technology Preview:${NC}"
+    echo -e "${YELLOW}14)${NC} AutoML Demo ${YELLOW}[Tech Preview]${NC}"
+    echo "    Automated ML model training via AutoGluon + Kubeflow Pipelines"
+    echo ""
+    echo -e "${YELLOW}15)${NC} AutoRAG Demo ${YELLOW}[Tech Preview]${NC}"
+    echo "    Automated RAG pipeline optimization (requires Llama Stack + Milvus)"
+    echo ""
+    echo -e "${MAGENTA}Environment:${NC}"
+    echo -e "${YELLOW}16)${NC} Deploy Full Demo Environment ${GREEN}[All-in-One]${NC}"
+    echo "    Deploy all demos (except Marketing Assistant)"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -4386,7 +4423,7 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -p "Select an option (1-7, 0): " model_choice
+        read -p "Select an option (1-8, 0): " model_choice
         
         case $model_choice in
             1)
@@ -4424,11 +4461,16 @@ model_management_submenu() {
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
+            8)
+                "$SCRIPT_DIR/scripts/manage-model-catalog.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
             0)
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-7 or 0."
+                print_error "Invalid option. Please select 1-8 or 0."
                 sleep 1
                 ;;
         esac
@@ -4502,42 +4544,106 @@ ai_services_submenu() {
 demos_submenu() {
     while true; do
         show_demos_submenu
-        read -p "Select an option (1-6, 0): " demo_choice
+        read -p "Select an option (1-16, 0): " demo_choice
         
         case $demo_choice in
             1)
-                # Deploy Banking Demo (Feast)
                 deploy_banking_demo
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             2)
-                # Deploy Open WebUI
                 deploy_open_webui
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                # Deploy LlamaStack Demo
                 deploy_llamastack_demo_menu
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             4)
-                # Deploy GuideLLM
                 deploy_guidellm
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             5)
-                # Deploy Guardrails Demo
                 deploy_guardrails_demo
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             6)
-                # MaaS Demo
                 run_maas_demo
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/financial-loan-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/marketing-assistant-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/pipeline-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            10)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/nemo-guardrails-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            11)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/lmeval-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            12)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/n8n-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            13)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/maas-ratelimit-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            14)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/automl-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            15)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/autorag-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            16)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/scripts/deploy-demo-environment.sh" --skip-core
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
@@ -4545,7 +4651,7 @@ demos_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6 or 0."
+                print_error "Invalid option. Please select 1-16 or 0."
                 sleep 1
                 ;;
         esac

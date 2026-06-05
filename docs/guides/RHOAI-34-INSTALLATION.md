@@ -766,6 +766,68 @@ The toolkit can create demo users with htpasswd authentication and organize them
 
 ---
 
+## AI Pipelines (Pipeline Server)
+
+The toolkit can deploy a DataSciencePipelinesApplication (DSPA) to enable AI Pipelines in any project namespace.
+
+### Automated Setup (via install script)
+
+```bash
+./scripts/install-rhoai-34.sh --setup-pipelines --pipeline-namespace my-project
+```
+
+### Interactive Setup (via toolkit menu)
+
+```bash
+./rhoai-toolkit.sh
+# → RHOAI Management → Setup Pipeline Server
+```
+
+### Storage Options
+
+| Option | Description | Use Case |
+|--------|-------------|----------|
+| Built-in MinIO + MariaDB | DSPA operator deploys MinIO and MariaDB automatically | Dev/testing |
+| External S3 storage | Use existing S3-compatible storage (MinIO, AWS S3, etc.) | Production |
+| Standalone MinIO | Deploy a dedicated MinIO instance in the namespace | Shared environments |
+
+### Manual Setup
+
+```bash
+cat <<EOF | oc apply -f - -n <namespace>
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: pipelines-definition
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    cacheEnabled: true
+    pipelineStore: kubernetes
+  database:
+    mariaDB:
+      deploy: true
+      pvcSize: 10Gi
+  objectStorage:
+    minio:
+      deploy: true
+      pvcSize: 10Gi
+      image: 'quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance'
+  mlmd:
+    deploy: true
+EOF
+```
+
+### Verification
+
+```bash
+oc get dspa -n <namespace>
+oc get pods -n <namespace> | grep -E "ds-pipeline|mariadb|minio"
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Root Cause | Fix |

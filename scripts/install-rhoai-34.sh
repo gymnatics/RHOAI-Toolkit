@@ -54,6 +54,8 @@ POSTGRES_CONNECTION=""
 CLUSTER_DOMAIN=""
 WAIT_TIMEOUT=600
 RHOAI_CHANNEL=""
+SETUP_PIPELINES=false
+PIPELINE_NAMESPACE=""
 SETUP_USERS=false
 NUM_USERS=5
 ADMIN_GROUP="rhods-admins"
@@ -109,6 +111,10 @@ usage() {
     echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
     echo "  --timeout <seconds>    Wait timeout for operators (default: 600)"
+    echo ""
+    echo "AI Pipelines:"
+    echo "  --setup-pipelines      Deploy a pipeline server (DSPA) with built-in MinIO + MariaDB"
+    echo "  --pipeline-namespace <ns>  Namespace for pipeline server (default: prompts interactively)"
     echo ""
     echo "User Management:"
     echo "  --setup-users          Create demo users (user1..userN) with htpasswd + groups"
@@ -2379,6 +2385,15 @@ main() {
                 WAIT_TIMEOUT="$2"
                 shift 2
                 ;;
+            --setup-pipelines)
+                SETUP_PIPELINES=true
+                shift
+                ;;
+            --pipeline-namespace)
+                SETUP_PIPELINES=true
+                PIPELINE_NAMESPACE="$2"
+                shift 2
+                ;;
             --setup-users)
                 SETUP_USERS=true
                 shift
@@ -2469,6 +2484,10 @@ main() {
         configure_maas_tls
         configure_maas_rate_limiting
         verify_maas_deployment
+    fi
+
+    if [ "$SETUP_PIPELINES" = true ]; then
+        setup_pipeline_server "$PIPELINE_NAMESPACE"
     fi
 
     if [ "$SETUP_USERS" = true ]; then

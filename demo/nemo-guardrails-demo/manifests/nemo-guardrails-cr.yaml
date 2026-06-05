@@ -1,0 +1,26 @@
+# NeMo Guardrails Custom Resource
+#
+# Usage:
+#   export NAMESPACE=my-project GUARDRAILS_NAME=nemo-quickstart
+#   envsubst < nemo-guardrails-cr.yaml | oc apply -f -
+#
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: NemoGuardrails
+metadata:
+  name: ${GUARDRAILS_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    security.opendatahub.io/enable-auth: "true"
+spec:
+  nemoConfigs:
+    - name: ${GUARDRAILS_NAME}-config
+      configMaps:
+        - ${GUARDRAILS_NAME}-config
+  env:
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: api-token-secret
+          key: token
+          optional: true

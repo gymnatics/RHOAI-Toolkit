@@ -1918,12 +1918,17 @@ EOF
     echo ""
     
     # Demo usage instructions
-    echo -e "${CYAN}Demo Usage (from CAI Guide):${NC}"
+    echo -e "${CYAN}Demo Usage:${NC}"
     echo "  1. Create a Workbench in the '$namespace' project"
-    echo "     Image: Jupyter | Data Science | CPU | Python 3.12"
-    echo "  2. Clone: $git_url"
+    echo "     Image: Standard Data Science | default-profile"
+    echo "  2. Clone this repo in the workbench terminal:"
+    echo "     git clone https://github.com/gymnatics/openshift-installation.git"
     echo "  3. Copy Feature Store client config from dashboard"
-    echo "  4. Run online_retrieval.ipynb notebook"
+    echo "  4. Open demo/feast-demo/notebooks/"
+    echo "     feast-online-retrieval.ipynb  -- query features in real time"
+    echo "     feast-banking-complex.ipynb   -- advanced feature engineering"
+    echo ""
+    echo "  Original repo: $git_url"
     echo ""
 }
 
@@ -3198,8 +3203,9 @@ setup_pipeline_server() {
     fi
     
     echo -e "${YELLOW}Storage options:${NC}"
-    echo "  1) Use existing MinIO (create new bucket for pipelines)"
-    echo "  2) Deploy new MinIO in this namespace"
+    echo "  1) Built-in MinIO + MariaDB (simplest, for dev/testing)"
+    echo "  2) Use existing external S3 storage"
+    echo "  3) Deploy standalone MinIO in this namespace"
     echo ""
     read -p "Select option [1]: " storage_choice
     storage_choice="${storage_choice:-1}"
@@ -3212,61 +3218,78 @@ setup_pipeline_server() {
     local s3_host=""
     local s3_port="9000"
     local credentials_secret_name="pipelines-s3-credentials"
+    local use_builtin_storage=false
+    local dspa_name="pipelines-definition"
     
     if [ "$storage_choice" = "1" ]; then
-        # Reuse existing MinIO
+        # Built-in MinIO + MariaDB managed by the DSPA operator
+        use_builtin_storage=true
         echo ""
-        echo -e "${CYAN}Enter existing MinIO details:${NC}"
+        print_info "DSPA operator will deploy MinIO and MariaDB automatically"
+        print_info "This is recommended for development and testing"
+        echo ""
+        
+        read -p "  MinIO PVC size [10Gi]: " minio_pvc_size
+        minio_pvc_size="${minio_pvc_size:-10Gi}"
+        
+        read -p "  MariaDB PVC size [10Gi]: " mariadb_pvc_size
+        mariadb_pvc_size="${mariadb_pvc_size:-10Gi}"
+        
+    elif [ "$storage_choice" = "2" ]; then
+        # Reuse existing external S3
+        echo ""
+        echo -e "${CYAN}Enter existing S3-compatible storage details:${NC}"
         
         # Try to auto-detect from model-storage namespace
         local default_ns=$(echo "$minio_deployments" | head -1 | awk '{print $1}')
         default_ns="${default_ns:-model-storage}"
         
-        read -p "  MinIO namespace [$default_ns]: " minio_ns
-        minio_ns="${minio_ns:-$default_ns}"
+        read -p "  S3 host (e.g. minio.model-storage.svc.cluster.local): " s3_host
+        if [ -z "$s3_host" ]; then
+            read -p "  MinIO namespace [$default_ns]: " minio_ns
+            minio_ns="${minio_ns:-$default_ns}"
+            local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            detected_svc="${detected_svc:-minio}"
+            read -p "  MinIO service name [$detected_svc]: " minio_svc
+            minio_svc="${minio_svc:-$detected_svc}"
+            s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+        fi
         
-        # Find service name
-        local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
-        detected_svc="${detected_svc:-minio}"
-        
-        read -p "  MinIO service name [$detected_svc]: " minio_svc
-        minio_svc="${minio_svc:-$detected_svc}"
-        
-        s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
-        
-        read -p "  MinIO port [$s3_port]: " input_port
+        read -p "  S3 port [$s3_port]: " input_port
         s3_port="${input_port:-$s3_port}"
         
         read -p "  Pipeline bucket name [$s3_bucket]: " input_bucket
         s3_bucket="${input_bucket:-$s3_bucket}"
         
-        # Get credentials
-        local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
+        read -p "  S3 scheme (http/https) [$s3_scheme]: " input_scheme
+        s3_scheme="${input_scheme:-$s3_scheme}"
         
-        if [ -n "$detected_secret" ]; then
-            print_info "Found credentials secret: $detected_secret in $minio_ns"
-            read -p "  Use these credentials? (Y/n): " use_existing
-            if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
-                s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
-                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
-                s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
-                               oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+        # Get credentials
+        if [ -n "${minio_ns:-}" ]; then
+            local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
+            if [ -n "$detected_secret" ]; then
+                print_info "Found credentials secret: $detected_secret in $minio_ns"
+                read -p "  Use these credentials? (Y/n): " use_existing
+                if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
+                    s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
+                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
+                    s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
+                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+                fi
             fi
         fi
         
         if [ -z "$s3_access_key" ]; then
-            read -p "  MinIO access key [minio]: " s3_access_key
-            s3_access_key="${s3_access_key:-minio}"
-            read -p "  MinIO secret key [minio123]: " s3_secret_key
-            s3_secret_key="${s3_secret_key:-minio123}"
+            read -p "  S3 access key: " s3_access_key
+            read -p "  S3 secret key: " s3_secret_key
         fi
         
-        print_success "Using existing MinIO: $s3_host:$s3_port"
+        print_success "Using external S3: $s3_host:$s3_port"
         
     else
-        # Deploy new MinIO
+        # Deploy standalone MinIO
         echo ""
-        print_step "Deploying new MinIO in '$target_ns'..."
+        print_step "Deploying standalone MinIO in '$target_ns'..."
         
         s3_host="minio.${target_ns}.svc.cluster.local"
         s3_access_key="minio"
@@ -3379,14 +3402,43 @@ EOF
     fi
     
     ############################################################################
-    # Step 5: Create S3 credentials secret in target namespace
+    # Step 5: Create DSPA
     ############################################################################
-    print_step "Step 5: Creating S3 credentials secret..."
-    
-    if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
-        print_success "Credentials secret already exists [SKIP]"
-    else
+    if [ "$use_builtin_storage" = true ]; then
+        # Built-in approach: DSPA operator manages MinIO + MariaDB
+        print_step "Step 5: Creating DataSciencePipelinesApplication (built-in storage)..."
+        
         cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: $dspa_name
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    cacheEnabled: true
+    pipelineStore: kubernetes
+  database:
+    mariaDB:
+      deploy: true
+      pvcSize: $mariadb_pvc_size
+  objectStorage:
+    minio:
+      deploy: true
+      pvcSize: $minio_pvc_size
+      image: 'quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance'
+  mlmd:
+    deploy: true
+EOF
+    else
+        # External storage approach: create credentials secret first
+        print_step "Step 5: Creating S3 credentials secret..."
+        
+        if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
+            print_success "Credentials secret already exists [SKIP]"
+        else
+            cat <<EOF | oc apply -f - -n "$target_ns"
 apiVersion: v1
 kind: Secret
 metadata:
@@ -3398,17 +3450,12 @@ stringData:
   AWS_ACCESS_KEY_ID: "$s3_access_key"
   AWS_SECRET_ACCESS_KEY: "$s3_secret_key"
 EOF
-        print_success "Credentials secret created"
-    fi
-    
-    ############################################################################
-    # Step 6: Create DataSciencePipelinesApplication CR
-    ############################################################################
-    print_step "Step 6: Creating DataSciencePipelinesApplication..."
-    
-    local dspa_name="dspa"
-    
-    cat <<EOF | oc apply -f - -n "$target_ns"
+            print_success "Credentials secret created"
+        fi
+        
+        print_step "Step 6: Creating DataSciencePipelinesApplication..."
+        
+        cat <<EOF | oc apply -f - -n "$target_ns"
 apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
 kind: DataSciencePipelinesApplication
 metadata:
@@ -3417,6 +3464,7 @@ spec:
   dspVersion: v2
   apiServer:
     deploy: true
+    cacheEnabled: true
     pipelineStore: kubernetes
   objectStorage:
     externalStorage:
@@ -3428,12 +3476,15 @@ spec:
         secretName: "$credentials_secret_name"
         accessKey: AWS_ACCESS_KEY_ID
         secretKey: AWS_SECRET_ACCESS_KEY
+  mlmd:
+    deploy: true
 EOF
+    fi
     
     ############################################################################
-    # Step 7: Wait for pipeline server to be ready
+    # Wait for pipeline server to be ready
     ############################################################################
-    print_step "Step 7: Waiting for pipeline server to be ready..."
+    print_step "Waiting for pipeline server to be ready..."
     local elapsed=0
     while [ $elapsed -lt 180 ]; do
         local ready=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
@@ -3454,16 +3505,13 @@ EOF
         print_info "Check: oc get dspa $dspa_name -n $target_ns -o yaml"
     fi
     
-    ############################################################################
-    # Step 8: Show summary
-    ############################################################################
     _show_pipeline_server_summary "$target_ns" "$dspa_name"
 }
 
 # Internal helper: display pipeline server summary
 _show_pipeline_server_summary() {
     local target_ns="$1"
-    local dspa_name="${2:-dspa}"
+    local dspa_name="${2:-pipelines-definition}"
     
     echo ""
     print_header "Pipeline Server Summary"
@@ -3483,7 +3531,7 @@ _show_pipeline_server_summary() {
     
     # Pods
     echo -e "${CYAN}Pods:${NC}"
-    oc get pods -n "$target_ns" --no-headers 2>/dev/null | grep -E "ds-pipeline|mariadb" | sed 's/^/  /'
+    oc get pods -n "$target_ns" --no-headers 2>/dev/null | grep -E "ds-pipeline|mariadb|minio" | sed 's/^/  /'
     echo ""
     
     echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -1,0 +1,37 @@
+# MMLU - Massive Multitask Language Understanding
+# 57 subjects across STEM, humanities, social sciences, and more
+# Standard 5-shot evaluation
+#
+# Usage:
+#   export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN
+#   envsubst < english-mmlu.yaml | oc apply -f -
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: LMEvalJob
+metadata:
+  name: eval-mmlu
+  namespace: ${NAMESPACE}
+spec:
+  model: local-completions
+  taskList:
+    taskNames:
+      - mmlu
+  numFewShot: 5
+  batchSize: "auto"
+  logSamples: true
+  pod:
+    container:
+      env:
+        - name: OPENAI_API_KEY
+          value: "${SA_TOKEN}"
+        - name: OPENAI_BASE_URL
+          value: "https://${MODEL_NAME}-predictor.${MODEL_NAMESPACE}.svc:8080/v1"
+        - name: OPENAI_VERIFY_SSL
+          value: "False"
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi

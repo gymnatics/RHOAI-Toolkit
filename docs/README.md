@@ -68,6 +68,7 @@ Step-by-step instructions for common tasks.
 | [MCP Server Setup](guides/MCP-SERVER-SETUP.md) | Configure MCP servers |
 | [OCP MCP Server Deployment](guides/OCP-MCP-SERVER-DEPLOYMENT.md) | Deploy MCP servers on OpenShift |
 
+
 ---
 
 ## Reference

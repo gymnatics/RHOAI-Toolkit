@@ -77,7 +77,8 @@ oc get packagemanifest rhods-operator -n openshift-marketplace -o jsonpath='{.st
 | GPU Acceleration | NVIDIA GPU Operator, NFD |
 | Trainer (Kubeflow v2) | JobSet operator |
 | AutoML | AI Pipelines (Kubeflow Pipelines), S3 storage |
-| AutoRAG | AI Pipelines (Kubeflow Pipelines), S3 storage |
+| AutoRAG | AI Pipelines, Llama Stack Operator, Remote Milvus, S3 storage |
+| EvalHub | TrustyAI Managed, EvalHub CR, SQLite or PostgreSQL |
 | MLflow | MLflow Operator (DSC component) |
 | MaaS (3.4) | RHCL v1.2+, Gateway API, Istio, User Workload Monitoring |
 | MaaS (3.3) | RHCL v1.1+, Gateway API, Istio, cert-manager |

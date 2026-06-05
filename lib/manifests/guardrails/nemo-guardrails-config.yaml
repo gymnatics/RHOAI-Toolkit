@@ -1,0 +1,42 @@
+# NeMo Guardrails Basic Configuration
+# Built-in detectors only (Presidio PII + regex), no LLM required.
+#
+# Usage:
+#   export NAMESPACE=my-project GUARDRAILS_NAME=nemo-quickstart
+#   envsubst < nemo-guardrails-config.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GUARDRAILS_NAME}-config
+  namespace: ${NAMESPACE}
+data:
+  config.yaml: |
+    rails:
+      config:
+        sensitive_data_detection:
+          input:
+            entities:
+              - EMAIL_ADDRESS
+              - PERSON
+              - PHONE_NUMBER
+          output:
+            entities:
+              - EMAIL_ADDRESS
+              - PERSON
+        regex_detection:
+          input:
+            patterns:
+              - "\\b(password|secret|api[_-]?key|token)\\b"
+              - "\\d{3}-\\d{2}-\\d{4}"
+            case_insensitive: true
+      input:
+        flows:
+          - detect sensitive data on input
+          - regex check input
+      output:
+        flows:
+          - detect sensitive data on output
+  rails.co: |
+    # Using built-in rails only

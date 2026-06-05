@@ -1,0 +1,34 @@
+# EvalHub Custom Resource (Official RHOAI 3.4 TrustyAI Operator)
+# Deploys the EvalHub evaluation orchestration service.
+# Supports: lm-evaluation-harness, garak, guidellm, lighteval
+#
+# The TrustyAI Operator automatically reconciles this CR, creating
+# the server deployment, service, and route.
+#
+# Usage:
+#   export NAMESPACE=lmeval-demo
+#   envsubst < evalhub.yaml | oc apply -f -
+#
+# For dev/demo use, SQLite backend requires no external database.
+# For production, switch to postgresql with a database secret.
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: EvalHub
+metadata:
+  name: evalhub
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  database:
+    type: sqlite
+  providers:
+    - lm-evaluation-harness
+    - garak
+    - guidellm
+    - lighteval
+  collections:
+    - leaderboard-v2
+    - safety-and-fairness-v1
+  env:
+    - name: MLFLOW_TRACKING_URI
+      value: "${MLFLOW_TRACKING_URI}"

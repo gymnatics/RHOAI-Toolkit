@@ -46,9 +46,20 @@ help:
 	@echo ""
 	@echo -e "$(YELLOW)Demo & Tools:$(NC)"
 	@echo "  make setup-demo            Setup demo environment (MinIO, Open WebUI)"
+	@echo "  make setup-demo-environment Deploy full demo environment (all components)"
 	@echo "  make setup-mcp-kubernetes  Deploy Kubernetes MCP server"
 	@echo "  make setup-benchmarks      Deploy GuideLLM and Benchmark Arena"
 	@echo "  make setup-model-catalog   Configure custom model catalog"
+	@echo "  make manage-model-catalog  Interactive model catalog management"
+	@echo "  make deploy-n8n            Deploy n8n workflow automation"
+	@echo "  make deploy-financial-loan Deploy financial loan demo"
+	@echo "  make deploy-pipeline-demo  Deploy AI pipeline demo (KFP + Elyra)"
+	@echo "  make deploy-nemo-guardrails Deploy NeMo Guardrails (RHOAI 3.4)"
+	@echo "  make deploy-lmeval-lab     Deploy LMEval Builder Lab"
+	@echo "  make deploy-maas-ratelimit Deploy MaaS Rate Limiting Demo"
+	@echo "  make deploy-automl         Deploy AutoML Demo (Tech Preview)"
+	@echo "  make deploy-autorag        Deploy AutoRAG Demo (Tech Preview)"
+	@echo "  make deploy-open-webui     Deploy Open WebUI in own namespace"
 	@echo ""
 	@echo -e "$(YELLOW)Utilities:$(NC)"
 	@echo "  make check-operators       Check operator installation status"
@@ -203,6 +214,56 @@ setup-model-catalog:
 	@echo -e "$(GREEN)✓ Model catalog configured$(NC)"
 
 # =============================================================================
+# Full Demo Environment
+# =============================================================================
+
+.PHONY: setup-demo-environment
+setup-demo-environment:
+	@echo -e "$(GREEN)▶ Deploying full demo environment...$(NC)"
+	@$(BASE)/scripts/deploy-demo-environment.sh --skip-core
+	@echo -e "$(GREEN)✓ Demo environment deployed$(NC)"
+
+.PHONY: deploy-n8n
+deploy-n8n:
+	@$(BASE)/demo/n8n-demo/deploy.sh
+
+.PHONY: deploy-financial-loan
+deploy-financial-loan:
+	@$(BASE)/demo/financial-loan-demo/deploy.sh
+
+.PHONY: deploy-pipeline-demo
+deploy-pipeline-demo:
+	@$(BASE)/demo/pipeline-demo/deploy.sh
+
+.PHONY: deploy-nemo-guardrails
+deploy-nemo-guardrails:
+	@$(BASE)/demo/nemo-guardrails-demo/deploy.sh
+
+.PHONY: deploy-lmeval-lab
+deploy-lmeval-lab:
+	@$(BASE)/demo/lmeval-demo/deploy.sh
+
+.PHONY: deploy-maas-ratelimit
+deploy-maas-ratelimit:
+	@$(BASE)/demo/maas-ratelimit-demo/deploy.sh
+
+.PHONY: deploy-automl
+deploy-automl:
+	@$(BASE)/demo/automl-demo/deploy.sh
+
+.PHONY: deploy-autorag
+deploy-autorag:
+	@$(BASE)/demo/autorag-demo/deploy.sh
+
+.PHONY: deploy-open-webui
+deploy-open-webui:
+	@$(BASE)/demo/open-webui-demo/deploy.sh
+
+.PHONY: manage-model-catalog
+manage-model-catalog:
+	@$(BASE)/scripts/manage-model-catalog.sh
+
+# =============================================================================
 # Utilities
 # =============================================================================
 
@@ -255,5 +316,20 @@ show-urls:
 	@if oc get route open-webui -n $(NAMESPACE) >/dev/null 2>&1; then \
 		echo "Open WebUI:"; \
 		echo "  https://$$(oc get route open-webui -n $(NAMESPACE) -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route open-webui -n open-webui >/dev/null 2>&1; then \
+		echo "Open WebUI (standalone):"; \
+		echo "  https://$$(oc get route open-webui -n open-webui -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route n8n -n n8n >/dev/null 2>&1; then \
+		echo "n8n:"; \
+		echo "  https://$$(oc get route n8n -n n8n -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route evalhub -n lmeval-demo >/dev/null 2>&1; then \
+		echo "EvalHub:"; \
+		echo "  https://$$(oc get route evalhub -n lmeval-demo -o jsonpath='{.spec.host}')"; \
 		echo ""; \
 	fi

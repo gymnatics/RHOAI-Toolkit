@@ -1,0 +1,42 @@
+[
+  {
+    "question": "What serving runtimes does OpenShift AI support for LLM inference?",
+    "expected_answer": "OpenShift AI supports vLLM as the primary runtime for LLM inference, with features like continuous batching, PagedAttention, and tensor parallelism. Other runtimes include OpenVINO, AutoGluon, and MLServer."
+  },
+  {
+    "question": "What is Models as a Service (MaaS) in OpenShift AI?",
+    "expected_answer": "MaaS is a centralized model serving platform that provides subscription-based access, API key management, rate limiting, and tenant isolation. It enables organizations to offer LLM inference as an internal service with governance and cost visibility."
+  },
+  {
+    "question": "How does AutoML work in OpenShift AI?",
+    "expected_answer": "AutoML automates model training by accepting CSV data and a task type, then trains multiple candidate models using AutoGluon via Kubeflow Pipelines. Models are ranked on a leaderboard by optimized metric, and can be registered to Model Registry and deployed."
+  },
+  {
+    "question": "What are Hardware Profiles and why are they important?",
+    "expected_answer": "Hardware Profiles define GPU resource allocation including resource requests/limits, node selectors, and tolerations for GPU-tainted nodes. Models must reference a matching Hardware Profile to ensure correct GPU scheduling."
+  },
+  {
+    "question": "What is the difference between KServe Serverless and RawDeployment modes?",
+    "expected_answer": "Serverless uses Knative for automatic scaling including scale-to-zero, best for variable workloads. RawDeployment uses standard Kubernetes Deployments for predictable performance and is required for TrustyAI and NeMo Guardrails integration."
+  },
+  {
+    "question": "What is Elyra and how is it used for ML pipelines?",
+    "expected_answer": "Elyra is a visual pipeline editor in JupyterLab that lets you chain notebooks into pipelines without writing pipeline code. Each notebook becomes a pipeline step, enabling visual workflow creation."
+  },
+  {
+    "question": "What experiment tracking capabilities does OpenShift AI provide?",
+    "expected_answer": "OpenShift AI integrates MLflow as a managed DSC component for experiment tracking, model versioning, artifact management, and automatic logging from popular ML frameworks."
+  },
+  {
+    "question": "What GPUs does OpenShift AI support?",
+    "expected_answer": "OpenShift AI supports NVIDIA GPUs including A100, H100, H200 for large-scale training and inference, L40S for cost-effective inference, and T4 for development and small workloads."
+  },
+  {
+    "question": "What is the Feast operator used for?",
+    "expected_answer": "The Feast operator enables feature store capabilities for managing and serving machine learning features. It supports online and offline stores with integration into the RHOAI dashboard."
+  },
+  {
+    "question": "How does distributed training work in OpenShift AI?",
+    "expected_answer": "OpenShift AI supports distributed training via Kubeflow Trainer v2 with JIT checkpointing and S3 storage, and Ray for distributed computing and hyperparameter tuning. GPU scheduling is managed by Kueue."
+  }
+]

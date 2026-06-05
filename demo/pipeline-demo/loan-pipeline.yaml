@@ -1,0 +1,366 @@
+# PIPELINE DEFINITION
+# Name: loan-approval-training
+# Description: Train and register a loan approval ML model
+# Inputs:
+#    model_name: str [Default: 'loan-approval-classifier']
+#    model_version: str [Default: 'v1']
+#    raw_data_path: str [Default: 'https://raw.githubusercontent.com/cbtham/micro-financial-loan/main/data/sample-loans.csv']
+#    registry_url: str [Default: '']
+#    s3_bucket: str [Default: 'models']
+#    s3_endpoint: str [Default: 'http://minio.pipeline-demo.svc:9000']
+components:
+  comp-data-prep:
+    executorLabel: exec-data-prep
+    inputDefinitions:
+      parameters:
+        raw_data_path:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        cleaned_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-evaluate-model:
+    executorLabel: exec-evaluate-model
+    inputDefinitions:
+      artifacts:
+        test_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+  comp-register-model:
+    executorLabel: exec-register-model
+    inputDefinitions:
+      artifacts:
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        model_name:
+          parameterType: STRING
+        model_version:
+          parameterType: STRING
+        registry_url:
+          parameterType: STRING
+        s3_bucket:
+          parameterType: STRING
+        s3_endpoint:
+          parameterType: STRING
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        cleaned_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        test_data:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-data-prep:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - data_prep
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.4'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef data_prep(\n    raw_data_path: str,\n    cleaned_data: Output[Dataset],\n\
+          ):\n    \"\"\"Load and clean the loan dataset.\"\"\"\n    import pandas\
+          \ as pd\n\n    df = pd.read_csv(raw_data_path)\n\n    df = df.dropna()\n\
+          \    df = df.drop_duplicates()\n\n    numeric_cols = [\"age\", \"income\"\
+          , \"loan_amount\", \"interest_rate\",\n                    \"credit_score\"\
+          , \"dti_ratio\", \"employment_length\",\n                    \"num_credit_lines\"\
+          , \"delinquencies\"]\n    for col in numeric_cols:\n        if col in df.columns:\n\
+          \            mean_val = df[col].mean()\n            std_val = df[col].std()\n\
+          \            if std_val > 0:\n                df[col] = (df[col] - mean_val)\
+          \ / std_val\n\n    cat_cols = [\"home_ownership\", \"loan_purpose\"]\n \
+          \   df = pd.get_dummies(df, columns=cat_cols, drop_first=True)\n\n    df.to_csv(cleaned_data.path,\
+          \ index=False)\n    print(f\"Cleaned data: {len(df)} rows, {len(df.columns)}\
+          \ columns\")\n\n"
+        image: registry.redhat.io/ubi9/python-311:latest
+    exec-evaluate-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.14.4' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate_model(\n    trained_model: Input[Model],\n    test_data:\
+          \ Input[Dataset],\n    metrics: Output[Metrics],\n):\n    \"\"\"Evaluate\
+          \ the trained model and log metrics.\"\"\"\n    import pandas as pd\n  \
+          \  from sklearn.metrics import accuracy_score, precision_score, recall_score,\
+          \ f1_score\n    import joblib\n\n    clf = joblib.load(trained_model.path)\n\
+          \    test_df = pd.read_csv(test_data.path)\n\n    target = \"approved\"\n\
+          \    X_test = test_df.drop(columns=[target])\n    y_test = test_df[target]\n\
+          \n    y_pred = clf.predict(X_test)\n\n    accuracy = accuracy_score(y_test,\
+          \ y_pred)\n    precision = precision_score(y_test, y_pred, zero_division=0)\n\
+          \    recall = recall_score(y_test, y_pred, zero_division=0)\n    f1 = f1_score(y_test,\
+          \ y_pred, zero_division=0)\n\n    metrics.log_metric(\"accuracy\", accuracy)\n\
+          \    metrics.log_metric(\"precision\", precision)\n    metrics.log_metric(\"\
+          recall\", recall)\n    metrics.log_metric(\"f1_score\", f1)\n\n    print(f\"\
+          Accuracy:  {accuracy:.4f}\")\n    print(f\"Precision: {precision:.4f}\"\
+          )\n    print(f\"Recall:    {recall:.4f}\")\n    print(f\"F1 Score:  {f1:.4f}\"\
+          )\n\n"
+        image: registry.redhat.io/ubi9/python-311:latest
+    exec-register-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - register_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'boto3' 'joblib'\
+          \ 'requests'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.14.4' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef register_model(\n    trained_model: Input[Model],\n    model_name:\
+          \ str,\n    model_version: str,\n    s3_bucket: str,\n    s3_endpoint: str,\n\
+          \    registry_url: str,\n):\n    \"\"\"Upload model to S3 and register in\
+          \ Model Registry.\"\"\"\n    import joblib\n    import boto3\n    import\
+          \ requests\n    import os\n\n    s3_key = f\"models/{model_name}/{model_version}/model.joblib\"\
+          \n    s3_client = boto3.client(\n        \"s3\",\n        endpoint_url=s3_endpoint,\n\
+          \        aws_access_key_id=os.environ.get(\"AWS_ACCESS_KEY_ID\", \"minio\"\
+          ),\n        aws_secret_access_key=os.environ.get(\"AWS_SECRET_ACCESS_KEY\"\
+          , \"minio123\"),\n        verify=False,\n    )\n\n    try:\n        s3_client.head_bucket(Bucket=s3_bucket)\n\
+          \    except Exception:\n        s3_client.create_bucket(Bucket=s3_bucket)\n\
+          \n    s3_client.upload_file(trained_model.path, s3_bucket, s3_key)\n   \
+          \ s3_uri = f\"s3://{s3_bucket}/{s3_key}\"\n    print(f\"Model uploaded to\
+          \ {s3_uri}\")\n\n    if registry_url:\n        try:\n            resp =\
+          \ requests.post(\n                f\"{registry_url}/api/model_registry/v1alpha3/registered_models\"\
+          ,\n                json={\"name\": model_name, \"description\": \"Loan approval\
+          \ classifier\"},\n                verify=False,\n            )\n       \
+          \     model_id = resp.json().get(\"id\", \"unknown\")\n\n            requests.post(\n\
+          \                f\"{registry_url}/api/model_registry/v1alpha3/model_versions\"\
+          ,\n                json={\n                    \"name\": model_version,\n\
+          \                    \"registeredModelId\": model_id,\n                \
+          \    \"customProperties\": {\n                        \"s3_uri\": {\"string_value\"\
+          : s3_uri},\n                        \"framework\": {\"string_value\": \"\
+          sklearn\"},\n                    },\n                },\n              \
+          \  verify=False,\n            )\n            print(f\"Registered in Model\
+          \ Registry: {model_name} v{model_version}\")\n        except Exception as\
+          \ e:\n            print(f\"Model Registry registration skipped: {e}\")\n\
+          \n"
+        image: registry.redhat.io/ubi9/python-311:latest
+    exec-train-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ 'joblib'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.14.4' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_model(\n    cleaned_data: Input[Dataset],\n    trained_model:\
+          \ Output[Model],\n    test_data: Output[Dataset],\n):\n    \"\"\"Train a\
+          \ RandomForest classifier on loan data.\"\"\"\n    import pandas as pd\n\
+          \    from sklearn.model_selection import train_test_split\n    from sklearn.ensemble\
+          \ import RandomForestClassifier\n    import joblib\n\n    df = pd.read_csv(cleaned_data.path)\n\
+          \n    target = \"approved\"\n    X = df.drop(columns=[target, \"loan_id\"\
+          ], errors=\"ignore\")\n    y = df[target]\n\n    X_train, X_test, y_train,\
+          \ y_test = train_test_split(\n        X, y, test_size=0.2, random_state=42,\
+          \ stratify=y\n    )\n\n    clf = RandomForestClassifier(\n        n_estimators=100,\
+          \ max_depth=10, random_state=42\n    )\n    clf.fit(X_train, y_train)\n\n\
+          \    joblib.dump(clf, trained_model.path)\n    print(f\"Model trained on\
+          \ {len(X_train)} samples\")\n\n    test_df = X_test.copy()\n    test_df[target]\
+          \ = y_test\n    test_df.to_csv(test_data.path, index=False)\n\n"
+        image: registry.redhat.io/ubi9/python-311:latest
+pipelineInfo:
+  description: Train and register a loan approval ML model
+  name: loan-approval-training
+root:
+  dag:
+    tasks:
+      data-prep:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-data-prep
+        inputs:
+          parameters:
+            raw_data_path:
+              componentInputParameter: raw_data_path
+        taskInfo:
+          name: data-prep
+      evaluate-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate-model
+        dependentTasks:
+        - train-model
+        inputs:
+          artifacts:
+            test_data:
+              taskOutputArtifact:
+                outputArtifactKey: test_data
+                producerTask: train-model
+            trained_model:
+              taskOutputArtifact:
+                outputArtifactKey: trained_model
+                producerTask: train-model
+        taskInfo:
+          name: evaluate-model
+      register-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-register-model
+        dependentTasks:
+        - train-model
+        inputs:
+          artifacts:
+            trained_model:
+              taskOutputArtifact:
+                outputArtifactKey: trained_model
+                producerTask: train-model
+          parameters:
+            model_name:
+              componentInputParameter: model_name
+            model_version:
+              componentInputParameter: model_version
+            registry_url:
+              componentInputParameter: registry_url
+            s3_bucket:
+              componentInputParameter: s3_bucket
+            s3_endpoint:
+              componentInputParameter: s3_endpoint
+        taskInfo:
+          name: register-model
+      train-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - data-prep
+        inputs:
+          artifacts:
+            cleaned_data:
+              taskOutputArtifact:
+                outputArtifactKey: cleaned_data
+                producerTask: data-prep
+        taskInfo:
+          name: train-model
+  inputDefinitions:
+    parameters:
+      model_name:
+        defaultValue: loan-approval-classifier
+        isOptional: true
+        parameterType: STRING
+      model_version:
+        defaultValue: v1
+        isOptional: true
+        parameterType: STRING
+      raw_data_path:
+        defaultValue: https://raw.githubusercontent.com/cbtham/micro-financial-loan/main/data/sample-loans.csv
+        isOptional: true
+        parameterType: STRING
+      registry_url:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      s3_bucket:
+        defaultValue: models
+        isOptional: true
+        parameterType: STRING
+      s3_endpoint:
+        defaultValue: http://minio.pipeline-demo.svc:9000
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.14.4

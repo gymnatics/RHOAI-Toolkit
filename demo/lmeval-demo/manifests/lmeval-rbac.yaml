@@ -1,0 +1,49 @@
+# RBAC for LMEval Builder Lab
+# Grants permissions to create LMEvalJob CRs and access model endpoints.
+#
+# Usage:
+#   export NAMESPACE=lmeval-demo
+#   envsubst < lmeval-rbac.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lmeval-sa
+  namespace: ${NAMESPACE}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lmeval-sa-token
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/service-account.name: lmeval-sa
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lmeval-sa-view
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: lmeval-sa
+    namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lmeval-sa-lmevaljob-${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: lmeval-sa
+    namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-operator-lmevaljob-editor-role

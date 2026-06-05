@@ -58,7 +58,23 @@ docs/reference/CAI's guide to RHOAI 3.0.txt
 docs/guides/(DRAFTY)*
 docs/reference/(DRAFTY)*
 
+# Personal presentation files
+docs/guides/MLflow-OpenShift-AI-Presentation.md
+
+# Generated env files (contain cluster-specific values)
+demo/**/notebooks/.env
+demo/**/.env
+
 # Python cache
 __pycache__/
 *.pyc
 rhoai-info.txt
+
+# Agent context files
+CLAUDE.md
+.cursor/plans/
+
+# External/temp directories
+colleague-repo/
+llamastack-demo/
+dify-debug/

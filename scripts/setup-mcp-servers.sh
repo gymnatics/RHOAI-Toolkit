@@ -58,11 +58,12 @@ echo -e "${YELLOW}MCP (Model Context Protocol) servers enable AI agents to inter
 echo ""
 echo "Available MCP servers:"
 echo "  1) GitHub MCP Server - Interact with GitHub repositories"
-echo "  2) Filesystem MCP Server - Access files and directories"
-echo "  3) Brave Search MCP Server - Web search capabilities"
-echo "  4) PostgreSQL MCP Server - Database queries"
-echo "  5) Sequential Thinking MCP Server - Multi-step reasoning"
-echo "  6) Custom MCP Server - Add your own"
+echo "  2) Kubernetes/OpenShift MCP Server - Cluster operations, pods, logs, resources"
+echo "  3) Filesystem MCP Server - Access files and directories"
+echo "  4) Brave Search MCP Server - Web search capabilities"
+echo "  5) PostgreSQL MCP Server - Database queries"
+echo "  6) Sequential Thinking MCP Server - Multi-step reasoning"
+echo "  7) Custom MCP Server - Add your own"
 echo ""
 
 read -p "Which MCP servers would you like to enable? (comma-separated, e.g., 1,2,3 or 'all'): " mcp_choice
@@ -101,6 +102,159 @@ if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 1 ]]; then
 fi
 
 if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 2 ]]; then
+    echo ""
+    print_info "Kubernetes/OpenShift MCP Server (github.com/openshift/openshift-mcp-server)"
+    print_info "Native Go implementation -- no kubectl dependency, supports CRUD, Helm, Tekton, metrics"
+    echo ""
+
+    K8S_MCP_URL="http://kubernetes-mcp-server.mcp-servers.svc.cluster.local:8080"
+
+    read -p "Deploy Kubernetes MCP Server to cluster? (Y/n): " deploy_k8s
+    deploy_k8s="${deploy_k8s:-Y}"
+
+    if [[ "$deploy_k8s" =~ ^[Yy]$ ]]; then
+        oc create namespace mcp-servers 2>/dev/null || true
+
+        if command -v helm &>/dev/null; then
+            print_info "Deploying Kubernetes MCP Server via Helm..."
+            helm upgrade --install kubernetes-mcp-server \
+                oci://ghcr.io/containers/charts/kubernetes-mcp-server \
+                -n mcp-servers \
+                --set config.port=8080 \
+                --set extraArgs='{--read-only}' 2>/dev/null && \
+                print_success "Kubernetes MCP Server deployed via Helm" || \
+                print_warning "Helm install failed -- deploying manually"
+        fi
+
+        if ! oc get deployment kubernetes-mcp-server -n mcp-servers &>/dev/null 2>&1; then
+            print_info "Deploying Kubernetes MCP Server natively..."
+            cat <<K8SMCPEOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp-servers
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-view
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-mcp-server
+  namespace: mcp-servers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp-servers
+data:
+  config.toml: |
+    port = "8080"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp-servers
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: kubernetes-mcp-server
+        image: quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/openshift-mcp-server:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - "--config"
+        - "/etc/kubernetes-mcp-server/config.toml"
+        - "--read-only"
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: config
+          mountPath: /etc/kubernetes-mcp-server
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: kubernetes-mcp-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  namespace: mcp-servers
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+K8SMCPEOF
+            print_success "Kubernetes MCP Server deployed"
+        fi
+    else
+        read -p "Enter Kubernetes MCP Server URL (or press Enter for default): " k8s_url_input
+        K8S_MCP_URL="${k8s_url_input:-$K8S_MCP_URL}"
+    fi
+
+    print_info "Adding Kubernetes MCP Server to ConfigMap..."
+    MCP_DATA+='  Kubernetes-MCP-Server: |
+    {
+      "url": "'"$K8S_MCP_URL"'/mcp",
+      "description": "Kubernetes and OpenShift cluster operations. List, get, create, update, delete any resource. Pod logs, exec, events, Helm, Tekton pipelines."
+    }
+'
+fi
+
+if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 3 ]]; then
     echo ""
     read -p "Deploy Filesystem MCP Server to cluster? (y/N): " deploy_fs
     
@@ -170,7 +324,7 @@ FSEOF
 '
 fi
 
-if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 3 ]]; then
+if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 4 ]]; then
     echo ""
     read -p "Enter Brave Search API Key (or press Enter to skip): " brave_key
     
@@ -199,7 +353,7 @@ if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 3 ]]; then
 '
 fi
 
-if [[ "$mcp_choice" =~ 4 ]]; then
+if [[ "$mcp_choice" =~ 5 ]]; then
     echo ""
     print_info "PostgreSQL MCP Server Configuration"
     read -p "Enter PostgreSQL connection string (e.g., postgres://user:pass@host:5432/db): " pg_conn
@@ -215,7 +369,7 @@ if [[ "$mcp_choice" =~ 4 ]]; then
 '
 fi
 
-if [[ "$mcp_choice" =~ 5 ]]; then
+if [[ "$mcp_choice" =~ 6 ]]; then
     echo ""
     local seq_url="http://sequential-thinking-mcp-server.mcp-servers.svc.cluster.local:8080"
     read -p "Enter Sequential Thinking MCP Server URL (or press Enter for default): " seq_url_input
@@ -230,7 +384,7 @@ if [[ "$mcp_choice" =~ 5 ]]; then
 '
 fi
 
-if [[ "$mcp_choice" =~ 6 ]]; then
+if [[ "$mcp_choice" =~ 7 ]]; then
     echo ""
     print_info "Custom MCP Server Configuration"
     read -p "Enter MCP server name: " custom_name
