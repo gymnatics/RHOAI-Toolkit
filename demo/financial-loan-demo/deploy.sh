@@ -117,6 +117,61 @@ stringData:
   AWS_S3_ENDPOINT: http://minio.${NAMESPACE}.svc.cluster.local:9000
 DCEOF
 
+# --- Upload training dataset to MinIO ---
+DATA_EXISTS=false
+if [ -n "$MINIO_POD" ]; then
+    if oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c \
+        'mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null && mc stat local/datasets/microloan-dataset/application_train.csv 2>/dev/null' &>/dev/null; then
+        DATA_EXISTS=true
+        print_info "Training dataset already in MinIO"
+    fi
+fi
+
+if [ "$DATA_EXISTS" = false ] && [ -n "$MINIO_POD" ]; then
+    echo ""
+    print_step "Training dataset (Home Credit Default Risk) not found in MinIO."
+    echo ""
+    echo "  The notebook requires application_train.csv (~158 MB) from Kaggle."
+    echo "  Before proceeding, you must:"
+    echo "    1. Have a Kaggle account (https://www.kaggle.com)"
+    echo "    2. Accept the competition rules at:"
+    echo "       https://www.kaggle.com/c/home-credit-default-risk/rules"
+    echo "    3. Create an API token at: https://www.kaggle.com/settings"
+    echo ""
+    read -rp "Enter your Kaggle API token (or press Enter to skip): " KAGGLE_TOKEN
+    if [ -n "$KAGGLE_TOKEN" ]; then
+        print_step "Downloading dataset from Kaggle..."
+        TMPDIR=$(mktemp -d)
+        export KAGGLE_API_TOKEN="$KAGGLE_TOKEN"
+        if command -v kaggle &>/dev/null || pip3 install -q kaggle 2>/dev/null; then
+            if kaggle competitions download -c home-credit-default-risk -f application_train.csv -p "$TMPDIR" 2>&1; then
+                if [ -f "$TMPDIR/application_train.csv.zip" ]; then
+                    unzip -o "$TMPDIR/application_train.csv.zip" -d "$TMPDIR" 2>/dev/null
+                fi
+                if [ -f "$TMPDIR/application_train.csv" ]; then
+                    print_step "Uploading to MinIO (this may take a minute)..."
+                    oc exec -i "$MINIO_POD" -n "$NAMESPACE" -- sh -c 'cat > /tmp/application_train.csv' \
+                        < "$TMPDIR/application_train.csv" 2>/dev/null
+                    oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
+                        mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
+                        mc cp /tmp/application_train.csv local/datasets/microloan-dataset/application_train.csv 2>/dev/null
+                        rm /tmp/application_train.csv
+                    ' 2>/dev/null && print_success "Training dataset uploaded to MinIO" || \
+                        print_warning "Upload failed -- upload manually from the workbench"
+                fi
+            else
+                print_warning "Download failed -- make sure you accepted the competition rules"
+            fi
+        else
+            print_warning "Could not install kaggle CLI"
+        fi
+        rm -rf "$TMPDIR"
+        unset KAGGLE_API_TOKEN
+    else
+        print_info "Skipped -- you can download the dataset later from the workbench notebook"
+    fi
+fi
+
 # --- Check for ML ServingRuntime (CPU) ---
 if oc get servingruntime -A --no-headers 2>/dev/null | grep -qi mlserver; then
     print_info "MLServer ServingRuntime available (supports sklearn + xgboost)"
@@ -168,6 +223,7 @@ S3_BUCKET_MODELS=models
 NAMESPACE=${NAMESPACE}
 SKLEARN_API_URL=${SKLEARN_API_URL}
 LLM_URL=${LLM_URL}
+HF_MODEL_ID=${HF_MODEL_ID:-Qwen/Qwen3-4B-Instruct-2507}
 "
 
 oc create configmap demo-config-env \
