@@ -65,6 +65,37 @@ oc extract secret/pipelines-s3-credentials --to=-
 
 > **Note:** The deploy script grants workbench service accounts the `edit` role so Elyra can upload and run pipelines.
 
+## Data Flow (Elyra Pipeline)
+
+Each Elyra notebook step runs in an isolated container. Data is passed between steps via MinIO (S3):
+
+```
+MinIO (pipelines bucket)
+├── data/sample-loans.csv            ← input data (uploaded by deploy.sh)
+├── pipeline-artifacts/cleaned-data.csv  ← output of step 1
+├── pipeline-artifacts/model.joblib      ← output of step 2
+├── pipeline-artifacts/test-data.csv     ← output of step 2
+└── pipeline-artifacts/metrics.json      ← output of step 3
+
+MinIO (models bucket)
+└── models/loan-approval-classifier/v1/model.joblib  ← output of step 4
+```
+
+> **Future:** Adding RWX (ReadWriteMany) shared storage would allow notebooks to use local file paths instead of S3, simplifying the pipeline notebooks.
+
 ## Sample Data
 
 `data/sample-loans.csv` -- 20 sample loan applications with features like income, credit score, DTI ratio.
+
+Upload to MinIO for the Elyra pipeline:
+```bash
+# From the workbench terminal
+pip install boto3
+python -c "
+import boto3
+s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+                  aws_access_key_id='minio', aws_secret_access_key='minio123', verify=False)
+s3.upload_file('data/sample-loans.csv', 'pipelines', 'data/sample-loans.csv')
+print('Uploaded')
+"
+```
