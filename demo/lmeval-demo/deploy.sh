@@ -151,6 +151,10 @@ subjects:
   namespace: ${EVALHUB_NAMESPACE}
 EORBAC
 
+    # Create the SA that EvalHub uses to run eval jobs in this namespace
+    oc create sa evalhub-${EVALHUB_NAMESPACE}-job -n "$NAMESPACE" 2>/dev/null || true
+    oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:evalhub-${EVALHUB_NAMESPACE}-job" -n "$NAMESPACE" 2>/dev/null || true
+
     EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
     if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then
         EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $EVALHUB_NAMESPACE)"
