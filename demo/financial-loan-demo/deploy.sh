@@ -93,7 +93,7 @@ if [ -n "$MINIO_POD" ]; then
         mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
         mc mb --ignore-existing local/models 2>/dev/null
         mc mb --ignore-existing local/datasets 2>/dev/null
-    ' 2>/dev/null || true
+    ' &>/dev/null || true
 fi
 
 # Data connection for RHOAI dashboard
@@ -172,15 +172,18 @@ if [ "$DATA_EXISTS" = false ] && [ -n "$MINIO_POD" ]; then
     fi
 fi
 
-# --- Check for ML ServingRuntime (CPU) ---
-if oc get servingruntime -A --no-headers 2>/dev/null | grep -qi mlserver; then
-    print_info "MLServer ServingRuntime available (supports sklearn + xgboost)"
+# --- Check for predictive ServingRuntime (CPU) ---
+PREDICTIVE_RUNTIME_EXISTS=$(oc get servingruntime -A -o jsonpath='{range .items[*]}{.spec.supportedModelFormats[*].name}{" "}{end}' 2>/dev/null)
+if echo "$PREDICTIVE_RUNTIME_EXISTS" | grep -qi -E 'sklearn|xgboost|lightgbm'; then
+    print_info "Predictive ServingRuntime available (supports sklearn/xgboost)"
 else
-    print_step "Installing XGBoost ServingRuntime (no MLServer found)..."
+    print_step "No predictive ServingRuntime found -- installing XGBServer..."
     if [ -f "$REPO_PATH/serving-runtimes/xgbserver-kserve.yaml" ]; then
         oc apply -n "$NAMESPACE" -f "$REPO_PATH/serving-runtimes/xgbserver-kserve.yaml" 2>/dev/null && \
             print_success "XGBoost ServingRuntime installed (CPU, no GPU required)" || \
             print_warning "Failed to install -- import ServingRuntime manually from dashboard"
+    else
+        print_warning "Install MLServer or XGBServer from the RHOAI dashboard (Settings > Serving runtimes)"
     fi
 fi
 
@@ -194,20 +197,64 @@ if [ -z "$LLM_URL" ]; then
         LLM_URL="${MAAS_GATEWAY}/v1/chat/completions"
         print_success "Detected MaaS gateway"
     else
-        FIRST_ISVC=$(oc get inferenceservice -A --no-headers 2>/dev/null | head -1)
-        if [ -n "$FIRST_ISVC" ]; then
-            isvc_ns=$(echo "$FIRST_ISVC" | awk '{print $1}')
-            isvc_name=$(echo "$FIRST_ISVC" | awk '{print $2}')
-            LLM_URL="https://${isvc_name}-predictor.${isvc_ns}.svc:8080/v1/chat/completions"
-            print_success "Detected InferenceService: $isvc_name"
+        # Prefer LLMInferenceService (GenAI), then vLLM InferenceService; skip predictive models
+        LLM_ISVC=""
+        LLM_ISVC_NS=""
+        FIRST_LLMISVC=$(oc get llmisvc -A --no-headers 2>/dev/null | head -1)
+        if [ -n "$FIRST_LLMISVC" ]; then
+            LLM_ISVC_NS=$(echo "$FIRST_LLMISVC" | awk '{print $1}')
+            LLM_ISVC=$(echo "$FIRST_LLMISVC" | awk '{print $2}')
+        else
+            # Look for vLLM-based InferenceService (skip sklearn/xgboost/lightgbm)
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                ns=$(echo "$line" | awk '{print $1}')
+                name=$(echo "$line" | awk '{print $2}')
+                runtime=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.runtime}' 2>/dev/null)
+                fmt=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null)
+                # Skip predictive model formats
+                if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
+                    continue
+                fi
+                LLM_ISVC_NS="$ns"
+                LLM_ISVC="$name"
+                break
+            done < <(oc get inferenceservice -A --no-headers 2>/dev/null)
+        fi
+
+        if [ -n "$LLM_ISVC" ]; then
+            LLM_URL="https://${LLM_ISVC}-predictor.${LLM_ISVC_NS}.svc:8080/v1/chat/completions"
+            print_success "Detected LLM: $LLM_ISVC (ns: $LLM_ISVC_NS)"
         else
             LLM_URL="https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions"
-            print_warning "No model detected -- deploy a model first"
+            print_warning "No LLM model detected -- deploy a GenAI model first"
         fi
     fi
 fi
 
-SKLEARN_API_URL="https://microloan-sklearn-${NAMESPACE}.apps.${CLUSTER_DOMAIN}/v2/models/microloan-sklearn/infer"
+# --- Detect predictive model endpoint ---
+SKLEARN_MODEL_NAME=""
+# Look for a predictive InferenceService in this namespace first, then any namespace
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    sk_ns=$(echo "$line" | awk '{print $1}')
+    sk_name=$(echo "$line" | awk '{print $2}')
+    sk_fmt=$(oc get inferenceservice "$sk_name" -n "$sk_ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null)
+    if echo "$sk_fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
+        SKLEARN_MODEL_NAME="$sk_name"
+        SKLEARN_MODEL_NS="$sk_ns"
+        break
+    fi
+done < <(oc get inferenceservice -n "$NAMESPACE" --no-headers 2>/dev/null; oc get inferenceservice -A --no-headers 2>/dev/null)
+
+if [ -n "$SKLEARN_MODEL_NAME" ]; then
+    SKLEARN_API_URL="https://${SKLEARN_MODEL_NAME}-${SKLEARN_MODEL_NS}.apps.${CLUSTER_DOMAIN}/v2/models/${SKLEARN_MODEL_NAME}/infer"
+    print_success "Detected predictive model: $SKLEARN_MODEL_NAME (ns: $SKLEARN_MODEL_NS)"
+else
+    SKLEARN_MODEL_NAME="microloan-sklearn"
+    SKLEARN_API_URL="https://${SKLEARN_MODEL_NAME}-${NAMESPACE}.apps.${CLUSTER_DOMAIN}/v2/models/${SKLEARN_MODEL_NAME}/infer"
+    print_info "No predictive model deployed yet -- using default name: $SKLEARN_MODEL_NAME"
+fi
 
 # --- Generate demo-config.env for vendored notebooks ---
 MINIO_SVC="http://minio.${NAMESPACE}.svc:9000"
@@ -237,13 +284,16 @@ WEBAPP_DIR="$SCRIPT_DIR/web-application"
 if [ "$SKIP_WEBAPP" = false ] && [ -d "$WEBAPP_DIR" ]; then
     print_step "Deploying web application in $NAMESPACE..."
 
-    # Auto-detect LLM model name from deployed models
+    # Auto-detect LLM model name (reuse the LLM_ISVC found during endpoint detection)
     LLM_MODEL_NAME="${LLM_MODEL_NAME:-}"
     if [ -z "$LLM_MODEL_NAME" ]; then
-        LLM_MODEL_NAME=$(oc get inferenceservice -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
-        [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME=$(oc get llmisvc -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
-        [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME="qwen3-4b"
-        print_info "Auto-detected LLM model name: $LLM_MODEL_NAME"
+        if [ -n "${LLM_ISVC:-}" ]; then
+            LLM_MODEL_NAME="$LLM_ISVC"
+        else
+            LLM_MODEL_NAME=$(oc get llmisvc -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
+            [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME="qwen3-4b"
+        fi
+        print_info "LLM model name for web app: $LLM_MODEL_NAME"
     fi
 
     # Patch the deployment.yaml namespace and apply
