@@ -103,6 +103,16 @@ if [ -f "$ELYRA_TEMPLATE" ] && [ -f "$ELYRA_SETUP" ]; then
         --from-file="template=${ELYRA_TEMPLATE}" \
         --from-file="setup.sh=${ELYRA_SETUP}" \
         -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+
+    WB_SA=$(oc get pods -n "$NAMESPACE" -l app=ai-pipelines -o jsonpath='{.items[0].spec.serviceAccountName}' 2>/dev/null)
+    WB_SA="${WB_SA:-$(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name!="builder")].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -v '^default$\|^deployer$\|^pipeline' | head -1)}"
+    if [ -n "$WB_SA" ]; then
+        oc create rolebinding "${WB_SA}-view" \
+            --clusterrole=view \
+            --serviceaccount="${NAMESPACE}:${WB_SA}" \
+            -n "$NAMESPACE" 2>/dev/null || true
+    fi
+
     print_success "Elyra runtime template + setup script stored in ConfigMap 'elyra-runtime-config'"
     print_info "In workbench terminal, run:"
     echo "    bash <(oc get cm elyra-runtime-config -o jsonpath='{.data.setup\\.sh}')"
