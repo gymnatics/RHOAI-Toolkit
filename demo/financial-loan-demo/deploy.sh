@@ -206,20 +206,18 @@ if [ -z "$LLM_URL" ]; then
             LLM_ISVC=$(echo "$FIRST_LLMISVC" | awk '{print $2}')
         else
             # Look for vLLM-based InferenceService (skip sklearn/xgboost/lightgbm)
-            while IFS= read -r line; do
+            while IFS= read -r line || [ -n "$line" ]; do
                 [ -z "$line" ] && continue
                 ns=$(echo "$line" | awk '{print $1}')
                 name=$(echo "$line" | awk '{print $2}')
-                runtime=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.runtime}' 2>/dev/null)
-                fmt=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null)
-                # Skip predictive model formats
+                fmt=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
                 if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
                     continue
                 fi
                 LLM_ISVC_NS="$ns"
                 LLM_ISVC="$name"
                 break
-            done < <(oc get inferenceservice -A --no-headers 2>/dev/null)
+            done < <(oc get inferenceservice -A --no-headers 2>/dev/null || true) || true
         fi
 
         if [ -n "$LLM_ISVC" ]; then
@@ -234,18 +232,19 @@ fi
 
 # --- Detect predictive model endpoint ---
 SKLEARN_MODEL_NAME=""
+SKLEARN_MODEL_NS=""
 # Look for a predictive InferenceService in this namespace first, then any namespace
-while IFS= read -r line; do
+while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     sk_ns=$(echo "$line" | awk '{print $1}')
     sk_name=$(echo "$line" | awk '{print $2}')
-    sk_fmt=$(oc get inferenceservice "$sk_name" -n "$sk_ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null)
+    sk_fmt=$(oc get inferenceservice "$sk_name" -n "$sk_ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
     if echo "$sk_fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
         SKLEARN_MODEL_NAME="$sk_name"
         SKLEARN_MODEL_NS="$sk_ns"
         break
     fi
-done < <(oc get inferenceservice -n "$NAMESPACE" --no-headers 2>/dev/null; oc get inferenceservice -A --no-headers 2>/dev/null)
+done < <(oc get inferenceservice -n "$NAMESPACE" --no-headers 2>/dev/null || true; oc get inferenceservice -A --no-headers 2>/dev/null || true) || true
 
 if [ -n "$SKLEARN_MODEL_NAME" ]; then
     SKLEARN_API_URL="https://${SKLEARN_MODEL_NAME}-${SKLEARN_MODEL_NS}.apps.${CLUSTER_DOMAIN}/v2/models/${SKLEARN_MODEL_NAME}/infer"
