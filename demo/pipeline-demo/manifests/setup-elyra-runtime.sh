@@ -26,10 +26,10 @@ fi
 
 S3_ACCESS_KEY=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" \
     -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
-S3_SECRET_KEY=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" \
+S3_COS_PASS=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" \
     -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
 
-if [ -z "$S3_ACCESS_KEY" ] || [ -z "$S3_SECRET_KEY" ]; then
+if [ -z "$S3_ACCESS_KEY" ] || [ -z "$S3_COS_PASS" ]; then
     echo "ERROR: Could not read S3 credentials from secret '$SECRET_NAME'."
     exit 1
 fi
@@ -48,7 +48,7 @@ if [ -z "$TEMPLATE" ]; then
     "cos_bucket": "pipelines",
     "cos_auth_type": "USER_CREDENTIALS",
     "cos_username": "${S3_ACCESS_KEY}",
-    "cos_password": "${S3_SECRET_KEY}",
+    "cos_password": "${S3_COS_PASS}",
     "tags": []
   },
   "schema_name": "kfp"
@@ -58,7 +58,7 @@ fi
 RUNTIME_DIR="$HOME/.local/share/jupyter/metadata/runtimes"
 mkdir -p "$RUNTIME_DIR"
 
-export NAMESPACE S3_ACCESS_KEY S3_SECRET_KEY
+export NAMESPACE S3_ACCESS_KEY S3_COS_PASS
 echo "$TEMPLATE" | envsubst > "$RUNTIME_DIR/pipeline-demo.json"
 
 echo "Elyra runtime configured: $RUNTIME_DIR/pipeline-demo.json"

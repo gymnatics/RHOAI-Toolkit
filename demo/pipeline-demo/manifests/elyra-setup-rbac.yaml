@@ -10,5 +10,5 @@ rules:
   verbs: ["get"]
 - apiGroups: [""]
   resources: ["configmaps"]
-  resourceNames: ["elyra-runtime-config"]
+  resourceNames: ["elyra-runtime-config", "elyra-runtime-ready"]
   verbs: ["get"]
