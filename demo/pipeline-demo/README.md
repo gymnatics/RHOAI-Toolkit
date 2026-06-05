@@ -33,7 +33,33 @@ Visual notebook pipeline for JupyterLab:
 3. `03-evaluate.ipynb` -- evaluation metrics
 4. `04-register.ipynb` -- S3 upload + Model Registry
 
-Open in the Elyra workbench and create a pipeline from these notebooks.
+#### Elyra Runtime Setup (one-time, inside workbench)
+
+Before submitting an Elyra pipeline, configure a Kubeflow Pipelines runtime:
+
+1. Open the **Runtime Configuration** panel (wrench icon in left sidebar)
+2. Click **+** and select **Kubeflow Pipelines**
+3. Fill in:
+
+| Field | Value |
+|-------|-------|
+| Display Name | `pipeline-demo` |
+| Kubeflow Pipelines API Endpoint | `http://ds-pipeline-pipelines-definition.<namespace>.svc:8888` |
+| Cloud Object Storage Endpoint | `http://minio.<namespace>.svc:9000` |
+| Cloud Object Storage Bucket | `pipelines` |
+| Cloud Object Storage Username | *(from `pipelines-s3-credentials` secret, key `AWS_ACCESS_KEY_ID`)* |
+| Cloud Object Storage Password | *(from `pipelines-s3-credentials` secret, key `AWS_SECRET_ACCESS_KEY`)* |
+
+Replace `<namespace>` with your project name (default: `pipeline-demo`).
+
+To retrieve the S3 credentials, run in the workbench terminal:
+
+```bash
+oc extract secret/pipelines-s3-credentials --to=-
+```
+
+4. Click **Save**
+5. Open a `.pipeline` file and submit -- the runtime should now appear in the dropdown.
 
 ## Sample Data
 

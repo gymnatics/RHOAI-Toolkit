@@ -92,58 +92,7 @@ else
     print_info "Model Registry can be set up via RHOAI dashboard."
 fi
 
-# --- Step 4: Create Elyra runtime config ---
-print_step "Creating Elyra runtime configuration..."
-
-ELYRA_TEMPLATE="$SCRIPT_DIR/manifests/elyra-runtime-config.json.template"
-
-if [ -f "$ELYRA_TEMPLATE" ]; then
-    S3_CREDS_JSON=$(oc get secret pipelines-s3-credentials -n "$NAMESPACE" -o json 2>/dev/null || true)
-
-    if [ -n "$S3_CREDS_JSON" ]; then
-        POPULATED=$(echo "$S3_CREDS_JSON" | python3 -c "
-import sys, json, base64, os
-d = json.load(sys.stdin)['data']
-keys = sorted(d.keys())
-os.environ['S3_ACCESS_KEY'] = base64.b64decode(d[keys[0]]).decode()
-os.environ['S3_COS_PASS'] = base64.b64decode(d[keys[1]]).decode()
-os.environ['NAMESPACE'] = os.environ.get('NAMESPACE', 'pipeline-demo')
-tmpl = open(sys.argv[1]).read()
-from string import Template
-import re
-result = tmpl
-for k, v in os.environ.items():
-    result = result.replace('\${' + k + '}', v)
-print(result)
-" "$ELYRA_TEMPLATE")
-        oc create configmap elyra-runtime-ready \
-            --from-literal="pipeline-demo.json=${POPULATED}" \
-            -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
-
-        ELYRA_RBAC="$SCRIPT_DIR/manifests/elyra-setup-rbac.yaml"
-        if [ -f "$ELYRA_RBAC" ]; then
-            envsubst < "$ELYRA_RBAC" | oc apply -f - 2>/dev/null
-            for WB_SA in $(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-                case "$WB_SA" in builder|default|deployer|ds-pipeline-*|pipeline-runner-*) continue ;; esac
-                oc create rolebinding "${WB_SA}-elyra-setup" \
-                    --role=elyra-setup \
-                    --serviceaccount="${NAMESPACE}:${WB_SA}" \
-                    -n "$NAMESPACE" 2>/dev/null || true
-            done
-        fi
-
-        print_success "Elyra runtime config created (ConfigMap 'elyra-runtime-ready')"
-        print_info "In workbench terminal, run:"
-        echo "    mkdir -p ~/.local/share/jupyter/metadata/runtimes"
-        echo "    oc get cm elyra-runtime-ready -o jsonpath='{.data.pipeline-demo\\.json}' > ~/.local/share/jupyter/metadata/runtimes/pipeline-demo.json"
-    else
-        print_warning "S3 credentials not found -- create Elyra runtime manually after pipeline server is ready"
-    fi
-else
-    print_warning "Elyra template not found at $ELYRA_TEMPLATE -- create runtime manually"
-fi
-
-# --- Step 5: Compile KFP pipeline if SDK is available ---
+# --- Step 4: Compile KFP pipeline if SDK is available ---
 print_step "KFP pipeline..."
 if command -v python3 &>/dev/null && python3 -c "import kfp" 2>/dev/null; then
     (cd "$SCRIPT_DIR" && python3 pipeline-kfp.py)
@@ -175,9 +124,7 @@ echo "     - Upload YAML to RHOAI dashboard Pipelines"
 echo ""
 echo "  Elyra notebook pipeline (pipeline-elyra/):"
 echo "     01-data-prep.ipynb -> 02-train.ipynb -> 03-evaluate.ipynb -> 04-register.ipynb"
-echo "     Setup runtime (run once in workbench terminal):"
-echo "       mkdir -p ~/.local/share/jupyter/metadata/runtimes"
-echo "       oc get cm elyra-runtime-ready -o jsonpath='{.data.pipeline-demo\\.json}' > ~/.local/share/jupyter/metadata/runtimes/pipeline-demo.json"
+echo "     Setup: configure Elyra runtime manually (see README.md)"
 echo ""
 echo "  Sample data: data/sample-loans.csv"
 echo ""
