@@ -2,7 +2,7 @@
   "display_name": "${NAMESPACE}",
   "metadata": {
     "runtime_type": "KUBEFLOW_PIPELINES",
-    "api_endpoint": "https://ds-pipeline-pipelines-definition.${NAMESPACE}.svc:8443",
+    "api_endpoint": "http://ds-pipeline-pipelines-definition.${NAMESPACE}.svc:8888",
     "cos_endpoint": "http://minio.${NAMESPACE}.svc:9000",
     "cos_bucket": "pipelines",
     "cos_auth_type": "USER_CREDENTIALS",
