@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microloan Approval System - AI-Powered Decision Support</title>
+    <link rel="icon" type="image/png" href="static/images/logo.png">
+    <link rel="stylesheet" href="static/css/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="static/images/logo.png" alt="Logo" style="width: 60px; height: 60px; border-radius: 12px;">
+                <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                    <span class="nav-title" style="font-size: 2rem;">Loan Default Prediction</span>
+                    <span class="powered-by">powered by Red Hat AI</span>
+                </div>
+            </div>
+            <div class="nav-actions">
+                <button class="nav-btn" id="historyBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    History
+                </button>
+                <div class="user-profile">
+                    <div class="avatar">FA</div>
+                    <span class="user-name">Financial Advisor</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-section quick-actions-section">
+                <h3 class="sidebar-title">Quick Actions</h3>
+                <button class="sidebar-btn active" id="newApplicationBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"/>
+                        <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    New Application
+                </button>
+                <button class="sidebar-btn" id="savedApplicationsBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    Saved Applications
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <h3 class="sidebar-title">Sample Profiles</h3>
+                <button class="sample-btn" data-sample="1">
+                    <div class="sample-info">
+                        <div class="sample-name">Low-Risk Applicant</div>
+                        <div class="sample-desc">Age 38, Sales Staff, $85K income</div>
+                    </div>
+                </button>
+                <button class="sample-btn" data-sample="2">
+                    <div class="sample-info">
+                        <div class="sample-name">High-Risk Applicant</div>
+                        <div class="sample-desc">Age 17, Student, $0 income</div>
+                    </div>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <h3 class="sidebar-title">System Status</h3>
+                <div class="status-indicator">
+                    <div class="status-dot online"></div>
+                    <span>ML: XGBoost Classifier</span>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot online"></div>
+                    <span>LLM: Qwen3-4B-fine-tuned</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Application Form Section -->
+            <section class="card" id="applicationForm">
+                <div class="card-header">
+                    <div>
+                        <h2 class="card-title">Loan Application Assessment</h2>
+                        <p class="card-subtitle">Enter applicant information to receive AI-powered approval prediction</p>
+                    </div>
+                    <button class="btn-secondary" id="clearFormBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="1 4 1 10 7 10"/>
+                            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                        </svg>
+                        Reset Form
+                    </button>
+                </div>
+
+                <form id="loanForm">
+                    <!-- Personal Information -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Personal Information</h3>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="age">Age (years)</label>
+                                <input type="number" id="age" name="DAYS_BIRTH" step="0.01" placeholder="35" required>
+                            </div>
+                            <div class="form-field">
+                                <label for="education">Education Level</label>
+                                <select id="education" name="NAME_EDUCATION_LEVEL" required>
+                                    <option value="">Select education level</option>
+                                    <option value="Tertiary_qualification">Tertiary Qualification</option>
+                                    <option value="Secondary_education">Secondary Education</option>
+                                    <option value="No_secondary_or_higher_education">No Secondary/Higher Education</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="maritalStatus">Marital Status</label>
+                                <select id="maritalStatus" name="NAME_FAMILY_STATUS" required>
+                                    <option value="">Select marital status</option>
+                                    <option value="Married">Married</option>
+                                    <option value="Single">Single / Other</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="familyMembers">Household Members</label>
+                                <input type="number" id="familyMembers" name="CNT_FAM_MEMBERS" placeholder="4" required>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Employment Information -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Employment & Income</h3>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="occupation">Occupation Type</label>
+                                <select id="occupation" name="OCCUPATION_TYPE" required>
+                                    <option value="">Select occupation</option>
+                                    <option value="Laborers">Laborer</option>
+                                    <option value="Sales_staff">Sales Staff</option>
+                                    <option value="Unemployed">Unemployed</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="employmentYears">Employment Duration (years)</label>
+                                <input type="number" id="employmentYears" name="DAYS_EMPLOYED" step="0.01" placeholder="5" required>
+                                <small class="field-hint">Enter 0 if currently unemployed</small>
+                            </div>
+                            <div class="form-field form-field-wide">
+                                <label for="annualIncome">Annual Income ($)</label>
+                                <input type="number" id="annualIncome" name="AMT_INCOME_TOTAL" placeholder="50000" required>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Loan Details -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Loan Details</h3>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="loanAmount">Requested Loan Amount ($)</label>
+                                <input type="number" id="loanAmount" name="AMT_CREDIT" placeholder="10000" required>
+                            </div>
+                            <div class="form-field">
+                                <label for="annualRepayment">Annual Repayment Amount ($)</label>
+                                <input type="number" id="annualRepayment" name="AMT_ANNUITY" placeholder="2500" required>
+                            </div>
+                            <div class="form-field">
+                                <label for="goodsPrice">Cost of Goods/Equipment ($)</label>
+                                <input type="number" id="goodsPrice" name="AMT_GOODS_PRICE" placeholder="8000" required>
+                            </div>
+                            <div class="form-field">
+                                <label for="externalScore">External Credit Score (0-1)</label>
+                                <input type="number" id="externalScore" name="EXT_SOURCE_3" step="0.01" min="0" max="1" placeholder="0.5" value="0.5" required>
+                                <small class="field-hint">Third-party credit bureau score normalized to 0-1</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Housing & Location -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Housing & Location</h3>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="housingType">Housing Type</label>
+                                <select id="housingType" name="NAME_HOUSING_TYPE" required>
+                                    <option value="">Select housing type</option>
+                                    <option value="House_apartment">Owned (House/Apartment)</option>
+                                    <option value="With_parents">Rented / With Parents</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="populationDensity">Population Density (Relative)</label>
+                                <input type="number" id="populationDensity" name="REGION_POPULATION_RELATIVE" step="0.001" placeholder="0.035" required>
+                                <small class="field-hint">Regional population density factor (0.001 - 0.1)</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Contact Information -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Contact Information</h3>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="hasMobile">Mobile Phone</label>
+                                <select id="hasMobile" name="FLAG_MOBIL" required>
+                                    <option value="Yes">Yes</option>
+                                    <option value="No">No</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="hasEmail">Email Address</label>
+                                <select id="hasEmail" name="FLAG_EMAIL" required>
+                                    <option value="Yes">Yes</option>
+                                    <option value="No">No</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label for="hasWorkPhone">Work Phone</label>
+                                <select id="hasWorkPhone" name="FLAG_WORK_PHONE" required>
+                                    <option value="Yes">Yes</option>
+                                    <option value="No">No</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary" id="analyzeBtn">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                <polyline points="22 4 12 14.01 9 11.01"/>
+                            </svg>
+                            Analyze Application
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Results Section (Initially Hidden) -->
+            <section class="card" id="resultsSection" style="display: none;">
+                <div class="card-header">
+                    <h2 class="card-title">Assessment Results</h2>
+                    <div class="result-timestamp" id="resultTimestamp"></div>
+                </div>
+
+                <!-- Prediction Result -->
+                <div class="result-main">
+                    <div class="result-decision" id="decisionContainer">
+                        <div class="decision-icon" id="decisionIcon"></div>
+                        <div class="decision-content">
+                            <div class="decision-label">Loan Decision</div>
+                            <div class="decision-value" id="decisionValue">Approved</div>
+                        </div>
+                    </div>
+
+                    <div class="result-metrics">
+                        <div class="metric-card">
+                            <div class="metric-label">Approval Probability</div>
+                            <div class="metric-value" id="approvalProb">92.5%</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill" id="approvalBar"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Default Risk</div>
+                            <div class="metric-value" id="defaultProb">7.5%</div>
+                            <div class="metric-bar risk">
+                                <div class="metric-bar-fill" id="defaultBar"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Credit Score Category</div>
+                            <div class="metric-value" id="creditCategory">Good</div>
+                            <div class="credit-badge" id="creditBadge"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Key Factors -->
+                <div class="result-section" id="keyFactorsSection" style="display: none;">
+                    <h3 class="result-section-title">Key Influencing Factors</h3>
+                    <div class="factors-grid" id="factorsGrid">
+                        <!-- Factors will be dynamically inserted here -->
+                    </div>
+                </div>
+
+                <!-- AI Explanation -->
+                <div class="result-section">
+                    <div class="explanation-header">
+                        <h3 class="result-section-title">Explanation</h3>
+                        <button class="btn-primary btn-large" id="generateExplanationBtn">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                                <line x1="12" y1="17" x2="12.01" y2="17"/>
+                            </svg>
+                            Generate Explanation
+                        </button>
+                    </div>
+                    <div class="explanation-container" id="explanationContainer">
+                        <div class="explanation-placeholder">
+                            Click "Generate Explanation" to receive an AI-powered analysis of this decision using our thinking model.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="result-actions">
+                    <button class="btn-secondary" id="adviseClientBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                        Advise Client
+                    </button>
+                    <button class="btn-secondary" id="saveReportBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                            <polyline points="17 21 17 13 7 13 7 21"/>
+                            <polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        Save Report
+                    </button>
+                    <button class="btn-secondary" id="newAssessmentBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        New Assessment
+                    </button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Mobile Menu Overlay -->
+    <div class="mobile-menu-overlay" id="mobileMenuOverlay">
+        <div class="mobile-menu">
+            <div class="mobile-menu-header">
+                <h3>Sample Profiles</h3>
+                <button class="mobile-menu-close" id="mobileMenuClose">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <button class="mobile-sample-btn" data-sample="1">
+                    <div class="sample-name">Young Professional</div>
+                    <div class="sample-desc">Age 44, Laborer, $25K income</div>
+                </button>
+                <button class="mobile-sample-btn" data-sample="2">
+                    <div class="sample-name">High-Risk Applicant</div>
+                    <div class="sample-desc">Age 82, Unemployed, $10K income</div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner-ring"></div>
+            <div class="spinner-text">Analyzing application...</div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">
+        <div class="toast-content">
+            <svg class="toast-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <span class="toast-message" id="toastMessage">Action completed successfully</span>
+        </div>
+    </div>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

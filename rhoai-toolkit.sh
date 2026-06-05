@@ -178,32 +178,35 @@ show_model_management_submenu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${MAGENTA}Model Deployment:${NC}"
-    echo -e "${YELLOW}1)${NC} Deploy Model"
-    echo "    Interactive model deployment to OpenShift AI"
+    echo -e "${YELLOW}1)${NC} Deploy GenAI Model"
+    echo "    Interactive LLM deployment (vLLM, llm-d, etc.)"
     echo ""
-    echo -e "${YELLOW}2)${NC} Add Model to Playground"
+    echo -e "${YELLOW}2)${NC} Deploy Predictive Model ${GREEN}[New]${NC}"
+    echo "    Deploy sklearn/xgboost/lightgbm/onnx from S3/MinIO (CPU)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Add Model to Playground"
     echo "    Test models interactively in GenAI Studio"
     echo ""
     echo -e "${MAGENTA}Model Storage (HuggingFace → S3):${NC}"
-    echo -e "${YELLOW}3)${NC} Setup Model Storage (MinIO) ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}4)${NC} Setup Model Storage (MinIO) ${GREEN}[New]${NC}"
     echo "    Deploy MinIO S3 storage for HuggingFace models"
     echo ""
-    echo -e "${YELLOW}4)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}5)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
     echo "    Download models to S3 for deployment"
     echo ""
     echo -e "${MAGENTA}Serving Runtimes:${NC}"
-    echo -e "${YELLOW}5)${NC} Manage Serving Runtimes ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}6)${NC} Manage Serving Runtimes ${GREEN}[New]${NC}"
     echo "    Add/export runtimes (vLLM-Omni, Community vLLM, Red Hat vLLM)"
     echo ""
     echo -e "${MAGENTA}Hardware Profiles:${NC}"
-    echo -e "${YELLOW}6)${NC} Create GPU Hardware Profile (Custom)"
+    echo -e "${YELLOW}7)${NC} Create GPU Hardware Profile (Custom)"
     echo "    Define custom GPU resources for model deployments"
     echo ""
-    echo -e "${YELLOW}7)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
+    echo -e "${YELLOW}8)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
     echo "    Create pre-configured profiles (Small/Medium/Large)"
     echo ""
     echo -e "${MAGENTA}Model Catalog:${NC}"
-    echo -e "${YELLOW}8)${NC} Manage Model Catalog ${GREEN}[Add/Remove/List]${NC}"
+    echo -e "${YELLOW}9)${NC} Manage Model Catalog ${GREEN}[Add/Remove/List]${NC}"
     echo "    Add, remove, rename entries in the RHOAI Model Catalog"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
@@ -4138,6 +4141,118 @@ deploy_model_interactive() {
 }
 
 ################################################################################
+# Predictive Model Deployment (interactive wrapper)
+################################################################################
+
+deploy_predictive_model_interactive() {
+    print_header "Deploy Predictive Model (CPU)"
+
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+
+    source "$SCRIPT_DIR/lib/utils/colors.sh"
+    source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
+
+    # Select namespace
+    echo -e "${YELLOW}Available data science projects:${NC}"
+    oc get projects -l opendatahub.io/dashboard=true --no-headers 2>/dev/null | awk '{print "  " $1}'
+    echo ""
+    read -rp "Namespace to deploy in: " target_ns
+    if [ -z "$target_ns" ]; then
+        print_error "Namespace is required"
+        return 1
+    fi
+    if ! oc get project "$target_ns" &>/dev/null; then
+        print_error "Project '$target_ns' does not exist"
+        return 1
+    fi
+
+    # Select model format
+    echo ""
+    echo -e "${YELLOW}Model format:${NC}"
+    echo "  1) sklearn"
+    echo "  2) xgboost"
+    echo "  3) lightgbm"
+    echo "  4) onnx"
+    echo "  5) mlflow"
+    read -rp "Select format [1]: " fmt_choice
+    local model_format
+    case "${fmt_choice:-1}" in
+        1) model_format="sklearn" ;;
+        2) model_format="xgboost" ;;
+        3) model_format="lightgbm" ;;
+        4) model_format="onnx" ;;
+        5) model_format="mlflow" ;;
+        *) model_format="sklearn" ;;
+    esac
+
+    # Model name
+    echo ""
+    read -rp "Model name (InferenceService name) [my-model]: " model_name
+    model_name="${model_name:-my-model}"
+
+    # S3 storage path
+    echo ""
+    echo -e "${YELLOW}S3 path to model artifacts (e.g. s3://models/my-model/):${NC}"
+
+    # List available buckets from MinIO if possible
+    local minio_pod
+    minio_pod=$(oc get pod -n "$target_ns" -l app=minio --no-headers 2>/dev/null | awk 'NR==1{print $1}')
+    if [ -n "$minio_pod" ]; then
+        echo -e "${CYAN}Available paths in MinIO:${NC}"
+        oc exec -n "$target_ns" "$minio_pod" -- sh -c 'ls /data/ 2>/dev/null' | while read -r bucket; do
+            echo "  s3://$bucket/"
+            oc exec -n "$target_ns" "$minio_pod" -- sh -c "ls /data/$bucket/ 2>/dev/null" | while read -r prefix; do
+                echo "    s3://$bucket/$prefix/"
+            done
+        done
+        echo ""
+    fi
+
+    read -rp "Storage URI: " storage_uri
+    if [ -z "$storage_uri" ]; then
+        print_error "Storage URI is required (e.g. s3://models/my-model/)"
+        return 1
+    fi
+
+    # Data connection
+    echo ""
+    echo -e "${YELLOW}Available data connections in $target_ns:${NC}"
+    oc get secret -n "$target_ns" -l opendatahub.io/dashboard=true --no-headers 2>/dev/null | awk '{print "  " $1}' || true
+    local default_dc="aws-connection-minio"
+    if oc get secret aws-connection-minio -n "$target_ns" &>/dev/null; then
+        echo ""
+        echo -e "${CYAN}Default: $default_dc${NC}"
+    fi
+    read -rp "Data connection secret [$default_dc]: " data_conn
+    data_conn="${data_conn:-$default_dc}"
+
+    # Confirm and deploy
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                  Deployment Summary                            ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  ${BLUE}Name:${NC}            $model_name"
+    echo -e "  ${BLUE}Namespace:${NC}       $target_ns"
+    echo -e "  ${BLUE}Format:${NC}          $model_format"
+    echo -e "  ${BLUE}Storage URI:${NC}     $storage_uri"
+    echo -e "  ${BLUE}Data Connection:${NC} $data_conn"
+    echo ""
+    read -rp "Deploy? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+
+    deploy_predictive_model "$model_name" "$target_ns" "$storage_uri" \
+        --format "$model_format" \
+        --data-connection "$data_conn"
+}
+
+################################################################################
 # RHOAI Management Functions
 ################################################################################
 
@@ -4423,7 +4538,7 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -p "Select an option (1-8, 0): " model_choice
+        read -p "Select an option (1-9, 0): " model_choice
         
         case $model_choice in
             1)
@@ -4432,36 +4547,41 @@ model_management_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             2)
-                add_model_to_playground_interactive
+                deploy_predictive_model_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                setup_model_storage_interactive
+                add_model_to_playground_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             4)
-                download_hf_model_interactive
+                setup_model_storage_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             5)
-                "$SCRIPT_DIR/scripts/add-serving-runtime.sh"
+                download_hf_model_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             6)
-                create_hardware_profile_interactive
+                "$SCRIPT_DIR/scripts/add-serving-runtime.sh"
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             7)
-                create_hardware_profile_quick
+                create_hardware_profile_interactive
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             8)
+                create_hardware_profile_quick
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
                 "$SCRIPT_DIR/scripts/manage-model-catalog.sh"
                 echo ""
                 read -p "Press Enter to continue..."
@@ -4470,7 +4590,7 @@ model_management_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8 or 0."
+                print_error "Invalid option. Please select 1-9 or 0."
                 sleep 1
                 ;;
         esac

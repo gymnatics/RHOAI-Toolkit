@@ -299,6 +299,263 @@ EOF
 }
 
 ################################################################################
+# Predictive Model Deployment (sklearn, xgboost, lightgbm, etc.)
+################################################################################
+
+# Deploy a predictive model stored in S3/MinIO using KServe InferenceService.
+# Supports any model format that MLServer or OpenVINO can serve (CPU-only).
+#
+# Usage: deploy_predictive_model <name> <namespace> <storage_uri> [options]
+#
+# Required:
+#   name         - InferenceService name (e.g. microloan-sklearn)
+#   namespace    - Target namespace
+#   storage_uri  - S3 path to the model (e.g. s3://models/microloan-sklearn/)
+#
+# Options:
+#   --format     - Model format: sklearn, xgboost, lightgbm, mlflow, onnx (default: sklearn)
+#   --runtime    - Serving runtime name (auto-detected if omitted)
+#   --replicas   - Min replicas (default: 1)
+#   --timeout    - Wait timeout in seconds (default: 300)
+#   --no-wait    - Don't wait for model to become ready
+#   --data-connection - Name of existing data connection secret (default: aws-connection-minio)
+#
+# Examples:
+#   deploy_predictive_model microloan-sklearn financial-loan-demo s3://models/microloan-sklearn/
+#   deploy_predictive_model fraud-xgb myns s3://models/fraud/ --format xgboost
+#   deploy_predictive_model iris-onnx demo s3://models/iris/ --format onnx --runtime ovms
+deploy_predictive_model() {
+    local name=""
+    local namespace=""
+    local storage_uri=""
+    local model_format="sklearn"
+    local runtime_override=""
+    local min_replicas=1
+    local wait_timeout=300
+    local do_wait=true
+    local data_connection="aws-connection-minio"
+
+    # Parse positional + flag arguments
+    local positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --format)       model_format="$2"; shift 2 ;;
+            --runtime)      runtime_override="$2"; shift 2 ;;
+            --replicas)     min_replicas="$2"; shift 2 ;;
+            --timeout)      wait_timeout="$2"; shift 2 ;;
+            --no-wait)      do_wait=false; shift ;;
+            --data-connection) data_connection="$2"; shift 2 ;;
+            *)              positional+=("$1"); shift ;;
+        esac
+    done
+    name="${positional[0]:-}"
+    namespace="${positional[1]:-}"
+    storage_uri="${positional[2]:-}"
+
+    if [ -z "$name" ] || [ -z "$namespace" ] || [ -z "$storage_uri" ]; then
+        print_error "Usage: deploy_predictive_model <name> <namespace> <storage_uri> [--format sklearn|xgboost|lightgbm|onnx|mlflow] [--runtime <name>]"
+        return 1
+    fi
+
+    print_header "Deploying Predictive Model"
+    echo -e "${BLUE}Model:${NC}      $name"
+    echo -e "${BLUE}Namespace:${NC}  $namespace"
+    echo -e "${BLUE}Format:${NC}     $model_format"
+    echo -e "${BLUE}Storage:${NC}    $storage_uri"
+    echo ""
+
+    # Resolve serving runtime
+    local runtime_name="$runtime_override"
+    if [ -z "$runtime_name" ]; then
+        case "$model_format" in
+            sklearn|xgboost|lightgbm|mlflow)
+                runtime_name=$(oc get servingruntime -n "$namespace" --no-headers 2>/dev/null \
+                    | grep -i mlserver | awk '{print $1}' | head -1)
+                if [ -z "$runtime_name" ]; then
+                    # Check cluster-scoped runtimes
+                    runtime_name=$(oc get servingruntime -A --no-headers 2>/dev/null \
+                        | grep -i mlserver | awk '{print $2}' | head -1)
+                fi
+                if [ -z "$runtime_name" ]; then
+                    print_warning "No MLServer ServingRuntime found."
+                    echo "Install one from the RHOAI dashboard (Settings > Serving runtimes > Add)"
+                    echo "or deploy one manually, then retry with --runtime <name>"
+                    return 1
+                fi
+                print_info "Auto-detected runtime: $runtime_name"
+                ;;
+            onnx)
+                runtime_name=$(oc get servingruntime -n "$namespace" --no-headers 2>/dev/null \
+                    | grep -i -E 'ovms|openvino' | awk '{print $1}' | head -1)
+                if [ -z "$runtime_name" ]; then
+                    runtime_name=$(oc get servingruntime -A --no-headers 2>/dev/null \
+                        | grep -i -E 'ovms|openvino' | awk '{print $2}' | head -1)
+                fi
+                if [ -z "$runtime_name" ]; then
+                    print_warning "No OpenVINO ServingRuntime found."
+                    return 1
+                fi
+                print_info "Auto-detected runtime: $runtime_name"
+                ;;
+            *)
+                print_error "Unsupported format '$model_format'. Use: sklearn, xgboost, lightgbm, mlflow, onnx"
+                return 1
+                ;;
+        esac
+    fi
+
+    # Verify data connection secret exists
+    if ! oc get secret "$data_connection" -n "$namespace" &>/dev/null; then
+        print_warning "Data connection secret '$data_connection' not found in $namespace"
+        echo "Create one via RHOAI dashboard (Data connections) or:"
+        echo "  oc create secret generic $data_connection \\"
+        echo "    --from-literal=AWS_ACCESS_KEY_ID=minio \\"
+        echo "    --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \\"
+        echo "    --from-literal=AWS_S3_ENDPOINT=http://minio.$namespace.svc:9000 \\"
+        echo "    --from-literal=AWS_S3_BUCKET=models \\"
+        echo "    --from-literal=AWS_DEFAULT_REGION=us-east-1 \\"
+        echo "    -n $namespace"
+        echo ""
+        echo "  oc label secret $data_connection -n $namespace opendatahub.io/dashboard=true"
+        echo "  oc annotate secret $data_connection -n $namespace opendatahub.io/connection-type=s3"
+        return 1
+    fi
+
+    # Warn about well-known filenames for MLServer auto-detection
+    case "$model_format" in
+        sklearn)
+            echo -e "${CYAN}Note:${NC} MLServer expects model file named: model.joblib, model.pickle, or model.pkl"
+            echo "      If your file has a different name, set MLSERVER_MODEL_URI in Advanced Settings."
+            ;;
+        xgboost)
+            echo -e "${CYAN}Note:${NC} MLServer expects model file named: model.bst, model.json, or model.ubj"
+            ;;
+        lightgbm)
+            echo -e "${CYAN}Note:${NC} MLServer expects model file named: model.bst"
+            ;;
+        onnx)
+            echo -e "${CYAN}Note:${NC} OpenVINO expects model file named: model.onnx"
+            ;;
+    esac
+    echo ""
+
+    # Check if InferenceService already exists
+    if oc get inferenceservice "$name" -n "$namespace" &>/dev/null; then
+        local existing_state
+        existing_state=$(oc get inferenceservice "$name" -n "$namespace" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$existing_state" = "True" ]; then
+            print_info "InferenceService '$name' already exists and is Ready"
+            local url
+            url=$(oc get inferenceservice "$name" -n "$namespace" -o jsonpath='{.status.url}' 2>/dev/null)
+            echo -e "${CYAN}Endpoint:${NC} ${url}"
+            return 0
+        else
+            print_info "InferenceService '$name' exists but is not Ready -- reapplying"
+        fi
+    fi
+
+    # Fetch hardware profile annotations if available
+    local hw_annotations=""
+    local profile_name
+    profile_name=$(oc get hardwareprofile -n "$namespace" --no-headers 2>/dev/null \
+        | grep -i -E 'small|cpu|default' | head -1 | awk '{print $1}')
+    if [ -n "$profile_name" ]; then
+        local profile_rv
+        profile_rv=$(oc get hardwareprofile "$profile_name" -n "$namespace" \
+            -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)
+        hw_annotations="    opendatahub.io/hardware-profile-name: \"$profile_name\"
+    opendatahub.io/hardware-profile-namespace: \"$namespace\"
+    opendatahub.io/hardware-profile-resource-version: \"${profile_rv:-}\""
+    fi
+
+    # Create the InferenceService
+    print_step "Creating InferenceService '$name'..."
+
+    # Strip s3:// prefix and bucket name to get the path portion
+    # storage.key references the data connection secret (which contains the bucket)
+    # storage.path is the folder path within that bucket
+    local model_path="${storage_uri#s3://}"
+    # Remove bucket name from path (e.g. "models/my-model/" -> "my-model/")
+    # The bucket is already configured in the data connection secret
+    model_path="${model_path#*/}"
+
+    cat <<EOF | oc apply -f -
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: $name
+  namespace: $namespace
+  annotations:
+    openshift.io/display-name: "$name"
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.knative.openshift.io/enablePassthrough: "true"
+${hw_annotations}
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  predictor:
+    minReplicas: $min_replicas
+    model:
+      modelFormat:
+        name: $model_format
+      name: ""
+      runtime: $runtime_name
+      storage:
+        key: $data_connection
+        path: $model_path
+EOF
+
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create InferenceService '$name'"
+        return 1
+    fi
+    print_success "InferenceService '$name' created"
+
+    if [ "$do_wait" = true ]; then
+        echo ""
+        print_step "Waiting for model to become ready (timeout: ${wait_timeout}s)..."
+        if oc wait --for=condition=Ready inferenceservice/"$name" -n "$namespace" \
+            --timeout="${wait_timeout}s" 2>/dev/null; then
+            print_success "Model '$name' is ready!"
+
+            local url
+            url=$(oc get inferenceservice "$name" -n "$namespace" -o jsonpath='{.status.url}' 2>/dev/null)
+            local cluster_domain
+            cluster_domain=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+            local route_url="https://${name}-${namespace}.apps.${cluster_domain}"
+
+            echo ""
+            echo -e "${CYAN}Internal URL:${NC} ${url}"
+            echo -e "${CYAN}Route URL:${NC}   ${route_url}"
+            echo ""
+            echo -e "${YELLOW}Test (v2 predict):${NC}"
+            echo "  curl -sk ${route_url}/v2/models/${name}/infer \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"inputs\":[{\"name\":\"predict\",\"shape\":[1,N],\"datatype\":\"FP64\",\"data\":[[...]]}]}'"
+            echo ""
+            echo -e "${YELLOW}Health check:${NC}"
+            echo "  curl -sk ${route_url}/v2/health/ready"
+        else
+            print_warning "Model '$name' not ready after ${wait_timeout}s"
+            echo ""
+            echo "Debug commands:"
+            echo "  oc get inferenceservice $name -n $namespace"
+            echo "  oc describe inferenceservice $name -n $namespace"
+            echo "  oc get pods -n $namespace | grep $name"
+            echo "  oc logs -n $namespace -l serving.kserve.io/inferenceservice=$name --tail=50"
+            return 1
+        fi
+    else
+        echo ""
+        print_info "Monitor deployment:"
+        echo "  oc get inferenceservice $name -n $namespace -w"
+    fi
+
+    return 0
+}
+
+################################################################################
 # Interactive Model Deployment
 ################################################################################
 

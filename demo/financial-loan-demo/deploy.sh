@@ -224,6 +224,7 @@ NAMESPACE=${NAMESPACE}
 SKLEARN_API_URL=${SKLEARN_API_URL}
 LLM_URL=${LLM_URL}
 HF_MODEL_ID=${HF_MODEL_ID:-Qwen/Qwen3-4B-Instruct-2507}
+LLM_MODEL_NAME=${LLM_MODEL_NAME:-qwen3-4b}
 "
 
 oc create configmap demo-config-env \
@@ -231,14 +232,24 @@ oc create configmap demo-config-env \
     -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null && \
     print_success "ConfigMap demo-config-env created (mount as /opt/app-root/src/.env in workbench)" || true
 
-# --- Deploy web application ---
-if [ "$SKIP_WEBAPP" = false ] && [ -d "$REPO_PATH/web-application" ]; then
+# --- Deploy web application (vendored) ---
+WEBAPP_DIR="$SCRIPT_DIR/web-application"
+if [ "$SKIP_WEBAPP" = false ] && [ -d "$WEBAPP_DIR" ]; then
     print_step "Deploying web application in $NAMESPACE..."
 
-    # Patch the upstream deployment.yaml to use our namespace instead of hardcoded microloan-web-app
-    sed "s/microloan-web-app/$NAMESPACE/g" "$REPO_PATH/web-application/deployment.yaml" | oc apply -n "$NAMESPACE" -f -
+    # Auto-detect LLM model name from deployed models
+    LLM_MODEL_NAME="${LLM_MODEL_NAME:-}"
+    if [ -z "$LLM_MODEL_NAME" ]; then
+        LLM_MODEL_NAME=$(oc get inferenceservice -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
+        [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME=$(oc get llmisvc -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
+        [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME="qwen3-4b"
+        print_info "Auto-detected LLM model name: $LLM_MODEL_NAME"
+    fi
 
-    # Patch the ConfigMap with auto-detected endpoints
+    # Patch the deployment.yaml namespace and apply
+    sed "s/microloan-web-app/$NAMESPACE/g" "$WEBAPP_DIR/deployment.yaml" | oc apply -n "$NAMESPACE" -f -
+
+    # ConfigMap with auto-detected endpoints + model name
     oc apply -n "$NAMESPACE" -f - <<PATCH
 apiVersion: v1
 kind: ConfigMap
@@ -248,14 +259,15 @@ metadata:
 data:
   SKLEARN_API_URL: "${SKLEARN_API_URL}"
   LLM_API_URL: "${LLM_URL}"
+  LLM_MODEL_NAME: "${LLM_MODEL_NAME}"
   FLASK_ENV: "production"
   HOST: "0.0.0.0"
   PORT: "8080"
 PATCH
 
-    # Build the container image from the cloned repo
+    # Build the container image from vendored source
     print_step "Building web app container image (this takes 1-2 minutes)..."
-    oc start-build microloan-webapp --from-dir="$REPO_PATH/web-application" -n "$NAMESPACE" --follow 2>/dev/null || \
+    oc start-build microloan-webapp --from-dir="$WEBAPP_DIR" -n "$NAMESPACE" --follow 2>/dev/null || \
         print_warning "Build failed or already running -- check: oc get builds -n $NAMESPACE"
 
     # Restart to pick up the patched ConfigMap
