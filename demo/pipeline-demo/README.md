@@ -43,12 +43,14 @@ Before submitting an Elyra pipeline, configure a Kubeflow Pipelines runtime:
 
 | Field | Value |
 |-------|-------|
-| Display Name | `pipeline-demo` |
-| Kubeflow Pipelines API Endpoint | `http://ds-pipeline-pipelines-definition.<namespace>.svc:8888` |
-| Cloud Object Storage Endpoint | `http://minio.<namespace>.svc:9000` |
-| Cloud Object Storage Bucket | `pipelines` |
-| Cloud Object Storage Username | *(from `pipelines-s3-credentials` secret, key `AWS_ACCESS_KEY_ID`)* |
-| Cloud Object Storage Password | *(from `pipelines-s3-credentials` secret, key `AWS_SECRET_ACCESS_KEY`)* |
+| **Display Name** | `pipeline-demo` |
+| **Kubeflow Pipelines API Endpoint** | `https://ds-pipeline-pipelines-definition.<namespace>.svc:8443` |
+| **Authentication Type** | `KUBERNETES_SERVICE_ACCOUNT_TOKEN` |
+| **Cloud Object Storage Endpoint** | `http://minio.<namespace>.svc:9000` |
+| **Cloud Object Storage Bucket Name** | `pipelines` |
+| **Cloud Object Storage Authentication Type** | `USER_CREDENTIALS` |
+| **Cloud Object Storage Username** | *(from `pipelines-s3-credentials` secret, key `AWS_ACCESS_KEY_ID`)* |
+| **Cloud Object Storage Password** | *(from `pipelines-s3-credentials` secret, key `AWS_SECRET_ACCESS_KEY`)* |
 
 Replace `<namespace>` with your project name (default: `pipeline-demo`).
 
@@ -60,6 +62,8 @@ oc extract secret/pipelines-s3-credentials --to=-
 
 4. Click **Save**
 5. Open a `.pipeline` file and submit -- the runtime should now appear in the dropdown.
+
+> **Note:** The deploy script grants workbench service accounts the `edit` role so Elyra can upload and run pipelines.
 
 ## Sample Data
 

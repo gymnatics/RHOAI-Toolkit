@@ -53,6 +53,12 @@ fi
 ensure_namespace "$NAMESPACE"
 oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
 
+# Grant workbench SAs edit access (needed for Elyra pipeline submission)
+for WB_SA in $(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+    case "$WB_SA" in builder|default|deployer|ds-pipeline-*|pipeline-runner-*|mariadb-*) continue ;; esac
+    oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:${WB_SA}" -n "$NAMESPACE" 2>/dev/null || true
+done
+
 # --- Step 1: MinIO for pipeline artifacts ---
 print_step "Setting up MinIO for pipeline artifacts..."
 if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
