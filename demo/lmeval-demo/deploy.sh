@@ -83,15 +83,21 @@ export NAMESPACE
 envsubst < "$SCRIPT_DIR/manifests/lmeval-rbac.yaml" | oc apply -f -
 
 print_step "Deploying EvalHub service (TrustyAI Operator CR)..."
-export MLFLOW_TRACKING_URI="http://mlflow.${NAMESPACE}.svc:5000"
+EVALHUB_NAMESPACE="redhat-ods-applications"
+export MLFLOW_TRACKING_URI="https://mlflow.${EVALHUB_NAMESPACE}.svc:8443"
 
 if [ "$EVALHUB_CRD_AVAILABLE" = true ]; then
-    envsubst < "$SCRIPT_DIR/manifests/evalhub.yaml" | oc apply -f -
-    print_info "EvalHub CR applied -- TrustyAI Operator will reconcile the deployment"
-    sleep 5
-    EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
+    if oc get evalhub evalhub -n "$EVALHUB_NAMESPACE" &>/dev/null; then
+        print_info "EvalHub CR already exists in $EVALHUB_NAMESPACE"
+    else
+        print_info "Deploying EvalHub CR in $EVALHUB_NAMESPACE (required for dashboard UI)"
+        NAMESPACE="$EVALHUB_NAMESPACE" envsubst < "$SCRIPT_DIR/manifests/evalhub.yaml" | oc apply -f -
+        print_info "EvalHub CR applied -- TrustyAI Operator will reconcile the deployment"
+        sleep 5
+    fi
+    EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
     if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then
-        EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $NAMESPACE)"
+        EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $EVALHUB_NAMESPACE)"
     fi
 else
     print_warning "EvalHub CRD not available. Ensure TrustyAI is Managed in your DSC."
@@ -101,7 +107,7 @@ fi
 
 # --- Generate demo-config.env for vendored notebooks ---
 CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-EVALHUB_SVC="http://evalhub.${NAMESPACE}.svc:8080"
+EVALHUB_SVC="http://evalhub.redhat-ods-applications.svc:8080"
 
 FIRST_MODEL=""
 FIRST_MODEL_URL=""
