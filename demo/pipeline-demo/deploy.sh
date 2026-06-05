@@ -104,13 +104,16 @@ if [ -f "$ELYRA_TEMPLATE" ] && [ -f "$ELYRA_SETUP" ]; then
         --from-file="setup.sh=${ELYRA_SETUP}" \
         -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
 
-    WB_SA=$(oc get pods -n "$NAMESPACE" -l app=ai-pipelines -o jsonpath='{.items[0].spec.serviceAccountName}' 2>/dev/null)
-    WB_SA="${WB_SA:-$(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name!="builder")].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -v '^default$\|^deployer$\|^pipeline' | head -1)}"
-    if [ -n "$WB_SA" ]; then
-        oc create rolebinding "${WB_SA}-view" \
-            --clusterrole=view \
-            --serviceaccount="${NAMESPACE}:${WB_SA}" \
-            -n "$NAMESPACE" 2>/dev/null || true
+    ELYRA_RBAC="$SCRIPT_DIR/manifests/elyra-setup-rbac.yaml"
+    if [ -f "$ELYRA_RBAC" ]; then
+        envsubst < "$ELYRA_RBAC" | oc apply -f - 2>/dev/null
+        for WB_SA in $(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            case "$WB_SA" in builder|default|deployer|ds-pipeline-*|pipeline-runner-*) continue ;; esac
+            oc create rolebinding "${WB_SA}-elyra-setup" \
+                --role=elyra-setup \
+                --serviceaccount="${NAMESPACE}:${WB_SA}" \
+                -n "$NAMESPACE" 2>/dev/null || true
+        done
     fi
 
     print_success "Elyra runtime template + setup script stored in ConfigMap 'elyra-runtime-config'"

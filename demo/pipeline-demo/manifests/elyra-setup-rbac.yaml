@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: elyra-setup
+  namespace: ${NAMESPACE}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["pipelines-s3-credentials"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["elyra-runtime-config"]
+  verbs: ["get"]
