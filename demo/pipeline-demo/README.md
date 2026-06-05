@@ -70,15 +70,17 @@ oc extract secret/pipelines-s3-credentials --to=-
 Each Elyra notebook step runs in an isolated container. Data is passed between steps via MinIO (S3):
 
 ```
-MinIO (pipelines bucket)
-├── data/sample-loans.csv            ← input data (uploaded by deploy.sh)
-├── pipeline-artifacts/cleaned-data.csv  ← output of step 1
-├── pipeline-artifacts/model.joblib      ← output of step 2
-├── pipeline-artifacts/test-data.csv     ← output of step 2
-└── pipeline-artifacts/metrics.json      ← output of step 3
+MinIO (data bucket)         ← input
+└── sample-loans.csv
 
-MinIO (models bucket)
-└── models/loan-approval-classifier/v1/model.joblib  ← output of step 4
+MinIO (pipelines bucket)    ← intermediate artifacts
+├── pipeline-artifacts/cleaned-data.csv  ← step 1 output
+├── pipeline-artifacts/model.joblib      ← step 2 output
+├── pipeline-artifacts/test-data.csv     ← step 2 output
+└── pipeline-artifacts/metrics.json      ← step 3 output
+
+MinIO (models bucket)       ← final model for serving
+└── models/loan-approval-classifier/v1/model.joblib  ← step 4 output
 ```
 
 > **Future:** Adding RWX (ReadWriteMany) shared storage would allow notebooks to use local file paths instead of S3, simplifying the pipeline notebooks.
@@ -87,7 +89,7 @@ MinIO (models bucket)
 
 `data/sample-loans.csv` -- 20 sample loan applications with features like income, credit score, DTI ratio.
 
-Upload to MinIO for the Elyra pipeline:
+Upload to the `data` bucket in MinIO before running the Elyra pipeline:
 ```bash
 # From the workbench terminal
 pip install boto3
@@ -95,7 +97,9 @@ python -c "
 import boto3
 s3 = boto3.client('s3', endpoint_url='http://minio:9000',
                   aws_access_key_id='minio', aws_secret_access_key='minio123', verify=False)
-s3.upload_file('data/sample-loans.csv', 'pipelines', 'data/sample-loans.csv')
-print('Uploaded')
+try: s3.head_bucket(Bucket='data')
+except: s3.create_bucket(Bucket='data')
+s3.upload_file('data/sample-loans.csv', 'data', 'sample-loans.csv')
+print('Uploaded to s3://data/sample-loans.csv')
 "
 ```
