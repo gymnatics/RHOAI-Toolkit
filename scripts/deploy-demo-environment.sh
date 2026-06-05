@@ -162,7 +162,7 @@ check_status() {
     if [ $_needs_wb -gt 0 ]; then
         echo ""
         echo "    Create workbenches in RHOAI Dashboard, then in each terminal:"
-        echo "      git clone https://github.com/gymnatics/openshift-installation.git"
+        echo "      git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
     elif [ $_needs_wb -eq 0 ]; then
         local _any_ns=false
         for _wns in "${_wb_namespaces[@]}"; do
@@ -544,8 +544,8 @@ if [ $NEEDS_WB -gt 0 ]; then
     echo "  For each ○ namespace above:"
     echo "    1. RHOAI Dashboard > Data Science Projects > <namespace> > Create workbench"
     echo "    2. In the workbench terminal:"
-    echo "       git clone https://github.com/gymnatics/openshift-installation.git"
-    echo "       cd openshift-installation/demo/<demo-name>"
+    echo "       git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
+    echo "       cd RHOAI-Toolkit/demo/<demo-name>"
     echo ""
     echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
     echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"
@@ -554,8 +554,8 @@ if [ $NEEDS_WB -gt 0 ]; then
     echo ""
 else
     echo "  All workbenches are created. In each workbench terminal:"
-    echo "    git clone https://github.com/gymnatics/openshift-installation.git"
-    echo "    cd openshift-installation/demo/<demo-name>"
+    echo "    git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
+    echo "    cd RHOAI-Toolkit/demo/<demo-name>"
     echo ""
     echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
     echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"

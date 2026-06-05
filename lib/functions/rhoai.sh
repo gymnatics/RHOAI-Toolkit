@@ -1922,7 +1922,7 @@ EOF
     echo "  1. Create a Workbench in the '$namespace' project"
     echo "     Image: Standard Data Science | default-profile"
     echo "  2. Clone this repo in the workbench terminal:"
-    echo "     git clone https://github.com/gymnatics/openshift-installation.git"
+    echo "     git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
     echo "  3. Copy Feature Store client config from dashboard"
     echo "  4. Open demo/feast-demo/notebooks/"
     echo "     feast-online-retrieval.ipynb  -- query features in real time"

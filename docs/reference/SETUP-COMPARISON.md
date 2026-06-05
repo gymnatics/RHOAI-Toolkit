@@ -460,7 +460,7 @@ Use this checklist to verify your setup matches the reference repo where needed:
 ## References
 
 - Reference Repository: [tsailiming/openshift-ai-bootstrap (rhoai-3 branch)](https://github.com/tsailiming/openshift-ai-bootstrap/tree/rhoai-3)
-- Our Repository: [gymnatics/openshift-installation](https://github.com/gymnatics/openshift-installation)
+- Our Repository: [gymnatics/RHOAI-Toolkit](https://github.com/gymnatics/RHOAI-Toolkit)
 - Related Docs:
   - `KSERVE-DEPLOYMENT-MODES.md` - RawDeployment vs Serverless comparison
   - `RHOAI-3.0-HARDWARE-PROFILE-FIX.md` - Hardware profile configuration
