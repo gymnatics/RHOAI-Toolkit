@@ -4,10 +4,10 @@
 # Inputs:
 #    model_name: str [Default: 'loan-approval-classifier']
 #    model_version: str [Default: 'v1']
-#    raw_data_path: str [Default: 'https://raw.githubusercontent.com/cbtham/micro-financial-loan/main/data/sample-loans.csv']
-#    registry_url: str [Default: '']
+#    raw_data_path: str [Default: 'https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv']
+#    registry_url: str [Default: 'http://team-models.rhoai-model-registries.svc:8080']
 #    s3_bucket: str [Default: 'models']
-#    s3_endpoint: str [Default: 'http://minio.pipeline-demo.svc:9000']
+#    s3_endpoint: str [Default: 'http://minio:9000']
 components:
   comp-data-prep:
     executorLabel: exec-data-prep
@@ -347,11 +347,11 @@ root:
         isOptional: true
         parameterType: STRING
       raw_data_path:
-        defaultValue: https://raw.githubusercontent.com/cbtham/micro-financial-loan/main/data/sample-loans.csv
+        defaultValue: https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv
         isOptional: true
         parameterType: STRING
       registry_url:
-        defaultValue: ''
+        defaultValue: http://team-models.rhoai-model-registries.svc:8080
         isOptional: true
         parameterType: STRING
       s3_bucket:
@@ -359,7 +359,7 @@ root:
         isOptional: true
         parameterType: STRING
       s3_endpoint:
-        defaultValue: http://minio.pipeline-demo.svc:9000
+        defaultValue: http://minio:9000
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
