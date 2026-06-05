@@ -92,7 +92,25 @@ else
     print_info "Model Registry can be set up via RHOAI dashboard."
 fi
 
-# --- Step 4: Compile KFP pipeline if SDK is available ---
+# --- Step 4: Create Elyra runtime config ---
+print_step "Creating Elyra runtime configuration..."
+
+ELYRA_TEMPLATE="$SCRIPT_DIR/manifests/elyra-runtime-config.json.template"
+ELYRA_SETUP="$SCRIPT_DIR/manifests/setup-elyra-runtime.sh"
+
+if [ -f "$ELYRA_TEMPLATE" ] && [ -f "$ELYRA_SETUP" ]; then
+    oc create configmap elyra-runtime-config \
+        --from-file="template=${ELYRA_TEMPLATE}" \
+        --from-file="setup.sh=${ELYRA_SETUP}" \
+        -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+    print_success "Elyra runtime template + setup script stored in ConfigMap 'elyra-runtime-config'"
+    print_info "In workbench terminal, run:"
+    echo "    bash <(oc get cm elyra-runtime-config -o jsonpath='{.data.setup\\.sh}')"
+else
+    print_warning "Elyra manifests not found at $SCRIPT_DIR/manifests/ -- create runtime manually"
+fi
+
+# --- Step 5: Compile KFP pipeline if SDK is available ---
 print_step "KFP pipeline..."
 if command -v python3 &>/dev/null && python3 -c "import kfp" 2>/dev/null; then
     (cd "$SCRIPT_DIR" && python3 pipeline-kfp.py)
@@ -124,7 +142,8 @@ echo "     - Upload YAML to RHOAI dashboard Pipelines"
 echo ""
 echo "  Elyra notebook pipeline (pipeline-elyra/):"
 echo "     01-data-prep.ipynb -> 02-train.ipynb -> 03-evaluate.ipynb -> 04-register.ipynb"
-echo "     - Create Elyra pipeline from notebooks"
+echo "     Setup runtime (run once in workbench terminal):"
+echo "       bash <(oc get cm elyra-runtime-config -o jsonpath='{.data.setup\\.sh}')"
 echo ""
 echo "  Sample data: data/sample-loans.csv"
 echo ""
