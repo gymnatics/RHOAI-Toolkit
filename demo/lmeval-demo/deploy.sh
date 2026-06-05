@@ -45,7 +45,8 @@ print_header "LMEval Demo"
 
 if [ "$DELETE_MODE" = true ]; then
     print_step "Removing LMEval infrastructure from $NAMESPACE..."
-    oc delete evalhub evalhub -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    oc delete rolebinding evalhub-central-mlflow-access evalhub-central-jobs-writer evalhub-central-job-config -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    print_info "Note: EvalHub CR in redhat-ods-applications is shared -- not deleting it"
     export NAMESPACE MLFLOW_TRACKING_URI="placeholder"
     envsubst < "$SCRIPT_DIR/manifests/lmeval-rbac.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     oc delete lmevaljob --all -n "$NAMESPACE" --ignore-not-found 2>/dev/null
@@ -93,8 +94,63 @@ if [ "$EVALHUB_CRD_AVAILABLE" = true ]; then
         print_info "Deploying EvalHub CR in $EVALHUB_NAMESPACE (required for dashboard UI)"
         NAMESPACE="$EVALHUB_NAMESPACE" envsubst < "$SCRIPT_DIR/manifests/evalhub.yaml" | oc apply -f -
         print_info "EvalHub CR applied -- TrustyAI Operator will reconcile the deployment"
-        sleep 5
+        print_info "Waiting for EvalHub to become Ready..."
+        for i in $(seq 1 30); do
+            PHASE=$(oc get evalhub evalhub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+            if [ "$PHASE" = "Ready" ]; then
+                print_success "EvalHub is Ready"
+                break
+            fi
+            sleep 5
+        done
     fi
+
+    # Grant the central EvalHub SA access to this project's MLflow workspace
+    print_info "Granting EvalHub access to MLflow workspace in $NAMESPACE..."
+    cat <<EORBAC | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-mlflow-access
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-jobs-writer
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-jobs-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-job-config
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-job-config
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+EORBAC
+
     EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
     if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then
         EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $EVALHUB_NAMESPACE)"
