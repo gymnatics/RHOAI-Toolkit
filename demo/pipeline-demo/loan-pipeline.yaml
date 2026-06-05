@@ -2,7 +2,7 @@
 # Name: loan-approval-training
 # Description: Train and register a loan approval ML model
 # Inputs:
-#    model_name: str [Default: 'loan-approval-classifier']
+#    model_name: str [Default: 'loan-approval-kfp']
 #    model_version: str [Default: 'v1']
 #    raw_data_path: str [Default: 'https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv']
 #    registry_url: str [Default: 'http://team-models.rhoai-model-registries.svc:8080']
@@ -339,7 +339,7 @@ root:
   inputDefinitions:
     parameters:
       model_name:
-        defaultValue: loan-approval-classifier
+        defaultValue: loan-approval-kfp
         isOptional: true
         parameterType: STRING
       model_version:

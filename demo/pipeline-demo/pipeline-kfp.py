@@ -190,7 +190,7 @@ def register_model(
 )
 def loan_pipeline(
     raw_data_path: str = "https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv",
-    model_name: str = "loan-approval-classifier",
+    model_name: str = "loan-approval-kfp",
     model_version: str = "v1",
     s3_bucket: str = "models",
     s3_endpoint: str = "http://minio:9000",
