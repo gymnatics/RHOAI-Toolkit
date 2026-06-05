@@ -548,7 +548,147 @@ curl -sk https://maas.apps.CLUSTER/0-demo/qwen3-8b/v1/chat/completions \
 ```
 </details>
 
-### 14. MaaS Verification
+### 14. MaaS Rate Limiting Fixes
+
+Token rate limiting in MaaS silently fails under load due to the Kuadrant WasmPlugin's internal span buffer (capacity: 100) being saturated by health check traffic. The toolkit applies three fixes automatically:
+
+| Fix | What It Does |
+|-----|-------------|
+| Redis-cached Limitador storage | Persistent counters (survive restarts), faster gRPC responses |
+| Health check interceptor EnvoyFilter | Prevents `/healthz` and `/ready` probes from filling the span buffer |
+| Ratelimit cluster timeout EnvoyFilter | Increases Limitador gRPC timeout from ~100ms to 2s |
+
+> **Warning:** Without these fixes, `MaaSSubscription` token rate limits (e.g. 10,000 tokens/hour) are never enforced — requests that should return HTTP 429 are allowed through indefinitely.
+
+<details>
+<summary><b>Manual Commands</b></summary>
+
+```bash
+# 1. Deploy Redis
+oc apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+  labels:
+    app: limitador-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: limitador-redis
+  template:
+    metadata:
+      labels:
+        app: limitador-redis
+    spec:
+      containers:
+      - name: redis
+        image: registry.redhat.io/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+spec:
+  selector:
+    app: limitador-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+EOF
+
+# 2. Create Redis secret and patch Limitador
+oc create secret generic limitador-redis-config \
+  --from-literal=URL="redis://limitador-redis.kuadrant-system.svc.cluster.local:6379" \
+  -n kuadrant-system
+
+oc patch limitador limitador -n kuadrant-system --type=merge -p '{
+  "spec": {
+    "storage": {
+      "redis-cached": {
+        "configSecretRef": {"name": "limitador-redis-config"},
+        "options": {"flush-period": 500, "max-cached": 10000, "batch-size": 100, "response-timeout": 500}
+      }
+    }
+  }
+}'
+
+# 3. Health check interceptor
+oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: healthcheck-filter
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.health_check
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+            pass_through_mode: false
+            headers:
+              - name: ":path"
+                string_match:
+                  exact: "/healthz"
+              - name: ":path"
+                string_match:
+                  exact: "/ready"
+EOF
+
+# 4. Ratelimit cluster timeout
+oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: increase-ratelimit-cluster-timeout
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+        cluster:
+          name: kuadrant-ratelimit-service
+      patch:
+        operation: MERGE
+        value:
+          connect_timeout: 2s
+EOF
+
+# 5. Restart gateway
+oc rollout restart deployment/maas-default-gateway-openshift-gateway-controller -n openshift-ingress
+
+# 6. Verify
+oc logs deployment/maas-default-gateway-openshift-gateway-controller \
+  -n openshift-ingress --since=5m | grep -c "Span buffer full"
+# Should be 0 or very low
+```
+</details>
+
+> **See also:** `docs/maas-token-ratelimit-span-buffer-bug.md` for the full root cause analysis.
+
+### 15. MaaS Verification
 
 ```bash
 # Check DSC status
@@ -636,6 +776,10 @@ The toolkit can create demo users with htpasswd authentication and organize them
 | No subscriptions for API key | User not in owner group | Add user to group or patch `spec.owner.users` |
 | RHCL operator stuck | OLM set InstallPlan to Manual | Auto-approve pending InstallPlans |
 | MLflow unavailable | No MLflow CR created | Create MLflow CR with sqlite + PVC |
+
+
+### API Keys Page Shows "Error loading components"
+**Cause**: When no subscriptions are created, there is a bug that shows Error rather than the API Keys page. To fix this, add a subscription.
 
 ### Gateway Returns 503 / API Keys Page Shows "Error loading components"
 **Cause**: The `default-gateway-tls` secret doesn't exist, so the gateway's Envoy proxy never starts the HTTPS listener on port 443.

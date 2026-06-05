@@ -1305,6 +1305,182 @@ configure_maas_tls() {
     fi
 }
 
+################################################################################
+# MaaS Rate Limiting Fixes
+# Fixes WasmPlugin span buffer overflow that prevents token rate limiting
+# from working under load. See docs/maas-token-ratelimit-span-buffer-bug.md
+################################################################################
+
+configure_maas_rate_limiting() {
+    print_step "Configuring MaaS token rate limiting (Redis + EnvoyFilters)..."
+
+    # Fix 1: Deploy Redis for Limitador persistent storage
+    if oc get deployment limitador-redis -n kuadrant-system &>/dev/null; then
+        print_info "Limitador Redis already deployed"
+    else
+        print_step "Deploying Redis for Limitador..."
+        oc apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+  labels:
+    app: limitador-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: limitador-redis
+  template:
+    metadata:
+      labels:
+        app: limitador-redis
+    spec:
+      containers:
+      - name: redis
+        image: registry.redhat.io/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+spec:
+  selector:
+    app: limitador-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+EOF
+        oc rollout status deployment/limitador-redis -n kuadrant-system --timeout=60s 2>/dev/null
+        print_success "Redis deployed"
+    fi
+
+    # Create Redis connection secret
+    if ! oc get secret limitador-redis-config -n kuadrant-system &>/dev/null; then
+        oc create secret generic limitador-redis-config \
+            --from-literal=URL="redis://limitador-redis.kuadrant-system.svc.cluster.local:6379" \
+            -n kuadrant-system
+    fi
+
+    # Patch Limitador to use redis-cached storage
+    local current_storage
+    current_storage=$(oc get limitador limitador -n kuadrant-system \
+        -o jsonpath='{.spec.storage.redis-cached}' 2>/dev/null || true)
+    if [ -z "$current_storage" ]; then
+        print_step "Configuring Limitador with redis-cached storage..."
+        oc patch limitador limitador -n kuadrant-system --type=merge -p '{
+            "spec": {
+                "storage": {
+                    "redis-cached": {
+                        "configSecretRef": {
+                            "name": "limitador-redis-config"
+                        },
+                        "options": {
+                            "flush-period": 500,
+                            "max-cached": 10000,
+                            "batch-size": 100,
+                            "response-timeout": 500
+                        }
+                    }
+                }
+            }
+        }'
+        print_success "Limitador configured with Redis-cached storage"
+    else
+        print_info "Limitador already using redis-cached storage"
+    fi
+
+    # Fix 2: Health check interceptor — prevents health probes from saturating
+    # the WasmPlugin's 100-span buffer (causing token reports to be dropped)
+    if ! oc get envoyfilter healthcheck-filter -n openshift-ingress &>/dev/null; then
+        print_step "Applying health check interceptor EnvoyFilter..."
+        oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: healthcheck-filter
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.health_check
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+            pass_through_mode: false
+            headers:
+              - name: ":path"
+                string_match:
+                  exact: "/healthz"
+              - name: ":path"
+                string_match:
+                  exact: "/ready"
+EOF
+        print_success "Health check interceptor applied"
+    else
+        print_info "Health check interceptor already exists"
+    fi
+
+    # Fix 3: Increase ratelimit cluster timeout (default ~100ms is too low)
+    if ! oc get envoyfilter increase-ratelimit-cluster-timeout -n openshift-ingress &>/dev/null; then
+        print_step "Applying ratelimit cluster timeout EnvoyFilter..."
+        oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: increase-ratelimit-cluster-timeout
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+        cluster:
+          name: kuadrant-ratelimit-service
+      patch:
+        operation: MERGE
+        value:
+          connect_timeout: 2s
+EOF
+        print_success "Ratelimit cluster timeout increased to 2s"
+    else
+        print_info "Ratelimit cluster timeout already configured"
+    fi
+
+    # Restart gateway to pick up new filters and clear span buffer
+    print_step "Restarting MaaS gateway to apply filters..."
+    oc rollout restart deployment/maas-default-gateway-openshift-gateway-controller \
+        -n openshift-ingress 2>/dev/null || true
+    sleep 10
+
+    print_success "MaaS rate limiting configured (Redis + health check filter + timeout fix)"
+}
+
 enable_user_workload_monitoring() {
     print_step "Enabling User Workload Monitoring..."
 
@@ -2291,6 +2467,7 @@ main() {
             fi
         fi
         configure_maas_tls
+        configure_maas_rate_limiting
         verify_maas_deployment
     fi
 
