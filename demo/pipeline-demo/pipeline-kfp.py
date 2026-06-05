@@ -189,12 +189,12 @@ def register_model(
     description="Train and register a loan approval ML model",
 )
 def loan_pipeline(
-    raw_data_path: str = "https://raw.githubusercontent.com/cbtham/micro-financial-loan/main/data/sample-loans.csv",
+    raw_data_path: str = "https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv",
     model_name: str = "loan-approval-classifier",
     model_version: str = "v1",
     s3_bucket: str = "models",
-    s3_endpoint: str = "http://minio.pipeline-demo.svc:9000",
-    registry_url: str = "",
+    s3_endpoint: str = "http://minio:9000",
+    registry_url: str = "http://team-models.rhoai-model-registries.svc:8080",
 ):
     prep_task = data_prep(raw_data_path=raw_data_path)
 
