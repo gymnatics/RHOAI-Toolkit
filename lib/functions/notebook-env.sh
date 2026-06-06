@@ -150,10 +150,16 @@ inject_notebook_env() {
         cm_args+=("--from-literal=SKLEARN_API_URL=${SKLEARN_API_URL}")
     fi
 
-    # EvalHub URL (if EvalHub is deployed)
+    # EvalHub URL + auth token (if EvalHub is deployed)
     local evalhub_url="https://evalhub.redhat-ods-applications.svc:8443"
     if oc get svc evalhub -n redhat-ods-applications &>/dev/null; then
         cm_args+=("--from-literal=EVALHUB_URL=${evalhub_url}")
+        # Generate a long-lived token from the evalhub-service SA for SDK auth
+        local evalhub_token
+        evalhub_token=$(oc create token evalhub-service -n "$ns" --duration=87600h 2>/dev/null || true)
+        if [ -n "$evalhub_token" ]; then
+            cm_args+=("--from-literal=EVALHUB_AUTH_TOKEN=${evalhub_token}")
+        fi
     fi
 
     # Append extra key=value pairs from arguments
