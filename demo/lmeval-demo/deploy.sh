@@ -185,6 +185,12 @@ subjects:
 - kind: ServiceAccount
   name: evalhub-service
   namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${EVALHUB_NAMESPACE}-job
+  namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${NAMESPACE}-job
+  namespace: ${NAMESPACE}
 EOROLE
 
     EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"

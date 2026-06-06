@@ -180,6 +180,12 @@ subjects:
 - kind: ServiceAccount
   name: evalhub-service
   namespace: ${ns}
+- kind: ServiceAccount
+  name: evalhub-redhat-ods-applications-job
+  namespace: ${ns}
+- kind: ServiceAccount
+  name: evalhub-${ns}-job
+  namespace: ${ns}
 EOROLE
             # Generate a long-lived token from the evalhub-service SA for SDK auth
             local evalhub_token
