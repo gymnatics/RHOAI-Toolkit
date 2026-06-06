@@ -155,6 +155,38 @@ EORBAC
     oc create sa evalhub-${EVALHUB_NAMESPACE}-job -n "$NAMESPACE" 2>/dev/null || true
     oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:evalhub-${EVALHUB_NAMESPACE}-job" -n "$NAMESPACE" 2>/dev/null || true
 
+    # Grant evalhub-service SA permission to submit evaluations via SDK
+    cat <<EOROLE | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluations-writer
+  namespace: ${NAMESPACE}
+rules:
+- apiGroups:
+  - trustyai.opendatahub.io
+  resources:
+  - evaluations
+  verbs:
+  - get
+  - create
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-evaluations-writer-rb
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-evaluations-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${NAMESPACE}
+EOROLE
+
     EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
     if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then
         EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $EVALHUB_NAMESPACE)"
@@ -167,7 +199,7 @@ fi
 
 # --- Generate demo-config.env for vendored notebooks ---
 CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-EVALHUB_SVC="http://evalhub.redhat-ods-applications.svc:8080"
+EVALHUB_SVC="https://evalhub.redhat-ods-applications.svc:8443"
 
 FIRST_MODEL=""
 FIRST_MODEL_URL=""

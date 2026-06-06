@@ -154,11 +154,39 @@ inject_notebook_env() {
     local evalhub_url="https://evalhub.redhat-ods-applications.svc:8443"
     if oc get svc evalhub -n redhat-ods-applications &>/dev/null; then
         cm_args+=("--from-literal=EVALHUB_URL=${evalhub_url}")
-        # Generate a long-lived token from the evalhub-service SA for SDK auth
-        local evalhub_token
-        evalhub_token=$(oc create token evalhub-service -n "$ns" --duration=87600h 2>/dev/null || true)
-        if [ -n "$evalhub_token" ]; then
-            cm_args+=("--from-literal=EVALHUB_AUTH_TOKEN=${evalhub_token}")
+        # Ensure evalhub-service SA can submit evaluations via SDK
+        if oc get sa evalhub-service -n "$ns" &>/dev/null; then
+            oc apply -f - <<EOROLE 2>/dev/null || true
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluations-writer
+  namespace: ${ns}
+rules:
+- apiGroups: ["trustyai.opendatahub.io"]
+  resources: ["evaluations"]
+  verbs: ["get", "create", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-evaluations-writer-rb
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-evaluations-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${ns}
+EOROLE
+            # Generate a long-lived token from the evalhub-service SA for SDK auth
+            local evalhub_token
+            evalhub_token=$(oc create token evalhub-service -n "$ns" --duration=87600h 2>/dev/null || true)
+            if [ -n "$evalhub_token" ]; then
+                cm_args+=("--from-literal=EVALHUB_AUTH_TOKEN=${evalhub_token}")
+            fi
         fi
     fi
 
