@@ -1,6 +1,6 @@
 # Loan Default Prediction Web Application
 
-AI-powered loan approval system for financial advisors. Uses XGBoost for predictions and Qwen3-4B LLM for explanations.
+AI-powered loan approval system for financial advisors. Uses XGBoost for predictions and Qwen3-8B LLM for explanations.
 
 ## Quick Start (Local)
 

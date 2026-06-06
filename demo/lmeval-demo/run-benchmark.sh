@@ -24,6 +24,7 @@ source "$ROOT_DIR/lib/utils/common.sh"
 NAMESPACE="${NAMESPACE:-lmeval-demo}"
 MODEL_NAME=""
 MODEL_NAMESPACE=""
+TOKENIZER=""
 BENCHMARK=""
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         -n|--namespace) NAMESPACE="$2"; shift 2 ;;
         --model) MODEL_NAME="$2"; shift 2 ;;
         --model-ns) MODEL_NAMESPACE="$2"; shift 2 ;;
+        --tokenizer) TOKENIZER="$2"; shift 2 ;;
         --list) LIST_MODE=true; shift ;;
         --status) STATUS_MODE=true; shift ;;
         -h|--help)
@@ -39,6 +41,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --model NAME        Model name (auto-detected if not set)"
             echo "  --model-ns NS       Model namespace (auto-detected if not set)"
+            echo "  --tokenizer ID      HuggingFace tokenizer ID (e.g. RedHatAI/Qwen3-8B-FP8-dynamic)"
+            echo "                      Auto-detected from LLMInferenceService if not set"
             echo "  -n, --namespace NS  LMEval namespace (default: lmeval-demo)"
             echo "  --list              List available benchmarks"
             echo "  --status            Check running LMEvalJob status"
@@ -94,14 +98,46 @@ fi
 # --- Auto-detect model ---
 if [ -z "$MODEL_NAME" ]; then
     print_step "Auto-detecting model..."
-    FIRST_ISVC=$(oc get inferenceservice -A --no-headers 2>/dev/null | head -1)
-    if [ -n "$FIRST_ISVC" ]; then
-        MODEL_NAMESPACE=$(echo "$FIRST_ISVC" | awk '{print $1}')
-        MODEL_NAME=$(echo "$FIRST_ISVC" | awk '{print $2}')
-        print_success "Detected: $MODEL_NAME in $MODEL_NAMESPACE"
+    # Prefer LLMInferenceService (llm-d/MaaS models) over plain InferenceService
+    FIRST_LLMISVC=$(oc get llminferenceservice -A --no-headers 2>/dev/null | head -1)
+    if [ -n "$FIRST_LLMISVC" ]; then
+        MODEL_NAMESPACE=$(echo "$FIRST_LLMISVC" | awk '{print $1}')
+        MODEL_NAME=$(echo "$FIRST_LLMISVC" | awk '{print $2}')
+        print_success "Detected LLMInferenceService: $MODEL_NAME in $MODEL_NAMESPACE"
     else
-        print_error "No InferenceService found. Deploy a model first or use --model and --model-ns."
-        exit 1
+        FIRST_ISVC=$(oc get inferenceservice -A --no-headers 2>/dev/null | head -1)
+        if [ -n "$FIRST_ISVC" ]; then
+            MODEL_NAMESPACE=$(echo "$FIRST_ISVC" | awk '{print $1}')
+            MODEL_NAME=$(echo "$FIRST_ISVC" | awk '{print $2}')
+            print_success "Detected InferenceService: $MODEL_NAME in $MODEL_NAMESPACE"
+        else
+            print_error "No InferenceService found. Deploy a model first or use --model and --model-ns."
+            exit 1
+        fi
+    fi
+fi
+
+# --- Resolve tokenizer ---
+if [ -z "$TOKENIZER" ]; then
+    # Try to extract model URI from LLMInferenceService and derive tokenizer
+    MODEL_URI=$(oc get llminferenceservice "$MODEL_NAME" -n "$MODEL_NAMESPACE" \
+        -o jsonpath='{.spec.model.uri}' 2>/dev/null)
+    if [ -n "$MODEL_URI" ]; then
+        # OCI URIs like oci://registry.redhat.io/rhelai1/modelcar-qwen3-8b-fp8-dynamic:1.5
+        # Extract slug after "modelcar-" and look up known tokenizers
+        MODEL_SLUG=$(echo "$MODEL_URI" | sed -n 's|.*modelcar-\([^:]*\).*|\1|p')
+    fi
+
+    if [ -z "$TOKENIZER" ]; then
+        echo ""
+        print_warning "Tokenizer not specified. The HuggingFace tokenizer ID is required"
+        print_warning "for proper evaluation (it differs from the vLLM served name)."
+        echo ""
+        echo "  Example: served name 'redhataiqwen3-8b-fp8-dynamic'"
+        echo "           tokenizer   'RedHatAI/Qwen3-8B-FP8-dynamic'"
+        echo ""
+        read -rp "  Enter HuggingFace tokenizer ID (or press Enter to use model name): " TOKENIZER
+        TOKENIZER="${TOKENIZER:-$MODEL_NAME}"
     fi
 fi
 
@@ -117,7 +153,7 @@ if [ -z "$SA_TOKEN" ]; then
     exit 1
 fi
 
-export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN
+export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN TOKENIZER
 
 # --- Interactive selection ---
 if [ -z "$BENCHMARK" ]; then

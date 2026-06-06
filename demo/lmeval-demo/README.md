@@ -91,6 +91,27 @@ The script auto-detects your deployed model and submits `LMEvalJob` CRs.
 4. Select a model and run evaluations
 5. View scores and metrics in the results view
 
+### Tokenizer Mismatch (common failure)
+
+The "Model or agent name" field in the UI is used as **both** the vLLM served model
+name and the HuggingFace tokenizer ID. For Red Hat AI catalog models these differ:
+
+| Field | Value |
+|-------|-------|
+| vLLM served name | `redhataiqwen3-8b-fp8-dynamic` |
+| HuggingFace tokenizer | `RedHatAI/Qwen3-8B-FP8-dynamic` |
+
+If your eval jobs fail with tokenizer errors, use the **served model name** in the
+"Model or agent name" field, then check **"Add additional arguments"** and add:
+
+```
+tokenizer=RedHatAI/Qwen3-8B-FP8-dynamic
+```
+
+To find the correct tokenizer ID for any model, check the vLLM container's model
+path or look up the model on HuggingFace. For Red Hat AI catalog models the pattern
+is `RedHatAI/<Model-Name-With-Proper-Casing>`.
+
 ## Run Korean & Performance Benchmarks (Workbench Notebooks)
 
 Vendored notebooks in `notebooks/` auto-detect the deployed model and EvalHub endpoint:

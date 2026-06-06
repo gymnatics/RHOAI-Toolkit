@@ -422,8 +422,8 @@ def call_llm_explanation(data, result):
         decision = "approved" if result['decision'] == "Approved" else "rejected"
         
         # Create prompt for LLM
-        system_prompt = "You are an AI loan officer assistant. Explain loan decisions clearly and professionally based on applicant data."
-        user_prompt = f"Explain loan decision: credit_score={credit_score}, income={income}, dti={dti:.1f}, loan_amount={loan_amount}, decision={decision}"
+        system_prompt = "You are a loan officer AI. Summarize the loan decision in 3-4 concise sentences. State the decision, the key reason, and one recommendation. No bullet points or lists."
+        user_prompt = f"Loan {decision}. Credit score {credit_score}, income ${income:,}, loan ${loan_amount:,}, DTI {dti:.0f}%."
         
         # Use messages format with anti-repetition parameters (EXACTLY like original Flask app)
         payload = {
@@ -432,12 +432,13 @@ def call_llm_explanation(data, result):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "max_tokens": 120,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "frequency_penalty": 0.5,
-            "presence_penalty": 0.3
-        }
+        "max_tokens": 150,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "frequency_penalty": 0.5,
+        "presence_penalty": 0.3,
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
         
         response = requests.post(
             LLM_API_URL,
@@ -557,8 +558,8 @@ def explain_stream():
     # Prepare Qwen request with streaming
     approval_prob = probabilities[0]
     default_prob = probabilities[1]
-    system_prompt = "You are an AI loan officer assistant. Explain loan decisions clearly and professionally based on applicant data. Use the exact probability values provided."
-    user_prompt = f"Explain loan decision: credit_score={int(credit_score)}, income=${int(income)}, loan_amount=${int(loan_amount)}, approval_probability={approval_prob:.1f}%, default_risk={default_prob:.1f}%, decision={decision.lower()}"
+    system_prompt = "You are a loan officer AI. Summarize the loan decision in 3-4 concise sentences. State the decision, the key reason, and one recommendation. No bullet points or lists."
+    user_prompt = f"Loan {decision.lower()}. Credit score {int(credit_score)}, income ${int(income):,}, loan ${int(loan_amount):,}, DTI {dti:.0f}%, approval probability {approval_prob:.0f}%, default risk {default_prob:.0f}%."
     
     payload = {
         "model": LLM_MODEL_NAME,
@@ -566,12 +567,13 @@ def explain_stream():
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": 120,
+        "max_tokens": 150,
         "temperature": 0.7,
         "top_p": 0.9,
         "frequency_penalty": 0.5,
         "presence_penalty": 0.3,
-        "stream": True
+        "stream": True,
+        "chat_template_kwargs": {"enable_thinking": False}
     }
     
     def generate():

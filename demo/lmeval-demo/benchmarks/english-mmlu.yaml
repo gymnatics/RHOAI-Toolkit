@@ -3,7 +3,7 @@
 # Standard 5-shot evaluation
 #
 # Usage:
-#   export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN
+#   export NAMESPACE MODEL_NAME MODEL_NAMESPACE SA_TOKEN TOKENIZER
 #   envsubst < english-mmlu.yaml | oc apply -f -
 ---
 apiVersion: trustyai.opendatahub.io/v1alpha1
@@ -13,6 +13,13 @@ metadata:
   namespace: ${NAMESPACE}
 spec:
   model: local-completions
+  modelArgs:
+    - name: model
+      value: "${MODEL_NAME}"
+    - name: tokenizer
+      value: "${TOKENIZER}"
+    - name: tokenized_requests
+      value: "False"
   taskList:
     taskNames:
       - mmlu

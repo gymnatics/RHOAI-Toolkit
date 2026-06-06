@@ -221,8 +221,22 @@ if [ -z "$LLM_URL" ]; then
         fi
 
         if [ -n "$LLM_ISVC" ]; then
-            LLM_URL="https://${LLM_ISVC}-predictor.${LLM_ISVC_NS}.svc:8080/v1/chat/completions"
-            print_success "Detected LLM: $LLM_ISVC (ns: $LLM_ISVC_NS)"
+            # Discover the actual kserve workload service (try multiple label conventions)
+            LLM_SVC=""
+            LLM_PORT=""
+            for LABEL in "app.kubernetes.io/name=${LLM_ISVC}" "serving.kserve.io/inferenceservice=${LLM_ISVC}"; do
+                LLM_SVC=$(oc get svc -n "$LLM_ISVC_NS" -l "$LABEL" \
+                    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                if [ -n "$LLM_SVC" ]; then
+                    LLM_PORT=$(oc get svc "$LLM_SVC" -n "$LLM_ISVC_NS" \
+                        -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8000")
+                    break
+                fi
+            done
+            LLM_SVC="${LLM_SVC:-${LLM_ISVC}-kserve-workload-svc}"
+            LLM_PORT="${LLM_PORT:-8000}"
+            LLM_URL="https://${LLM_SVC}.${LLM_ISVC_NS}.svc:${LLM_PORT}/v1/chat/completions"
+            print_success "Detected LLM: $LLM_ISVC (ns: $LLM_ISVC_NS, svc: $LLM_SVC:$LLM_PORT)"
         else
             LLM_URL="https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions"
             print_warning "No LLM model detected -- deploy a GenAI model first"
@@ -269,8 +283,8 @@ S3_BUCKET_MODELS=models
 NAMESPACE=${NAMESPACE}
 SKLEARN_API_URL=${SKLEARN_API_URL}
 LLM_URL=${LLM_URL}
-HF_MODEL_ID=${HF_MODEL_ID:-Qwen/Qwen3-4B-Instruct-2507}
-LLM_MODEL_NAME=${LLM_MODEL_NAME:-qwen3-4b}
+HF_MODEL_ID=${HF_MODEL_ID:-RedHatAI/Qwen3-8B-FP8-dynamic}
+LLM_MODEL_NAME=${LLM_MODEL_NAME:-${LLM_ISVC:-qwen3-4b}}
 "
 
 oc create configmap demo-config-env \
@@ -334,6 +348,20 @@ fi
 
 echo ""
 print_success "Financial Loan Demo deployed"
+
+# --- Inject notebook environment variables into workbench ---
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
+inject_notebook_env "$NAMESPACE" \
+    "S3_ENDPOINT=${S3_ENDPOINT}" \
+    "AWS_ACCESS_KEY_ID=minio" \
+    "AWS_SECRET_ACCESS_KEY=minio123" \
+    "S3_BUCKET_DATA=datasets" \
+    "S3_BUCKET_MODELS=models" \
+    "HF_MODEL_ID=${HF_MODEL_ID:-RedHatAI/Qwen3-8B-FP8-dynamic}" \
+    "LLM_URL=${LLM_URL}" \
+    "SKLEARN_API_URL=${SKLEARN_API_URL}"
+print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
+
 echo ""
 echo "  Components:"
 echo "    Workbench namespace: $NAMESPACE (create workbench from RHOAI dashboard)"

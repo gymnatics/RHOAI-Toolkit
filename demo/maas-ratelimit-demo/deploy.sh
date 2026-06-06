@@ -71,6 +71,15 @@ fi
 echo ""
 print_success "MaaS Rate Limiting Demo namespace ready"
 print_info "Namespace: $NAMESPACE"
+
+# --- Inject notebook environment variables into workbench ---
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
+inject_notebook_env "$NAMESPACE" \
+    "MAAS_ENDPOINT=${MAAS_ENDPOINT}" \
+    "MODEL_NAME=${FIRST_MODEL_NAME}" \
+    "MODEL_NAMESPACE=${FIRST_MODEL_NS}"
+print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
+
 echo ""
 echo "  Next steps:"
 echo "  1. Create a workbench in RHOAI dashboard for namespace: $NAMESPACE"

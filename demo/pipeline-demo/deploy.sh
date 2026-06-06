@@ -113,6 +113,18 @@ fi
 echo ""
 print_success "AI Pipeline Demo infrastructure ready"
 print_info "Namespace: $NAMESPACE"
+
+# --- Inject notebook environment variables into workbench ---
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
+inject_notebook_env "$NAMESPACE" \
+    "S3_ENDPOINT=http://minio.${NAMESPACE}.svc:9000" \
+    "AWS_ACCESS_KEY_ID=minio" \
+    "AWS_SECRET_ACCESS_KEY=minio123" \
+    "S3_BUCKET=models" \
+    "DATA_BUCKET=datasets" \
+    "ARTIFACTS_BUCKET=artifacts"
+print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
+
 echo ""
 echo "  Next steps:"
 echo "  1. Create a workbench in RHOAI dashboard for namespace: $NAMESPACE"
