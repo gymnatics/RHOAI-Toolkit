@@ -1,0 +1,241 @@
+{
+  "name": "RHOAI Cluster Health Check",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://qwen3-8b-fp8-dynamic-no-maas-0-test.apps.cluster-9tjvr.9tjvr.sandbox2001.opentlc.com/v1/models",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "timeout": 10000
+        }
+      },
+      "id": "check-model",
+      "name": "Check vLLM Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 100],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://open-webui-open-webui.apps.cluster-9tjvr.9tjvr.sandbox2001.opentlc.com",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "timeout": 10000
+        }
+      },
+      "id": "check-webui",
+      "name": "Check Open WebUI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://evalhub.redhat-ods-applications.svc:8443/api/v1/health",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "timeout": 10000
+        }
+      },
+      "id": "check-evalhub",
+      "name": "Check EvalHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 500],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ts",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "vllm",
+              "name": "vllm_status",
+              "value": "={{ $('Check vLLM Model').isExecuted ? ($('Check vLLM Model').first().json.data ? '✅ Healthy (' + $('Check vLLM Model').first().json.data.length + ' models)' : '❌ DOWN') : '❌ DOWN' }}",
+              "type": "string"
+            },
+            {
+              "id": "webui",
+              "name": "webui_status",
+              "value": "={{ $('Check Open WebUI').isExecuted ? '✅ Healthy' : '❌ DOWN' }}",
+              "type": "string"
+            },
+            {
+              "id": "evalhub",
+              "name": "evalhub_status",
+              "value": "={{ $('Check EvalHub').isExecuted ? '✅ Healthy' : '❌ DOWN' }}",
+              "type": "string"
+            },
+            {
+              "id": "summary",
+              "name": "summary",
+              "value": "=RHOAI Health Report ({{ $now.toISO() }})\n━━━━━━━━━━━━━━━━━━━━━━━\n🤖 vLLM Model: {{ $('Check vLLM Model').isExecuted ? ($('Check vLLM Model').first().json.data ? '✅ Healthy' : '❌ DOWN') : '❌ DOWN' }}\n🖥️ Open WebUI: {{ $('Check Open WebUI').isExecuted ? '✅ Healthy' : '❌ DOWN' }}\n📊 EvalHub:    {{ $('Check EvalHub').isExecuted ? '✅ Healthy' : '❌ DOWN' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-report",
+      "name": "Build Health Report",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [600, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-failure",
+              "leftValue": "={{ $json.summary }}",
+              "rightValue": "❌",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-failures",
+      "name": "Any Failures?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [850, 100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "alert",
+              "name": "alert",
+              "value": "=⚠️ ALERT: {{ $json.summary }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "alert-node",
+      "name": "🚨 Alert (Failure)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ok",
+              "name": "status",
+              "value": "={{ $json.summary }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "all-ok-node",
+      "name": "✅ All Healthy",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1100, 200]
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          { "node": "Check vLLM Model", "type": "main", "index": 0 },
+          { "node": "Check Open WebUI", "type": "main", "index": 0 },
+          { "node": "Check EvalHub", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Manual Test": {
+      "main": [
+        [
+          { "node": "Check vLLM Model", "type": "main", "index": 0 },
+          { "node": "Check Open WebUI", "type": "main", "index": 0 },
+          { "node": "Check EvalHub", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check vLLM Model": {
+      "main": [
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }],
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Open WebUI": {
+      "main": [
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }],
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check EvalHub": {
+      "main": [
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }],
+        [{ "node": "Build Health Report", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Health Report": {
+      "main": [
+        [{ "node": "Any Failures?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Failures?": {
+      "main": [
+        [{ "node": "🚨 Alert (Failure)", "type": "main", "index": 0 }],
+        [{ "node": "✅ All Healthy", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": ["rhoai", "health-check", "monitoring"]
+}
