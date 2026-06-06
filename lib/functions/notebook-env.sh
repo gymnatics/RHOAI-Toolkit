@@ -151,7 +151,7 @@ inject_notebook_env() {
     fi
 
     # EvalHub URL (if EvalHub is deployed)
-    local evalhub_url="http://evalhub.redhat-ods-applications.svc:8080"
+    local evalhub_url="https://evalhub.redhat-ods-applications.svc:8443"
     if oc get svc evalhub -n redhat-ods-applications &>/dev/null; then
         cm_args+=("--from-literal=EVALHUB_URL=${evalhub_url}")
     fi

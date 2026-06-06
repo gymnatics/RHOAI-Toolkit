@@ -25,6 +25,7 @@ DEMO_NAMESPACES=(
     "pipeline-demo"
     "maas-ratelimit-demo"
     "feast-demo"
+    "a-rh-dept"
 )
 
 usage() {
