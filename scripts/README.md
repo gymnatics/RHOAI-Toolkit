@@ -252,7 +252,7 @@ cat scripts/CLEANUP-USAGE.md
 
 ## See Also
 
-- **Main Scripts** (in root): `openshift-installer-master.sh`, `integrated-workflow.sh`, `rhoai-toolkit.sh`
+- **Main Scripts** (in root): `openshift-installer-master.sh`, `integrated-workflow.sh`, `rhoai-toolkit.sh`, `restart-cluster-instances.sh`
 - **Diagnostics** (in diagnostics/): Tools for troubleshooting
 - **Tests** (in tests/): Test scripts for validation
 - **Documentation** (in docs/): Detailed guides and troubleshooting

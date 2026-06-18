@@ -38,5 +38,5 @@ spec:
     distribution:
       name: rh-dev
     userConfig:
-      configMapName: llamastack-demo-llm-config
+      configMapName: llamastack-demo-config
 

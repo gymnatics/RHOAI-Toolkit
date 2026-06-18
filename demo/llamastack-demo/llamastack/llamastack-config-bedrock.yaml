@@ -7,14 +7,14 @@ metadata:
   labels:
     llamastack.io/distribution: llamastack-demo
     opendatahub.io/dashboard: "true"
-  name: llamastack-demo-llm-config
+  name: llamastack-demo-config
   namespace: NAMESPACE_PLACEHOLDER
 data:
   run.yaml: |
     version: "2"
     image_name: rh
     apis:
-    - agents
+    - responses
     - datasetio
     - files
     - inference
@@ -39,17 +39,10 @@ data:
             db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
             namespace: null
             type: sqlite
-      agents:
-      - provider_id: meta-reference
-        provider_type: inline::meta-reference
-        config:
-          persistence_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
-            namespace: null
-            type: sqlite
-          responses_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
-            type: sqlite
+      responses:
+      - provider_id: builtin
+        provider_type: inline::builtin
+        config: {}
       eval: []
       files:
       - provider_id: meta-reference-files
@@ -75,8 +68,8 @@ data:
         provider_type: inline::llm-as-judge
         config: {}
       tool_runtime:
-      - provider_id: rag-runtime
-        provider_type: inline::rag-runtime
+      - provider_id: file-search
+        provider_type: inline::file-search
         config: {}
       - provider_id: model-context-protocol
         provider_type: remote::model-context-protocol
@@ -97,8 +90,6 @@ data:
     scoring_fns: []
     benchmarks: []
     tool_groups:
-    - toolgroup_id: builtin::rag
-      provider_id: rag-runtime
     - toolgroup_id: mcp::weather-data
       provider_id: model-context-protocol
       mcp_endpoint:

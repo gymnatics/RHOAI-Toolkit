@@ -1,6 +1,6 @@
 ---
 # LlamaStack ConfigMap - vLLM Provider (OpenShift/RHOAI)
-# Use this when you have a model served via RHOAI KServe/vLLM
+# Compatible with LlamaStack 0.4.0+
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,7 +14,7 @@ data:
     version: "2"
     image_name: rh
     apis:
-    - agents
+    - responses
     - datasetio
     - files
     - inference
@@ -30,47 +30,46 @@ data:
       - provider_id: vllm-inference
         provider_type: remote::vllm
         config:
-          api_token: ${env.VLLM_API_TOKEN:}
-          max_tokens: ${env.VLLM_MAX_TOKENS:4096}
-          tls_verify: ${env.VLLM_TLS_VERIFY:false}
-          url: ${env.VLLM_URL}/v1
+          base_url: ${env.VLLM_URL:=}
+          max_tokens: ${env.VLLM_MAX_TOKENS:=4096}
+          api_token: ${env.VLLM_API_TOKEN:=}
+          network:
+            tls:
+              verify: ${env.VLLM_TLS_VERIFY:=true}
       vector_io:
       - provider_id: milvus
         provider_type: inline::milvus
         config:
-          db_path: /opt/app-root/src/.llama/distributions/rh/milvus.db
-          kvstore:
-            db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
-            namespace: null
-            type: sqlite
-      agents:
-      - provider_id: meta-reference
-        provider_type: inline::meta-reference
+          db_path: ${env.MILVUS_DB_PATH:=~/.llama/milvus.db}
+          persistence:
+            namespace: milvus_registry
+            backend: kv_default
+      responses:
+      - provider_id: builtin
+        provider_type: inline::builtin
         config:
-          persistence_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
-            namespace: null
-            type: sqlite
-          responses_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
-            type: sqlite
+          persistence:
+            agent_state:
+              namespace: responses
+              backend: kv_default
+            responses:
+              backend: sql_default
       eval: []
       files:
-      - provider_id: meta-reference-files
+      - provider_id: builtin-files
         provider_type: inline::localfs
         config:
           metadata_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/files_metadata.db
-            type: sqlite
+            backend: sql_default
+            table_name: files_metadata
           storage_dir: /opt/app-root/src/.llama/distributions/rh/files
       datasetio:
       - provider_id: huggingface
         provider_type: remote::huggingface
         config:
           kvstore:
-            db_path: /opt/app-root/src/.llama/distributions/rh/huggingface_datasetio.db
-            namespace: null
-            type: sqlite
+            namespace: huggingface_datasetio
+            backend: kv_default
       scoring:
       - provider_id: basic
         provider_type: inline::basic
@@ -79,15 +78,12 @@ data:
         provider_type: inline::llm-as-judge
         config: {}
       tool_runtime:
-      - provider_id: rag-runtime
-        provider_type: inline::rag-runtime
+      - provider_id: file-search
+        provider_type: inline::file-search
         config: {}
       - provider_id: model-context-protocol
         provider_type: remote::model-context-protocol
         config: {}
-    metadata_store:
-      type: sqlite
-      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
     models:
     - provider_id: vllm-inference
       model_id: MODEL_ID_PLACEHOLDER
@@ -96,17 +92,13 @@ data:
       metadata:
         display_name: MODEL_ID_PLACEHOLDER
     shields: []
-    vector_dbs: []
     datasets: []
     scoring_fns: []
     benchmarks: []
     tool_groups:
-    - toolgroup_id: builtin::rag
-      provider_id: rag-runtime
     - toolgroup_id: mcp::weather-data
       provider_id: model-context-protocol
       mcp_endpoint:
         uri: http://weather-mcp-server.NAMESPACE_PLACEHOLDER.svc.cluster.local:8000/mcp
     server:
       port: 8321
-

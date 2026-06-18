@@ -367,7 +367,7 @@ def chat_completion_openai(messages: List[Dict], tools: List[Dict] = None) -> Di
     
     try:
         response = requests.post(
-            f"{LLAMASTACK_URL}/v1/openai/v1/chat/completions",
+            f"{LLAMASTACK_URL}/v1/chat/completions",
             json=payload,
             timeout=120
         )

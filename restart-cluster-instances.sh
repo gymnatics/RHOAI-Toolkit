@@ -12,10 +12,15 @@
 #     when the cluster restarts after long downtime (expired tokens, OAuth down)
 #
 # Usage:
-#   ./restart-cluster-instances.sh          # stop → start (default)
-#   ./restart-cluster-instances.sh stop      # stop only
-#   ./restart-cluster-instances.sh start     # start only
-#   ./restart-cluster-instances.sh status    # show instance status
+#   ./restart-cluster-instances.sh              # stop → start (default)
+#   ./restart-cluster-instances.sh stop          # stop only
+#   ./restart-cluster-instances.sh start         # start only
+#   ./restart-cluster-instances.sh status        # show instance status
+#   ./restart-cluster-instances.sh schedule      # show auto-stop schedule
+#   ./restart-cluster-instances.sh schedule on   # enable daily auto-stop at 00:00
+#   ./restart-cluster-instances.sh schedule on 23:30  # set auto-stop at 23:30
+#   ./restart-cluster-instances.sh schedule off  # disable auto-stop
+#   ./restart-cluster-instances.sh schedule run  # run auto-stop now (used by cron)
 #
 # Environment:
 #   KUBECONFIG   Path to kubeconfig with client certificate (auto-detected)
@@ -394,6 +399,148 @@ wait_for_cluster() {
     return 0
 }
 
+################################################################################
+# Schedule management (crontab-based auto-stop)
+################################################################################
+
+CRON_TAG="RHOAI-AUTOSTOP"
+AUTOSTOP_LOG="/tmp/cluster-autostop.log"
+
+_get_cron_entry() {
+    local hour="${1:-0}" minute="${2:-0}"
+    local script_path
+    script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    echo "$minute $hour * * * $script_path schedule run >> $AUTOSTOP_LOG 2>&1 # $CRON_TAG"
+}
+
+_get_current_schedule_time() {
+    local line
+    line=$(crontab -l 2>/dev/null | grep "$CRON_TAG" | grep -v "^#" || true)
+    if [ -n "$line" ]; then
+        local min hr
+        min=$(echo "$line" | awk '{print $1}')
+        hr=$(echo "$line" | awk '{print $2}')
+        printf "%02d:%02d" "$hr" "$min"
+    else
+        echo "00:00"
+    fi
+}
+
+_get_schedule_info() {
+    local line
+    line=$(crontab -l 2>/dev/null | grep "$CRON_TAG" || true)
+    if [ -z "$line" ]; then
+        echo "none"
+    elif echo "$line" | grep -q "^#"; then
+        echo "disabled"
+    else
+        echo "active"
+    fi
+}
+
+schedule_status() {
+    local state sched_time
+    state=$(_get_schedule_info)
+    sched_time=$(_get_current_schedule_time)
+    echo ""
+    case "$state" in
+        active)
+            success "Auto-stop schedule: ACTIVE (daily at $sched_time)"
+            echo "  Log: $AUTOSTOP_LOG"
+            echo ""
+            echo "  crontab entry:"
+            crontab -l 2>/dev/null | grep "$CRON_TAG" | sed 's/^/    /'
+            echo ""
+            echo "  Change time: $0 schedule on HH:MM"
+            ;;
+        disabled)
+            warn "Auto-stop schedule: DISABLED (registered but inactive)"
+            echo ""
+            echo "  crontab entry (commented out):"
+            crontab -l 2>/dev/null | grep "$CRON_TAG" | sed 's/^/    /'
+            echo ""
+            echo "  Enable with: $0 schedule on [HH:MM]"
+            ;;
+        none)
+            info "Auto-stop schedule: NOT REGISTERED"
+            echo ""
+            echo "  Register with: $0 schedule on [HH:MM]  (default: 00:00)"
+            ;;
+    esac
+    echo ""
+}
+
+schedule_on() {
+    local time_arg="${1:-00:00}"
+    local hour minute state entry
+
+    if ! echo "$time_arg" | grep -qE '^[0-9]{1,2}:[0-9]{2}$'; then
+        error "Invalid time format: $time_arg (expected HH:MM)"
+        return 1
+    fi
+    hour=$(echo "$time_arg" | cut -d: -f1)
+    minute=$(echo "$time_arg" | cut -d: -f2)
+
+    if [ "$hour" -gt 23 ] || [ "$minute" -gt 59 ] 2>/dev/null; then
+        error "Invalid time: $time_arg"
+        return 1
+    fi
+
+    state=$(_get_schedule_info)
+    entry=$(_get_cron_entry "$hour" "$minute")
+
+    case "$state" in
+        active|disabled)
+            local existing
+            existing=$(crontab -l 2>/dev/null | grep -v "$CRON_TAG" || true)
+            if [ -n "$existing" ]; then
+                printf '%s\n%s\n' "$existing" "$entry" | crontab -
+            else
+                echo "$entry" | crontab -
+            fi
+            success "Auto-stop schedule ENABLED (daily at $(printf '%02d:%02d' "$hour" "$minute"))"
+            ;;
+        none)
+            ( crontab -l 2>/dev/null || true; echo "$entry" ) | crontab -
+            success "Auto-stop schedule REGISTERED and ENABLED (daily at $(printf '%02d:%02d' "$hour" "$minute"))"
+            ;;
+    esac
+    echo "  Log: $AUTOSTOP_LOG"
+    echo ""
+}
+
+schedule_off() {
+    local state
+    state=$(_get_schedule_info)
+
+    case "$state" in
+        active)
+            crontab -l 2>/dev/null | sed "/$CRON_TAG/s/^/# /" | crontab -
+            success "Auto-stop schedule DISABLED"
+            ;;
+        disabled)
+            warn "Auto-stop schedule is already disabled"
+            ;;
+        none)
+            warn "No auto-stop schedule registered"
+            echo "  Register with: $0 schedule on"
+            ;;
+    esac
+    echo ""
+}
+
+schedule_run() {
+    echo ""
+    echo "========================================"
+    echo "  Auto-stop triggered at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "========================================"
+    detect_cluster
+    echo "  Cluster: $INFRA_ID  Region: $AWS_REGION"
+    stop_instances
+    echo "  Completed at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "========================================"
+}
+
 main() {
     local action="${1:-restart}"
 
@@ -406,6 +553,13 @@ main() {
     echo "  Cluster:  $INFRA_ID"
     echo "  Region:   $AWS_REGION"
     echo "  Action:   $action"
+
+    local sched_state
+    sched_state=$(_get_schedule_info)
+    case "$sched_state" in
+        active)   echo -e "  Schedule: ${GREEN}Auto-stop at $(_get_current_schedule_time) daily (active)${NC}" ;;
+        disabled) echo -e "  Schedule: ${YELLOW}Auto-stop registered (disabled)${NC}" ;;
+    esac
     echo ""
 
     case "$action" in
@@ -448,8 +602,18 @@ main() {
         status)
             show_status
             ;;
+        schedule)
+            local sub="${2:-}"
+            case "$sub" in
+                on)  schedule_on "${3:-00:00}" ;;
+                off) schedule_off ;;
+                run) schedule_run ;;
+                *)   schedule_status ;;
+            esac
+            return 0
+            ;;
         *)
-            echo "Usage: $0 [stop|start|restart|status]"
+            echo "Usage: $0 [stop|start|restart|status|schedule [on [HH:MM]|off|run]]"
             exit 1
             ;;
     esac

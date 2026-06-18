@@ -46,6 +46,26 @@ get_rhoai_version() {
     oc get csv -n redhat-ods-operator -o jsonpath='{.items[0].spec.version}' 2>/dev/null
 }
 
+# Portable envsubst: use native command if available, otherwise pure bash fallback
+_envsubst() {
+    if command -v envsubst &>/dev/null; then
+        envsubst
+    else
+        local line
+        while IFS= read -r line || [ -n "$line" ]; do
+            while [[ "$line" =~ \$\{([A-Za-z_][A-Za-z_0-9]*)\} ]]; do
+                local var_name="${BASH_REMATCH[1]}"
+                line="${line/\$\{$var_name\}/${!var_name:-}}"
+            done
+            while [[ "$line" =~ \$([A-Za-z_][A-Za-z_0-9]*) ]]; do
+                local var_name="${BASH_REMATCH[1]}"
+                line="${line/\$$var_name/${!var_name:-}}"
+            done
+            printf '%s\n' "$line"
+        done
+    fi
+}
+
 # Apply manifest with envsubst
 apply_manifest() {
     local manifest_file="$1"
@@ -61,7 +81,7 @@ apply_manifest() {
         ns_arg="-n $namespace"
     fi
     
-    envsubst < "$manifest_file" | oc apply $ns_arg -f -
+    _envsubst < "$manifest_file" | oc apply $ns_arg -f -
 }
 
 # Delete manifest with envsubst
@@ -78,7 +98,7 @@ delete_manifest() {
         ns_arg="-n $namespace"
     fi
     
-    envsubst < "$manifest_file" | oc delete $ns_arg -f - --ignore-not-found=true
+    _envsubst < "$manifest_file" | oc delete $ns_arg -f - --ignore-not-found=true
 }
 
 # Wait for deployment to be ready

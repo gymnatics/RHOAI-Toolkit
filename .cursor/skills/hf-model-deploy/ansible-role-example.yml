@@ -1,0 +1,252 @@
+# =============================================================================
+# HF-vLLM-Deploy Ansible Role — OpenShift AI Edition
+# =============================================================================
+# 이 파일은 Ansible Task 형태의 "AI 인프라 스킬" 참조 구현입니다.
+# bare-metal EC2 또는 OpenShift 환경 모두에서 사용할 수 있도록 설계되었습니다.
+#
+# 사용법 (Playbook):
+#   roles:
+#     - role: hf-vllm-deploy
+#       vars:
+#         llm_model_id: "Qwen/Qwen2.5-Coder-7B-Instruct"
+#         deploy_target: "openshift"  # or "docker"
+# =============================================================================
+
+# ─── defaults/main.yml ───────────────────────────────────────────────────────
+# 이 스킬을 호출할 때 바꿀 수 있는 입력 인터페이스(Parameter)
+defaults:
+  llm_model_id: "Qwen/Qwen2.5-Coder-7B-Instruct"
+  llm_base_dir: "/opt/llm-models"
+  llm_namespace: "rhoai-models"
+  vllm_port: 8000
+  max_model_length: 16384
+  gpu_memory_utilization: "0.90"
+  quantization_type: "auto"  # auto | fp8 | awq | gptq
+  tool_call_parser: "hermes"  # hermes | llama3_json | mistral
+  enable_tool_calling: true
+  hf_token_secret: "hf-token"
+  pvc_size: "80Gi"
+  pvc_storage_class: "gp3-csi"
+  deploy_target: "openshift"  # openshift | docker
+  vllm_image: "registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4.0"
+
+# ─── tasks/main.yml ──────────────────────────────────────────────────────────
+tasks:
+
+  # ═══════════════ Strategy 1: OCI ModelCar (OpenShift 전용) ═══════════════
+  - name: "[OCI] Check if model is available as OCI ModelCar"
+    when: deploy_target == "openshift"
+    shell: |
+      curl -sf "https://quay.io/api/v1/repository/redhat-ai-services/modelcar-catalog/tag/?filter_tag_name=like:{{ llm_model_id | basename | lower | replace('-instruct','') }}" \
+        | python3 -c "import sys,json; tags=json.load(sys.stdin).get('tags',[]); print(tags[0]['name'] if tags else '')"
+    register: oci_tag
+
+  - name: "[OCI] Deploy via OCI ModelCar (instant, no download)"
+    when: oci_tag.stdout != ""
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: serving.kserve.io/v1beta1
+        kind: InferenceService
+        metadata:
+          name: "{{ llm_model_id | basename | lower }}"
+          namespace: "{{ llm_namespace }}"
+          labels:
+            opendatahub.io/dashboard: "true"
+          annotations:
+            serving.kserve.io/deploymentMode: RawDeployment
+        spec:
+          predictor:
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            model:
+              modelFormat:
+                name: vLLM
+              runtime: vllm-runtime
+              storageUri: "oci://quay.io/redhat-ai-services/modelcar-catalog:{{ oci_tag.stdout }}"
+              args: "{{ vllm_args }}"
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+
+  # ═══════════════ Strategy 2: PVC Pre-Cache (OpenShift) ═══════════════════
+  - name: "[PVC] Create model storage PVC"
+    when: deploy_target == "openshift" and oci_tag.stdout == ""
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: "model-cache-{{ llm_model_id | basename | lower }}"
+          namespace: "{{ llm_namespace }}"
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: "{{ pvc_size }}"
+          storageClassName: "{{ pvc_storage_class }}"
+
+  - name: "[PVC] Launch high-speed download Job (hf_transfer, resumable)"
+    when: deploy_target == "openshift" and oci_tag.stdout == ""
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: "download-{{ llm_model_id | basename | lower }}"
+          namespace: "{{ llm_namespace }}"
+        spec:
+          backoffLimit: 3
+          template:
+            spec:
+              restartPolicy: OnFailure
+              containers:
+                - name: downloader
+                  image: registry.redhat.io/ubi9/python-311:latest
+                  command: ["/bin/bash", "-c"]
+                  args:
+                    - |
+                      pip install -q huggingface_hub hf_transfer &&
+                      huggingface-cli download {{ llm_model_id }} \
+                        --local-dir /mnt/models \
+                        --local-dir-use-symlinks False
+                  env:
+                    - name: HF_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: "{{ hf_token_secret }}"
+                          key: token
+                          optional: true
+                    - name: HF_HUB_ENABLE_HF_TRANSFER
+                      value: "1"
+                    - name: HF_HUB_DISABLE_XET
+                      value: "1"
+                  resources:
+                    requests: { cpu: "2", memory: "4Gi" }
+                    limits: { cpu: "8", memory: "8Gi" }
+                  volumeMounts:
+                    - { name: model-vol, mountPath: /mnt/models }
+              volumes:
+                - name: model-vol
+                  persistentVolumeClaim:
+                    claimName: "model-cache-{{ llm_model_id | basename | lower }}"
+
+  - name: "[PVC] Wait for download to complete"
+    when: deploy_target == "openshift" and oci_tag.stdout == ""
+    kubernetes.core.k8s_info:
+      kind: Job
+      namespace: "{{ llm_namespace }}"
+      name: "download-{{ llm_model_id | basename | lower }}"
+      wait: true
+      wait_condition:
+        type: Complete
+        status: "True"
+      wait_timeout: 1800
+
+  - name: "[PVC] Deploy InferenceService with PVC volume"
+    when: deploy_target == "openshift" and oci_tag.stdout == ""
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: serving.kserve.io/v1beta1
+        kind: InferenceService
+        metadata:
+          name: "{{ llm_model_id | basename | lower }}"
+          namespace: "{{ llm_namespace }}"
+          labels:
+            opendatahub.io/dashboard: "true"
+          annotations:
+            serving.kserve.io/deploymentMode: RawDeployment
+        spec:
+          predictor:
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            model:
+              modelFormat:
+                name: vLLM
+              runtime: vllm-runtime
+              storageUri: "pvc://model-cache-{{ llm_model_id | basename | lower }}"
+              args: "{{ vllm_args }}"
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+
+  # ═══════════════ Strategy 3: Docker/Podman (bare EC2) ═══════════════════
+  - name: "[Docker] Create model directory"
+    when: deploy_target == "docker"
+    file:
+      path: "{{ llm_base_dir }}/{{ llm_model_id | basename }}"
+      state: directory
+      mode: '0755'
+
+  - name: "[Docker] Install hf_transfer for high-speed downloads"
+    when: deploy_target == "docker"
+    pip:
+      name: [huggingface_hub, hf_transfer]
+      state: present
+
+  - name: "[Docker] Download model with hf_transfer (parallel, resumable)"
+    when: deploy_target == "docker"
+    command: >
+      huggingface-cli download {{ llm_model_id }}
+      --local-dir {{ llm_base_dir }}/{{ llm_model_id | basename }}
+      --local-dir-use-symlinks False
+    environment:
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      HF_HUB_DISABLE_XET: "1"
+    async: 1800
+    poll: 30
+
+  - name: "[Docker] Start vLLM container with pre-cached model"
+    when: deploy_target == "docker"
+    community.docker.docker_container:
+      name: "vllm-{{ llm_model_id | basename | lower }}"
+      image: "{{ vllm_image }}"
+      state: started
+      restart_policy: always
+      published_ports:
+        - "{{ vllm_port }}:8000"
+      volumes:
+        - "{{ llm_base_dir }}/{{ llm_model_id | basename }}:/model:ro"
+      device_requests:
+        - driver: nvidia
+          count: 1
+          capabilities: [['gpu']]
+      command: >
+        --model /model
+        --max-model-len {{ max_model_length }}
+        --gpu-memory-utilization {{ gpu_memory_utilization }}
+        {% if enable_tool_calling %}--enable-auto-tool-choice --tool-call-parser={{ tool_call_parser }}{% endif %}
+        {% if quantization_type != 'auto' %}--quantization {{ quantization_type }}{% endif %}
+
+# ─── Playbook 사용 예시 ───────────────────────────────────────────────────────
+# ---
+# - name: OpenShift AI에 코딩 LLM 배포
+#   hosts: localhost
+#   connection: local
+#   roles:
+#     - role: hf-vllm-deploy
+#       vars:
+#         llm_model_id: "Qwen/Qwen2.5-Coder-7B-Instruct"
+#         deploy_target: "openshift"
+#         llm_namespace: "rhoai-models"
+#
+# - name: AWS g6e.4xlarge에 Docker로 배포
+#   hosts: aws_g6e_instances
+#   become: true
+#   roles:
+#     - role: hf-vllm-deploy
+#       vars:
+#         llm_model_id: "Qwen/Qwen2.5-Coder-32B-Instruct-FP8"
+#         deploy_target: "docker"
+#         vllm_port: 8000

@@ -135,7 +135,7 @@ prompt_use_saved_configuration() {
     echo "  2) No - Enter new configuration"
     echo "  3) Edit - Modify specific values"
     echo ""
-    read -p "Select option [1]: " use_saved
+    read -ep "Select option [1]: " use_saved
     use_saved="${use_saved:-1}"
     
     case $use_saved in
@@ -170,36 +170,36 @@ interactive_edit_configuration() {
     echo ""
     
     # Cluster Name
-    read -p "Cluster name [$CLUSTER_NAME]: " new_value
+    read -ep "Cluster name [$CLUSTER_NAME]: " new_value
     [ -n "$new_value" ] && CLUSTER_NAME="$new_value"
     
     # Domain
-    read -p "Base domain [$BASE_DOMAIN]: " new_value
+    read -ep "Base domain [$BASE_DOMAIN]: " new_value
     [ -n "$new_value" ] && BASE_DOMAIN="$new_value"
     
     # Region
-    read -p "AWS region [$AWS_REGION]: " new_value
+    read -ep "AWS region [$AWS_REGION]: " new_value
     [ -n "$new_value" ] && AWS_REGION="$new_value"
     
     # Master instance type
-    read -p "Master instance type [$MASTER_INSTANCE_TYPE]: " new_value
+    read -ep "Master instance type [$MASTER_INSTANCE_TYPE]: " new_value
     [ -n "$new_value" ] && MASTER_INSTANCE_TYPE="$new_value"
     
     # Master replicas
-    read -p "Master replicas [$MASTER_REPLICAS]: " new_value
+    read -ep "Master replicas [$MASTER_REPLICAS]: " new_value
     [ -n "$new_value" ] && MASTER_REPLICAS="$new_value"
     
     # Worker instance type
-    read -p "Worker instance type [$WORKER_INSTANCE_TYPE]: " new_value
+    read -ep "Worker instance type [$WORKER_INSTANCE_TYPE]: " new_value
     [ -n "$new_value" ] && WORKER_INSTANCE_TYPE="$new_value"
     
     # Worker replicas
-    read -p "Worker replicas [$WORKER_REPLICAS]: " new_value
+    read -ep "Worker replicas [$WORKER_REPLICAS]: " new_value
     [ -n "$new_value" ] && WORKER_REPLICAS="$new_value"
     
     # VPC CIDR (if creating new)
     if [ "$USE_EXISTING_VPC" != "true" ]; then
-        read -p "VPC CIDR [$VPC_CIDR]: " new_value
+        read -ep "VPC CIDR [$VPC_CIDR]: " new_value
         [ -n "$new_value" ] && VPC_CIDR="$new_value"
     fi
     

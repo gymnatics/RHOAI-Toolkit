@@ -109,13 +109,20 @@ print_success "Cluster domain: $CLUSTER_DOMAIN"
 
 # Find model if not specified
 if [ -z "$MODEL_NAME" ]; then
-    print_step "Finding deployed models..."
+    print_step "Finding deployed models (LLMInferenceService)..."
     list_models
     echo ""
     
     SELECTED=$(select_model)
     if [ -z "$SELECTED" ]; then
         print_error "No model selected"
+        echo ""
+        print_info "MaaS Demo requires a model deployed with llm-d (LLMInferenceService)."
+        print_info "To deploy a model with llm-d:"
+        echo "  ./rhoai-toolkit.sh → RHOAI Management → Model Management → Deploy Model (llm-d)"
+        echo ""
+        print_info "For testing vLLM InferenceService models, use Open WebUI instead:"
+        echo "  ./rhoai-toolkit.sh → RHOAI Management → Demos → Deploy Open WebUI"
         exit 1
     fi
     parse_model "$SELECTED"

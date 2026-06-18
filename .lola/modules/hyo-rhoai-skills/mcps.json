@@ -1,0 +1,48 @@
+{
+  "mcpServers": {
+    "openshift": {
+      "command": "podman",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network=host",
+        "--userns=keep-id:uid=65532,gid=65532",
+        "-v", "${KUBECONFIG}:/kubeconfig:ro,Z",
+        "--entrypoint", "/app/kubernetes-mcp-server",
+        "quay.io/ecosystem-appeng/openshift-mcp-server@sha256:3531cb78f51f8c7ebcdb21adc21358ab8924116994848a3ce1ff542b3fc23742",
+        "--kubeconfig", "/kubeconfig",
+        "--toolsets", "core,config,observability"
+      ],
+      "env": {
+        "KUBECONFIG": "${KUBECONFIG}"
+      },
+      "description": "Red Hat Openshift MCP server for interacting with Openshift Container Platform clusters and its operators",
+      "security": {
+        "isolation": "container",
+        "network": "local",
+        "credentials": "env-only"
+      }
+    },
+    "ai-observability": {
+      "type": "http",
+      "url": "${AI_OBSERVABILITY_MCP_URL}/mcp",
+      "description": "AI Observability MCP server for vLLM model performance analysis, GPU monitoring, OpenShift metrics, and distributed tracing. Deployed on-cluster from quay.io/ecosystem-appeng/aiobs-mcp-server. See: https://github.com/rh-ai-quickstart/ai-observability-summarizer",
+      "security": { "isolation": "remote", "network": "cluster", "credentials": "env-only" }
+    },
+    "rhoai": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/opendatahub-io/rhoai-mcp@31576c61b6f59280704c86dde1e3e9ed79def5e5", "rhoai-mcp"],
+      "env": {
+        "RHOAI_MCP_KUBECONFIG_PATH": "${KUBECONFIG}",
+        "RHOAI_MCP_TRANSPORT": "stdio"
+      },
+      "description": "Red Hat OpenShift AI MCP server for high-level RHOAI operations: Data Science Projects, model serving (InferenceService deploy/list/get), serving runtimes, data connections, workbenches, pipelines, storage, training, and model registry. See: https://github.com/opendatahub-io/rhoai-mcp",
+      "security": {
+        "isolation": "process",
+        "network": "local",
+        "credentials": "env-only"
+      }
+    }
+  }
+}

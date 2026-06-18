@@ -3,7 +3,7 @@
 # Model discovery functions for MaaS Demo
 ################################################################################
 
-# Get all LLMInferenceServices
+# Get all LLMInferenceServices (llm-d models only - required for MaaS)
 get_all_models() {
     oc get llminferenceservice -A \
         -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \

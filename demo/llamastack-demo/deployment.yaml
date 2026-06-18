@@ -4,14 +4,14 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: llamastack-demo-config
+  name: llamastack-mcp-demo-config
   namespace: demo-test  # Change to your namespace
 data:
   # Required: LlamaStack endpoint
   LLAMASTACK_URL: "http://lsd-genai-playground-service.demo-test.svc.cluster.local:8321"
   
-  # Required: Model ID registered in LlamaStack
-  MODEL_ID: "qwen3-8b"
+  # Required: Model ID registered in LlamaStack (0.4.0+ uses provider_id/model_id)
+  MODEL_ID: "vllm-inference/qwen3-8b"
   
   # Required: MCP Server URL (for health checks in sidebar)
   MCP_SERVER_URL: "http://weather-mcp-server.demo-test.svc.cluster.local:8000"
@@ -59,7 +59,7 @@ spec:
           name: http
         envFrom:
         - configMapRef:
-            name: llamastack-demo-config
+            name: llamastack-mcp-demo-config
         resources:
           requests:
             memory: "256Mi"

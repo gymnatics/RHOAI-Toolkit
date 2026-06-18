@@ -156,7 +156,7 @@ select_rhoai_channel() {
     local choice=""
     
     while true; do
-        read -p "Select channel (1-$max_idx) [default: $default_idx]: " choice
+        read -ep "Select channel (1-$max_idx) [default: $default_idx]: " choice
         choice=$(echo "$choice" | tr -d '[:space:]')
         
         # Use default if empty
@@ -210,7 +210,7 @@ select_install_plan_approval() {
     
     local choice=""
     while true; do
-        read -p "Select approval mode (1-2) [default: 1]: " choice
+        read -ep "Select approval mode (1-2) [default: 1]: " choice
         choice=$(echo "$choice" | tr -d '[:space:]')
         
         # Use default if empty
@@ -271,7 +271,7 @@ install_rhoai_operator_interactive() {
         [ -n "$current_approval" ] && echo "  Upgrade Approval: $current_approval"
         echo ""
         
-        read -p "Do you want to modify these settings? (y/N): " modify_settings
+        read -ep "Do you want to modify these settings? (y/N): " modify_settings
         if [[ ! "$modify_settings" =~ ^[Yy]$ ]]; then
             return 0
         fi
@@ -285,7 +285,7 @@ install_rhoai_operator_interactive() {
         echo ""
         
         local modify_choice=""
-        read -p "Select option (0-3): " modify_choice
+        read -ep "Select option (0-3): " modify_choice
         
         case "$modify_choice" in
             1)
@@ -326,7 +326,7 @@ install_rhoai_operator_interactive() {
             local pending_ip=$(oc get installplan -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.approved==false)].metadata.name}' 2>/dev/null)
             if [ -n "$pending_ip" ]; then
                 print_warning "Pending InstallPlan detected: $pending_ip"
-                read -p "Approve this InstallPlan now? (y/N): " approve_ip
+                read -ep "Approve this InstallPlan now? (y/N): " approve_ip
                 if [[ "$approve_ip" =~ ^[Yy]$ ]]; then
                     oc patch installplan "$pending_ip" -n redhat-ods-operator \
                         --type merge -p '{"spec":{"approved":true}}'
@@ -857,7 +857,7 @@ EOF
         echo -e "${CYAN}ResourceFlavor needs toleration to schedule GPU workloads.${NC}"
         echo ""
         
-        read -p "Configure ResourceFlavor with GPU toleration? (Y/n): " add_toleration
+        read -ep "Configure ResourceFlavor with GPU toleration? (Y/n): " add_toleration
         add_toleration=${add_toleration:-Y}
         
         if [[ "$add_toleration" =~ ^[Yy]$ ]]; then
@@ -902,7 +902,7 @@ EOF
         echo -e "${CYAN}Command: oc adm taint nodes -l nvidia.com/gpu.present=true nvidia.com/gpu=:NoSchedule${NC}"
         echo ""
         
-        read -p "Do you want to taint GPU nodes now? (y/N): " taint_nodes
+        read -ep "Do you want to taint GPU nodes now? (y/N): " taint_nodes
         taint_nodes=${taint_nodes:-N}
         
         if [[ "$taint_nodes" =~ ^[Yy]$ ]]; then
@@ -1055,7 +1055,7 @@ configure_dsci_observability() {
     echo "  • Tempo Operator"
     echo ""
     
-    read -p "Continue with observability configuration? (Y/n): " continue_obs
+    read -ep "Continue with observability configuration? (Y/n): " continue_obs
     continue_obs=${continue_obs:-Y}
     
     if [[ ! "$continue_obs" =~ ^[Yy]$ ]]; then
@@ -1064,16 +1064,16 @@ configure_dsci_observability() {
     fi
     
     # Get configuration options
-    read -p "Metrics retention period [90d]: " metrics_retention
+    read -ep "Metrics retention period [90d]: " metrics_retention
     metrics_retention=${metrics_retention:-90d}
     
-    read -p "Metrics storage size [5Gi]: " metrics_size
+    read -ep "Metrics storage size [5Gi]: " metrics_size
     metrics_size=${metrics_size:-5Gi}
     
-    read -p "Traces sample ratio (0.0-1.0) [0.1]: " trace_ratio
+    read -ep "Traces sample ratio (0.0-1.0) [0.1]: " trace_ratio
     trace_ratio=${trace_ratio:-0.1}
     
-    read -p "Traces retention period [2160h0m0s]: " trace_retention
+    read -ep "Traces retention period [2160h0m0s]: " trace_retention
     trace_retention=${trace_retention:-2160h0m0s}
     
     print_step "Updating DSCInitialization with observability settings..."
@@ -1130,7 +1130,7 @@ setup_mcp_servers_configmap() {
     # Check if ConfigMap exists
     if oc get configmap gen-ai-aa-mcp-servers -n "$namespace" &>/dev/null; then
         print_info "MCP servers ConfigMap already exists"
-        read -p "Replace with default configuration? (y/N): " replace_cm
+        read -ep "Replace with default configuration? (y/N): " replace_cm
         if [[ ! "$replace_cm" =~ ^[Yy]$ ]]; then
             print_info "Keeping existing configuration"
             return 0
@@ -1259,7 +1259,7 @@ EOF
     
     # Step 4: Setup RHCL (Kuadrant) for authentication
     echo ""
-    read -p "Setup RHCL (Kuadrant) for llm-d authentication? (y/N): " setup_rhcl
+    read -ep "Setup RHCL (Kuadrant) for llm-d authentication? (y/N): " setup_rhcl
     if [[ "$setup_rhcl" =~ ^[Yy]$ ]]; then
         setup_rhcl_for_llmd
     else
@@ -1287,7 +1287,7 @@ setup_rhcl_for_llmd() {
         echo "  2. Install 'Red Hat Connectivity Link' operator in kuadrant-system namespace"
         echo "  3. Re-run this setup"
         echo ""
-        read -p "Create kuadrant-system namespace and continue? (y/N): " create_ns
+        read -ep "Create kuadrant-system namespace and continue? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc create namespace kuadrant-system 2>/dev/null || true
             print_info "Namespace created. Please install RHCL operator from OperatorHub"
@@ -1351,7 +1351,7 @@ EOF
     
     # Step 4: Restart controllers to pick up Authorino
     echo ""
-    read -p "Restart odh-model-controller and kserve-controller? (recommended) (Y/n): " restart_controllers
+    read -ep "Restart odh-model-controller and kserve-controller? (recommended) (Y/n): " restart_controllers
     restart_controllers=${restart_controllers:-Y}
     if [[ "$restart_controllers" =~ ^[Yy]$ ]]; then
         print_step "Restarting controllers..."
@@ -1399,7 +1399,7 @@ pin_nvidia_driver_version() {
     echo -e "Current driver version: ${CYAN}${current_driver:-default}${NC}"
     echo ""
     
-    read -p "Pin driver to version 570.195.03 (CUDA 12.8)? (Y/n): " pin_driver
+    read -ep "Pin driver to version 570.195.03 (CUDA 12.8)? (Y/n): " pin_driver
     pin_driver=${pin_driver:-Y}
     
     if [[ "$pin_driver" =~ ^[Yy]$ ]]; then
@@ -1449,7 +1449,7 @@ enable_mlflow_operator() {
         return 0
     fi
     
-    read -p "Enable MLflow operator? (Y/n): " enable_mlflow
+    read -ep "Enable MLflow operator? (Y/n): " enable_mlflow
     enable_mlflow=${enable_mlflow:-Y}
     
     if [[ "$enable_mlflow" =~ ^[Yy]$ ]]; then
@@ -1509,13 +1509,13 @@ deploy_llminferenceservice() {
     # Get namespace
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "default")
-        read -p "Enter namespace [$current_ns]: " namespace
+        read -ep "Enter namespace [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
     # Get model name
     if [ -z "$model_name" ]; then
-        read -p "Enter model name (e.g., qwen3-sample): " model_name
+        read -ep "Enter model name (e.g., qwen3-sample): " model_name
     fi
     
     # Get model URI
@@ -1526,12 +1526,12 @@ deploy_llminferenceservice() {
         echo "  • hf://RedHatAI/Qwen3-8B-FP8-dynamic"
         echo "  • oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
         echo ""
-        read -p "Enter model URI: " model_uri
+        read -ep "Enter model URI: " model_uri
     fi
     
     # Authentication option
     echo ""
-    read -p "Enable authentication? (Y/n): " enable_auth
+    read -ep "Enable authentication? (Y/n): " enable_auth
     enable_auth=${enable_auth:-Y}
     local auth_annotation="true"
     if [[ ! "$enable_auth" =~ ^[Yy]$ ]]; then
@@ -1539,10 +1539,10 @@ deploy_llminferenceservice() {
     fi
     
     # GPU resources
-    read -p "Number of GPUs [1]: " gpu_count
+    read -ep "Number of GPUs [1]: " gpu_count
     gpu_count=${gpu_count:-1}
     
-    read -p "Memory limit [16Gi]: " memory_limit
+    read -ep "Memory limit [16Gi]: " memory_limit
     memory_limit=${memory_limit:-16Gi}
     
     print_step "Creating LLMInferenceService '$model_name' in namespace '$namespace'..."
@@ -1695,7 +1695,7 @@ deploy_banking_demo() {
     # Check if Feast operator is enabled
     if ! check_feast_operator; then
         print_warning "Feast operator is not enabled"
-        read -p "Enable Feast operator now? (Y/n): " enable_feast
+        read -ep "Enable Feast operator now? (Y/n): " enable_feast
         enable_feast=${enable_feast:-Y}
         
         if [[ "$enable_feast" =~ ^[Yy]$ ]]; then
@@ -1711,7 +1711,7 @@ deploy_banking_demo() {
     # Get namespace
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "banking")
-        read -p "Enter namespace for banking demo [$current_ns]: " namespace
+        read -ep "Enter namespace for banking demo [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
@@ -1740,7 +1740,7 @@ deploy_banking_demo() {
     echo -e "  In feature_repo/permissions.py, change line 47 to:"
     echo -e "  ${CYAN}prod_namespaces = [\"$namespace\"]${NC}"
     echo ""
-    read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
+    read -ep "Enter your forked repo URL (or press Enter to use original): " custom_url
     if [ -n "$custom_url" ]; then
         git_url="$custom_url"
     fi
@@ -1748,7 +1748,7 @@ deploy_banking_demo() {
     # Check if FeatureStore already exists
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
         print_warning "FeatureStore 'banking' already exists in $namespace"
-        read -p "Delete and recreate? (y/N): " recreate
+        read -ep "Delete and recreate? (y/N): " recreate
         if [[ "$recreate" =~ ^[Yy]$ ]]; then
             print_step "Deleting existing FeatureStore..."
             oc delete featurestore "$feast_project" -n "$namespace"
@@ -1861,7 +1861,7 @@ EOF
     
     # Run feast apply
     echo ""
-    read -p "Run 'feast apply' to register features? (Y/n): " run_apply
+    read -ep "Run 'feast apply' to register features? (Y/n): " run_apply
     run_apply=${run_apply:-Y}
     
     if [[ "$run_apply" =~ ^[Yy]$ ]]; then
@@ -1871,7 +1871,7 @@ EOF
             
             # Run feast materialize
             echo ""
-            read -p "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
+            read -ep "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
             run_materialize=${run_materialize:-Y}
             
             if [[ "$run_materialize" =~ ^[Yy]$ ]]; then
@@ -1966,7 +1966,7 @@ setup_feature_store() {
     # Check if Feast operator is enabled
     if ! check_feast_operator; then
         print_warning "Feast operator is not enabled"
-        read -p "Enable Feast operator now? (Y/n): " enable_feast
+        read -ep "Enable Feast operator now? (Y/n): " enable_feast
         enable_feast=${enable_feast:-Y}
         
         if [[ "$enable_feast" =~ ^[Yy]$ ]]; then
@@ -1980,7 +1980,7 @@ setup_feature_store() {
     # Get namespace if not provided
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "default")
-        read -p "Enter namespace for Feature Store [$current_ns]: " namespace
+        read -ep "Enter namespace for Feature Store [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
@@ -2003,7 +2003,7 @@ setup_feature_store() {
         echo "  1) Use banking demo (https://github.com/RHRolun/banking-feature-store)"
         echo "  2) Enter custom Git URL"
         echo ""
-        read -p "Choose option [1]: " git_option
+        read -ep "Choose option [1]: " git_option
         git_option=${git_option:-1}
         
         if [[ "$git_option" == "1" ]]; then
@@ -2014,25 +2014,25 @@ setup_feature_store() {
             print_warning "For RBAC to work correctly, you should fork this repo and update permissions.py"
             echo -e "${CYAN}In feature_repo/permissions.py, change line 47 to: prod_namespaces = [\"$namespace\"]${NC}"
             echo ""
-            read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
+            read -ep "Enter your forked repo URL (or press Enter to use original): " custom_url
             if [ -n "$custom_url" ]; then
                 git_url="$custom_url"
             fi
         else
-            read -p "Enter Git repository URL: " git_url
-            read -p "Enter Feast project name [banking]: " feast_project
+            read -ep "Enter Git repository URL: " git_url
+            read -ep "Enter Feast project name [banking]: " feast_project
             feast_project=${feast_project:-banking}
         fi
     fi
     
     # Get git ref
-    read -p "Enter Git branch/ref [$git_ref]: " input_ref
+    read -ep "Enter Git branch/ref [$git_ref]: " input_ref
     git_ref=${input_ref:-$git_ref}
     
     # Check if FeatureStore already exists
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
         print_warning "FeatureStore '$feast_project' already exists in $namespace"
-        read -p "Delete and recreate? (y/N): " recreate
+        read -ep "Delete and recreate? (y/N): " recreate
         if [[ "$recreate" =~ ^[Yy]$ ]]; then
             oc delete featurestore "$feast_project" -n "$namespace"
             sleep 5
@@ -2113,7 +2113,7 @@ EOF
         
         # Run feast apply
         echo ""
-        read -p "Run 'feast apply' to register features? (Y/n): " run_apply
+        read -ep "Run 'feast apply' to register features? (Y/n): " run_apply
         run_apply=${run_apply:-Y}
         
         if [[ "$run_apply" =~ ^[Yy]$ ]]; then
@@ -2124,7 +2124,7 @@ EOF
                 print_success "Features registered successfully"
                 
                 # Run feast materialize
-                read -p "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
+                read -ep "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
                 run_materialize=${run_materialize:-Y}
                 
                 if [[ "$run_materialize" =~ ^[Yy]$ ]]; then
@@ -2259,8 +2259,8 @@ diagnose_feature_store_interactive() {
     oc get featurestore -A 2>/dev/null || echo "No FeatureStores found"
     echo ""
     
-    read -p "Enter namespace: " namespace
-    read -p "Enter FeatureStore name: " name
+    read -ep "Enter namespace: " namespace
+    read -ep "Enter FeatureStore name: " name
     
     if [ -z "$namespace" ] || [ -z "$name" ]; then
         print_error "Namespace and name are required"
@@ -2329,15 +2329,15 @@ delete_feature_store() {
     echo ""
     
     if [ -z "$namespace" ]; then
-        read -p "Enter namespace: " namespace
+        read -ep "Enter namespace: " namespace
     fi
     
     if [ -z "$feast_project" ]; then
-        read -p "Enter FeatureStore name: " feast_project
+        read -ep "Enter FeatureStore name: " feast_project
     fi
     
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
-        read -p "Delete FeatureStore '$feast_project' in namespace '$namespace'? (y/N): " confirm
+        read -ep "Delete FeatureStore '$feast_project' in namespace '$namespace'? (y/N): " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             oc delete featurestore "$feast_project" -n "$namespace"
             print_success "FeatureStore deleted"
@@ -2408,7 +2408,7 @@ run_maas_demo() {
     echo "   Test MaaS API with existing token"
     echo ""
     
-    read -p "Select option (1-3): " demo_option
+    read -ep "Select option (1-3): " demo_option
     
     case $demo_option in
         1)
@@ -2438,7 +2438,7 @@ run_maas_demo() {
                 echo ""
                 echo "Requirements: pip install streamlit requests"
                 echo ""
-                read -p "Start web demo? (y/n): " start_web
+                read -ep "Start web demo? (y/n): " start_web
                 if [[ "$start_web" =~ ^[Yy]$ ]]; then
                     cd "$(dirname "$app_path")"
                     streamlit run app.py

@@ -224,7 +224,7 @@ deploy_model_interactive() {
     
     echo -e "${YELLOW}Would you like to deploy a model now?${NC}"
     echo ""
-    read -p "Deploy a model? [Y/n]: " deploy_choice
+    read -ep "Deploy a model? [Y/n]: " deploy_choice
     deploy_choice="${deploy_choice:-y}"
     
     if [[ ! "$deploy_choice" =~ ^[Yy]$ ]]; then
@@ -305,7 +305,7 @@ deploy_model_interactive() {
     # Let user choose runtime
     local runtime_choice=""
     while true; do
-        read -p "Select serving runtime (1-${#runtimes[@]}): " runtime_choice
+        read -ep "Select serving runtime (1-${#runtimes[@]}): " runtime_choice
         runtime_choice=$(echo "$runtime_choice" | tr -d '[:space:]')
         
         if [[ "$runtime_choice" =~ ^[0-9]+$ ]] && [ "$runtime_choice" -ge 1 ] && [ "$runtime_choice" -le ${#runtimes[@]} ]; then
@@ -354,7 +354,7 @@ deploy_model_interactive() {
     echo "  9) Custom model URI (enter your own)"
     echo ""
     
-    read -p "Select a model (1-9): " model_choice
+    read -ep "Select a model (1-9): " model_choice
     
     local model_uri=""
     local model_name=""
@@ -446,7 +446,7 @@ deploy_model_interactive() {
             echo "  3) PVC (Persistent Volume)         e.g. meta-llama/Llama-3-8B-Instruct"
             echo "  4) HuggingFace URL                 e.g. google/gemma-4-E2B-it"
             echo ""
-            read -p "Select storage type [1-4] (default: 1): " storage_choice
+            read -ep "Select storage type [1-4] (default: 1): " storage_choice
             storage_choice="${storage_choice:-1}"
 
             case "$storage_choice" in
@@ -458,14 +458,14 @@ deploy_model_interactive() {
                     echo ""
                     echo "  Browse: https://quay.io/repository/redhat-ai-services/modelcar-catalog?tab=tags"
                     echo ""
-                    read -p "OCI URI: " model_uri
+                    read -ep "OCI URI: " model_uri
                     ;;
                 2)
                     echo ""
                     echo -e "${CYAN}Enter the S3 model path (relative to bucket):${NC}"
                     echo "  Example: Qwen/Qwen3-8B-Instruct"
                     echo ""
-                    read -p "S3 path: " s3_path
+                    read -ep "S3 path: " s3_path
                     model_uri="s3://${s3_path}"
                     ;;
                 3)
@@ -473,9 +473,9 @@ deploy_model_interactive() {
                     echo -e "${CYAN}Enter the PVC model path:${NC}"
                     echo "  Example: meta-llama/Llama-3-8B-Instruct"
                     echo ""
-                    read -p "PVC name [models-pvc]: " pvc_name
+                    read -ep "PVC name [models-pvc]: " pvc_name
                     pvc_name="${pvc_name:-models-pvc}"
-                    read -p "Model path in PVC: " pvc_path
+                    read -ep "Model path in PVC: " pvc_path
                     model_uri="pvc://${pvc_name}/${pvc_path}"
                     ;;
                 4)
@@ -483,7 +483,7 @@ deploy_model_interactive() {
                     echo -e "${CYAN}Enter HuggingFace model ID:${NC}"
                     echo "  Example: google/gemma-4-E2B-it"
                     echo ""
-                    read -p "HF model ID: " hf_id
+                    read -ep "HF model ID: " hf_id
                     model_uri="hf://${hf_id}"
                     ;;
                 *)
@@ -499,7 +499,7 @@ deploy_model_interactive() {
 
             echo ""
             print_info "Enter model name (alphanumeric, lowercase, hyphens only):"
-            read -p "Model name: " model_name
+            read -ep "Model name: " model_name
 
             if [ -z "$model_name" ]; then
                 print_error "No name provided. Skipping model deployment."
@@ -508,7 +508,7 @@ deploy_model_interactive() {
 
             echo ""
             echo -e "${CYAN}Enable tool calling for this model?${NC}"
-            read -p "Enable tool calling? [y/N]: " custom_tool_choice
+            read -ep "Enable tool calling? [y/N]: " custom_tool_choice
             if [[ "$custom_tool_choice" =~ ^[Yy]$ ]]; then
                 tool_calling_enabled=true
                 echo ""
@@ -516,7 +516,7 @@ deploy_model_interactive() {
                 echo "  2) llama3_json (Llama)"
                 echo "  3) mistral  (Mistral)"
                 echo "  4) gemma4   (Gemma)"
-                read -p "Select parser [1]: " parser_choice
+                read -ep "Select parser [1]: " parser_choice
                 parser_choice="${parser_choice:-1}"
                 case "$parser_choice" in
                     2) tool_parser="llama3_json" ;;
@@ -556,14 +556,14 @@ deploy_model_interactive() {
     echo "  0) Create new namespace"
     echo ""
     
-    read -p "Select namespace (enter number or name): " ns_choice
+    read -ep "Select namespace (enter number or name): " ns_choice
     
     local target_namespace=""
     
     if [ "$ns_choice" = "0" ]; then
         echo ""
         print_info "Enter new namespace name (alphanumeric, lowercase, hyphens only):"
-        read -p "Namespace: " target_namespace
+        read -ep "Namespace: " target_namespace
         
         if [ -z "$target_namespace" ]; then
             print_error "No namespace provided. Skipping model deployment."
@@ -587,7 +587,7 @@ deploy_model_interactive() {
         
         if ! oc get namespace "$target_namespace" &>/dev/null; then
             print_error "Namespace '$target_namespace' does not exist."
-            read -p "Create it? (y/N): " create_ns
+            read -ep "Create it? (y/N): " create_ns
             
             if [[ "$create_ns" =~ ^[Yy]$ ]]; then
                 oc create namespace "$target_namespace"
@@ -713,7 +713,7 @@ deploy_model_interactive() {
         
         local resource_choice=""
         while true; do
-            read -p "Select option (1-$custom_option): " resource_choice
+            read -ep "Select option (1-$custom_option): " resource_choice
             resource_choice=$(echo "$resource_choice" | tr -d '[:space:]')
             
             if [[ "$resource_choice" =~ ^[0-9]+$ ]] && [ "$resource_choice" -ge 1 ] && [ "$resource_choice" -le "$custom_option" ]; then
@@ -737,13 +737,13 @@ deploy_model_interactive() {
         else
             # Custom configuration
             echo ""
-            read -p "GPU limit (default: $default_gpu): " input_gpu
+            read -ep "GPU limit (default: $default_gpu): " input_gpu
             gpu_limit="${input_gpu:-$default_gpu}"
             
-            read -p "CPU limit (default: $default_cpu): " input_cpu
+            read -ep "CPU limit (default: $default_cpu): " input_cpu
             cpu_limit="${input_cpu:-$default_cpu}"
             
-            read -p "Memory limit (default: $default_memory): " input_memory
+            read -ep "Memory limit (default: $default_memory): " input_memory
             memory_limit="${input_memory:-$default_memory}"
         fi
     else
@@ -761,7 +761,7 @@ deploy_model_interactive() {
         echo -e "${YELLOW}3)${NC} Custom configuration (enter manually)"
         echo ""
         
-        read -p "Select option (1-3): " no_profile_choice
+        read -ep "Select option (1-3): " no_profile_choice
         no_profile_choice=$(echo "$no_profile_choice" | tr -d '[:space:]')
         
         case "$no_profile_choice" in
@@ -778,7 +778,7 @@ deploy_model_interactive() {
                 echo "  2) Medium - 8B-30B models (CPU: 4-16, Mem: 32-64Gi, GPU: 1)"
                 echo "  3) Large  - 70B+ models (CPU: 16-96, Mem: 128-512Gi, GPU: 4-8)"
                 echo ""
-                read -p "Select size (1-3) [1]: " size_choice
+                read -ep "Select size (1-3) [1]: " size_choice
                 size_choice="${size_choice:-1}"
                 
                 local profile_size="small"
@@ -828,13 +828,13 @@ deploy_model_interactive() {
             3)
                 # Custom configuration
                 echo ""
-                read -p "GPU limit (default: $default_gpu): " input_gpu
+                read -ep "GPU limit (default: $default_gpu): " input_gpu
                 gpu_limit="${input_gpu:-$default_gpu}"
                 
-                read -p "CPU limit (default: $default_cpu): " input_cpu
+                read -ep "CPU limit (default: $default_cpu): " input_cpu
                 cpu_limit="${input_cpu:-$default_cpu}"
                 
-                read -p "Memory limit (default: $default_memory): " input_memory
+                read -ep "Memory limit (default: $default_memory): " input_memory
                 memory_limit="${input_memory:-$default_memory}"
                 ;;
             *)
@@ -859,7 +859,7 @@ deploy_model_interactive() {
         echo -e "${YELLOW}This model supports tool calling (function calling).${NC}"
         echo -e "${CYAN}Parser: $tool_parser${NC}"
         echo ""
-        read -p "Enable tool calling? (Y/n): " enable_tools
+        read -ep "Enable tool calling? (Y/n): " enable_tools
         
         if [[ ! "$enable_tools" =~ ^[Nn]$ ]]; then
             vllm_args="--enable-auto-tool-choice --tool-call-parser=$tool_parser"
@@ -876,7 +876,7 @@ deploy_model_interactive() {
     echo -e "${YELLOW}Require authentication for this model?${NC}"
     echo -e "${CYAN}(Recommended: Yes for production)${NC}"
     echo ""
-    read -p "Require authentication? (Y/n): " enable_auth
+    read -ep "Require authentication? (Y/n): " enable_auth
     enable_auth=$(echo "$enable_auth" | tr -d '[:space:]')
     
     local auth_annotation=""
@@ -890,7 +890,7 @@ deploy_model_interactive() {
         # Ask for service account name
         echo ""
         local default_sa="${model_name}-sa"
-        read -p "Service account name (default: $default_sa): " service_account_name
+        read -ep "Service account name (default: $default_sa): " service_account_name
         service_account_name="${service_account_name:-$default_sa}"
         
         print_success "Authentication enabled with service account: $service_account_name"
@@ -922,7 +922,7 @@ deploy_model_interactive() {
     fi
     
     echo ""
-    read -p "Proceed with deployment? (Y/n): " confirm_deploy
+    read -ep "Proceed with deployment? (Y/n): " confirm_deploy
     confirm_deploy=$(echo "$confirm_deploy" | tr -d '[:space:]')
     
     if [[ "$confirm_deploy" =~ ^[Nn]$ ]]; then
@@ -1218,7 +1218,7 @@ EOF
         echo "  5) Custom image (enter your own)"
         echo ""
         
-        read -p "Select vLLM image (1-5, default: 1): " vllm_image_choice
+        read -ep "Select vLLM image (1-5, default: 1): " vllm_image_choice
         vllm_image_choice="${vllm_image_choice:-1}"
         
         local vllm_image=""
@@ -1229,7 +1229,7 @@ EOF
             4) vllm_image="docker.io/vllm/vllm-openai:latest" ;;
             5)
                 echo ""
-                read -p "Enter custom vLLM image: " vllm_image
+                read -ep "Enter custom vLLM image: " vllm_image
                 if [ -z "$vllm_image" ]; then
                     vllm_image="$default_vllm_image"
                 fi
@@ -1249,7 +1249,7 @@ EOF
         echo "  This determines the maximum context window size."
         echo "  Higher values use more GPU memory."
         echo ""
-        read -p "Max model length (default: $default_max_model_len): " max_model_len
+        read -ep "Max model length (default: $default_max_model_len): " max_model_len
         max_model_len="${max_model_len:-$default_max_model_len}"
         
         # GPU memory utilization
@@ -1259,7 +1259,7 @@ EOF
         echo "  Fraction of GPU memory to use (0.0-1.0)."
         echo "  Lower values leave room for other workloads."
         echo ""
-        read -p "GPU memory utilization (default: $default_gpu_mem_util): " gpu_mem_util
+        read -ep "GPU memory utilization (default: $default_gpu_mem_util): " gpu_mem_util
         gpu_mem_util="${gpu_mem_util:-$default_gpu_mem_util}"
         
         # Data type
@@ -1271,7 +1271,7 @@ EOF
         echo "  3) float16 (same as half)"
         echo "  4) auto (let vLLM decide)"
         echo ""
-        read -p "Select data type (1-4, default: 1): " dtype_choice
+        read -ep "Select data type (1-4, default: 1): " dtype_choice
         dtype_choice="${dtype_choice:-1}"
         
         local dtype=""
@@ -1944,7 +1944,7 @@ EOF
 
     # Optionally wait and test
     echo ""
-    read -p "Wait for model and run test prompt? [Y/n]: " wait_choice
+    read -ep "Wait for model and run test prompt? [Y/n]: " wait_choice
     wait_choice="${wait_choice:-y}"
     if [[ "$wait_choice" =~ ^[Yy]$ ]]; then
         wait_and_test_model "$model_name" "$target_namespace" 600 true

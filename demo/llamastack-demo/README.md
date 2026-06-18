@@ -24,7 +24,7 @@ All configuration is done via environment variables in the ConfigMap:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `LLAMASTACK_URL` | ✅ | `http://localhost:8321` | LlamaStack service endpoint |
-| `MODEL_ID` | ✅ | `llama3` | Model ID registered in LlamaStack |
+| `MODEL_ID` | ✅ | `llama3` | Model ID registered in LlamaStack (0.4.0+ format: `provider_id/model_id`) |
 | `MCP_SERVER_URL` | ✅ | `http://localhost:8000` | MCP server URL (for health checks) |
 | `APP_TITLE` | ❌ | `LlamaStack + MCP Demo` | Page title shown in header |
 | `APP_SUBTITLE` | ❌ | `Demonstrating AI Agent...` | Subtitle below title |
@@ -68,7 +68,7 @@ metadata:
 data:
   # Required settings
   LLAMASTACK_URL: "http://your-llamastack-service.your-namespace.svc.cluster.local:8321"
-  MODEL_ID: "your-model-id"               # <-- e.g., qwen3-8b, llama3, mistral
+  MODEL_ID: "your-model-id"               # <-- e.g., vllm-inference/qwen3-8b (0.4.0+ uses provider_id/model_id)
   MCP_SERVER_URL: "http://your-mcp-server.your-namespace.svc.cluster.local:8000"
   
   # Optional: Customize the UI for your use case
@@ -211,7 +211,7 @@ oc rollout restart deployment/llamastack-mcp-demo
 
 ```bash
 # Example: Change the model ID
-oc patch configmap llamastack-demo-config -p '{"data":{"MODEL_ID":"gpt-4o"}}'
+oc patch configmap llamastack-demo-config -p '{"data":{"MODEL_ID":"openai/gpt-4o"}}'
 
 # Restart to apply
 oc rollout restart deployment/llamastack-mcp-demo
@@ -230,7 +230,7 @@ You can also temporarily change URLs in the sidebar under "🌐 Endpoints" (thes
 ```yaml
 data:
   LLAMASTACK_URL: "http://lsd-genai-playground-service.demo-test.svc.cluster.local:8321"
-  MODEL_ID: "qwen3-8b"
+  MODEL_ID: "vllm-inference/qwen3-8b"
   MCP_SERVER_URL: "http://weather-mcp-server.demo-test.svc.cluster.local:8000"
   APP_TITLE: "Weather Assistant"
   MCP_SERVER_NAME: "Weather Data"
@@ -247,7 +247,7 @@ data:
 ```yaml
 data:
   LLAMASTACK_URL: "http://llamastack-prod.sales.svc.cluster.local:8321"
-  MODEL_ID: "llama3-70b"
+  MODEL_ID: "vllm-inference/llama3-70b"
   MCP_SERVER_URL: "http://customer-api.sales.svc.cluster.local:8080"
   APP_TITLE: "Sales Assistant"
   MCP_SERVER_NAME: "Customer Database"
@@ -264,7 +264,7 @@ data:
 ```yaml
 data:
   LLAMASTACK_URL: "http://llamastack.docs.svc.cluster.local:8321"
-  MODEL_ID: "mistral-7b"
+  MODEL_ID: "vllm-inference/mistral-7b"
   MCP_SERVER_URL: "http://doc-search.docs.svc.cluster.local:8000"
   APP_TITLE: "Documentation Search"
   MCP_SERVER_NAME: "Doc Search"
