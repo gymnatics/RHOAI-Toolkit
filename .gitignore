@@ -47,3 +47,4 @@ kubeconfig
 docs/PRD-rhoai-feature-store-model-registry.md
 docs/PRD-GUARDRAILS-DEMO.md
 docs/PRD-MAAS-DEMO.md
+.env
