@@ -61,11 +61,31 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-declare -A DASHBOARDS=(
-    ["dcgm"]="dcgm-exporter-dashboard.json|nvidia-dcgm-exporter-dashboard|NVIDIA DCGM Exporter Dashboard"
-    ["vllm"]="vllm-performance-ocp.json|vllm-performance-dashboard|vLLM Performance Dashboard"
-    ["vllm-advanced"]="vllm-advanced-ocp.json|vllm-advanced-dashboard|vLLM Advanced Dashboard"
-)
+DASHBOARD_NAMES="dcgm vllm vllm-advanced"
+
+_dashboard_file() {
+    case "$1" in
+        dcgm) echo "dcgm-exporter-dashboard.json" ;;
+        vllm) echo "vllm-performance-ocp.json" ;;
+        vllm-advanced) echo "vllm-advanced-ocp.json" ;;
+    esac
+}
+
+_dashboard_cm() {
+    case "$1" in
+        dcgm) echo "nvidia-dcgm-exporter-dashboard" ;;
+        vllm) echo "vllm-performance-dashboard" ;;
+        vllm-advanced) echo "vllm-advanced-dashboard" ;;
+    esac
+}
+
+_dashboard_display() {
+    case "$1" in
+        dcgm) echo "NVIDIA DCGM Exporter Dashboard" ;;
+        vllm) echo "vLLM Performance Dashboard" ;;
+        vllm-advanced) echo "vLLM Advanced Dashboard" ;;
+    esac
+}
 
 deploy_native() {
     local file="$1"
@@ -161,8 +181,14 @@ EOF
 
 process_dashboard() {
     local key="$1"
-    local entry="${DASHBOARDS[$key]}"
-    IFS='|' read -r file cm_name display_name <<< "$entry"
+    local file=$(_dashboard_file "$key")
+    local cm_name=$(_dashboard_cm "$key")
+    local display_name=$(_dashboard_display "$key")
+
+    if [ -z "$file" ]; then
+        print_error "Unknown dashboard: $key"
+        return 1
+    fi
 
     if [ "$DELETE" = true ]; then
         delete_native "$file" "$cm_name" "$display_name"
@@ -192,11 +218,11 @@ print_info "Dashboard: $DASHBOARD"
 echo ""
 
 if [ "$DASHBOARD" = "all" ]; then
-    for key in "${!DASHBOARDS[@]}"; do
+    for key in $DASHBOARD_NAMES; do
         process_dashboard "$key"
     done
 else
-    if [ -z "${DASHBOARDS[$DASHBOARD]}" ]; then
+    if [ -z "$(_dashboard_file "$DASHBOARD")" ]; then
         print_error "Unknown dashboard: $DASHBOARD"
         echo "Available: all, dcgm, vllm, vllm-advanced"
         exit 1
