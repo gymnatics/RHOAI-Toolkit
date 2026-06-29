@@ -114,6 +114,10 @@ echo ""
 print_success "AI Pipeline Demo infrastructure ready"
 print_info "Namespace: $NAMESPACE"
 
+# --- Create workbench + clone repo ---
+source "$ROOT_DIR/lib/functions/workbench.sh"
+ensure_workbench "$NAMESPACE" "ai-pipelines"
+
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 inject_notebook_env "$NAMESPACE" \

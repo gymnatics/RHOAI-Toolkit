@@ -1,0 +1,54 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    purpose: poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: ${PG_IMAGE}
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: "${PG_USER}"
+            - name: POSTGRESQL_PASSWORD
+              value: "${PG_PASSWORD}"
+            - name: POSTGRESQL_DATABASE
+              value: "${PG_DB}"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "${PG_USER}", "-d", "${PG_DB}"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "${PG_USER}", "-d", "${PG_DB}"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data

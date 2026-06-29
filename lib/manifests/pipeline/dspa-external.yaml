@@ -1,0 +1,32 @@
+# DataSciencePipelinesApplication — external S3 storage variant
+#
+# Variables:
+#   ${DSPA_NAME}              - DSPA resource name
+#   ${S3_HOST}                - S3 host (e.g. minio.ns.svc.cluster.local)
+#   ${S3_PORT}                - S3 port (e.g. 9000)
+#   ${S3_BUCKET}              - S3 bucket name
+#   ${S3_SCHEME}              - http or https
+#   ${CREDENTIALS_SECRET_NAME} - Secret name with S3 credentials
+---
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: ${DSPA_NAME}
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    cacheEnabled: true
+    pipelineStore: kubernetes
+  objectStorage:
+    externalStorage:
+      host: "${S3_HOST}"
+      port: "${S3_PORT}"
+      bucket: "${S3_BUCKET}"
+      scheme: "${S3_SCHEME}"
+      s3CredentialsSecret:
+        secretName: "${CREDENTIALS_SECRET_NAME}"
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+  mlmd:
+    deploy: true

@@ -49,10 +49,15 @@ docs/PRD-MAAS-DEMO.md
 
 # Vendor reference docs (kept locally, not tracked)
 docs/reference/RHAIE 3.3 Guide/
+docs/reference/RHAIE 3.4 Guide/
 docs/reference/rhoai-3.0.json
 docs/reference/rhoai-3.0.json.bz2
 docs/reference/Red_Hat_OpenShift_AI_Cloud_Service-*.pdf
 docs/reference/CAI's guide to RHOAI 3.0.txt
+
+# Generated HTML exports of markdown docs
+docs/RHCL-guardrails-architecture.html
+docs/RHCL-guardrails-diagrams.html
 
 # Draft/working docs
 docs/guides/(DRAFTY)*
@@ -60,6 +65,7 @@ docs/reference/(DRAFTY)*
 
 # Personal presentation files
 docs/guides/MLflow-OpenShift-AI-Presentation.md
+docs/guides/*.pptx
 
 # Generated env files (contain cluster-specific values)
 demo/**/notebooks/.env

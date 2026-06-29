@@ -26,6 +26,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/functions/external-repos.sh"
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
 
 NAMESPACE="${1:-financial-loan-demo}"
 LLM_URL=""
@@ -192,54 +193,30 @@ CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.
 
 if [ -z "$LLM_URL" ]; then
     print_step "Auto-detecting LLM endpoint..."
-    MAAS_GATEWAY="https://inference-gateway.${CLUSTER_DOMAIN}"
-    if curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" -H "Authorization: Bearer $(oc create token default -n "$NAMESPACE" --duration=1m 2>/dev/null)" 2>/dev/null | grep -q "data"; then
-        LLM_URL="${MAAS_GATEWAY}/v1/chat/completions"
-        print_success "Detected MaaS gateway"
-    else
-        # Prefer LLMInferenceService (GenAI), then vLLM InferenceService; skip predictive models
-        LLM_ISVC=""
-        LLM_ISVC_NS=""
-        FIRST_LLMISVC=$(oc get llmisvc -A --no-headers 2>/dev/null | head -1)
-        if [ -n "$FIRST_LLMISVC" ]; then
-            LLM_ISVC_NS=$(echo "$FIRST_LLMISVC" | awk '{print $1}')
-            LLM_ISVC=$(echo "$FIRST_LLMISVC" | awk '{print $2}')
-        else
-            # Look for vLLM-based InferenceService (skip sklearn/xgboost/lightgbm)
-            while IFS= read -r line || [ -n "$line" ]; do
-                [ -z "$line" ] && continue
-                ns=$(echo "$line" | awk '{print $1}')
-                name=$(echo "$line" | awk '{print $2}')
-                fmt=$(oc get inferenceservice "$name" -n "$ns" -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
-                if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
-                    continue
-                fi
-                LLM_ISVC_NS="$ns"
-                LLM_ISVC="$name"
-                break
-            done < <(oc get inferenceservice -A --no-headers 2>/dev/null || true) || true
-        fi
 
-        if [ -n "$LLM_ISVC" ]; then
-            # Discover the actual kserve workload service (try multiple label conventions)
-            LLM_SVC=""
-            LLM_PORT=""
-            for LABEL in "app.kubernetes.io/name=${LLM_ISVC}" "serving.kserve.io/inferenceservice=${LLM_ISVC}"; do
-                LLM_SVC=$(oc get svc -n "$LLM_ISVC_NS" -l "$LABEL" \
-                    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-                if [ -n "$LLM_SVC" ]; then
-                    LLM_PORT=$(oc get svc "$LLM_SVC" -n "$LLM_ISVC_NS" \
-                        -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8000")
-                    break
-                fi
-            done
-            LLM_SVC="${LLM_SVC:-${LLM_ISVC}-kserve-workload-svc}"
-            LLM_PORT="${LLM_PORT:-8000}"
-            LLM_URL="https://${LLM_SVC}.${LLM_ISVC_NS}.svc:${LLM_PORT}/v1/chat/completions"
-            print_success "Detected LLM: $LLM_ISVC (ns: $LLM_ISVC_NS, svc: $LLM_SVC:$LLM_PORT)"
+    # Prefer direct (non-MaaS) vLLM endpoint — simpler, no gateway auth needed
+    detect_direct_llm_endpoint || true
+    if [ -n "$DIRECT_MODEL_NAME" ]; then
+        LLM_URL="${DIRECT_BASE_URL%/v1}/v1/chat/completions"
+        LLM_ISVC="$DIRECT_MODEL_NAME"
+        print_success "Detected direct vLLM: $DIRECT_MODEL_NAME (ns: $DIRECT_MODEL_NS)"
+    else
+        # Fallback: try MaaS gateway
+        MAAS_GATEWAY="https://inference-gateway.${CLUSTER_DOMAIN}"
+        if curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" -H "Authorization: Bearer $(oc create token default -n "$NAMESPACE" --duration=1m 2>/dev/null)" 2>/dev/null | grep -q "data"; then
+            LLM_URL="${MAAS_GATEWAY}/v1/chat/completions"
+            print_success "Detected MaaS gateway"
         else
-            LLM_URL="https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions"
-            print_warning "No LLM model detected -- deploy a GenAI model first"
+            # Last resort: detect LLMInferenceService internal endpoint
+            detect_llm_endpoint || true
+            if [ -n "$LLM_MODEL_NAME" ]; then
+                LLM_URL="${LLM_BASE_URL%/v1}/v1/chat/completions"
+                LLM_ISVC="$LLM_MODEL_NAME"
+                print_success "Detected LLM: $LLM_MODEL_NAME (ns: $LLM_MODEL_NS)"
+            else
+                LLM_URL="https://inference-gateway.${CLUSTER_DOMAIN}/v1/chat/completions"
+                print_warning "No LLM model detected -- deploy a GenAI model first"
+            fi
         fi
     fi
 fi
@@ -297,11 +274,15 @@ WEBAPP_DIR="$SCRIPT_DIR/web-application"
 if [ "$SKIP_WEBAPP" = false ] && [ -d "$WEBAPP_DIR" ]; then
     print_step "Deploying web application in $NAMESPACE..."
 
-    # Auto-detect LLM model name (reuse the LLM_ISVC found during endpoint detection)
+    # Auto-detect LLM model name (reuse detected endpoint name)
     LLM_MODEL_NAME="${LLM_MODEL_NAME:-}"
     if [ -z "$LLM_MODEL_NAME" ]; then
         if [ -n "${LLM_ISVC:-}" ]; then
             LLM_MODEL_NAME="$LLM_ISVC"
+        elif [ -n "${DIRECT_MODEL_NAME:-}" ]; then
+            LLM_MODEL_NAME="$DIRECT_MODEL_NAME"
+        elif [ -n "${LLM_MODEL_NAME:-}" ]; then
+            LLM_MODEL_NAME="$LLM_MODEL_NAME"
         else
             LLM_MODEL_NAME=$(oc get llmisvc -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
             [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME="qwen3-4b"
@@ -348,6 +329,10 @@ fi
 
 echo ""
 print_success "Financial Loan Demo deployed"
+
+# --- Create workbench + clone repo (GPU workbench with PyTorch image) ---
+source "$ROOT_DIR/lib/functions/workbench.sh"
+ensure_workbench "$NAMESPACE" "model-training" "pytorch:3.4" "2" "4" "12Gi" "12Gi" "1" "20Gi" "Model Training"
 
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"

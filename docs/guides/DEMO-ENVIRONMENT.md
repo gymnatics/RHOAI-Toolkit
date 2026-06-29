@@ -28,13 +28,16 @@ make setup-demo-environment
 | 7 | n8n | n8n | `demo/n8n-demo/deploy.sh` | No |
 | 8 | Model Catalog | rhoai-model-registries | `scripts/manage-model-catalog.sh` | No |
 | 9 | NeMo Guardrails | nemo-guardrails-demo | `demo/nemo-guardrails-demo/deploy.sh` | No (basic) / Yes (self-check) |
-| 10 | LMEval + EvalHub (TP) | lmeval-demo | `demo/lmeval-demo/deploy.sh` | Yes (benchmarks) |
-| 11 | MaaS Rate Limiting | maas-ratelimit-demo | `demo/maas-ratelimit-demo/deploy.sh` | No (uses API key) |
-| 12 | AutoML (TP) | automl-demo | `demo/automl-demo/deploy.sh` | No (CPU training) |
-| 13 | AutoRAG (TP) | autorag-demo | `demo/autorag-demo/deploy.sh` | Yes (LLM + embeddings) |
-| 14 | Marketing Assistant | marketing-assistant | `demo/marketing-assistant-demo/deploy.sh` | Yes (3x L40S) |
+| 10 | Lemonade Stand Chat | nemo-guardrails-demo | `demo/lemonade-stand-demo/deploy.sh` | No |
+| 11 | LMEval + EvalHub (TP) | lmeval-demo | `demo/lmeval-demo/deploy.sh` | Yes (benchmarks) |
+| 12 | MaaS Rate Limiting | maas-ratelimit-demo | `demo/maas-ratelimit-demo/deploy.sh` | No (uses API key) |
+| 13 | AutoML (TP) | automl-demo | `demo/automl-demo/deploy.sh` | No (CPU training) |
+| 14 | AutoRAG (TP) | autorag-demo | `demo/autorag-demo/deploy.sh` | Yes (LLM + embeddings) |
+| 15 | Marketing Assistant | marketing-assistant | `demo/marketing-assistant-demo/deploy.sh` | Yes (3x L40S) |
+| 16 | Lightspeed + MCP Troubleshooting | lightspeed-demo | `demo/lightspeed-demo/deploy.sh` | No (uses existing model) |
 
 Marketing Assistant Demo is **not** included in deploy-all due to heavy GPU requirements (3x L40S).
+Lightspeed Demo is **standalone** (not part of deploy-all) — requires Lightspeed operator pre-installed.
 
 ### Technology Preview Features
 
@@ -54,6 +57,7 @@ Every component can be deployed independently:
 ./demo/financial-loan-demo/deploy.sh
 ./demo/pipeline-demo/deploy.sh
 ./demo/nemo-guardrails-demo/deploy.sh
+./demo/lemonade-stand-demo/deploy.sh
 ./demo/lmeval-demo/deploy.sh
 ./demo/maas-ratelimit-demo/deploy.sh
 ./demo/automl-demo/deploy.sh
@@ -70,6 +74,7 @@ make deploy-n8n
 make deploy-financial-loan
 make deploy-pipeline-demo
 make deploy-nemo-guardrails
+make deploy-lemonade-stand
 make deploy-lmeval-lab
 make deploy-maas-ratelimit
 make deploy-automl
@@ -123,10 +128,33 @@ scripts/deploy-demo-environment.sh    (master orchestrator)
 
 Each deploy.sh:
   ├── sources lib/utils/colors.sh + common.sh
-  ├── sources lib/functions/*.sh
+  ├── sources lib/functions/*.sh (incl. workbench.sh)
   ├── applies lib/manifests/**/*.yaml via envsubst
+  ├── auto-creates workbench (Notebook CR + PVC) if missing
+  ├── auto-clones RHOAI-Toolkit into workbench
   └── self-contained, runs standalone
 ```
+
+## Automated Workbench Provisioning
+
+Each demo's `deploy.sh` automatically creates and configures its workbench via `lib/functions/workbench.sh`:
+
+| Demo | Namespace | Workbench Name | Image | GPU |
+|------|-----------|---------------|-------|-----|
+| LMEval + EvalHub | lmeval-demo | model-benchmarking | Data Science 3.4 | No |
+| Financial Loan | financial-loan-demo | model-training | PyTorch 3.4 | 1x |
+| AI Pipeline | pipeline-demo | ai-pipelines | Data Science 3.4 | No |
+| MaaS Rate Limiting | maas-ratelimit-demo | rate-limit-testing | Data Science 3.4 | No |
+| Feast Banking | (user-specified) | feature-store | Data Science 3.4 | No |
+
+What happens automatically:
+
+1. **Workbench creation** (Notebook CR + PVC) if it doesn't already exist
+2. **Wait** for workbench pod to reach Running state
+3. **Git clone** of RHOAI-Toolkit into `/opt/app-root/src/RHOAI-Toolkit`
+4. **Freshness check** — warns if the cloned repo is behind remote (does not auto-pull)
+
+Templates: `lib/manifests/workbench/notebook-template.yaml` (CPU) and `notebook-gpu-template.yaml` (GPU).
 
 ## GPU Requirements
 

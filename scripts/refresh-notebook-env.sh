@@ -25,6 +25,7 @@ DEMO_NAMESPACES=(
     "pipeline-demo"
     "maas-ratelimit-demo"
     "feast-demo"
+    "autorag-demo"
     "a-rh-dept"
 )
 
@@ -74,12 +75,17 @@ refresh_namespace() {
     LLM_MODEL_NAME=""
     LLM_MODEL_NS=""
     LLM_BASE_URL=""
+    DIRECT_MODEL_NAME=""
+    DIRECT_MODEL_NS=""
+    DIRECT_BASE_URL=""
+    DIRECT_ROUTE_URL=""
     SKLEARN_MODEL_NAME=""
     SKLEARN_MODEL_NS=""
     SKLEARN_API_URL=""
 
     # Detect endpoints
     detect_llm_endpoint || true
+    detect_direct_llm_endpoint || true
     detect_predictive_endpoint "$ns" || true
 
     # Build extra args based on namespace-specific needs
@@ -92,15 +98,14 @@ refresh_namespace() {
         extra_args+=("AWS_SECRET_ACCESS_KEY=minio123")
     fi
 
-    # Check for MaaS gateway
+    # Check for MaaS gateway (RHOAI 3.4: route in openshift-ingress)
     local cluster_domain
     cluster_domain=$(oc get ingress.config.openshift.io cluster \
         -o jsonpath='{.spec.domain}' 2>/dev/null || true)
     if [ -n "$cluster_domain" ]; then
-        local maas_endpoint="https://maas.apps.${cluster_domain##*.apps.}"
-        # Only add if inference-gateway exists
-        if oc get route inference-gateway -n istio-system &>/dev/null 2>&1 || \
-           oc get route inference-gateway -n knative-serving &>/dev/null 2>&1; then
+        if oc get route -n openshift-ingress --no-headers 2>/dev/null | grep -q "maas-default-gateway"; then
+            extra_args+=("MAAS_ENDPOINT=https://maas.${cluster_domain}")
+        elif oc get route -n openshift-ingress --no-headers 2>/dev/null | grep -q "inference-gateway\|inference-passthrough"; then
             extra_args+=("MAAS_ENDPOINT=https://inference-gateway.${cluster_domain}")
         fi
     fi
@@ -114,6 +119,10 @@ refresh_namespace() {
     else
         print_warning "No LLM model detected"
     fi
+    if [ -n "$DIRECT_MODEL_NAME" ]; then
+        print_success "Direct vLLM: $DIRECT_MODEL_NAME (ns: $DIRECT_MODEL_NS)"
+        [ -n "$DIRECT_ROUTE_URL" ] && print_info "  Route URL: $DIRECT_ROUTE_URL"
+    fi
     if [ -n "$SKLEARN_MODEL_NAME" ]; then
         print_success "Predictive: $SKLEARN_MODEL_NAME (ns: $SKLEARN_MODEL_NS)"
     fi
@@ -124,10 +133,9 @@ refresh_namespace() {
         -o custom-columns='NAME:.metadata.name' 2>/dev/null || true)
     for nb in $notebooks; do
         [ -z "$nb" ] && continue
-        # Trigger restart by annotating the pod template
-        oc patch notebook "$nb" -n "$ns" --type=merge \
-            -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"notebook-env/refreshed\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}}}}" \
-            2>/dev/null || true
+        # Delete pod to force recreation with fresh ConfigMap (Notebook controller
+        # does not restart pods on annotation changes like Deployments do)
+        oc delete pod "${nb}-0" -n "$ns" --ignore-not-found 2>/dev/null || true
         print_info "Restarted workbench: $nb"
     done
 }

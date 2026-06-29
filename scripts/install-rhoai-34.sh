@@ -206,6 +206,7 @@ get_cluster_domain() {
             exit 1
         fi
     fi
+    export CLUSTER_DOMAIN
     print_info "Cluster domain: $CLUSTER_DOMAIN"
 }
 
@@ -705,17 +706,7 @@ install_lws_operator() {
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-subscription.yaml"
     wait_for_operator "leader-worker-set" "openshift-lws-operator"
 
-    oc apply -f - <<EOF
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-  logLevel: Normal
-  operatorLogLevel: Normal
-EOF
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-operator-cr.yaml"
 
     print_success "LWS Operator installed"
 }
@@ -727,19 +718,7 @@ install_servicemesh_operator() {
         print_info "Service Mesh 3 Operator already installed and ready"
     else
         if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
-            oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: servicemeshoperator3
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Manual
-  name: servicemeshoperator3
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+            oc apply -f "$ROOT_DIR/lib/manifests/operators/servicemesh3-subscription.yaml"
         fi
 
         print_step "Waiting for Service Mesh InstallPlan to be created..."
@@ -827,16 +806,8 @@ setup_istio_for_kuadrant() {
         local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.26.2")
 
         print_step "Creating IstioCNI..."
-        oc apply -f - <<EOF
-apiVersion: sailoperator.io/v1
-kind: IstioCNI
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-cni
-  version: $istio_version
-EOF
+        export ISTIO_VERSION="$istio_version"
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istiocni.yaml" | oc apply -f -
 
         print_step "Waiting for IstioCNI to be ready..."
         local elapsed=0
@@ -853,16 +824,7 @@ EOF
         done
 
         print_step "Creating Istio instance in istio-system..."
-        oc apply -f - <<EOF
-apiVersion: sailoperator.io/v1
-kind: Istio
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-system
-  version: $istio_version
-EOF
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istio.yaml" | oc apply -f -
 
         print_step "Waiting for Istio to be healthy..."
         elapsed=0
@@ -886,15 +848,7 @@ EOF
         print_step "Creating openshift-default GatewayClass..."
         local attempt=1
         while [ $attempt -le 3 ]; do
-            if oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-default
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
-            then
+            if oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-default.yaml"; then
                 break
             fi
             print_warning "GatewayClass creation failed (attempt $attempt/3), waiting for API server..."
@@ -1097,88 +1051,16 @@ setup_maas_database() {
     fi
 
     print_step "Deploying POC PostgreSQL in redhat-ods-applications..."
-    oc apply -n redhat-ods-applications -f - <<PGEOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  labels:
-    app: postgres
-    purpose: poc
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-  labels:
-    app: postgres
-    purpose: poc
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-      - name: postgres
-        image: ${pg_image}
-        ports:
-        - containerPort: 5432
-        env:
-        - name: POSTGRESQL_USER
-          value: "${pg_user}"
-        - name: POSTGRESQL_PASSWORD
-          value: "${pg_password}"
-        - name: POSTGRESQL_DATABASE
-          value: "${pg_db}"
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/pgsql/data
-        resources:
-          requests:
-            cpu: 250m
-            memory: 512Mi
-          limits:
-            cpu: "1"
-            memory: 1Gi
-        readinessProbe:
-          exec:
-            command: ["pg_isready", "-U", "${pg_user}", "-d", "${pg_db}"]
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        livenessProbe:
-          exec:
-            command: ["pg_isready", "-U", "${pg_user}", "-d", "${pg_db}"]
-          initialDelaySeconds: 15
-          periodSeconds: 10
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: postgres-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  labels:
-    app: postgres
-spec:
-  selector:
-    app: postgres
-  ports:
-  - port: 5432
-    targetPort: 5432
-PGEOF
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-pvc.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-service.yaml"
+
+    export PG_IMAGE="$pg_image"
+    export PG_USER="$pg_user"
+    export PG_PASSWORD="$pg_password"
+    export PG_DB="$pg_db"
+    envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
+        < "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
+    unset PG_PASSWORD
 
     print_step "Waiting for PostgreSQL to be ready..."
     local elapsed=0
@@ -1490,20 +1372,46 @@ EOF
 enable_user_workload_monitoring() {
     print_step "Enabling User Workload Monitoring..."
 
-    oc apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
+    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
 
     print_success "User Workload Monitoring enabled"
+}
+
+install_coo_operator() {
+    print_step "Installing Cluster Observability Operator (COO)..."
+
+    if oc get csv -n openshift-cluster-observability-operator 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; then
+        print_info "COO already installed"
+        return 0
+    fi
+
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-namespace.yaml"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-operatorgroup.yaml"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-subscription.yaml"
+
+    print_step "Waiting for COO operator to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 180 ]; do
+        if oc get csv -n openshift-cluster-observability-operator 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; then
+            print_success "COO operator installed (Perses CRDs available)"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+
+    print_warning "COO operator not ready after 180s (may still be installing)"
+}
+
+configure_gateway_telemetry() {
+    print_step "Configuring gateway telemetry for MaaS usage metrics..."
+
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/gateway-telemetry-policy.yaml" 2>/dev/null || \
+        print_warning "TelemetryPolicy CRD not available (RHCL may need upgrade)"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/istio-gateway-telemetry.yaml" 2>/dev/null || \
+        print_warning "Istio Telemetry CRD not available"
+
+    print_success "Gateway telemetry configured"
 }
 
 install_rhoai_operator() {
@@ -1522,27 +1430,11 @@ install_rhoai_operator() {
         print_info "Using specified channel: $RHOAI_CHANNEL"
     fi
 
-    oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-EOF
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
 
     print_step "Creating RHOAI subscription with channel: $RHOAI_CHANNEL"
-    oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  name: rhods-operator
-  channel: $RHOAI_CHANNEL
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    export RHOAI_CHANNEL
+    envsubst '${RHOAI_CHANNEL}' < "$ROOT_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
 
     wait_for_operator "rhods" "redhat-ods-operator"
 
@@ -1551,6 +1443,13 @@ EOF
 
 create_datasciencecluster() {
     print_step "Creating DataScienceCluster..."
+
+    # Apply DSCInitialization first (controls monitoring, trustedCABundle, applications namespace)
+    if ! oc get dscinitialization default-dsci &>/dev/null; then
+        print_step "Applying DSCInitialization..."
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/dscinitialization.yaml"
+        oc wait --for=jsonpath='{.status.phase}'=Ready dscinitialization/default-dsci --timeout=120s 2>/dev/null || true
+    fi
 
     if oc get datasciencecluster default-dsc &>/dev/null; then
         print_info "DataScienceCluster already exists"
@@ -1612,6 +1511,8 @@ enable_dashboard_features() {
     #   maasAuthPolicies: true        - MaaS admin features (subscriptions, auth policies)
     #   vLLMDeploymentOnMaaS: true    - Required for "Publish as MaaS" to appear in deploy wizard
     #                                   (without it, dashboard hides the non-legacy deployment path)
+    # Developer Preview flags:
+    #   mcpCatalog: true              - MCP Catalog under AI Hub (requires MCP Lifecycle Operator)
     # Optional TP flags:
     #   observabilityDashboard: true  - MaaS usage monitoring dashboard (TP)
     local patch_json='{
@@ -1624,7 +1525,8 @@ enable_dashboard_features() {
                 "modelAsService": true,
                 "maasAuthPolicies": true,
                 "vLLMDeploymentOnMaaS": true,
-                "disableLMEval": false
+                "disableLMEval": false,
+                "mcpCatalog": true
             }
         }
     }'
@@ -1640,7 +1542,8 @@ enable_dashboard_features() {
                     "modelAsService": true,
                     "maasAuthPolicies": true,
                     "disableLMEval": false,
-                    "vLLMDeploymentOnMaaS": true
+                    "vLLMDeploymentOnMaaS": true,
+                    "mcpCatalog": true
                 }
             }
         }'
@@ -1658,7 +1561,8 @@ enable_dashboard_features() {
                     "modelAsService": true,
                     "maasAuthPolicies": true,
                     "observabilityDashboard": true,
-                    "disableLMEval": false
+                    "disableLMEval": false,
+                    "mcpCatalog": true
                 }
             }
         }'
@@ -1673,6 +1577,77 @@ enable_dashboard_features() {
     print_success "Dashboard features enabled (including maasAuthPolicies)"
 }
 
+install_mcp_lifecycle_operator() {
+    print_step "Installing MCP Lifecycle Operator (Developer Preview)..."
+
+    if oc get crd mcpservers.mcp.x-k8s.io &>/dev/null; then
+        print_success "MCP Lifecycle Operator already installed [SKIP]"
+        return 0
+    fi
+
+    local MCP_OPERATOR_URL="https://github.com/kubernetes-sigs/mcp-lifecycle-operator/releases/latest/download/install.yaml"
+
+    print_step "Deploying MCP Lifecycle Operator from kubernetes-sigs..."
+    if kubectl apply -f "$MCP_OPERATOR_URL" &>/dev/null; then
+        print_success "MCP Lifecycle Operator deployed"
+    else
+        print_warning "Could not install MCP Lifecycle Operator — MCP Catalog will not appear in AI Hub"
+        return 1
+    fi
+
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        if oc get pods -n mcp-lifecycle-operator-system 2>/dev/null | grep -q "1/1.*Running"; then
+            print_success "MCP Lifecycle Operator is running"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_warning "MCP Lifecycle Operator not ready yet — check: oc get pods -n mcp-lifecycle-operator-system"
+}
+
+# MCP Catalog prerequisites — the catalog creates MCPServer CRs but does NOT
+# auto-create the ServiceAccount, RBAC, or config ConfigMap the server pod needs.
+# Call this before deploying from the catalog in any namespace.
+setup_mcp_catalog_prerequisites() {
+    local namespace="${1:?Namespace required}"
+
+    print_step "Setting up MCP Catalog prerequisites in $namespace..."
+
+    if ! oc get sa mcp-viewer -n "$namespace" &>/dev/null; then
+        print_step "Creating mcp-viewer ServiceAccount..."
+        oc create serviceaccount mcp-viewer -n "$namespace"
+        oc create clusterrolebinding "mcp-viewer-${namespace}" \
+            --clusterrole=view \
+            --serviceaccount="${namespace}:mcp-viewer" 2>/dev/null || true
+        print_success "mcp-viewer ServiceAccount + view ClusterRoleBinding created"
+    else
+        print_success "mcp-viewer ServiceAccount already exists [SKIP]"
+    fi
+
+    if ! oc get configmap openshift-mcp-server-config -n "$namespace" &>/dev/null; then
+        print_step "Creating openshift-mcp-server-config ConfigMap..."
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-mcp-server-config
+  namespace: $namespace
+data:
+  config.toml: |
+    port = "8080"
+    read_only = true
+    stateless = true
+    toolsets = ["core", "config", "openshift"]
+EOF
+        print_success "openshift-mcp-server-config ConfigMap created"
+    else
+        print_success "openshift-mcp-server-config ConfigMap already exists [SKIP]"
+    fi
+}
+
 create_inference_gateway() {
     print_step "Creating inference Gateways for llm-d/MaaS..."
 
@@ -1681,85 +1656,27 @@ create_inference_gateway() {
     # GatewayClass for OpenShift Gateway Controller
     if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then
         print_step "Creating openshift-gateway-controller GatewayClass..."
-        oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-gateway-controller
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
     fi
+
+    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins)
+    print_step "Applying gateway resource overrides (2Gi memory limit)..."
+    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
 
     # MaaS Gateway - MUST have both annotations for MaaS controller to work in 3.4:
     #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
     #   security.opendatahub.io/authorino-tls-bootstrap: "true" - enables TLS to Authorino
     print_step "Creating maas-default-gateway with MaaS annotations..."
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: maas-default-gateway
-  namespace: openshift-ingress
-  annotations:
-    opendatahub.io/managed: "false"
-    security.opendatahub.io/authorino-tls-bootstrap: "true"
-spec:
-  gatewayClassName: openshift-gateway-controller
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: maas.apps.${CLUSTER_DOMAIN}
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
+    export CERT_NAME="default-gateway-tls"
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc apply -f -
 
     # llm-d inference gateway (for direct model access outside MaaS)
     print_step "Creating openshift-ai-inference gateway..."
     if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
-        oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
     fi
 
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: inference-gateway.apps.${CLUSTER_DOMAIN}
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
 
     # Create default-gateway-tls secret for the HTTPS listeners
     # Without this, Envoy never creates the port 443 listener and the gateway returns 503
@@ -1788,27 +1705,8 @@ create_gateway_tls_secret() {
     issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
-        oc apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: default-gateway-tls
-  namespace: openshift-ingress
-spec:
-  secretName: default-gateway-tls
-  duration: 2160h
-  renewBefore: 360h
-  commonName: "apps.${CLUSTER_DOMAIN}"
-  dnsNames:
-    - "apps.${CLUSTER_DOMAIN}"
-    - "*.apps.${CLUSTER_DOMAIN}"
-  issuerRef:
-    name: ${issuer}
-    kind: ClusterIssuer
-  usages:
-    - server auth
-    - client auth
-EOF
+        export ISSUER_NAME="$issuer"
+        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc apply -f -
         print_step "Waiting for cert-manager to generate TLS secret..."
         local wait=0
         while [ $wait -lt 120 ]; do
@@ -1831,22 +1729,16 @@ EOF
                 | base64 -d 2>/dev/null | openssl x509 -noout -subject 2>/dev/null || true)
             if echo "$cert_cn" | grep -q "${CLUSTER_DOMAIN}"; then
                 print_info "Copying wildcard cert from '$src'..."
-                local tls_crt tls_key
-                tls_crt=$(oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.crt}')
-                tls_key=$(oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.key}')
-                oc apply -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: default-gateway-tls
-  namespace: openshift-ingress
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-type: kubernetes.io/tls
-data:
-  tls.crt: ${tls_crt}
-  tls.key: ${tls_key}
-EOF
+                local tmpdir_cert
+                tmpdir_cert=$(mktemp -d)
+                oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.crt}' | base64 -d > "$tmpdir_cert/tls.crt"
+                oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.key}' | base64 -d > "$tmpdir_cert/tls.key"
+                oc create secret tls default-gateway-tls \
+                    --cert="$tmpdir_cert/tls.crt" --key="$tmpdir_cert/tls.key" \
+                    -n openshift-ingress --dry-run=client -o yaml | \
+                    oc label --local -f - app.kubernetes.io/managed-by=rhoai-toolkit --dry-run=client -o yaml | \
+                    oc apply -f -
+                rm -rf "$tmpdir_cert"
                 print_success "default-gateway-tls created from '$src'"
                 return 0
             fi
@@ -1909,27 +1801,11 @@ create_gateway_passthrough_routes() {
         fi
 
         print_step "Creating passthrough route: ${hostname} → ${svc_name}..."
-        oc apply -f - <<EOF
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: ${route_name}
-  namespace: openshift-ingress
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-  annotations:
-    haproxy.router.openshift.io/timeout: 300s
-spec:
-  host: ${hostname}
-  to:
-    kind: Service
-    name: ${svc_name}
-    weight: 100
-  port:
-    targetPort: 443
-  tls:
-    termination: passthrough
-EOF
+        export ROUTE_NAME="$route_name"
+        export HOSTNAME="$hostname"
+        export SERVICE_NAME="$svc_name"
+        envsubst '${ROUTE_NAME} ${HOSTNAME} ${SERVICE_NAME}' \
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc apply -f -
     done
     print_success "Gateway passthrough routes configured"
 }
@@ -1937,49 +1813,7 @@ EOF
 create_hardware_profile() {
     print_step "Creating default GPU hardware profile..."
 
-    oc apply -f - <<EOF
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: gpu-profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-  name: gpu-profile
-  namespace: redhat-ods-applications
-spec:
-  identifiers:
-    - defaultCount: '1'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '8'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 12Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 24Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 4
-      minCount: 1
-      resourceType: Accelerator
-  scheduling:
-    type: Node
-    node:
-      nodeSelector:
-        nvidia.com/gpu.present: 'true'
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-EOF
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml"
 
     print_success "Hardware profile created"
 }
@@ -2003,18 +1837,7 @@ create_mlflow_server() {
         return 0
     fi
 
-    oc apply -f - <<'EOF'
-apiVersion: mlflow.opendatahub.io/v1
-kind: MLflow
-metadata:
-  name: mlflow
-spec:
-  serveArtifacts: true
-  artifactsDestination: "file:///mlflow/artifacts"
-  backendStoreUri: "sqlite:////mlflow/mlflow.db"
-  storage:
-    size: 10Gi
-EOF
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
 
     print_step "Waiting for MLflow server to be ready..."
     local wait=0
@@ -2105,6 +1928,18 @@ verify_maas_deployment() {
         print_success "Authorino TLS listener is enabled"
     else
         print_warning "Authorino TLS listener not enabled"
+    fi
+
+    # Check MaaS API health endpoint
+    print_step "Checking MaaS API health endpoint..."
+    local maas_health
+    maas_health=$(curl -sk "https://maas.apps.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null || true)
+    if echo "$maas_health" | grep -q "healthy"; then
+        print_success "MaaS API health endpoint responding: $maas_health"
+    elif [ -n "$maas_health" ]; then
+        print_warning "MaaS API health endpoint returned: $maas_health"
+    else
+        print_info "MaaS API health endpoint not reachable yet (maas-api may still be starting)"
     fi
 }
 
@@ -2464,6 +2299,7 @@ main() {
     create_datasciencecluster
 
     enable_dashboard_features
+    install_mcp_lifecycle_operator
     create_hardware_profile
     create_mlflow_server
 
@@ -2484,6 +2320,12 @@ main() {
         configure_maas_tls
         configure_maas_rate_limiting
         verify_maas_deployment
+    fi
+
+    # Observability stack (COO + gateway telemetry)
+    if [ "$ENABLE_OBSERVABILITY" = true ]; then
+        install_coo_operator
+        configure_gateway_telemetry
     fi
 
     if [ "$SETUP_PIPELINES" = true ]; then

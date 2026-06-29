@@ -53,10 +53,14 @@ oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev
 
 # Detect MaaS endpoint and models
 CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-MAAS_ENDPOINT="https://inference-gateway.${CLUSTER_DOMAIN}"
+if oc get route -n openshift-ingress --no-headers 2>/dev/null | grep -q "maas-default-gateway"; then
+    MAAS_ENDPOINT="https://maas.${CLUSTER_DOMAIN}"
+else
+    MAAS_ENDPOINT="https://inference-gateway.${CLUSTER_DOMAIN}"
+fi
 
 print_step "Checking for MaaS models..."
-MODELS=$(oc get inferenceservice -A --no-headers 2>/dev/null)
+MODELS=$(oc get llminferenceservice -A --no-headers 2>/dev/null)
 if [ -n "$MODELS" ]; then
     print_success "Available models:"
     echo "$MODELS" | awk '{printf "    %-30s %s\n", $2, $1}'
@@ -71,6 +75,10 @@ fi
 echo ""
 print_success "MaaS Rate Limiting Demo namespace ready"
 print_info "Namespace: $NAMESPACE"
+
+# --- Create workbench + clone repo ---
+source "$ROOT_DIR/lib/functions/workbench.sh"
+ensure_workbench "$NAMESPACE" "rate-limit-testing"
 
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"

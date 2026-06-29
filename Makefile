@@ -55,6 +55,7 @@ help:
 	@echo "  make deploy-financial-loan Deploy financial loan demo"
 	@echo "  make deploy-pipeline-demo  Deploy AI pipeline demo (KFP + Elyra)"
 	@echo "  make deploy-nemo-guardrails Deploy NeMo Guardrails (RHOAI 3.4)"
+	@echo "  make deploy-lemonade-stand Deploy Lemonade Stand Chat (NeMo Edition)"
 	@echo "  make deploy-lmeval-lab     Deploy LMEval Builder Lab"
 	@echo "  make deploy-maas-ratelimit Deploy MaaS Rate Limiting Demo"
 	@echo "  make deploy-automl         Deploy AutoML Demo (Tech Preview)"
@@ -238,6 +239,10 @@ deploy-pipeline-demo:
 .PHONY: deploy-nemo-guardrails
 deploy-nemo-guardrails:
 	@$(BASE)/demo/nemo-guardrails-demo/deploy.sh
+
+.PHONY: deploy-lemonade-stand
+deploy-lemonade-stand:
+	@$(BASE)/demo/lemonade-stand-demo/deploy.sh
 
 .PHONY: deploy-lmeval-lab
 deploy-lmeval-lab:

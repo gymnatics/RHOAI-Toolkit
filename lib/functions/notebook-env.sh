@@ -4,6 +4,7 @@
 ################################################################################
 # Provides:
 #   detect_llm_endpoint          — sets LLM_MODEL_NAME, LLM_MODEL_NS, LLM_BASE_URL
+#   detect_direct_llm_endpoint   — sets DIRECT_MODEL_NAME, DIRECT_MODEL_NS, DIRECT_BASE_URL, DIRECT_ROUTE_URL
 #   detect_predictive_endpoint   — sets SKLEARN_MODEL_NAME, SKLEARN_API_URL
 #   inject_notebook_env          — creates notebook-env ConfigMap + patches Notebook CRs
 #
@@ -70,6 +71,78 @@ detect_llm_endpoint() {
     LLM_BASE_URL="https://${svc_name}.${detected_ns}.svc:${svc_port}/v1"
 }
 
+# Detect a standard vLLM InferenceService for direct access (non-MaaS, non-embedding).
+# Use this for consumers like LlamaStack that need a standard vLLM /v1 endpoint.
+# Sets: DIRECT_MODEL_NAME, DIRECT_MODEL_NS, DIRECT_BASE_URL
+detect_direct_llm_endpoint() {
+    DIRECT_MODEL_NAME=""
+    DIRECT_MODEL_NS=""
+    DIRECT_BASE_URL=""
+
+    local detected="" detected_ns=""
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -z "$line" ] && continue
+        local ns name
+        ns=$(echo "$line" | awk '{print $1}')
+        name=$(echo "$line" | awk '{print $2}')
+        local fmt
+        fmt=$(oc get inferenceservice "$name" -n "$ns" \
+            -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
+        if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
+            continue
+        fi
+        # Skip embedding models
+        if echo "$name" | grep -qi -E 'bge|e5-|embed|nomic-embed'; then
+            continue
+        fi
+        detected_ns="$ns"
+        detected="$name"
+        break
+    done < <(oc get inferenceservice -A --no-headers 2>/dev/null || true)
+
+    [ -z "$detected" ] && return 1
+
+    DIRECT_MODEL_NAME="$detected"
+    DIRECT_MODEL_NS="$detected_ns"
+
+    # Resolve actual service name via labels
+    local svc_name="" svc_port=""
+    for label in "serving.kserve.io/inferenceservice=${detected}" "app.kubernetes.io/name=${detected}"; do
+        svc_name=$(oc get svc -n "$detected_ns" -l "$label" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        if [ -n "$svc_name" ]; then
+            svc_port=$(oc get svc "$svc_name" -n "$detected_ns" \
+                -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "80")
+            break
+        fi
+    done
+
+    svc_name="${svc_name:-${detected}-predictor}"
+    svc_port="${svc_port:-80}"
+
+    # Determine protocol from port name
+    local port_name
+    port_name=$(oc get svc "$svc_name" -n "$detected_ns" \
+        -o jsonpath='{.spec.ports[0].name}' 2>/dev/null || echo "http")
+    local proto="http"
+    if echo "$port_name" | grep -qi "https"; then
+        proto="https"
+    fi
+
+    DIRECT_BASE_URL="${proto}://${svc_name}.${detected_ns}.svc:${svc_port}/v1"
+
+    # Also resolve the external route URL (for consumers outside cluster networking,
+    # e.g. EvalHub adapter pods that can't trust internal service-ca)
+    DIRECT_ROUTE_URL=""
+    local route_url
+    route_url=$(oc get inferenceservice "$detected" -n "$detected_ns" \
+        -o jsonpath='{.status.url}' 2>/dev/null || true)
+    if [ -n "$route_url" ]; then
+        DIRECT_ROUTE_URL="${route_url%/}/v1"
+    fi
+}
+
 # Detect predictive model (sklearn/xgboost) InferenceService
 # Args: $1 = namespace to check first (optional)
 # Sets: SKLEARN_MODEL_NAME, SKLEARN_MODEL_NS, SKLEARN_API_URL
@@ -128,6 +201,11 @@ inject_notebook_env() {
         detect_llm_endpoint || true
     fi
 
+    # Detect direct vLLM endpoint (non-MaaS, for LlamaStack etc.)
+    if [ -z "${DIRECT_MODEL_NAME:-}" ]; then
+        detect_direct_llm_endpoint || true
+    fi
+
     # Detect predictive model
     if [ -z "${SKLEARN_MODEL_NAME:-}" ]; then
         detect_predictive_endpoint "$ns" || true
@@ -143,6 +221,14 @@ inject_notebook_env() {
         cm_args+=("--from-literal=BASE_URL=${LLM_BASE_URL}")
         cm_args+=("--from-literal=LLM_API_URL=${LLM_BASE_URL}/chat/completions")
         cm_args+=("--from-literal=LLM_MODEL_NAME=${LLM_MODEL_NAME}")
+    fi
+
+    if [ -n "${DIRECT_MODEL_NAME:-}" ]; then
+        cm_args+=("--from-literal=DIRECT_MODEL_NAME=${DIRECT_MODEL_NAME}")
+        cm_args+=("--from-literal=DIRECT_BASE_URL=${DIRECT_BASE_URL}")
+        if [ -n "${DIRECT_ROUTE_URL:-}" ]; then
+            cm_args+=("--from-literal=DIRECT_ROUTE_URL=${DIRECT_ROUTE_URL}")
+        fi
     fi
 
     if [ -n "${SKLEARN_MODEL_NAME:-}" ]; then
@@ -164,7 +250,7 @@ metadata:
   namespace: ${ns}
 rules:
 - apiGroups: ["trustyai.opendatahub.io"]
-  resources: ["evaluations"]
+  resources: ["evaluations", "status-events"]
   verbs: ["get", "create", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

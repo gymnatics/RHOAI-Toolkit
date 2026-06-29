@@ -1,0 +1,153 @@
+---
+# LlamaStack Secret - Connection details for LLM, embedding, and Milvus
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llama-stack-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  INFERENCE_MODEL: "${INFERENCE_MODEL}"
+  VLLM_URL: "${VLLM_URL}"
+  VLLM_TLS_VERIFY: "${VLLM_TLS_VERIFY}"
+  VLLM_API_TOKEN: "${VLLM_API_TOKEN}"
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
+  EMBEDDING_PROVIDER_MODEL_ID: "${EMBEDDING_PROVIDER_MODEL_ID}"
+  VLLM_EMBEDDING_URL: "${VLLM_EMBEDDING_URL}"
+  VLLM_EMBEDDING_API_TOKEN: "${VLLM_EMBEDDING_API_TOKEN}"
+  VLLM_EMBEDDING_TLS_VERIFY: "${VLLM_EMBEDDING_TLS_VERIFY}"
+  VLLM_EMBEDDING_MAX_TOKENS: "${VLLM_EMBEDDING_MAX_TOKENS}"
+---
+# Milvus connection secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: milvus-connection-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  MILVUS_ENDPOINT: "${MILVUS_ENDPOINT}"
+  MILVUS_TOKEN: "${MILVUS_TOKEN}"
+  MILVUS_CONSISTENCY_LEVEL: "Bounded"
+---
+# LlamaStackDistribution - Remote Milvus + Remote Embeddings (bge-m3)
+# Based on RHOAI 3.4 Guide Example A (remote embeddings) + B (remote Milvus)
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: autorag-llamastack
+  namespace: ${NAMESPACE}
+  annotations:
+    openshift.io/display-name: AutoRAG LlamaStack
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  replicas: 1
+  network:
+    allowedFrom:
+      namespaces:
+        - ${NAMESPACE}
+        - redhat-ods-applications
+    exposeRoute: true
+  server:
+    containerSpec:
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "500Mi"
+        limits:
+          cpu: 4
+          memory: "12Gi"
+      env:
+        # Remote LLM (direct vLLM InferenceService — not MaaS)
+        - name: INFERENCE_MODEL
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: INFERENCE_MODEL
+        - name: VLLM_URL
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_URL
+        - name: VLLM_TLS_VERIFY
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_TLS_VERIFY
+        - name: VLLM_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_API_TOKEN
+        - name: VLLM_MAX_TOKENS
+          value: "4096"
+        # Remote embeddings (bge-m3 via vLLM)
+        - name: EMBEDDING_MODEL
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: EMBEDDING_MODEL
+        - name: EMBEDDING_PROVIDER_MODEL_ID
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: EMBEDDING_PROVIDER_MODEL_ID
+        - name: VLLM_EMBEDDING_URL
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_EMBEDDING_URL
+        - name: VLLM_EMBEDDING_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_EMBEDDING_API_TOKEN
+        - name: VLLM_EMBEDDING_TLS_VERIFY
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_EMBEDDING_TLS_VERIFY
+        - name: VLLM_EMBEDDING_MAX_TOKENS
+          valueFrom:
+            secretKeyRef:
+              name: llama-stack-secret
+              key: VLLM_EMBEDDING_MAX_TOKENS
+        # Remote Milvus
+        - name: MILVUS_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: milvus-connection-secret
+              key: MILVUS_ENDPOINT
+        - name: MILVUS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: milvus-connection-secret
+              key: MILVUS_TOKEN
+        - name: MILVUS_CONSISTENCY_LEVEL
+          valueFrom:
+            secretKeyRef:
+              name: milvus-connection-secret
+              key: MILVUS_CONSISTENCY_LEVEL
+        # PostgreSQL metadata store (required in RHOAI 3.4)
+        - name: POSTGRES_HOST
+          value: "llamastack-postgres.${NAMESPACE}.svc.cluster.local"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "llamastack"
+        - name: POSTGRES_USER
+          value: "llamastack"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llamastack-postgres-secret
+              key: password
+        - name: FMS_ORCHESTRATOR_URL
+          value: "http://localhost"
+      name: llama-stack
+      port: 8321
+    distribution:
+      name: rh-dev
+    storage:
+      size: 5Gi

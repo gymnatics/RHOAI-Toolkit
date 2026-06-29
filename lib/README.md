@@ -38,7 +38,7 @@ Operator installation functions:
 
 ### rhoai.sh
 RHOAI-specific functions:
-- `get_rhoai_channel(version)` - Get OLM channel for RHOAI version
+- `get_rhoai_channel(version)` - Resolve OLM channel dynamically from the cluster catalog
 - `install_rhoai_operator(version)` - Install RHOAI operator
 - `initialize_rhoai()` - Create DSCInitialization
 - `create_datasciencecluster_v1()` - Create DSC for RHOAI 2.x

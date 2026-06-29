@@ -1,0 +1,16 @@
+# ResourceFlavor for GPU nodes — with toleration + ODH labels
+# Used when GPU nodes are tainted with nvidia.com/gpu:NoSchedule.
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule

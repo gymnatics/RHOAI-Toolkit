@@ -1,0 +1,34 @@
+# FeatureStore template with restAPI: false (initial creation step)
+# Used in the two-step approach: create with restAPI false, wait for pod,
+# then flip to true.
+#
+# Variables:
+#   ${NAMESPACE}     - Target namespace
+#   ${FEAST_PROJECT} - Feast project name
+#   ${GIT_REF}       - Git branch/tag
+#   ${GIT_URL}       - Git repository URL
+#   ${FEAST_LABELS}  - Pre-formatted label block (includes conditional RHOAI 3.3+ labels)
+---
+apiVersion: feast.dev/v1alpha1
+kind: FeatureStore
+metadata:
+  labels:
+${FEAST_LABELS}
+  name: ${FEAST_PROJECT}
+spec:
+  feastProject: ${FEAST_PROJECT}
+  feastProjectDir:
+    git:
+      ref: ${GIT_REF}
+      url: '${GIT_URL}'
+  services:
+    offlineStore:
+      server:
+        logLevel: debug
+    onlineStore:
+      server:
+        logLevel: debug
+    registry:
+      local:
+        server:
+          restAPI: false

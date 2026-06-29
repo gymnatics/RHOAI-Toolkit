@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-portal
+  namespace: lightspeed-demo
+  labels:
+    app: customer-portal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: customer-portal
+  template:
+    metadata:
+      labels:
+        app: customer-portal
+    spec:
+      containers:
+      - name: web
+        image: quay.io/redhattraining/hello-world-nginx:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-portal
+  namespace: lightspeed-demo
+spec:
+  selector:
+    app: customer-portal
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP

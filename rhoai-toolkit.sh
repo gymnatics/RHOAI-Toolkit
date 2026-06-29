@@ -49,6 +49,16 @@ source "$SCRIPT_DIR/lib/utils/os-compat.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/operators.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/menus/commands.sh" 2>/dev/null || true
+
+# Command mode: if first arg doesn't start with -- and isn't a known flag,
+# route it through the command registry (bypasses interactive menus)
+if [ $# -gt 0 ] && [[ "$1" != --* ]] && [[ "$1" != -* ]]; then
+    if route_command "$@"; then
+        exit 0
+    fi
+    # route_command returns 1 for "menu" command or errors — fall through to interactive
+fi
 
 # Default flags
 SETUP_MAAS="ask"
@@ -78,25 +88,22 @@ show_main_menu() {
     echo -e "${CYAN}║                    Main Menu                                   ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${MAGENTA}RHOAI 3.x (Current):${NC}"
+    echo -e "${MAGENTA}Installation:${NC}"
     echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 3.4 ${GREEN}[NEW - Recommended]${NC}"
-    echo "    Full 3.4 install: MaaS (core GA), NeMo Guardrails (GA), llm-d, AutoML/AutoRAG (TP)"
-    echo -e "${YELLOW}3b)${NC} Install RHOAI 3.3"
-    echo "    Full 3.3 install with MaaS (TP), llm-d, Llama Stack"
-    echo ""
-    echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
+    echo -e "${YELLOW}3)${NC} Install RHOAI ${GREEN}[auto-detects available versions]${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
-    echo -e "${YELLOW}5)${NC} Install RHOAI 2.x Only ${CYAN}[2.25, 2.22, 2.19]${NC}"
     echo ""
     echo -e "${MAGENTA}Management & Tools:${NC}"
-    echo -e "${YELLOW}6)${NC} RHOAI Management (configure features, deploy models, etc.)"
-    echo -e "${YELLOW}7)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}8)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
-    echo -e "${YELLOW}9)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}5)${NC} RHOAI Management (configure features, deploy models, etc.)"
+    echo -e "${YELLOW}6)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}7)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
+    echo -e "${YELLOW}8)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
     echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
+    echo ""
+    echo -e "${CYAN}Tip:${NC} Use command mode to skip menus: ${GREEN}./rhoai-toolkit.sh deploy demo webui${NC}"
+    echo -e "     Type ${GREEN}./rhoai-toolkit.sh help${NC} for all available commands."
     echo ""
 }
 
@@ -3335,10 +3342,33 @@ _mcp_deploy_helm() {
         return 1
     fi
     
+    # The upstream chart defaults to image.version=latest, but the :latest tag
+    # is frequently deleted from quay.io. Resolve a concrete commit-SHA tag
+    # from the cloned repo that has a matching container image.
+    local image_tag=""
+    local image_registry="quay.io"
+    local image_repo="redhat-user-workloads/crt-nshift-lightspeed-tenant/openshift-mcp-server"
+    
+    print_step "Resolving container image tag..."
+    for sha in $(git log --format='%H' -n 10 2>/dev/null); do
+        if skopeo inspect --raw "docker://${image_registry}/${image_repo}:${sha}" &>/dev/null; then
+            image_tag="$sha"
+            break
+        fi
+    done
+    
+    if [ -z "$image_tag" ]; then
+        print_warning "Could not resolve image tag from git history, falling back to latest"
+        image_tag="latest"
+    else
+        print_info "Resolved image tag: ${image_tag:0:12}..."
+    fi
+    
     print_step "Installing via Helm..."
     helm upgrade --install kubernetes-mcp-server \
         "$tmpdir/repo/charts/kubernetes-mcp-server" \
         --namespace "$target_ns" \
+        --set image.version="$image_tag" \
         --set server.readOnly="$read_only" \
         --set server.port=8080 \
         --set server.stateless=true \
@@ -6349,7 +6379,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-9, 3b, h, 0): " choice
+        read -p "Select an option (1-8, h, 0): " choice
         
         case $choice in
             1)
@@ -6359,71 +6389,23 @@ main() {
                 run_minimal_setup
                 ;;
             3)
-                # RHOAI 3.4 installation
-                print_header "RHOAI 3.4 Installation"
-                echo ""
-                echo -e "${CYAN}This will install RHOAI 3.4 with all features:${NC}"
-                echo "  • NFD, GPU Operator, Kueue, cert-manager"
-                echo "  • RHCL (Kuadrant) for MaaS/llm-d authentication"
-                echo "  • LWS for multi-node inference"
-                echo "  • Full DataScienceCluster with all components"
-                echo "  • Inference Gateway for llm-d/MaaS"
-                echo "  • Default GPU hardware profile"
-                echo ""
-                echo -e "${GREEN}What's New in 3.4:${NC}"
-                echo "  • MaaS core platform now GA (subscriptions, API keys, llm-d)"
-                echo "    Sub-features still TP: vLLM runtime, external OIDC, observability, external model egress"
-                echo "  • NeMo Guardrails now GA"
-                echo "  • MLflow Operator managed DSC component"
-                echo "  • AutoML & AutoRAG (Technology Preview)"
-                echo "  • llm-d: Prometheus metrics, WVA autoscaling (TP)"
-                echo "  • vLLM runtime for MaaS (Technology Preview)"
-                echo "  • MLServer ServingRuntime GA (scikit-learn, XGBoost)"
-                echo ""
-                read -p "Proceed with RHOAI 3.4 installation? (Y/n): " confirm_34
-                if [[ ! "$confirm_34" =~ ^[Nn]$ ]]; then
-                    "$SCRIPT_DIR/scripts/install-rhoai-34.sh"
-                fi
-                echo ""
-                read -p "Press Enter to return to main menu..."
-                ;;
-            3b|3B)
-                # RHOAI 3.3 installation (previous version)
-                print_header "RHOAI 3.3 Installation"
-                echo ""
-                echo -e "${CYAN}This will install RHOAI 3.3 with all features:${NC}"
-                echo "  • NFD, GPU Operator, Kueue, cert-manager"
-                echo "  • RHCL (Kuadrant) for MaaS/llm-d authentication"
-                echo "  • LWS for multi-node inference"
-                echo "  • Full DataScienceCluster with all components"
-                echo "  • Inference Gateway for llm-d/MaaS"
-                echo "  • Default GPU hardware profile"
-                echo ""
-                read -p "Proceed with RHOAI 3.3 installation? (Y/n): " confirm_33
-                if [[ ! "$confirm_33" =~ ^[Nn]$ ]]; then
-                    "$SCRIPT_DIR/scripts/install-rhoai-33.sh"
-                fi
-                echo ""
-                read -p "Press Enter to return to main menu..."
+                install_rhoai_menu
                 ;;
             4)
                 workshop_setup_menu
                 ;;
             5)
-                rhoai_2x_menu
-                ;;
-            6)
                 rhoai_management_menu
                 ;;
-            7)
+            6)
                 create_gpu_machineset_interactive
                 echo ""
                 read -p "Press Enter to return to main menu..."
                 ;;
-            8)
+            7)
                 gpu_clusterpolicy_menu
                 ;;
-            9)
+            8)
                 configure_kubeconfig_interactive
                 ;;
             h|H)
@@ -6436,7 +6418,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9, h, or 0."
+                print_error "Invalid option. Please select 1-8, h, or 0."
                 sleep 2
                 ;;
         esac
@@ -6617,6 +6599,124 @@ run_minimal_setup() {
     echo ""
     read -p "Press Enter to return to main menu..."
     return 0
+}
+
+################################################################################
+# Unified RHOAI Installation (dynamic channel selection)
+################################################################################
+
+install_rhoai_menu() {
+    print_header "Install Red Hat OpenShift AI"
+
+    print_step "Fetching available RHOAI channels from cluster..."
+
+    local channel_data
+    channel_data=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{range .status.channels[*]}{.name}|{.currentCSV}{"\n"}{end}' 2>/dev/null)
+
+    if [ -z "$channel_data" ]; then
+        print_error "Unable to fetch RHOAI channels from cluster"
+        print_info "Make sure you are connected to an OpenShift cluster with access to redhat-operators"
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return 1
+    fi
+
+    local default_channel
+    default_channel=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.defaultChannel}' 2>/dev/null)
+
+    # Parse channel names and extract version from currentCSV (e.g. rhods-operator.3.4.1 -> 3.4.1)
+    local -a channel_list
+    local -a channel_versions
+    while IFS='|' read -r ch_name ch_csv; do
+        [ -z "$ch_name" ] && continue
+        local ver="${ch_csv##*.}"
+        # CSV format: rhods-operator.X.Y.Z — grab last 3 dot-segments
+        if [[ "$ch_csv" =~ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            ver="${BASH_REMATCH[1]}"
+        fi
+        channel_list+=("$ch_name")
+        channel_versions+=("$ver")
+    done < <(echo "$channel_data" | sort -t'|' -k2 -rV)
+
+    echo ""
+    echo -e "${CYAN}Available RHOAI channels on this cluster:${NC}"
+    echo ""
+    local i=1
+    for idx in "${!channel_list[@]}"; do
+        local ch="${channel_list[$idx]}"
+        local ver="${channel_versions[$idx]}"
+        local label=""
+        if [ "$ch" = "$default_channel" ]; then
+            label=" ${GREEN}[default]${NC}"
+        fi
+        printf "  ${YELLOW}%d)${NC} %-16s — v%s%b\n" "$i" "$ch" "$ver" "$label"
+        i=$((i + 1))
+    done
+    echo ""
+    echo -e "  ${YELLOW}0)${NC} Back to main menu"
+    echo ""
+
+    read -p "Select channel (1-${#channel_list[@]}, 0): " ch_choice
+
+    if [ "$ch_choice" = "0" ] || [ -z "$ch_choice" ]; then
+        return 0
+    fi
+
+    if ! [[ "$ch_choice" =~ ^[0-9]+$ ]] || [ "$ch_choice" -lt 1 ] || [ "$ch_choice" -gt "${#channel_list[@]}" ]; then
+        print_warning "Invalid selection"
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return 0
+    fi
+
+    local selected_channel="${channel_list[$((ch_choice - 1))]}"
+    echo ""
+    print_info "Selected channel: $selected_channel"
+    echo ""
+
+    case "$selected_channel" in
+        *3.4*|fast-3.x)
+            echo -e "${CYAN}Launching RHOAI 3.4 installer (channel: $selected_channel)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                "$SCRIPT_DIR/scripts/install-rhoai-34.sh" --channel "$selected_channel"
+            fi
+            ;;
+        *3.3*)
+            echo -e "${CYAN}Launching RHOAI 3.3 installer (channel: $selected_channel)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                "$SCRIPT_DIR/scripts/install-rhoai-33.sh" --channel "$selected_channel"
+            fi
+            ;;
+        stable-2.*|stable)
+            local version="${selected_channel#stable-}"
+            [ "$version" = "stable" ] && version="2.25"
+            echo -e "${CYAN}Launching RHOAI 2.x installer (version $version)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                install_rhoai_2x "$version" "$selected_channel"
+            fi
+            ;;
+        *)
+            print_info "No dedicated installer for channel '$selected_channel'"
+            print_info "Using interactive operator installer..."
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                SELECTED_RHOAI_CHANNEL="$selected_channel"
+                install_rhoai_operator_interactive
+            fi
+            ;;
+    esac
+
+    echo ""
+    read -p "Press Enter to return to main menu..."
 }
 
 ################################################################################

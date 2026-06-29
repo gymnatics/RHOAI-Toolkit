@@ -268,6 +268,191 @@ The RHOAI Dashboard and CLI configurations interfere with each other. Changes in
 
 ---
 
+## MaaS / RHOAI 3.4
+
+### MaaS API Keys Page — "Error loading components"
+
+**Error:** The Gen AI Studio > API Keys page shows "Error loading components — the server encountered a problem and could not process your request."
+
+**Root cause:** The `Tenant` CR (`default-tenant` in `models-as-a-service`) has `spec.gatewayRef` pointing to `openshift-ai-inference` instead of `maas-default-gateway`. The Tenant controller reconciles the `maas-api-route` HTTPRoute using this gatewayRef, so the route only gets `openshift-ai-inference` in its `parentRefs`. But the `maas-ui` sidecar discovers the MaaS URL as `https://maas.apps.<cluster>/maas-api/...` which routes through `maas-default-gateway`. Since that gateway isn't in the parentRefs, `/maas-api/*` gets a 404.
+
+This typically happens when the Tenant was auto-created before `maas-default-gateway` existed, inheriting `openshift-ai-inference` as the default.
+
+**Diagnosis:**
+```bash
+# Check maas-ui logs for the 404
+oc logs $(oc get pods -n redhat-ods-applications -l app=rhods-dashboard --no-headers | grep Running | head -1 | awk '{print $1}') \
+  -n redhat-ods-applications -c maas-ui --tail=20
+# Look for: "unknown error when invoking maas-api (unmarshall)" statusCode=404
+
+# Confirm the Tenant gatewayRef is wrong
+oc get tenant default-tenant -n models-as-a-service -o jsonpath='{.spec.gatewayRef}'
+# If it shows openshift-ai-inference, that's the bug
+
+# Confirm the HTTPRoute parentRefs
+oc get httproute maas-api-route -n redhat-ods-applications -o jsonpath='{.spec.parentRefs[*].name}'
+```
+
+**Fix (permanent):** Patch the Tenant CR's `gatewayRef` to `maas-default-gateway`. The Tenant controller will automatically reconcile the `maas-api-route` HTTPRoute to use the correct gateway:
+```bash
+oc patch tenant default-tenant -n models-as-a-service --type=merge \
+  -p '{"spec":{"gatewayRef":{"name":"maas-default-gateway","namespace":"openshift-ingress"}}}'
+```
+
+This is the proper fix — it changes the source of truth so the controller reconciles correctly, rather than fighting it.
+
+**Verify:**
+```bash
+# Should show maas-default-gateway
+oc get httproute maas-api-route -n redhat-ods-applications -o jsonpath='{.spec.parentRefs[*].name}'
+
+# Should return: {"status":"healthy"}
+curl -sk "https://maas.apps.<cluster>/maas-api/health"
+```
+
+### Cluster Observability Operator v1.5.0 Breaks MaaS Dashboard
+
+**Error:** The Observe & Monitor > Dashboard page shows "Internal error" or charts fail to load.
+
+**Root cause:** COO v1.5.0 ships a Perses binary that adds `-web.tls-min-version` as a startup flag, but the StatefulSet image and configuration can get into a mismatch state where the binary doesn't recognize the flag, causing CrashLoopBackOff.
+
+**Diagnosis:**
+```bash
+# Perses pod in CrashLoopBackOff
+oc get pods -n redhat-ods-monitoring | grep perses
+# Logs show: "flag provided but not defined: -web.tls-min-version"
+oc logs data-science-perses-0 -n redhat-ods-monitoring
+```
+
+**Fix — Option A: Rollback to COO v1.4.0** (recommended if v1.5.0 causes issues):
+```bash
+# Delete subscription and CSV
+oc delete subscription cluster-observability-operator -n openshift-cluster-observability-operator
+oc delete csv cluster-observability-operator.v1.5.0 -n openshift-cluster-observability-operator
+
+# Recreate pinned to v1.4.0 with Manual approval to prevent auto-upgrade
+oc apply -f - <<'EOF'
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cluster-observability-operator
+  namespace: openshift-cluster-observability-operator
+spec:
+  channel: stable
+  installPlanApproval: Manual
+  name: cluster-observability-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: cluster-observability-operator.v1.4.0
+EOF
+
+# Approve the v1.4.0 InstallPlan
+IP=$(oc get installplan -n openshift-cluster-observability-operator --no-headers | grep v1.4.0 | awk '{print $1}')
+oc patch installplan "$IP" -n openshift-cluster-observability-operator \
+  --type='json' -p='[{"op": "replace", "path": "/spec/approved", "value": true}]'
+
+# Wait for CSV, then recreate Perses StatefulSet
+sleep 30
+oc delete statefulset data-science-perses -n redhat-ods-monitoring
+```
+
+**Fix — Option B: Recreate Perses StatefulSet** (if staying on v1.5.0):
+```bash
+oc delete statefulset data-science-perses -n redhat-ods-monitoring
+# The operator will recreate it with the correct image/args
+```
+
+**Verify:**
+```bash
+oc get pods -n redhat-ods-monitoring | grep perses
+# Should show 1/1 Running
+```
+
+### Observability Dashboard — GPU Metrics Show "No data"
+
+**Error:** The Observe & Monitor > Dashboard shows "No data" for GPU utilization, while CPU and Memory charts work.
+
+**Root cause:** The `gpu-operator` ServiceMonitor in `nvidia-gpu-operator` only monitors the GPU Operator controller pod, not the DCGM exporter (which exposes GPU metrics on port 9400). A separate ServiceMonitor is needed for DCGM.
+
+**Fix:** Create a ServiceMonitor for the DCGM exporter:
+```bash
+oc apply -f - <<'EOF'
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nvidia-dcgm-exporter
+  namespace: nvidia-gpu-operator
+  labels:
+    app: nvidia-dcgm-exporter
+spec:
+  endpoints:
+  - path: /metrics
+    port: gpu-metrics
+    interval: 30s
+  namespaceSelector:
+    matchNames:
+    - nvidia-gpu-operator
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+EOF
+```
+
+**Verify** (wait ~60s for scraping to start):
+```bash
+TOKEN=$(oc create token prometheus-k8s -n openshift-monitoring)
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://thanos-querier-openshift-monitoring.apps.<cluster>/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL"
+# Should return results for each GPU node
+```
+
+### HardwareProfile Toleration Error — `value must be empty when operator is Exists`
+
+**Error:** InferenceService stuck at `ReconcileFailed` with: `Deployment is invalid: spec.template.spec.tolerations[0].operator: Invalid value: "True": value must be empty when operator is 'Exists'`
+
+**Root cause:** The HardwareProfile has `operator: Exists` with `value: "True"` in its toleration. When `operator` is `Exists`, `value` must be empty. KServe reads tolerations from the HardwareProfile and applies them to the deployment — fixing the InferenceService alone won't help because KServe keeps overwriting from the HardwareProfile.
+
+**Fix:** Fix the HardwareProfile (not the InferenceService):
+```bash
+HP_NAME="<hardware-profile-name>"  # e.g. gpu-profile-nvidia-l40s
+oc get hardwareprofile "$HP_NAME" -n redhat-ods-applications -o json | \
+  python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data['spec']['scheduling']['node']['tolerations']:
+    if t.get('operator') == 'Exists':
+        t.pop('value', None)
+json.dump(data, sys.stdout)
+" | oc replace -f -
+```
+
+Then force the InferenceService to reconcile:
+```bash
+oc get inferenceservice <name> -n <namespace> -o json | \
+  python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data['spec']['predictor']['tolerations']:
+    if t.get('operator') == 'Exists':
+        t.pop('value', None)
+json.dump(data, sys.stdout)
+" | oc replace -f -
+```
+
+### DSC NotReady — Kueue `Managed` Not Supported
+
+**Error:** DataScienceCluster shows `NotReady` with: `Kueue managementState Managed is not supported, please use Removed or Unmanaged`
+
+**Root cause:** When the standalone Kueue operator is already installed, the DSC's Kueue component must be set to `Unmanaged` to avoid conflicts.
+
+**Fix:**
+```bash
+oc patch datasciencecluster default-dsc --type='json' \
+  -p='[{"op": "replace", "path": "/spec/components/kueue/managementState", "value": "Unmanaged"}]'
+```
+
+---
+
 ## macOS Compatibility
 
 ### grep -P / awk Errors in Model Deployment

@@ -1,0 +1,87 @@
+# MinIO for pipeline server object storage
+#
+# Variables:
+#   ${STORAGE_SIZE}    - PVC storage size (e.g. 50Gi)
+#   ${S3_ACCESS_KEY}   - MinIO root user
+#   ${S3_SECRET_KEY}   - MinIO root password
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pipelines-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: ${STORAGE_SIZE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:latest
+        args:
+        - server
+        - /data
+        - --console-address
+        - ":9001"
+        env:
+        - name: MINIO_ROOT_USER
+          value: "${S3_ACCESS_KEY}"
+        - name: MINIO_ROOT_PASSWORD
+          value: "${S3_SECRET_KEY}"
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-pipelines-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  selector:
+    app: minio

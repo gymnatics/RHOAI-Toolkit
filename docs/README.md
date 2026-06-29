@@ -17,12 +17,9 @@ Step-by-step instructions for common tasks.
 
 | Guide | Description |
 |-------|-------------|
-| [RHOAI 3.4 Installation](guides/RHOAI-34-INSTALLATION.md) | Full RHOAI 3.4 install guide (recommended) |
-| [RHOAI 3.4 What's New](guides/RHOAI-34-WHATS-NEW.md) | Changes from 3.3 to 3.4 (MaaS GA, NeMo GA, AutoML/AutoRAG) |
-| [RHOAI 3.3 Installation](guides/RHOAI-33-INSTALLATION.md) | Full RHOAI 3.3 install guide |
-| [RHOAI 3.3 What's New](guides/RHOAI-33-WHATS-NEW.md) | Changes from 3.2 to 3.3 |
-| [Manual Installation](guides/RHOAI-MANUAL-INSTALLATION-GUIDE.md) | Step-by-step with all YAMLs |
-| [Manual RHOAI Setup](guides/MANUAL-RHOAI-SETUP.md) | Alternative manual setup |
+| [RHOAI 3.4 Installation](guides/rhoai-3.4/RHOAI-34-INSTALLATION.md) | Full RHOAI 3.4 install guide (recommended) |
+| [RHOAI 3.4 Manual Installation](guides/rhoai-3.4/RHOAI-34-MANUAL-INSTALLATION-GUIDE.md) | Step-by-step with all YAMLs — Path A (no MaaS) and Path B (full MaaS) |
+| [RHOAI 3.4 What's New](guides/rhoai-3.4/RHOAI-34-WHATS-NEW.md) | Changes from 3.3 to 3.4 (MaaS GA, NeMo GA, AutoML/AutoRAG) |
 | [AWS Prerequisites](guides/AWS-PREREQUISITES-CHECK.md) | Pre-installation validation |
 | [Using Existing AWS Infrastructure](guides/USING-EXISTING-AWS-INFRASTRUCTURE.md) | Reuse VPCs and subnets |
 | [Configuration Reuse](guides/CONFIGURATION-REUSE.md) | Save and reuse install settings |
@@ -45,29 +42,63 @@ Step-by-step instructions for common tasks.
 | [Model Registry](guides/MODEL-REGISTRY.md) | Model versioning and lifecycle |
 | [GenAI Playground](guides/GENAI-PLAYGROUND-INTEGRATION.md) | Add models to playground |
 
-### MaaS (Model as a Service)
+### MaaS (Models as a Service)
 
 | Guide | Description |
 |-------|-------------|
-| [MaaS Setup](guides/MAAS-SETUP-STEP-BY-STEP.md) | Step-by-step MaaS configuration |
 | [MaaS Serving Runtimes](guides/MAAS-SERVING-RUNTIMES.md) | Which runtimes work with MaaS |
-| [MaaS Policy Enforcement](guides/MAAS-POLICY-ENFORCEMENT.md) | Configure MaaS authentication |
+| [MaaS Policy Enforcement](guides/MAAS-POLICY-ENFORCEMENT.md) | Configure MaaS authentication and rate limiting |
 | [MaaS Demo](guides/MAAS-DEMO-GUIDE.md) | Running the MaaS demo |
 
-### Third-Party on OpenShift
+### Security & Governance
 
 | Guide | Description |
 |-------|-------------|
-| [Dify Enterprise — Kaniko Fix](guides/DIFY-OPENSHIFT-KANIKO-TROUBLESHOOTING.md) | Fix Kaniko plugin builder permission errors on OpenShift |
+| [RHCL + NeMo Guardrails Architecture](guides/RHCL-GUARDRAILS-ARCHITECTURE.md) | RHCL (MaaS access control) + TrustyAI NeMo Guardrails — architecture, CRDs, auth flow, deployment |
+| [AI Agent Security & Governance](guides/AI-AGENT-SECURITY-GOVERNANCE.md) | Guardrails, access controls, data protection |
 
 ### MCP & Tool Calling
 
 | Guide | Description |
 |-------|-------------|
+| [MCP Catalog Setup](guides/MCP-CATALOG-SETUP.md) | Install MCP Lifecycle Operator + enable catalog in dashboard |
 | [MCP Servers](guides/MCP-SERVERS.md) | Model Context Protocol for tool calling |
 | [MCP Server Setup](guides/MCP-SERVER-SETUP.md) | Configure MCP servers |
 | [OCP MCP Server Deployment](guides/OCP-MCP-SERVER-DEPLOYMENT.md) | Deploy MCP servers on OpenShift |
 
+### Workshops
+
+| Guide | Description |
+|-------|-------------|
+| [Model Deployment Workshop](guides/RHOAI-MODEL-DEPLOYMENT-WORKSHOP.md) | Hands-on: deploy models via the UI + test with AI Playground |
+
+### Demo Environment
+
+| Guide | Description |
+|-------|-------------|
+| [Demo Environment](guides/DEMO-ENVIRONMENT.md) | Full demo environment — 11 components, GPU requirements |
+| [Dify Enterprise — Kaniko Fix](guides/DIFY-OPENSHIFT-KANIKO-TROUBLESHOOTING.md) | Fix Kaniko plugin builder permission errors |
+
+### End-to-End Setup Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Setup Guide (English)](guides/setup-guide_EN.md) | Full walkthrough from AWS install through RHOAI 3.4 |
+| [Setup Guide (Korean)](guides/setup-guide_KO.md) | Korean translation of the setup guide |
+
+---
+
+## Bugs & Known Issues
+
+Active bug reports for RHOAI 3.4:
+
+| Report | Description |
+|--------|-------------|
+| [MaaS Bugs (RHOAI 3.4)](bugs/maas-bugs-rhoai-34.md) | Tenant `gatewayRef` + Authorino CEL issues |
+| [EvalHub Bugs (RHOAI 3.4)](bugs/evalhub-bugs-rhoai-34.md) | LMEval / EvalHub TP issues |
+| [EvalHub Dashboard Namespace](bugs/evalhub-dashboard-namespace-lookup.md) | CR must be in `redhat-ods-applications` |
+| [Authorino CEL MetricLabels Bug](bugs/authorino-cel-metriclabels-bug.md) | Breaks MaaS Usage dashboard labels |
+| [MaaS Token Rate Limit Span Buffer](bugs/maas-token-ratelimit-span-buffer-bug.md) | WasmPlugin span buffer saturation |
 
 ---
 
@@ -77,11 +108,23 @@ Technical reference documentation.
 
 | Document | Description |
 |----------|-------------|
-| [GPU ResourceFlavor Configuration](reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md) | Kueue ResourceFlavor setup |
+| [Serving Runtime Comparison](reference/SERVING-RUNTIME-COMPARISON.md) | Compare vLLM, llm-d, and other runtimes |
 | [KServe Deployment Modes](reference/KSERVE-DEPLOYMENT-MODES.md) | RawDeployment vs Serverless |
-| [OS Compatibility](reference/OS-COMPATIBILITY.md) | Cross-platform compatibility layer |
-| [Serving Runtime Comparison](reference/SERVING-RUNTIME-COMPARISON.md) | Compare vLLM, llm-d, etc. |
-| [Setup Comparison](reference/SETUP-COMPARISON.md) | Our setup vs reference repos |
+| [GPU ResourceFlavor Configuration](reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md) | Kueue ResourceFlavor setup for GPU tolerations |
+| [OS Compatibility](reference/OS-COMPATIBILITY.md) | macOS/Linux compatibility layer (`os-compat.sh`) |
+
+---
+
+## Archived — RHOAI 3.3
+
+Kept for reference if running a 3.3 cluster. See `docs/guides/rhoai-3.3/`.
+
+| Guide | Description |
+|-------|-------------|
+| [RHOAI 3.3 Installation](guides/rhoai-3.3/RHOAI-33-INSTALLATION.md) | Full RHOAI 3.3 install guide |
+| [RHOAI 3.3 What's New](guides/rhoai-3.3/RHOAI-33-WHATS-NEW.md) | Changes from 3.2 to 3.3 |
+| [MaaS Setup (3.3)](guides/rhoai-3.3/MAAS-SETUP-STEP-BY-STEP.md) | Tier-based MaaS setup for RHOAI 3.3 |
+| [Manual Installation Guide (3.3)](guides/rhoai-3.3/RHOAI-MANUAL-INSTALLATION-GUIDE.md) | Step-by-step with all YAMLs for 3.3 |
 
 ---
 
@@ -91,25 +134,14 @@ All troubleshooting is consolidated in [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
 - OpenShift installation issues
 - RHOAI component problems (Kueue, LWS, Authorino, dashboard)
 - Model deployment (hardware profiles, vLLM args)
-- MaaS / rate limiting (RHOAI 3.3 Tech Preview)
+- MaaS / rate limiting
 - macOS compatibility
-
----
-
-## Demo Applications
-
-| Demo | Description |
-|------|-------------|
-| [MaaS Demo](../demo/maas-demo/README.md) | Interactive MaaS demonstration |
-| [LlamaStack Demo](../demo/llamastack-demo/README.md) | Chatbot frontend with MCP |
-| [Guardrails Demo](../demo/guardrails-demo/README.md) | AI safety demo |
-| [GuideLLM Demo](../demo/guidellm-demo/README.md) | LLM benchmarking |
 
 ---
 
 ## External Resources
 
-- [RHOAI 3.3 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3)
+- [RHOAI 3.4 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4)
 - [OpenShift Documentation](https://docs.openshift.com)
 - [Kueue Documentation](https://kueue.sigs.k8s.io/)
 - [KServe Documentation](https://kserve.github.io/website/)
@@ -117,6 +149,6 @@ All troubleshooting is consolidated in [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
 
 ---
 
-**Last Updated**: May 2026
-**RHOAI Version**: 3.3
+**Last Updated**: June 2026
+**RHOAI Version**: 3.4
 **OpenShift Version**: 4.19+

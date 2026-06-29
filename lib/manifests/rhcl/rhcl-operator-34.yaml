@@ -13,6 +13,10 @@
 # openshift-operators already has a default OperatorGroup — no need to create one.
 # Kuadrant CR is created separately via kuadrant-instance.yaml in kuadrant-system.
 #
+# PINNED: Manual installPlanApproval prevents auto-upgrade to v1.4.0 which has known
+# WASM plugin loading issues that cause gateway errors and break the RHOAI model UI.
+# The install script auto-approves the initial plan. Remove pin once upstream fix ships.
+#
 # Service Mesh 3 (Sail): auto-installed as OLM dependency, uses Manual InstallPlan approval.
 # Prerequisites: cert-manager Operator 1.18+
 ---
@@ -23,7 +27,7 @@ metadata:
   namespace: openshift-operators
 spec:
   channel: stable
-  installPlanApproval: Automatic
+  installPlanApproval: Manual
   name: rhcl-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace

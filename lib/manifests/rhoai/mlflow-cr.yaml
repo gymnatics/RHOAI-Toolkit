@@ -1,0 +1,11 @@
+---
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  serveArtifacts: true
+  artifactsDestination: "file:///mlflow/artifacts"
+  backendStoreUri: "sqlite:////mlflow/mlflow.db"
+  storage:
+    size: 10Gi

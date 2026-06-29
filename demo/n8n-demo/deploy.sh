@@ -50,6 +50,9 @@ fi
 
 ensure_namespace "$NAMESPACE"
 
+print_step "Granting anyuid SCC (required for n8n container)..."
+oc adm policy add-scc-to-user anyuid -z default -n "$NAMESPACE" 2>/dev/null || true
+
 export NAMESPACE
 export N8N_ENCRYPTION_KEY
 N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)

@@ -1,0 +1,22 @@
+# cert-manager Certificate for gateway TLS
+# Used when a ClusterIssuer is available
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: default-gateway-tls
+  namespace: openshift-ingress
+spec:
+  secretName: default-gateway-tls
+  duration: 2160h
+  renewBefore: 360h
+  commonName: "apps.${CLUSTER_DOMAIN}"
+  dnsNames:
+    - "apps.${CLUSTER_DOMAIN}"
+    - "*.apps.${CLUSTER_DOMAIN}"
+  issuerRef:
+    name: ${ISSUER_NAME}
+    kind: ClusterIssuer
+  usages:
+    - server auth
+    - client auth

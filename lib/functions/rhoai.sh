@@ -10,20 +10,36 @@ source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
-# Get RHOAI channel based on version (fallback/default mapping)
+# Resolve RHOAI OLM channel for a given version by querying the cluster catalog.
+# Priority: stable-<version> > fast-<major>.x > cluster default > hardcoded fallback
 get_rhoai_channel() {
     local version="$1"
-    
-    case "$version" in
-        2.17|2.18) echo "stable-2.18" ;;
-        2.19|2.20) echo "stable-2.20" ;;
-        2.21) echo "stable-2.21" ;;
-        2.22) echo "stable-2.22" ;;
-        2.23) echo "stable-2.23" ;;
-        2.24|2.25) echo "stable" ;;
-        3.0|3.1|3.2|3.3) echo "fast-3.x" ;;
-        *) echo "stable" ;;
-    esac
+
+    local channels
+    channels=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+
+    if [ -n "$channels" ]; then
+        if echo "$channels" | tr ' ' '\n' | grep -qx "stable-${version}"; then
+            echo "stable-${version}"
+            return 0
+        fi
+        local major="${version%%.*}"
+        if echo "$channels" | tr ' ' '\n' | grep -qx "fast-${major}.x"; then
+            echo "fast-${major}.x"
+            return 0
+        fi
+        local default_ch
+        default_ch=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+            -o jsonpath='{.status.defaultChannel}' 2>/dev/null)
+        if [ -n "$default_ch" ]; then
+            echo "$default_ch"
+            return 0
+        fi
+    fi
+
+    # Cluster unreachable — last-resort fallback
+    echo "fast-3.x"
 }
 
 # Fetch available RHOAI channels from the cluster
@@ -356,31 +372,12 @@ install_rhoai_operator_interactive() {
     echo "  Approval: $SELECTED_INSTALL_PLAN_APPROVAL"
     echo ""
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: redhat-ods-operator
-  namespace: redhat-ods-operator
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: $SELECTED_RHOAI_CHANNEL
-  installPlanApproval: $SELECTED_INSTALL_PLAN_APPROVAL
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-namespace.yaml"
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
+    export RHOAI_CHANNEL="$SELECTED_RHOAI_CHANNEL"
+    export INSTALL_PLAN_APPROVAL="$SELECTED_INSTALL_PLAN_APPROVAL"
+    envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    unset RHOAI_CHANNEL INSTALL_PLAN_APPROVAL
     
     # If Manual approval, need to approve the initial InstallPlan
     if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
@@ -457,31 +454,12 @@ install_rhoai_operator() {
     
     print_step "Installing RHOAI Operator (channel: $channel)..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: redhat-ods-operator
-  namespace: redhat-ods-operator
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: $channel
-  installPlanApproval: Automatic
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-namespace.yaml"
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
+    export RHOAI_CHANNEL="$channel"
+    export INSTALL_PLAN_APPROVAL="Automatic"
+    envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    unset RHOAI_CHANNEL INSTALL_PLAN_APPROVAL
     
     # Wait for operator to be ready
     print_step "Waiting for RHOAI operator to be ready (this may take 2-3 minutes)..."
@@ -550,53 +528,9 @@ initialize_rhoai() {
     # Use replace if exists, apply if not (handles conversion webhook issues better)
     if oc get dscinitialization default-dsci &>/dev/null 2>&1; then
         print_step "DSCInitialization exists but may be in wrong version, replacing..."
-        cat <<EOF | oc replace -f -
-apiVersion: dscinitialization.opendatahub.io/v1
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    managementState: Managed
-    namespace: redhat-ods-monitoring
-  serviceMesh:
-    auth:
-      audiences:
-        - 'https://kubernetes.default.svc'
-    controlPlane:
-      metricsCollection: Istio
-      name: data-science-smcp
-      namespace: istio-system
-    managementState: Managed
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+        oc replace -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-v1-servicemesh.yaml"
     else
-        cat <<EOF | oc apply -f -
-apiVersion: dscinitialization.opendatahub.io/v1
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    managementState: Managed
-    namespace: redhat-ods-monitoring
-  serviceMesh:
-    auth:
-      audiences:
-        - 'https://kubernetes.default.svc'
-    controlPlane:
-      metricsCollection: Istio
-      name: data-science-smcp
-      namespace: istio-system
-    managementState: Managed
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-v1-servicemesh.yaml"
     fi
     
     if [ $? -eq 0 ]; then
@@ -656,6 +590,7 @@ spec:
     disableKServeMetrics: false
     disableLMEval: false
     disableKueue: false
+    mcpCatalog: true
 EOF
     
     print_success "Dashboard configured"
@@ -701,50 +636,9 @@ create_gpu_hardware_profile() {
             # Unset variables
             unset NAMESPACE PROFILE_NAME DISPLAY_NAME DEFAULT_CPU MAX_CPU DEFAULT_MEM MAX_MEM DEFAULT_GPU MAX_GPU
         else
-            print_warning "Template not found at $template_file, using inline YAML"
-            # Fallback to inline YAML if template not found
-            # IMPORTANT: nodeSelector and tolerations must be inside scheduling.node
-            cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: gpu-profile
-  namespace: $namespace
-  annotations:
-    opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '16'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 16Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 64Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-  scheduling:
-    type: Node
-    node:
-      nodeSelector:
-        nvidia.com/gpu.present: 'true'
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-EOF
+            print_warning "Template not found at $template_file, using static manifest"
+            sed "s/namespace: redhat-ods-applications/namespace: $namespace/" \
+                "$_RHOAI_LIB_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml" | oc apply -f -
         fi
         print_success "GPU hardware profile created in $namespace"
     }
@@ -779,19 +673,7 @@ configure_gpu_resourceflavor() {
         if [[ "$kueue_state" == "Unmanaged" ]]; then
             print_info "Kueue is 'Unmanaged' - creating ResourceFlavor manually..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-basic.yaml"
             
             if oc get resourceflavor nvidia-gpu-flavor &>/dev/null; then
                 print_success "ResourceFlavor created"
@@ -822,17 +704,7 @@ EOF
         
         # Configure with node selector only for now
         print_step "Configuring ResourceFlavor with node selector..."
-        cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
         
         if [ $? -eq 0 ]; then
             print_success "ResourceFlavor configured (will auto-detect GPU nodes when added)"
@@ -863,21 +735,7 @@ EOF
         if [[ "$add_toleration" =~ ^[Yy]$ ]]; then
             print_step "Updating nvidia-gpu-flavor ResourceFlavor with toleration..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
             
             if [ $? -eq 0 ]; then
                 print_success "ResourceFlavor configured with GPU toleration"
@@ -914,21 +772,7 @@ EOF
                 echo ""
                 print_step "Updating ResourceFlavor with toleration..."
                 
-                cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+                oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
                 
                 if [ $? -eq 0 ]; then
                     print_success "ResourceFlavor configured with GPU toleration"
@@ -943,17 +787,7 @@ EOF
         else
             print_step "Configuring ResourceFlavor without toleration..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
             
             if [ $? -eq 0 ]; then
                 print_success "ResourceFlavor configured with node selector only"
@@ -979,21 +813,7 @@ enable_user_workload_monitoring() {
     
     print_step "Creating user workload monitoring ConfigMap..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: user-workload-monitoring-config
-  namespace: openshift-user-workload-monitoring
-data:
-  config.yaml: |
-    prometheus:
-      retention: 24h
-      resources:
-        requests:
-          cpu: 200m
-          memory: 2Gi
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/monitoring/user-workload-monitoring-config.yaml"
     
     print_success "User workload monitoring enabled"
 }
@@ -1019,18 +839,7 @@ enable_cluster_monitoring_for_kserve() {
     
     print_step "Creating/updating cluster-monitoring-config ConfigMap..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
     
     if [ $? -eq 0 ]; then
         print_success "Cluster monitoring configured for KServe metrics"
@@ -1078,31 +887,13 @@ configure_dsci_observability() {
     
     print_step "Updating DSCInitialization with observability settings..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: dscinitialization.opendatahub.io/v2
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    alerting: {}
-    managementState: Managed
-    metrics:
-      replicas: 1
-      storage:
-        retention: $metrics_retention
-        size: $metrics_size
-    namespace: redhat-ods-monitoring
-    traces:
-      sampleRatio: '$trace_ratio'
-      storage:
-        backend: pv
-        retention: $trace_retention
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+    export METRICS_RETENTION="$metrics_retention"
+    export METRICS_SIZE="$metrics_size"
+    export TRACE_RATIO="$trace_ratio"
+    export TRACE_RETENTION="$trace_retention"
+    envsubst '${METRICS_RETENTION} ${METRICS_SIZE} ${TRACE_RATIO} ${TRACE_RETENTION}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-observability.yaml" | oc apply -f -
+    unset METRICS_RETENTION METRICS_SIZE TRACE_RATIO TRACE_RETENTION
     
     if [ $? -eq 0 ]; then
         print_success "DSCInitialization updated with observability"
@@ -1115,16 +906,15 @@ EOF
     fi
 }
 
-# Setup MCP Servers ConfigMap (per CAI Guide 3.2 Section 2)
-# New JSON format for gen-ai-aa-mcp-servers
+# Setup MCP Servers ConfigMap (per RHOAI 3.4 Gen AI Studio docs)
+# Creates the gen-ai-aa-mcp-servers ConfigMap for Playground MCP tool access
 setup_mcp_servers_configmap() {
     local namespace="${1:-redhat-ods-applications}"
     
     print_header "Setup MCP Servers ConfigMap (RHOAI 3.2+)"
     
     echo ""
-    echo -e "${CYAN}This creates the MCP servers ConfigMap in the new 3.2 format${NC}"
-    echo -e "${CYAN}(per CAI Guide Section 2, Step 5)${NC}"
+    echo -e "${CYAN}This creates the MCP servers ConfigMap for the Gen AI Studio Playground${NC}"
     echo ""
     
     # Check if ConfigMap exists
@@ -1139,19 +929,7 @@ setup_mcp_servers_configmap() {
     
     print_step "Creating MCP servers ConfigMap..."
     
-    cat <<'EOF' | oc apply -f -
-kind: ConfigMap
-apiVersion: v1
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-data:
-  GitHub-MCP-Server: |
-    {
-      "url": "https://api.githubcopilot.com/mcp",
-      "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows. With this service, developers can query repositories, discover project metadata, and streamline code-related tasks through MCP-compatible tools."
-    }
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/mcp/mcp-servers-configmap.yaml"
     
     if [ $? -eq 0 ]; then
         print_success "MCP servers ConfigMap created"
@@ -1164,6 +942,38 @@ EOF
         echo "  oc edit configmap gen-ai-aa-mcp-servers -n $namespace"
     else
         print_error "Failed to create MCP servers ConfigMap"
+    fi
+}
+
+# Create prerequisites for MCP Catalog deployments (MCPServer CRs)
+# The MCP Catalog UI creates MCPServer CRs but does NOT auto-create the
+# ServiceAccount, RBAC, or config ConfigMap that the server image requires.
+setup_mcp_catalog_prerequisites() {
+    local namespace="${1:?Namespace required}"
+
+    print_step "Setting up MCP Catalog prerequisites in $namespace..."
+
+    # ServiceAccount for MCP server read-only cluster access
+    if ! oc get sa mcp-viewer -n "$namespace" &>/dev/null; then
+        print_step "Creating mcp-viewer ServiceAccount..."
+        oc create serviceaccount mcp-viewer -n "$namespace"
+        oc create clusterrolebinding "mcp-viewer-${namespace}" \
+            --clusterrole=view \
+            --serviceaccount="${namespace}:mcp-viewer" 2>/dev/null || true
+        print_success "mcp-viewer ServiceAccount created with view ClusterRole"
+    else
+        print_success "mcp-viewer ServiceAccount already exists [SKIP]"
+    fi
+
+    # Config ConfigMap for OpenShift MCP Server (from MCP Catalog)
+    if ! oc get configmap openshift-mcp-server-config -n "$namespace" &>/dev/null; then
+        print_step "Creating openshift-mcp-server-config ConfigMap..."
+        export NAMESPACE="$namespace"
+        envsubst '${NAMESPACE}' < "$_RHOAI_LIB_DIR/lib/manifests/mcp/mcp-catalog-configmap.yaml" | oc apply -f -
+        unset NAMESPACE
+        print_success "openshift-mcp-server-config ConfigMap created"
+    else
+        print_success "openshift-mcp-server-config ConfigMap already exists [SKIP]"
     fi
 }
 
@@ -1185,14 +995,7 @@ setup_llmd_infrastructure() {
     if oc get gatewayclass openshift-ai-inference &>/dev/null; then
         print_success "GatewayClass already exists"
     else
-        cat <<'EOF' | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
         print_success "GatewayClass created"
     fi
     
@@ -1204,31 +1007,10 @@ EOF
         local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
         print_info "Cluster domain: $cluster_domain"
         
-        cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: inference-gateway.apps.$cluster_domain
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
+        export CLUSTER_DOMAIN="$cluster_domain"
+        export CERT_NAME="default-gateway-tls"
+        envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$_RHOAI_LIB_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
+        unset CLUSTER_DOMAIN CERT_NAME
         print_success "Gateway created"
         print_info "Gateway hostname: inference-gateway.apps.$cluster_domain"
     fi
@@ -1240,17 +1022,7 @@ EOF
     else
         if oc get crd leaderworkersetoperators.operator.openshift.io &>/dev/null; then
             print_step "Creating LeaderWorkerSetOperator instance..."
-            cat <<'EOF' | oc apply -f -
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-  logLevel: Normal
-  operatorLogLevel: Normal
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/operators/lws-operator-cr.yaml"
             print_success "LeaderWorkerSetOperator instance created"
         else
             print_warning "LWS Operator not installed (only needed for multi-GPU/MoE deployments)"
@@ -1301,13 +1073,7 @@ setup_rhcl_for_llmd() {
     if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
         print_success "Kuadrant instance already exists"
     else
-        cat <<'EOF' | oc apply -f -
-apiVersion: kuadrant.io/v1beta1
-kind: Kuadrant
-metadata:
-  name: kuadrant
-  namespace: kuadrant-system
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
         print_success "Kuadrant instance created"
         sleep 5
     fi
@@ -1326,24 +1092,7 @@ EOF
     # Step 3: Update Authorino for TLS
     print_step "Enabling TLS on Authorino..."
     if oc get authorino authorino -n kuadrant-system &>/dev/null; then
-        cat <<'EOF' | oc apply -f -
-apiVersion: operator.authorino.kuadrant.io/v1beta1
-kind: Authorino
-metadata:
-  name: authorino
-  namespace: kuadrant-system
-spec:
-  replicas: 1
-  clusterWide: true
-  listener:
-    tls:
-      enabled: true
-      certSecretRef:
-        name: authorino-server-cert
-  oidcServer:
-    tls:
-      enabled: false
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/authorino-tls.yaml"
         print_success "Authorino TLS enabled"
     else
         print_warning "Authorino not found yet (RHCL may still be initializing)"
@@ -1547,47 +1296,15 @@ deploy_llminferenceservice() {
     
     print_step "Creating LLMInferenceService '$model_name' in namespace '$namespace'..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: LLMInferenceService
-metadata:
-  name: $model_name
-  namespace: $namespace
-  labels:
-    kueue.x-k8s.io/queue-name: default
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/genai-asset: "true"
-  annotations:
-    security.opendatahub.io/enable-auth: "$auth_annotation"
-spec:
-  replicas: 1
-  model:
-    uri: $model_uri
-    name: $model_name
-  router:
-    route: {}
-    gateway: {}
-    scheduler: {}
-  template:
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    containers:
-    - name: main
-      env:
-        - name: VLLM_ADDITIONAL_ARGS
-          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
-      resources:
-        limits:
-          cpu: '4'
-          memory: $memory_limit
-          nvidia.com/gpu: "$gpu_count"
-        requests:
-          cpu: '1'
-          memory: 8Gi
-          nvidia.com/gpu: "$gpu_count"
-EOF
+    export MODEL_NAME="$model_name"
+    export NAMESPACE="$namespace"
+    export AUTH_ANNOTATION="$auth_annotation"
+    export MODEL_URI="$model_uri"
+    export GPU_COUNT="$gpu_count"
+    export MEMORY_LIMIT="$memory_limit"
+    envsubst '${MODEL_NAME} ${NAMESPACE} ${AUTH_ANNOTATION} ${MODEL_URI} ${GPU_COUNT} ${MEMORY_LIMIT}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/templates/llminferenceservice.yaml.tmpl" | oc apply -f -
+    unset MODEL_NAME NAMESPACE AUTH_ANNOTATION MODEL_URI GPU_COUNT MEMORY_LIMIT
     
     if [ $? -eq 0 ]; then
         print_success "LLMInferenceService created"
@@ -1764,37 +1481,17 @@ deploy_banking_demo() {
     
     # Two-step approach (from CAI guide): create with restAPI: false first,
     # wait for pod, then flip to true. Avoids race condition during startup.
-    local feast_labels="    feature-store-ui: enabled"
+    export FEAST_LABELS="    feature-store-ui: enabled"
     if [ "$rhoai_33_plus" = true ]; then
-        feast_labels="    feature-store-ui: enabled
+        export FEAST_LABELS="    feature-store-ui: enabled
     opendatahub.io/dashboard: \"true\""
     fi
-
-    cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-${feast_labels}
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: false
-EOF
+    export FEAST_PROJECT="$feast_project"
+    export GIT_REF="$git_ref"
+    export GIT_URL="$git_url"
+    envsubst '${FEAST_LABELS} ${FEAST_PROJECT} ${GIT_REF} ${GIT_URL}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/feast/featurestore-restapi-false.yaml" | oc apply -n "$namespace" -f -
+    unset FEAST_LABELS FEAST_PROJECT GIT_REF GIT_URL
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -1917,14 +1614,27 @@ EOF
     fi
     echo ""
     
+    # Create workbench + clone repo
+    local _wb_lib="$_RHOAI_LIB_DIR/lib/functions/workbench.sh"
+    if [ -f "$_wb_lib" ]; then
+        source "$_wb_lib"
+        ensure_workbench "$namespace" "feature-store"
+    fi
+
+    # Inject notebook environment
+    local _nb_env_lib="$_RHOAI_LIB_DIR/lib/functions/notebook-env.sh"
+    if [ -f "$_nb_env_lib" ]; then
+        source "$_nb_env_lib"
+        inject_notebook_env "$namespace" \
+            "FEAST_PROJECT=$feast_project" \
+            "FEAST_NAME=$feast_project"
+    fi
+
     # Demo usage instructions
     echo -e "${CYAN}Demo Usage:${NC}"
-    echo "  1. Create a Workbench in the '$namespace' project"
-    echo "     Image: Standard Data Science | default-profile"
-    echo "  2. Clone this repo in the workbench terminal:"
-    echo "     git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
-    echo "  3. Copy Feature Store client config from dashboard"
-    echo "  4. Open demo/feast-demo/notebooks/"
+    echo "  1. Open the 'feature-store' workbench in the RHOAI dashboard"
+    echo "  2. Copy Feature Store client config from dashboard"
+    echo "  3. Open RHOAI-Toolkit/demo/feast-demo/notebooks/"
     echo "     feast-online-retrieval.ipynb  -- query features in real time"
     echo "     feast-banking-complex.ipynb   -- advanced feature engineering"
     echo ""
@@ -2035,39 +1745,18 @@ setup_feature_store() {
     print_step "Creating FeatureStore '$feast_project' in namespace '$namespace'..."
     
     # Determine labels based on RHOAI version
-    local extra_labels=""
+    export EXTRA_LABELS=""
     if type is_rhoai_33_or_higher &>/dev/null && is_rhoai_33_or_higher; then
         # RHOAI 3.3+ requires additional labels for dashboard visibility
-        extra_labels='    opendatahub.io/dashboard: "true"'
+        export EXTRA_LABELS='    opendatahub.io/dashboard: "true"'
         print_info "Adding RHOAI 3.3+ specific labels for dashboard visibility"
     fi
-    
-    cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-${extra_labels}
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
+    export FEAST_PROJECT="$feast_project"
+    export GIT_REF="$git_ref"
+    export GIT_URL="$git_url"
+    envsubst '${EXTRA_LABELS} ${FEAST_PROJECT} ${GIT_REF} ${GIT_URL}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/feast/featurestore-restapi-true.yaml" | oc apply -n "$namespace" -f -
+    unset EXTRA_LABELS FEAST_PROJECT GIT_REF GIT_URL
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -2833,98 +2522,24 @@ setup_model_registry() {
                 mysql_root_password="$default_root_pw"
             fi
             
-            cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${mysql_deploy_name}-credentials
-  namespace: $registry_ns
-  labels:
-    app: $mysql_deploy_name
-    app.kubernetes.io/part-of: model-registry
-type: Opaque
-stringData:
-  MYSQL_DATABASE: "$mysql_db"
-  MYSQL_USER: "$mysql_user"
-  MYSQL_PASSWORD: "$mysql_password"
-  MYSQL_ROOT_PASSWORD: "$mysql_root_password"
-EOF
+            export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+            export REGISTRY_NS="$registry_ns"
+            export MYSQL_DB="$mysql_db"
+            export MYSQL_USER="$mysql_user"
+            export MYSQL_PASSWORD="$mysql_password"
+            export MYSQL_ROOT_PASSWORD="$mysql_root_password"
+            envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_PASSWORD} ${MYSQL_ROOT_PASSWORD}' \
+                < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-secret.yaml" | oc apply -f -
+            unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
             print_success "MySQL credentials secret created"
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: $mysql_deploy_name
-  namespace: $registry_ns
-  labels:
-    app: $mysql_deploy_name
-    app.kubernetes.io/part-of: model-registry
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: $mysql_deploy_name
-  template:
-    metadata:
-      labels:
-        app: $mysql_deploy_name
-    spec:
-      containers:
-      - name: mysql
-        image: registry.redhat.io/rhel9/mysql-80:latest
-        ports:
-        - containerPort: 3306
-        envFrom:
-        - secretRef:
-            name: ${mysql_deploy_name}-credentials
-        volumeMounts:
-        - name: mysql-data
-          mountPath: /var/lib/mysql/data
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: "1"
-            memory: 1Gi
-        readinessProbe:
-          exec:
-            command:
-            - /bin/bash
-            - -c
-            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
-          initialDelaySeconds: 20
-          periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - /bin/bash
-            - -c
-            - "mysqladmin ping -u root -p\${MYSQL_ROOT_PASSWORD}"
-          initialDelaySeconds: 30
-          periodSeconds: 20
-      volumes:
-      - name: mysql-data
-        emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: $mysql_svc_name
-  namespace: $registry_ns
-  labels:
-    app: $mysql_deploy_name
-    app.kubernetes.io/part-of: model-registry
-spec:
-  ports:
-  - port: 3306
-    targetPort: 3306
-    protocol: TCP
-  selector:
-    app: $mysql_deploy_name
-EOF
+        export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+        export REGISTRY_NS="$registry_ns"
+        export MYSQL_SVC_NAME="$mysql_svc_name"
+        envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-deploy.yaml" | oc apply -f -
+        unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_SVC_NAME
         
         print_step "Waiting for MySQL to be ready..."
         local elapsed=0
@@ -2951,30 +2566,15 @@ EOF
     if oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" &>/dev/null; then
         print_info "ModelRegistry CR already exists, checking status..."
     else
-        cat <<EOF | oc apply -f -
-apiVersion: modelregistry.opendatahub.io/v1beta1
-kind: ModelRegistry
-metadata:
-  name: $registry_name
-  namespace: $registry_ns
-  labels:
-    app: $registry_name
-    app.kubernetes.io/part-of: model-registry
-spec:
-  grpc:
-    port: 9090
-  rest:
-    port: 8080
-    serviceRoute: enabled
-  mysql:
-    host: ${mysql_svc_name}.${registry_ns}.svc.cluster.local
-    port: 3306
-    database: $mysql_db
-    username: $mysql_user
-    passwordSecret:
-      name: ${mysql_deploy_name}-credentials
-      key: MYSQL_PASSWORD
-EOF
+        export REGISTRY_NAME="$registry_name"
+        export REGISTRY_NS="$registry_ns"
+        export MYSQL_SVC_NAME="$mysql_svc_name"
+        export MYSQL_DB="$mysql_db"
+        export MYSQL_USER="$mysql_user"
+        export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+        envsubst '${REGISTRY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_DEPLOY_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/modelregistry-cr.yaml" | oc apply -f -
+        unset REGISTRY_NAME REGISTRY_NS MYSQL_SVC_NAME MYSQL_DB MYSQL_USER MYSQL_DEPLOY_NAME
     fi
     
     # Wait for ModelRegistry to be ready
@@ -3303,88 +2903,12 @@ setup_pipeline_server() {
         read -p "  Storage size [50Gi]: " storage_size
         storage_size="${storage_size:-50Gi}"
         
-        cat <<EOF | oc apply -f - -n "$target_ns"
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: minio-pipelines-pvc
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: $storage_size
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: minio
-  labels:
-    app: minio
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: minio
-  template:
-    metadata:
-      labels:
-        app: minio
-    spec:
-      containers:
-      - name: minio
-        image: quay.io/minio/minio:latest
-        args:
-        - server
-        - /data
-        - --console-address
-        - ":9001"
-        env:
-        - name: MINIO_ROOT_USER
-          value: "$s3_access_key"
-        - name: MINIO_ROOT_PASSWORD
-          value: "$s3_secret_key"
-        ports:
-        - containerPort: 9000
-        - containerPort: 9001
-        volumeMounts:
-        - name: data
-          mountPath: /data
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-        readinessProbe:
-          httpGet:
-            path: /minio/health/ready
-            port: 9000
-          initialDelaySeconds: 10
-          periodSeconds: 10
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: minio-pipelines-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: minio
-  labels:
-    app: minio
-spec:
-  ports:
-  - port: 9000
-    targetPort: 9000
-    name: api
-  - port: 9001
-    targetPort: 9001
-    name: console
-  selector:
-    app: minio
-EOF
+        export STORAGE_SIZE="$storage_size"
+        export S3_ACCESS_KEY="$s3_access_key"
+        export S3_SECRET_KEY="$s3_secret_key"
+        envsubst '${STORAGE_SIZE} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/minio-pipelines.yaml" | oc apply -f - -n "$target_ns"
+        unset STORAGE_SIZE S3_ACCESS_KEY S3_SECRET_KEY
         
         # Wait for MinIO
         print_step "Waiting for MinIO to be ready..."
@@ -3408,29 +2932,12 @@ EOF
         # Built-in approach: DSPA operator manages MinIO + MariaDB
         print_step "Step 5: Creating DataSciencePipelinesApplication (built-in storage)..."
         
-        cat <<EOF | oc apply -f - -n "$target_ns"
-apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
-kind: DataSciencePipelinesApplication
-metadata:
-  name: $dspa_name
-spec:
-  dspVersion: v2
-  apiServer:
-    deploy: true
-    cacheEnabled: true
-    pipelineStore: kubernetes
-  database:
-    mariaDB:
-      deploy: true
-      pvcSize: $mariadb_pvc_size
-  objectStorage:
-    minio:
-      deploy: true
-      pvcSize: $minio_pvc_size
-      image: 'quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance'
-  mlmd:
-    deploy: true
-EOF
+        export DSPA_NAME="$dspa_name"
+        export MARIADB_PVC_SIZE="$mariadb_pvc_size"
+        export MINIO_PVC_SIZE="$minio_pvc_size"
+        envsubst '${DSPA_NAME} ${MARIADB_PVC_SIZE} ${MINIO_PVC_SIZE}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-builtin.yaml" | oc apply -f - -n "$target_ns"
+        unset DSPA_NAME MARIADB_PVC_SIZE MINIO_PVC_SIZE
     else
         # External storage approach: create credentials secret first
         print_step "Step 5: Creating S3 credentials secret..."
@@ -3438,47 +2945,26 @@ EOF
         if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
             print_success "Credentials secret already exists [SKIP]"
         else
-            cat <<EOF | oc apply -f - -n "$target_ns"
-apiVersion: v1
-kind: Secret
-metadata:
-  name: $credentials_secret_name
-  labels:
-    app.kubernetes.io/part-of: pipelines
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: "$s3_access_key"
-  AWS_SECRET_ACCESS_KEY: "$s3_secret_key"
-EOF
+            export CREDENTIALS_SECRET_NAME="$credentials_secret_name"
+            export S3_ACCESS_KEY="$s3_access_key"
+            export S3_SECRET_KEY="$s3_secret_key"
+            envsubst '${CREDENTIALS_SECRET_NAME} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}' \
+                < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-credentials-secret.yaml" | oc apply -f - -n "$target_ns"
+            unset CREDENTIALS_SECRET_NAME S3_ACCESS_KEY S3_SECRET_KEY
             print_success "Credentials secret created"
         fi
         
         print_step "Step 6: Creating DataSciencePipelinesApplication..."
         
-        cat <<EOF | oc apply -f - -n "$target_ns"
-apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
-kind: DataSciencePipelinesApplication
-metadata:
-  name: $dspa_name
-spec:
-  dspVersion: v2
-  apiServer:
-    deploy: true
-    cacheEnabled: true
-    pipelineStore: kubernetes
-  objectStorage:
-    externalStorage:
-      host: "$s3_host"
-      port: "$s3_port"
-      bucket: "$s3_bucket"
-      scheme: "$s3_scheme"
-      s3CredentialsSecret:
-        secretName: "$credentials_secret_name"
-        accessKey: AWS_ACCESS_KEY_ID
-        secretKey: AWS_SECRET_ACCESS_KEY
-  mlmd:
-    deploy: true
-EOF
+        export DSPA_NAME="$dspa_name"
+        export S3_HOST="$s3_host"
+        export S3_PORT="$s3_port"
+        export S3_BUCKET="$s3_bucket"
+        export S3_SCHEME="$s3_scheme"
+        export CREDENTIALS_SECRET_NAME="$credentials_secret_name"
+        envsubst '${DSPA_NAME} ${S3_HOST} ${S3_PORT} ${S3_BUCKET} ${S3_SCHEME} ${CREDENTIALS_SECRET_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-external.yaml" | oc apply -f - -n "$target_ns"
+        unset DSPA_NAME S3_HOST S3_PORT S3_BUCKET S3_SCHEME CREDENTIALS_SECRET_NAME
     fi
     
     ############################################################################

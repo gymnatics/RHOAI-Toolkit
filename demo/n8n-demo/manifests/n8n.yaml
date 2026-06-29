@@ -26,6 +26,7 @@ data:
   N8N_PORT: "5678"
   N8N_PROTOCOL: "https"
   N8N_SECURE_COOKIE: "false"
+  N8N_USER_FOLDER: "/home/node"
   GENERIC_TIMEZONE: "UTC"
   N8N_DIAGNOSTICS_ENABLED: "false"
   N8N_PERSONALIZATION_ENABLED: "false"
@@ -48,6 +49,8 @@ metadata:
     app: n8n
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: n8n
@@ -56,6 +59,8 @@ spec:
       labels:
         app: n8n
     spec:
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: n8n
           image: docker.io/n8nio/n8n:latest
@@ -70,6 +75,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /home/node/.n8n
+            - name: cache
+              mountPath: /home/node/.cache
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 100m
@@ -93,6 +102,10 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: n8n-data
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

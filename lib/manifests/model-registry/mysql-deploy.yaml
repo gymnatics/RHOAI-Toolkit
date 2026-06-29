@@ -1,0 +1,78 @@
+# MySQL Deployment and Service for Model Registry
+#
+# Variables:
+#   ${MYSQL_DEPLOY_NAME} - MySQL deployment name
+#   ${REGISTRY_NS}       - Target namespace
+#   ${MYSQL_SVC_NAME}    - MySQL service name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${MYSQL_DEPLOY_NAME}
+  namespace: ${REGISTRY_NS}
+  labels:
+    app: ${MYSQL_DEPLOY_NAME}
+    app.kubernetes.io/part-of: model-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${MYSQL_DEPLOY_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${MYSQL_DEPLOY_NAME}
+    spec:
+      containers:
+      - name: mysql
+        image: registry.redhat.io/rhel9/mysql-80:latest
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: ${MYSQL_DEPLOY_NAME}-credentials
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+          initialDelaySeconds: 30
+          periodSeconds: 20
+      volumes:
+      - name: mysql-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${MYSQL_SVC_NAME}
+  namespace: ${REGISTRY_NS}
+  labels:
+    app: ${MYSQL_DEPLOY_NAME}
+    app.kubernetes.io/part-of: model-registry
+spec:
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+  selector:
+    app: ${MYSQL_DEPLOY_NAME}

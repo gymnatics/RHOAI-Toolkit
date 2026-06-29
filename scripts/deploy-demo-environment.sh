@@ -33,6 +33,7 @@ COMPONENTS=(
     "n8n|deploy_n8n|n8n Workflow Automation|yes"
     "model-catalog|deploy_model_catalog|Custom Model Catalog|yes"
     "nemo-guardrails|deploy_nemo_guardrails_demo|NeMo Guardrails (RHOAI 3.4)|yes"
+    "lemonade-stand|deploy_lemonade_stand|Lemonade Stand Chat (NeMo Guardrails Edition)|yes"
     "lmeval|deploy_lmeval|LMEval + EvalHub (TP) Evaluation Stack|yes"
     "maas-ratelimit|deploy_maas_ratelimit|MaaS Rate Limiting Demo (API Key + 429)|yes"
     "automl|deploy_automl|AutoML (TP) Automated Model Training|yes"
@@ -217,6 +218,7 @@ is_deployed() {
         n8n)             oc get deployment n8n -n n8n &>/dev/null 2>&1 ;;
         model-catalog)   oc get configmap model-catalog-sources -n redhat-ods-applications &>/dev/null 2>&1 ;;
         nemo-guardrails) oc get namespace nemo-guardrails-demo &>/dev/null 2>&1 ;;
+        lemonade-stand) oc get deployment lemonade-stand -n nemo-guardrails-demo &>/dev/null 2>&1 ;;
         lmeval)          oc get namespace lmeval-demo &>/dev/null 2>&1 && \
                          oc get sa lmeval-sa -n lmeval-demo &>/dev/null 2>&1 ;;
         maas-ratelimit)  oc get namespace maas-ratelimit-demo &>/dev/null 2>&1 ;;
@@ -295,6 +297,10 @@ deploy_model_catalog() {
 
 deploy_nemo_guardrails_demo() {
     bash "$ROOT_DIR/demo/nemo-guardrails-demo/deploy.sh"
+}
+
+deploy_lemonade_stand() {
+    bash "$ROOT_DIR/demo/lemonade-stand-demo/deploy.sh"
 }
 
 deploy_lmeval() {
@@ -517,50 +523,34 @@ echo -e "${CYAN}║               Next Steps: Workbenches                       
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Workbench-requiring demos: namespace|description|demo-folder
+# Workbench-requiring demos: namespace|workbench-name|description
 WB_DEMOS=(
-    "financial-loan-demo|ML training + LLM fine-tuning|financial-loan-demo"
-    "pipeline-demo|KFP SDK + Elyra pipelines|pipeline-demo"
-    "lmeval-demo|EvalHub SDK + Korean benchmarks|lmeval-demo"
-    "maas-ratelimit-demo|API key auth + rate limit testing|maas-ratelimit-demo"
+    "lmeval-demo|model-benchmarking|EvalHub SDK + Korean benchmarks"
+    "financial-loan-demo|model-training|ML training + LLM fine-tuning"
+    "pipeline-demo|ai-pipelines|KFP SDK + Elyra pipelines"
+    "maas-ratelimit-demo|rate-limit-testing|API key auth + rate limit testing"
 )
 
-NEEDS_WB=0
 for wb_entry in "${WB_DEMOS[@]}"; do
-    IFS='|' read -r wb_ns wb_desc wb_folder <<< "$wb_entry"
+    IFS='|' read -r wb_ns wb_name wb_desc <<< "$wb_entry"
     if oc get namespace "$wb_ns" &>/dev/null 2>&1; then
-        WB_EXISTS=$(oc get notebooks.kubeflow.org -n "$wb_ns" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$WB_EXISTS" -gt 0 ]; then
-            printf "  ${GREEN}✓${NC}  %-28s %s\n" "$wb_ns" "Workbench exists -- git clone & run notebooks"
+        if oc get notebook "$wb_name" -n "$wb_ns" &>/dev/null 2>&1; then
+            printf "  ${GREEN}✓${NC}  %-28s workbench: %s\n" "$wb_ns" "$wb_name"
         else
-            printf "  ${YELLOW}○${NC}  %-28s %s\n" "$wb_ns" "Needs workbench -- $wb_desc"
-            NEEDS_WB=$((NEEDS_WB + 1))
+            printf "  ${YELLOW}○${NC}  %-28s workbench missing (re-run deploy.sh)\n" "$wb_ns"
         fi
     fi
 done
 
 echo ""
-if [ $NEEDS_WB -gt 0 ]; then
-    echo "  For each ○ namespace above:"
-    echo "    1. RHOAI Dashboard > Data Science Projects > <namespace> > Create workbench"
-    echo "    2. In the workbench terminal:"
-    echo "       git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
-    echo "       cd RHOAI-Toolkit/demo/<demo-name>"
-    echo ""
-    echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
-    echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"
-    echo "    lmeval-demo:         demo/lmeval-demo/notebooks/"
-    echo "    Config: oc get cm demo-config-env -n <namespace> -o jsonpath='{.data.\.env}'"
-    echo ""
-else
-    echo "  All workbenches are created. In each workbench terminal:"
-    echo "    git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
-    echo "    cd RHOAI-Toolkit/demo/<demo-name>"
-    echo ""
-    echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
-    echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"
-    echo "    lmeval-demo:         demo/lmeval-demo/notebooks/"
-    echo ""
+echo "  Workbenches are auto-provisioned by each deploy.sh."
+echo "  RHOAI-Toolkit is auto-cloned into /opt/app-root/src/RHOAI-Toolkit."
+echo "  If a repo is behind remote, a warning is printed — run 'git pull' manually."
+echo ""
+echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
+echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"
+echo "    lmeval-demo:         demo/lmeval-demo/notebooks/"
+echo ""
 fi
 
 # Dashboard-only features

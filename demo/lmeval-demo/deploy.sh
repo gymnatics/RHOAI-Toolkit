@@ -155,6 +155,23 @@ EORBAC
     oc create sa evalhub-${EVALHUB_NAMESPACE}-job -n "$NAMESPACE" 2>/dev/null || true
     oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:evalhub-${EVALHUB_NAMESPACE}-job" -n "$NAMESPACE" 2>/dev/null || true
 
+    # Grant job SA access to MLflow experiments (required for results to appear in MLflow UI)
+    cat <<EOMLFLOW | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-job-mlflow-access
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access
+subjects:
+- kind: ServiceAccount
+  name: evalhub-${EVALHUB_NAMESPACE}-job
+  namespace: ${NAMESPACE}
+EOMLFLOW
+
     # Grant evalhub-service SA permission to submit evaluations via SDK
     cat <<EOROLE | oc apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
@@ -167,6 +184,7 @@ rules:
   - trustyai.opendatahub.io
   resources:
   - evaluations
+  - status-events
   verbs:
   - get
   - create
@@ -268,6 +286,10 @@ echo "    git clone https://github.com/hyogrin/rhoai-lmeval-builder-lab.git"
 echo ""
 echo "  All results tracked in MLflow via EvalHub"
 echo ""
+
+# --- Create workbench + clone repo ---
+source "$ROOT_DIR/lib/functions/workbench.sh"
+ensure_workbench "$NAMESPACE" "model-benchmarking"
 
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
