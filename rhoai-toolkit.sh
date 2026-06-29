@@ -5830,7 +5830,7 @@ EXAMPLES:
     $0 --maas-only                  # Only set up MaaS infrastructure
 
 WHAT THIS SCRIPT DOES:
-    1. Runs integrated-workflow-v2.sh for OpenShift + RHOAI installation
+    1. Runs scripts/integrated-workflow-v2.sh for OpenShift + RHOAI installation
     2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
     3. Provides final summary and next steps
 
@@ -5985,17 +5985,17 @@ check_prerequisites() {
     fi
     
     # Check for required workflow script
-    if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-        print_error "integrated-workflow-v2.sh not found"
+    if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh" ]; then
+        print_error "scripts/integrated-workflow-v2.sh not found"
         all_good=false
     else
-        print_success "integrated-workflow-v2.sh found"
+        print_success "scripts/integrated-workflow-v2.sh found"
     fi
     
     # Make executable if needed
-    if [ ! -x "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-        print_warning "Making integrated-workflow-v2.sh executable..."
-        chmod +x "$SCRIPT_DIR/integrated-workflow-v2.sh"
+    if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh" ]; then
+        print_warning "Making scripts/integrated-workflow-v2.sh executable..."
+        chmod +x "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh"
     fi
     
     # Check for setup-maas.sh
@@ -6121,8 +6121,8 @@ run_integrated_workflow() {
         workflow_args="$workflow_args --skip-rhoai"
     fi
     
-    workflow_script="$SCRIPT_DIR/integrated-workflow-v2.sh"
-    print_step "Running integrated-workflow-v2.sh..."
+    workflow_script="$SCRIPT_DIR/scripts/integrated-workflow-v2.sh"
+    print_step "Running scripts/integrated-workflow-v2.sh..."
     
     if [ -n "$workflow_args" ]; then
         print_info "Flags: $workflow_args"

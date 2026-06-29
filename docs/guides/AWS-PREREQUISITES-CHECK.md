@@ -263,7 +263,7 @@ Run AWS checks? [Y/n]: n
 Or use the integrated workflow directly:
 
 ```bash
-./integrated-workflow-v2.sh
+./scripts/integrated-workflow-v2.sh
 ```
 
 ## See Also

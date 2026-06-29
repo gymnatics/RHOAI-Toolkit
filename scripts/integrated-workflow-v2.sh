@@ -15,13 +15,14 @@ set -e
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Source all required libraries
-source "$SCRIPT_DIR/lib/utils/colors.sh"
-source "$SCRIPT_DIR/lib/utils/common.sh"
-source "$SCRIPT_DIR/lib/functions/operators.sh"
-source "$SCRIPT_DIR/lib/functions/rhoai.sh"
-source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
+source "$ROOT_DIR/lib/utils/colors.sh"
+source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/functions/operators.sh"
+source "$ROOT_DIR/lib/functions/rhoai.sh"
+source "$ROOT_DIR/lib/functions/model-deployment.sh"
 
 # Global variables
 SKIP_OPENSHIFT=false
@@ -197,9 +198,9 @@ install_openshift() {
     fi
     
     # Proceed with installation
-    if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
+    if [ -f "$ROOT_DIR/scripts/openshift-installer-master.sh" ]; then
         print_step "Calling OpenShift installer script..."
-        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --install-only
+        "$ROOT_DIR/scripts/openshift-installer-master.sh" --install-only
     else
         print_warning "OpenShift installer script not found"
         print_info "Please install OpenShift manually or run: ./scripts/openshift-installer-master.sh"
@@ -245,12 +246,12 @@ install_gpu_nodes() {
     read -p "Create GPU nodes now? (y/n): " create_gpu
     
     if [[ "$create_gpu" =~ ^[Yy]$ ]]; then
-        local gpu_script_path="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
+        local gpu_script_path="$ROOT_DIR/scripts/create-gpu-machineset.sh"
         if [ -f "$gpu_script_path" ]; then
             "$gpu_script_path"
         else
             print_error "GPU MachineSet script not found at: $gpu_script_path"
-            print_info "SCRIPT_DIR is set to: $SCRIPT_DIR"
+            print_info "ROOT_DIR is set to: $ROOT_DIR"
             print_info "Current directory: $(pwd)"
             print_info "Please ensure the script exists or skip GPU creation."
         fi

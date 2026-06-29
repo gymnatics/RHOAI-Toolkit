@@ -78,7 +78,8 @@ rhoai-info.txt
 
 # Agent context files
 CLAUDE.md
-.cursor/plans/
+.cursor/
+.cursorignore
 
 # External/temp directories
 colleague-repo/
