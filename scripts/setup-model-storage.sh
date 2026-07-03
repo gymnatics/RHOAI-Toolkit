@@ -385,9 +385,14 @@ EOF
 
 # Wait for job completion
 print_info "Waiting for bucket creation..."
-oc wait --for=condition=complete job/create-bucket -n "$NAMESPACE" --timeout=60s 2>/dev/null || true
+if oc wait --for=condition=complete job/create-bucket -n "$NAMESPACE" --timeout=120s 2>/dev/null; then
+    print_success "Bucket ready"
+else
+    print_warn "Bucket creation job did not complete in 120s"
+    oc logs job/create-bucket -n "$NAMESPACE" 2>/dev/null | tail -5
+    print_warn "Check MinIO health and retry: oc delete job create-bucket -n $NAMESPACE && re-run this script"
+fi
 oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
-print_success "Bucket ready"
 
 ################################################################################
 # Step 5: Create RHOAI Data Connection

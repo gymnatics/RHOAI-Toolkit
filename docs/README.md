@@ -76,7 +76,7 @@ Step-by-step instructions for common tasks.
 
 | Guide | Description |
 |-------|-------------|
-| [Demo Environment](guides/DEMO-ENVIRONMENT.md) | Full demo environment — 11 components, GPU requirements |
+| [Demo Environment](guides/DEMO-ENVIRONMENT.md) | Full demo environment — 12 components, GPU requirements |
 | [Dify Enterprise — Kaniko Fix](guides/DIFY-OPENSHIFT-KANIKO-TROUBLESHOOTING.md) | Fix Kaniko plugin builder permission errors |
 
 ### End-to-End Setup Guides

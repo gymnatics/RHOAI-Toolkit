@@ -9,6 +9,7 @@ This folder contains demo scripts and applications for RHOAI.
 | Directory/File | Description |
 |----------------|-------------|
 | `banking-demo/` | **Banking Feature Store Demo** - Feast feature store with banking data |
+| `mlflow-tracing-demo/` | **MLflow Tracing Demo** - Banking multi-agent system with MLflow 3.x distributed tracing |
 | `guardrails-demo/` | **Guardrails Demo** - TrustyAI AI safety with PII detection |
 | `guidellm-demo/` | **GuideLLM Demo** - LLM benchmarking (TTFT, ITL, throughput) |
 | `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
