@@ -1099,22 +1099,42 @@ configure_cluster() {
     IFS=',' read -ra AZS <<< "$AZS_INPUT"
     
     echo ""
+    print_info "Cluster Topology"
+    echo "  1) Standard  - Master 3 + Worker N (default, separate worker nodes)"
+    echo "  2) Compact   - Master 3 only, masters are schedulable (no dedicated workers)"
+    echo ""
+    read -p "$(echo -e ${BLUE}Select topology${NC} [1-2] (default: 1): )" TOPOLOGY_CHOICE
+    TOPOLOGY_CHOICE="${TOPOLOGY_CHOICE:-1}"
+
+    COMPACT_CLUSTER=false
+    if [ "$TOPOLOGY_CHOICE" = "2" ]; then
+        COMPACT_CLUSTER=true
+        print_info "Compact Cluster: Masters will run both control-plane and workloads"
+    fi
+
+    echo ""
     print_info "Master Node Configuration"
     prompt_with_default "Master node instance type" "m6a.4xlarge" MASTER_INSTANCE_TYPE
     prompt_with_default "Number of master replicas" "3" MASTER_REPLICAS
-    
-    echo ""
-    print_info "Worker Node Configuration"
-    echo "Common instance types:"
-    echo "  - m6a.4xlarge (standard - AMD-based, cost-effective)"
-    echo "  - m6i.2xlarge (standard - Intel-based)"
-    echo "  - p5.48xlarge (H100 GPU - 8x H100 80GB)"
-    echo "  - p4d.24xlarge (A100 GPU - 8x A100 40GB)"
-    echo "  - g6e.xlarge (L40S GPU - 1x L40S 48GB)"
-    echo "  - g6e.4xlarge (L40S GPU - 1x L40S 48GB)"
-    echo "  - g5.xlarge (A10G GPU - 1x A10G 24GB)"
-    prompt_with_default "Worker node instance type" "m6a.4xlarge" WORKER_INSTANCE_TYPE
-    prompt_with_default "Number of worker replicas" "3" WORKER_REPLICAS
+
+    if [ "$COMPACT_CLUSTER" = true ]; then
+        WORKER_REPLICAS=0
+        WORKER_INSTANCE_TYPE="m6a.4xlarge"
+        print_info "Compact mode: worker replicas set to 0 (masters are schedulable)"
+    else
+        echo ""
+        print_info "Worker Node Configuration"
+        echo "Common instance types:"
+        echo "  - m6a.4xlarge (standard - AMD-based, cost-effective)"
+        echo "  - m6i.2xlarge (standard - Intel-based)"
+        echo "  - p5.48xlarge (H100 GPU - 8x H100 80GB)"
+        echo "  - p4d.24xlarge (A100 GPU - 8x A100 40GB)"
+        echo "  - g6e.xlarge (L40S GPU - 1x L40S 48GB)"
+        echo "  - g6e.4xlarge (L40S GPU - 1x L40S 48GB)"
+        echo "  - g5.xlarge (A10G GPU - 1x A10G 24GB)"
+        prompt_with_default "Worker node instance type" "m6a.4xlarge" WORKER_INSTANCE_TYPE
+        prompt_with_default "Number of worker replicas" "3" WORKER_REPLICAS
+    fi
     
     # Network configuration (only if creating new VPC)
     if [ "$USE_EXISTING_VPC" = false ]; then
@@ -1507,14 +1527,25 @@ display_summary() {
     echo "Base Domain:         $BASE_DOMAIN"
     echo "AWS Region:          $AWS_REGION"
     echo "Availability Zones:  ${AZS[*]}"
+    if [ "$COMPACT_CLUSTER" = true ]; then
+        echo "Topology:            Compact (masters schedulable, no dedicated workers)"
+    else
+        echo "Topology:            Standard (separate master and worker nodes)"
+    fi
     echo ""
     echo "Master Nodes:"
     echo "  - Instance Type:   $MASTER_INSTANCE_TYPE"
     echo "  - Replicas:        $MASTER_REPLICAS"
+    if [ "$COMPACT_CLUSTER" = true ]; then
+        echo "  - Role:            control-plane + worker (schedulable)"
+    fi
     echo ""
     echo "Worker Nodes:"
     echo "  - Instance Type:   $WORKER_INSTANCE_TYPE"
     echo "  - Replicas:        $WORKER_REPLICAS"
+    if [ "$COMPACT_CLUSTER" = true ]; then
+        echo "  (Compact mode: GPU workers can be added via MachineSet after install)"
+    fi
     echo ""
     echo "Network:"
     echo "  - VPC CIDR:        $VPC_CIDR"
@@ -1559,6 +1590,7 @@ run_installation() {
 ╚════════════════════════════════════════════════════════════════════════════╝
 
 Installation completed: $(date)
+Topology: $([ "$COMPACT_CLUSTER" = true ] && echo "Compact (3-node, masters schedulable)" || echo "Standard")
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

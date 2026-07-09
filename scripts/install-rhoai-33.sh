@@ -324,7 +324,12 @@ scale_cluster_nodes() {
     local worker_ms=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[?(@.spec.template.metadata.labels.machine\.openshift\.io/cluster-api-machine-role=="worker")].metadata.name}' 2>/dev/null | awk '{print $1}')
     
     if [ -z "$worker_ms" ]; then
-        print_warning "No worker machineset found, skipping node scaling"
+        local schedulable=$(oc get scheduler cluster -o jsonpath='{.spec.mastersSchedulable}' 2>/dev/null)
+        if [ "$schedulable" = "true" ]; then
+            print_info "Compact Cluster detected (masters schedulable, no dedicated workers)"
+        else
+            print_warning "No worker machineset found, skipping node scaling"
+        fi
         return 0
     fi
     
