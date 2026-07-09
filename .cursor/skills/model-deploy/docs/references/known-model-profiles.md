@@ -83,6 +83,35 @@ When the user does not specify a model source, use the `hf://` URI listed in the
 - **Important**: vLLM does NOT recognize `qwen3` as a valid tool-call-parser. Use `qwen3_coder` or `qwen3_xml`.
 - Storage-initializer deadlock workaround: Use direct vLLM download with `HF_HUB_OFFLINE=0` (see [deployment-annotations.md](deployment-annotations.md))
 
+## Embedding Models
+
+| Variant | Parameters | GPUs | GPU Type | VRAM | Key vLLM Args |
+|---------|-----------|------|----------|------|---------------|
+| nomic-embed-text-v1.5 | 137M | 0 (CPU) or 1 | Any (CPU works) | 1GB | `--task embedding --trust-remote-code` |
+| Qwen3-Embedding-8B | 8B | 1 | L4/A100/H100 | 16GB | `--task embedding --trust-remote-code` |
+
+- **Recommended storageUri (nomic)**: `oci://registry.redhat.io/rhelai1/modelcar-nomic-embed-text-v1-5:1.5` (RHEL AI entitlements)
+- **HF alternative (nomic)**: `hf://nomic-ai/nomic-embed-text-v1.5` (public, no auth)
+- **Recommended storageUri (Qwen3-Embed)**: `hf://RedHatAI/Qwen3-Embedding-8B` (public, no auth)
+- **CRITICAL**: Both models use custom code — `--trust-remote-code` is **mandatory** or vLLM refuses to load
+- **CPU runtime**: nomic-embed-text-v1.5 uses `vllm-cpu-rhel9` image (no GPU required)
+- **API endpoint**: `POST /v1/embeddings` (OpenAI-compatible)
+- **ServingRuntime note**: When deployed via RHOAI Dashboard, add `--trust-remote-code` to the ServingRuntime args manually. The Dashboard UI does not auto-detect this requirement.
+
+### Models Requiring `--trust-remote-code`
+
+The following model families contain custom code (custom `modeling_*.py` files in the repo) and **will fail without `--trust-remote-code`**:
+
+| Model Family | Reason |
+|--------------|--------|
+| `nomic-ai/nomic-embed-*` | Custom rotary embedding implementation |
+| `Alibaba-NLP/gte-*` | Custom bidirectional attention |
+| `BAAI/bge-*` (some variants) | Custom pooling layers |
+| `jinaai/jina-embeddings-*` | Custom architecture |
+| `mosaicml/mpt-*` | Custom attention/block implementations |
+
+**Detection**: vLLM error message: `"The repository contains custom code which must be executed ... Please pass the argument trust_remote_code=True"`
+
 ## When a Model Is Not Listed
 
 If the requested model is not in this file, the agent MUST use the live doc lookup protocol:
