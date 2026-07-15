@@ -390,118 +390,21 @@ export MODEL_TOKEN=<paste-token-here>
 
 ## Step 6.2: Deploy LlamaStack
 
-Run the following command to deploy the LlamaStack Secret, ConfigMap, and Distribution CR in your namespace:
+Clone the workshop repository and deploy LlamaStack using the provided manifest:
 
 ```bash
-cat <<EOF | oc apply -f -
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: vllm-secret
-  namespace: $NAMESPACE
-type: Opaque
-stringData:
-  base-url: "http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1"
-  api-token: "$MODEL_TOKEN"
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: llamastack-workshop-config
-  namespace: $NAMESPACE
-  labels:
-    llamastack.io/distribution: llamastack-workshop
-    opendatahub.io/dashboard: "true"
-data:
-  run.yaml: |
-    version: "2"
-    image_name: rh
-    apis:
-    - inference
-    - tool_runtime
-    providers:
-      inference:
-      - provider_id: vllm-inference
-        provider_type: remote::vllm
-        config:
-          base_url: http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1
-          max_tokens: 4096
-          api_token: placeholder
-      tool_runtime:
-      - provider_id: model-context-protocol
-        provider_type: remote::model-context-protocol
-        config: {}
-    connectors:
-    - connector_id: kubernetes
-      connector_type: mcp
-      url: http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp
-    metadata_store:
-      type: sqlite
-      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
-    models:
-    - provider_id: vllm-inference
-      model_id: qwen3-4b
-      provider_model_id: qwen3-4b
-      model_type: llm
-      metadata:
-        display_name: Qwen3-4B
-    shields: []
-    server:
-      port: 8321
----
-apiVersion: llamastack.io/v1alpha1
-kind: LlamaStackDistribution
-metadata:
-  name: llamastack-workshop
-  namespace: $NAMESPACE
-  annotations:
-    openshift.io/display-name: LlamaStack Workshop
-  labels:
-    opendatahub.io/dashboard: "true"
-spec:
-  replicas: 1
-  server:
-    distribution:
-      name: rh-dev
-    containerSpec:
-      name: llama-stack
-      port: 8321
-      command:
-      - /bin/sh
-      - -c
-      - llama stack run /etc/llama-stack/run.yaml
-      env:
-      - name: VLLM_URL
-        valueFrom:
-          secretKeyRef:
-            name: vllm-secret
-            key: base-url
-      - name: VLLM_API_TOKEN
-        valueFrom:
-          secretKeyRef:
-            name: vllm-secret
-            key: api-token
-      - name: FMS_ORCHESTRATOR_URL
-        value: http://localhost
-      - name: LLAMA_STACK_CONFIG_DIR
-        value: /opt/app-root/src/.llama/distributions/rh/
-      resources:
-        requests:
-          cpu: 250m
-          memory: 500Mi
-        limits:
-          cpu: "2"
-          memory: 8Gi
-    userConfig:
-      configMapName: llamastack-workshop-config
-EOF
+git clone https://github.com/gymnatics/Red-Hat-Inference-Workshop.git
+cd Red-Hat-Inference-Workshop
+
+envsubst < manifests/llamastack.yaml | oc apply -f -
 ```
 
-> **What just happened?** You created three Kubernetes resources:
+> **What just happened?** The manifest created three Kubernetes resources in your namespace:
 > - A **Secret** with the shared model's URL and authentication token
 > - A **ConfigMap** with LlamaStack's `run.yaml` configuration — this tells LlamaStack where to find the model and the MCP server
 > - A **LlamaStackDistribution** custom resource — the LlamaStack Operator sees this and deploys a LlamaStack server pod in your namespace
+>
+> You can inspect the full YAML in [`manifests/llamastack.yaml`](manifests/llamastack.yaml).
 
 ## Step 6.3: Wait for LlamaStack to Start
 
@@ -528,127 +431,15 @@ Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to Ch
 
 ## Step 7.1: Deploy Open WebUI
 
-Make sure your `NAMESPACE` variable is still set, then apply the manifest:
+Make sure your `NAMESPACE` variable is still set and you're in the workshop repo directory, then deploy:
 
 ```bash
-cat <<EOF | oc apply -f -
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openwebui-config
-  namespace: $NAMESPACE
-data:
-  ENABLE_OLLAMA_API: "False"
-  OPENAI_API_BASE_URLS: "http://llamastack-workshop-service.$NAMESPACE.svc.cluster.local:8321/v1"
-  OPENAI_API_KEYS: ""
-  WEBUI_AUTH: "False"
-  WEBUI_SECRET_KEY: "rhoai-workshop-secret-key"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: open-webui-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: open-webui
-  namespace: $NAMESPACE
-  labels:
-    app: open-webui
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: open-webui
-  template:
-    metadata:
-      labels:
-        app: open-webui
-    spec:
-      containers:
-        - name: open-webui
-          image: ghcr.io/open-webui/open-webui:main
-          ports:
-            - containerPort: 8080
-              name: http
-          envFrom:
-            - configMapRef:
-                name: openwebui-config
-          env:
-            - name: ENABLE_PERSISTENT_CONFIG
-              value: "False"
-          volumeMounts:
-            - name: data
-              mountPath: /app/backend/data
-          resources:
-            requests:
-              cpu: 100m
-              memory: 512Mi
-            limits:
-              cpu: 1000m
-              memory: 2Gi
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: open-webui-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: open-webui
-  namespace: $NAMESPACE
-  labels:
-    app: open-webui
-spec:
-  selector:
-    app: open-webui
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
-  type: ClusterIP
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: open-webui
-  namespace: $NAMESPACE
-  labels:
-    app: open-webui
-spec:
-  to:
-    kind: Service
-    name: open-webui
-  port:
-    targetPort: http
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
-EOF
+envsubst < manifests/open-webui.yaml | oc apply -f -
 ```
 
-> **Notice:** The `OPENAI_API_BASE_URLS` in the ConfigMap points to your LlamaStack instance — not directly to the model. LlamaStack acts as the unified API layer between OpenWebUI and the backend services.
+> **What this deploys:** A ConfigMap, PVC, Deployment, Service, and Route for Open WebUI. The `OPENAI_API_BASE_URLS` points to your LlamaStack instance — not directly to the model. LlamaStack acts as the unified API layer between OpenWebUI and the backend services.
+>
+> You can inspect the full YAML in [`manifests/open-webui.yaml`](manifests/open-webui.yaml).
 
 ## Step 7.2: Wait for Open WebUI
 
