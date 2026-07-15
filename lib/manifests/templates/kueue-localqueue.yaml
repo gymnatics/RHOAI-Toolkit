@@ -1,0 +1,11 @@
+# LocalQueue for namespace workload submission
+# Usage: export NAMESPACE=demo && envsubst < kueue-localqueue.yaml | oc apply -f -
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: default
+  namespace: ${NAMESPACE}
+  annotations:
+    kueue.x-k8s.io/default-queue: "true"
+spec:
+  clusterQueue: default

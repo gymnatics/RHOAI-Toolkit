@@ -27,6 +27,8 @@ help:
 	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
 	@echo -e "$(YELLOW)Installation:$(NC)"
+	@echo "  make install-rhoai         Install RHOAI (auto-detect latest version)"
+	@echo "  make install-rhoai-34      Install RHOAI 3.4"
 	@echo "  make setup-rhoai           Install RHOAI 3.0 with all operators"
 	@echo "  make setup-operators       Install only operators (NFD, GPU, Kueue, LWS)"
 	@echo "  make setup-llmd            Setup llm-d infrastructure (Gateway, LWS, Kuadrant)"
@@ -43,9 +45,13 @@ help:
 	@echo ""
 	@echo -e "$(YELLOW)Demo & Tools:$(NC)"
 	@echo "  make setup-demo            Setup demo environment (MinIO, Open WebUI)"
+	@echo "  make deploy-mcp-servers    Deploy MCP servers"
 	@echo "  make setup-mcp-kubernetes  Deploy Kubernetes MCP server"
 	@echo "  make setup-benchmarks      Deploy GuideLLM and Benchmark Arena"
 	@echo "  make setup-model-catalog   Configure custom model catalog"
+	@echo ""
+	@echo -e "$(YELLOW)Monitoring:$(NC)"
+	@echo "  make setup-grafana         Setup Grafana console link and ODH application"
 	@echo ""
 	@echo -e "$(YELLOW)Utilities:$(NC)"
 	@echo "  make check-operators       Check operator installation status"
@@ -89,6 +95,18 @@ setup-operators:
 		(oc apply -f $(BASE)/lib/manifests/operators/gpu-operator.yaml && \
 		 $(BASE)/scripts/check-operator-install-status.sh gpu-operator-certified nvidia-gpu-operator 300)
 	@echo -e "$(GREEN)✓ Operators installed$(NC)"
+
+.PHONY: install-rhoai
+install-rhoai:
+	@echo -e "$(GREEN)▶ Installing RHOAI (auto-detect version)...$(NC)"
+	@$(BASE)/scripts/install-rhoai.sh
+	@echo -e "$(GREEN)✓ RHOAI installation complete$(NC)"
+
+.PHONY: install-rhoai-34
+install-rhoai-34:
+	@echo -e "$(GREEN)▶ Installing RHOAI 3.4...$(NC)"
+	@$(BASE)/scripts/install-rhoai-34.sh
+	@echo -e "$(GREEN)✓ RHOAI 3.4 installation complete$(NC)"
 
 .PHONY: setup-llmd
 setup-llmd:
@@ -158,6 +176,12 @@ setup-minio:
 	done
 	@echo -e "$(GREEN)✓ MinIO ready$(NC)"
 
+.PHONY: deploy-mcp-servers
+deploy-mcp-servers:
+	@echo -e "$(GREEN)▶ Deploying MCP servers...$(NC)"
+	@$(BASE)/scripts/deploy-mcp-servers.sh
+	@echo -e "$(GREEN)✓ MCP servers deployed$(NC)"
+
 .PHONY: setup-mcp-kubernetes
 setup-mcp-kubernetes:
 	@echo -e "$(GREEN)▶ Deploying Kubernetes MCP Server...$(NC)"
@@ -180,6 +204,19 @@ setup-model-catalog:
 	@oc apply -f $(BASE)/lib/manifests/demo/custom-model-catalog.yaml
 	@oc delete pods -l app.kubernetes.io/name=model-catalog -n rhoai-model-registries 2>/dev/null || true
 	@echo -e "$(GREEN)✓ Model catalog configured$(NC)"
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+
+.PHONY: setup-grafana
+setup-grafana:
+	@echo -e "$(GREEN)▶ Setting up Grafana console link and ODH application...$(NC)"
+	$(eval CLUSTER_DOMAIN := $(shell oc get ingress.config cluster -o jsonpath='{.spec.domain}'))
+	@export CLUSTER_DOMAIN=$(CLUSTER_DOMAIN) && \
+		envsubst < $(BASE)/lib/manifests/monitoring/odhapplication-grafana.yaml | oc apply -f - && \
+		envsubst < $(BASE)/lib/manifests/monitoring/consolelinks-grafana.yaml | oc apply -f -
+	@echo -e "$(GREEN)✓ Grafana setup complete$(NC)"
 
 # =============================================================================
 # Utilities
@@ -221,7 +258,9 @@ show-urls:
 	@echo -e "$(CYAN)Service URLs:$(NC)"
 	@echo ""
 	@echo "RHOAI Dashboard:"
-	@echo "  https://$$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || echo 'Not available')"
+	@echo "  https://$$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || \
+		oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || \
+		echo 'Not available')"
 	@echo ""
 	@echo "OpenShift Console:"
 	@echo "  $$(oc whoami --show-console 2>/dev/null || echo 'Not connected')"

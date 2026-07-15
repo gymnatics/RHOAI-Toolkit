@@ -281,6 +281,126 @@ install_kueue_operator() {
     print_success "Kueue operator installation complete"
 }
 
+# Install Cluster Observability Operator (COO)
+install_coo_operator() {
+    print_header "Installing Cluster Observability Operator (COO)"
+    
+    # Check if already installed
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator"; then
+        print_success "COO Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing COO Operator subscription..."
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/coo-subscription.yaml" "COO Subscription"
+    
+    # Wait for operator to be ready
+    print_step "Waiting for COO operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "COO operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for COO operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "COO operator installation complete"
+}
+
+# Install OpenTelemetry Operator
+install_opentelemetry_operator() {
+    print_header "Installing OpenTelemetry Operator"
+    
+    # Check if already installed
+    if oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry"; then
+        print_success "OpenTelemetry Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing OpenTelemetry Operator subscription..."
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/opentelemetry-subscription.yaml" "OpenTelemetry Subscription"
+    
+    # Wait for operator to be ready
+    print_step "Waiting for OpenTelemetry operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "OpenTelemetry operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for OpenTelemetry operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "OpenTelemetry operator installation complete"
+}
+
+# Install Tempo Operator
+install_tempo_operator() {
+    print_header "Installing Tempo Operator"
+    
+    # Check if already installed
+    if oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo"; then
+        print_success "Tempo Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing Tempo Operator subscription..."
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/tempo-subscription.yaml" "Tempo Subscription"
+    
+    # Wait for operator to be ready
+    print_step "Waiting for Tempo operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "Tempo operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for Tempo operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "Tempo operator installation complete"
+}
+
+# Install JobSet Operator (required by Kubeflow Trainer v2)
+install_jobset_operator() {
+    print_header "Installing JobSet Operator"
+    
+    # Check if already installed
+    if oc get csv -n jobset-system 2>/dev/null | grep -q "jobset"; then
+        print_success "JobSet Operator already installed"
+        return 0
+    fi
+    
+    print_step "Installing JobSet Operator subscription..."
+    apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/operators/jobset-subscription.yaml" "JobSet Subscription"
+    
+    # Wait for operator to be ready
+    print_step "Waiting for JobSet operator to be ready..."
+    local timeout=180
+    local elapsed=0
+    until oc get csv -n jobset-system 2>/dev/null | grep -q "jobset.*Succeeded"; do
+        if [ $elapsed -ge $timeout ]; then
+            print_warning "JobSet operator not ready yet (continuing anyway)"
+            return 1
+        fi
+        echo "Waiting for JobSet operator... (${elapsed}s elapsed)"
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    
+    print_success "JobSet operator installation complete"
+}
+
 # Wait for Authorino service to be created
 wait_for_authorino_service() {
     print_step "Waiting for Kuadrant components to be ready..."

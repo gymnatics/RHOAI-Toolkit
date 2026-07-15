@@ -12,7 +12,8 @@
 #   - DataSciencePipelinesApplication v1alpha1 removed; only v1 supported
 #
 # Requires: NFD, GPU Operator, Kueue (RHBOK), cert-manager, RHCL (for MaaS), LWS (for llm-d)
-# Optional: JobSet operator (required if trainingoperator.managementState: Managed)
+# Requires: JobSet operator (for Kubeflow Trainer v2)
+# Optional: COO + OpenTelemetry + Tempo (for observability dashboards)
 apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
@@ -58,9 +59,17 @@ spec:
     ray:
       managementState: Managed
 
-    # Training Operator - Kubeflow Training Operator
-    # Requires JobSet operator if set to Managed
+    # Kubeflow Trainer v2 - Distributed training with JobSet
+    # Requires: JobSet operator must be installed first
+    trainer:
+      managementState: Managed
+
+    # Training Operator v1 - Legacy (replaced by Trainer v2)
     trainingoperator:
+      managementState: Removed
+
+    # Spark Operator - Not used
+    sparkoperator:
       managementState: Removed
 
     # Model Registry - Model versioning and tracking

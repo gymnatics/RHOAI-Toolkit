@@ -1,0 +1,21 @@
+# DataSciencePipelinesApplication (DSPA) - Kubeflow Pipelines v2
+# RHOAI 3.4 requires v1 API (v1alpha1 removed)
+# Usage: export NAMESPACE=demo S3_BUCKET=models S3_HOST=minio.demo.svc.cluster.local:9000 S3_SCHEME=http S3_SECRET_NAME=aws-connection-minio && envsubst < dspa.yaml | oc apply -f -
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: dspa
+  namespace: ${NAMESPACE}
+spec:
+  dspVersion: v2
+  objectStorage:
+    externalStorage:
+      bucket: ${S3_BUCKET}
+      host: ${S3_HOST}
+      port: ""
+      region: us-east-1
+      scheme: ${S3_SCHEME}
+      s3CredentialsSecret:
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+        secretName: ${S3_SECRET_NAME}

@@ -105,6 +105,19 @@ is_rhoai_33_or_higher() {
     return 1
 }
 
+# Check if RHOAI version is 3.4 or higher
+# Returns: 0 if >= 3.4, 1 otherwise
+is_rhoai_34_or_higher() {
+    detect_rhoai_version
+    
+    if [ "$RHOAI_MAJOR_VERSION" -gt 3 ]; then
+        return 0
+    elif [ "$RHOAI_MAJOR_VERSION" -eq 3 ] && [ "$RHOAI_MINOR_VERSION" -ge 4 ]; then
+        return 0
+    fi
+    return 1
+}
+
 # Check if RHOAI version is 3.2 or higher
 # Returns: 0 if >= 3.2, 1 otherwise
 is_rhoai_32_or_higher() {

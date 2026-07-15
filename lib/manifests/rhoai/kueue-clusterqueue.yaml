@@ -1,0 +1,46 @@
+# Kueue ClusterQueue for RHOAI workloads
+# Defines cluster-wide resource quotas for CPU, memory, and GPU
+# Adjust nominalQuota values based on your cluster capacity
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: default
+spec: {}
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: gpu-flavor
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: default
+spec:
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: default
+          resources:
+            - name: cpu
+              nominalQuota: 116
+            - name: memory
+              nominalQuota: 495Gi
+    - coveredResources: ["nvidia.com/gpu"]
+      flavors:
+        - name: gpu-flavor
+          resources:
+            - name: nvidia.com/gpu
+              nominalQuota: 1

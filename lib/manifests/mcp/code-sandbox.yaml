@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-code-sandbox
+  namespace: mcp-servers
+  labels:
+    app: mcp-code-sandbox
+    app.kubernetes.io/part-of: code-assistant-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-code-sandbox
+  template:
+    metadata:
+      labels:
+        app: mcp-code-sandbox
+    spec:
+      containers:
+      - name: code-sandbox
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        imagePullPolicy: Always
+        command:
+        - sh
+        - -c
+        args:
+        - |
+          pip install -q "mcp[cli]>=1.0.0" uvicorn starlette &&
+          python3 /app/server.py
+        env:
+        - name: HOME
+          value: /tmp
+        - name: SANDBOX_WORKSPACE
+          value: /tmp/sandbox-workspace
+        - name: SANDBOX_TIMEOUT
+          value: "30"
+        - name: MCP_PORT
+          value: "3005"
+        ports:
+        - containerPort: 3005
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 3005
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 24
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3005
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3005
+          periodSeconds: 30
+        volumeMounts:
+        - name: source
+          mountPath: /app/server.py
+          subPath: server.py
+      volumes:
+      - name: source
+        configMap:
+          name: mcp-code-sandbox-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-code-sandbox
+  namespace: mcp-servers
+  labels:
+    app: mcp-code-sandbox
+spec:
+  selector:
+    app: mcp-code-sandbox
+  ports:
+  - port: 3005
+    protocol: TCP
+    targetPort: 3005

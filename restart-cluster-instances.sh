@@ -280,7 +280,7 @@ wait_for_cluster() {
     oauth_url="https://oauth-openshift.apps.${cluster_domain}/.well-known/oauth-authorization-server"
 
     # --- Phase 1: API server healthz (no auth needed) ---
-    info "Phase 1/4: Waiting for API server..."
+    info "Phase 1/5: Waiting for API server..."
     echo "  API: $api_url"
 
     local max_wait=300 elapsed=0
@@ -305,7 +305,7 @@ wait_for_cluster() {
     success "API server is healthy"
 
     # --- Phase 2: CSR approval (if auth is available) ---
-    info "Phase 2/4: Checking for pending kubelet CSRs..."
+    info "Phase 2/5: Checking for pending kubelet CSRs..."
 
     if _oc_with_timeout 10 whoami &>/dev/null; then
         success "Auth verified: $(oc whoami 2>/dev/null)"
@@ -316,7 +316,7 @@ wait_for_cluster() {
     fi
 
     # --- Phase 3: OAuth / Ingress recovery (no auth needed) ---
-    info "Phase 3/4: Waiting for OAuth & Ingress..."
+    info "Phase 3/5: Waiting for OAuth & Ingress..."
     echo "  OAuth: $oauth_url"
 
     local oauth_wait=0 oauth_max=600
@@ -342,7 +342,7 @@ wait_for_cluster() {
     success "OAuth & Ingress responding"
 
     # --- Phase 4: Login + finalize ---
-    info "Phase 4/4: Authenticating & finalizing..."
+    info "Phase 4/5: Authenticating & finalizing..."
 
     if ! _oc_with_timeout 10 whoami &>/dev/null; then
         if [ -f "$pw_file" ]; then
@@ -386,6 +386,7 @@ wait_for_cluster() {
         if [ "$degraded" -eq 0 ] && [ "$progressing" -eq 0 ]; then
             echo ""
             success "All cluster operators are stable"
+            recover_rhoai_services
             show_access_info
             return 0
         fi
@@ -395,8 +396,189 @@ wait_for_cluster() {
     done
     echo ""
     warn "Some operators may still be stabilizing"
+    recover_rhoai_services
     show_access_info
     return 0
+}
+
+################################################################################
+# RHOAI post-restart recovery
+#
+# Fixes two common issues after cluster restart:
+#
+# 1. Model Catalog DB race condition: model-catalog-postgres re-initializes
+#    but the catalog pod starts first, hitting missing tables (locks_rvn, Context).
+#    Fix: restart pods in correct order — postgres → catalog → dashboard.
+#
+# 2. Thanos proxy secret missing: the observability dashboard needs
+#    monitoring-thanos-proxy-secret to query Prometheus/Thanos metrics.
+#    The secret uses a short-lived token that may expire or get deleted.
+#    Fix: recreate the secret with a fresh long-lived SA token.
+################################################################################
+
+_wait_for_pod_ready() {
+    local label="$1" ns="$2" timeout="${3:-120}"
+    oc wait --for=condition=ready pod -l "$label" -n "$ns" --timeout="${timeout}s" &>/dev/null
+}
+
+_recover_thanos_secret() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    local obs_enabled
+    obs_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n "$dash_ns" \
+        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null || echo "")
+    if [ "$obs_enabled" != "true" ]; then
+        return 0
+    fi
+
+    echo "  Checking Thanos proxy secret..."
+
+    if oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null; then
+        local token thanos_host http_code
+        token=$(oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+        if [ -n "$token" ] && [ -n "$thanos_host" ]; then
+            http_code=$(curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${token}" \
+                "https://${thanos_host}/api/v1/query?query=up" 2>/dev/null || echo "000")
+            if [ "$http_code" -eq 200 ] 2>/dev/null; then
+                success "  Thanos proxy secret valid (HTTP 200)"
+                return 0
+            fi
+            warn "  Thanos proxy secret exists but token is invalid (HTTP $http_code)"
+        else
+            warn "  Thanos proxy secret exists but is incomplete"
+        fi
+        oc delete secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null || true
+    else
+        warn "  Thanos proxy secret missing"
+    fi
+
+    echo "  Recreating monitoring-thanos-proxy-secret..."
+    local new_token thanos_host
+    new_token=$(oc create token rhods-dashboard -n "$dash_ns" --duration=87600h 2>/dev/null || echo "")
+    thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+        -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+    if [ -z "$new_token" ] || [ -z "$thanos_host" ]; then
+        warn "  Could not generate token or find Thanos route"
+        return 0
+    fi
+
+    cat <<EOF | oc apply -f - &>/dev/null
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-thanos-proxy-secret
+  namespace: ${dash_ns}
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    opendatahub.io/dashboard: "true"
+type: Opaque
+stringData:
+  token: "${new_token}"
+  url: "https://${thanos_host}"
+EOF
+
+    if [ $? -eq 0 ]; then
+        success "  Thanos proxy secret created"
+        return 1  # signal dashboard restart needed
+    else
+        warn "  Failed to create Thanos proxy secret"
+        return 0
+    fi
+}
+
+_recover_model_catalog_db() {
+    local ns="rhoai-model-registries"
+
+    if ! oc get namespace "$ns" &>/dev/null; then
+        return 0
+    fi
+
+    local catalog_pods
+    catalog_pods=$(oc get pods -n "$ns" -l app.kubernetes.io/name=model-catalog --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$catalog_pods" -eq 0 ]; then
+        return 0
+    fi
+
+    echo "  Checking Model Catalog DB..."
+
+    if ! oc logs deployment/model-catalog -n "$ns" -c catalog --tail=30 2>/dev/null \
+        | grep -q 'relation .* does not exist'; then
+        success "  Model Catalog DB is healthy"
+        return 0
+    fi
+
+    warn "  Model Catalog DB schema missing (race condition after restart)"
+    echo "  Restarting pods: postgres → catalog"
+
+    echo "    [1/2] Restarting model-catalog-postgres..."
+    oc delete pods -l app.kubernetes.io/name=model-catalog-postgres -n "$ns" --wait=false &>/dev/null || true
+    if _wait_for_pod_ready "app.kubernetes.io/name=model-catalog-postgres" "$ns" 120; then
+        success "    model-catalog-postgres is ready"
+    else
+        warn "    model-catalog-postgres did not become ready in 120s"
+        return 0
+    fi
+
+    echo "    [2/2] Restarting model-catalog..."
+    oc delete pods -l app.kubernetes.io/name=model-catalog -l 'app.kubernetes.io/name!=model-catalog-postgres' \
+        -n "$ns" --wait=false &>/dev/null || true
+    sleep 5
+    if _wait_for_pod_ready "app.kubernetes.io/instance=model-catalog" "$ns" 180; then
+        success "    model-catalog is ready"
+    else
+        warn "    model-catalog did not become ready in 180s"
+        return 0
+    fi
+
+    sleep 3
+    if oc logs deployment/model-catalog -n "$ns" -c catalog --tail=20 2>/dev/null \
+        | grep -q 'relation .* does not exist'; then
+        warn "  DB errors persist — may need manual intervention"
+        echo "  Try: oc delete pods -n $ns --all"
+        return 0
+    fi
+
+    local model_count
+    model_count=$(oc logs deployment/model-catalog -n "$ns" -c catalog --tail=5 2>/dev/null \
+        | grep -oE 'loaded [0-9]+ models' | tail -1 || echo "")
+    if [ -n "$model_count" ]; then
+        success "  Model Catalog recovered ($model_count)"
+    else
+        success "  Model Catalog DB recovered"
+    fi
+    return 1  # signal dashboard restart needed
+}
+
+recover_rhoai_services() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    info "Phase 5/5: Recovering RHOAI services..."
+
+    local need_dashboard_restart=false
+
+    _recover_thanos_secret  || need_dashboard_restart=true
+    _recover_model_catalog_db || need_dashboard_restart=true
+
+    if [ "$need_dashboard_restart" = true ]; then
+        echo "  Restarting dashboard to apply fixes..."
+        oc delete pods -l app.kubernetes.io/part-of=rhods-dashboard -n "$dash_ns" --wait=false &>/dev/null || true
+        _wait_for_pod_ready "app.kubernetes.io/part-of=rhods-dashboard" "$dash_ns" 180 || true
+        success "  Dashboard restarted"
+    fi
 }
 
 ################################################################################

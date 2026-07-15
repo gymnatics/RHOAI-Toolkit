@@ -1,0 +1,14 @@
+# Cluster Observability Operator (COO)
+# Required for Perses dashboards, MonitoringStack, and observability in RHOAI 3.4+
+# Depends on: OpenTelemetry Operator, Tempo Operator
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cluster-observability-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: cluster-observability-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

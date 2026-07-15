@@ -42,6 +42,8 @@ ENABLE_LLMD=true
 CLUSTER_DOMAIN=""
 WAIT_TIMEOUT=600
 RHOAI_CHANNEL=""  # Will be selected interactively or via --channel
+SKIP_OBSERVABILITY=false
+SKIP_MCP=false
 
 ################################################################################
 # Helper Functions
@@ -84,6 +86,8 @@ usage() {
     echo "  --skip-maas            Skip MaaS configuration"
     echo "  --skip-node-scaling    Skip automatic worker/GPU node scaling"
     echo "  --no-llmd              Don't configure llm-d Gateway"
+    echo "  --skip-observability   Skip COO, OpenTelemetry, Tempo, and observability config"
+    echo "  --skip-mcp             Skip MCP server deployment"
     echo "  --channel <channel>    RHOAI channel (e.g., stable-3.x, fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
     echo "  --timeout <seconds>    Wait timeout for operators (default: 600)"
@@ -770,6 +774,62 @@ install_rhcl_operator() {
     print_success "RHCL Operator installed and configured"
 }
 
+install_coo_operator() {
+    print_step "Installing Cluster Observability Operator (COO)..."
+    
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator"; then
+        print_info "COO Operator already installed"
+        return 0
+    fi
+    
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/coo-subscription.yaml"
+    wait_for_operator "cluster-observability-operator" "openshift-operators"
+    
+    print_success "COO Operator installed"
+}
+
+install_opentelemetry_operator() {
+    print_step "Installing Red Hat build of OpenTelemetry Operator..."
+    
+    if oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry"; then
+        print_info "OpenTelemetry Operator already installed"
+        return 0
+    fi
+    
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/opentelemetry-subscription.yaml"
+    wait_for_operator "opentelemetry" "openshift-opentelemetry-operator"
+    
+    print_success "OpenTelemetry Operator installed"
+}
+
+install_tempo_operator() {
+    print_step "Installing Tempo Operator..."
+    
+    if oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo"; then
+        print_info "Tempo Operator already installed"
+        return 0
+    fi
+    
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/tempo-subscription.yaml"
+    wait_for_operator "tempo" "openshift-tempo-operator"
+    
+    print_success "Tempo Operator installed"
+}
+
+install_jobset_operator() {
+    print_step "Installing JobSet Operator (Trainer v2 prerequisite)..."
+    
+    if oc get csv -n jobset-system 2>/dev/null | grep -q "jobset"; then
+        print_info "JobSet Operator already installed"
+        return 0
+    fi
+    
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/jobset-subscription.yaml"
+    wait_for_operator "jobset" "jobset-system"
+    
+    print_success "JobSet Operator installed"
+}
+
 enable_user_workload_monitoring() {
     print_step "Enabling User Workload Monitoring..."
     
@@ -1018,6 +1078,141 @@ EOF
     print_success "Hardware profile created"
 }
 
+configure_dsci_observability() {
+    print_step "Configuring DSCI observability (metrics and traces)..."
+    
+    # Wait for DSCI to exist
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        if oc get dsci default-dsci &>/dev/null; then
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
+    if ! oc get dsci default-dsci &>/dev/null; then
+        print_warning "DSCInitialization not found, skipping observability config"
+        return 0
+    fi
+    
+    oc patch dsci default-dsci --type=merge -p '{
+        "spec": {
+            "monitoring": {
+                "managementState": "Managed",
+                "namespace": "redhat-ods-monitoring"
+            },
+            "collectorReplicas": 2,
+            "metrics": {
+                "replicas": 1,
+                "storage": {
+                    "retention": "30d",
+                    "size": "5Gi"
+                }
+            },
+            "traces": {
+                "sampleRatio": "0.1",
+                "storage": {
+                    "backend": "pv",
+                    "retention": "168h0m0s"
+                }
+            }
+        }
+    }'
+    
+    print_success "DSCI observability configured"
+}
+
+setup_kueue_queues() {
+    print_step "Setting up Kueue ClusterQueue and LocalQueue..."
+    
+    # Apply ClusterQueue (includes ResourceFlavors)
+    if [ -f "$ROOT_DIR/lib/manifests/rhoai/kueue-clusterqueue.yaml" ]; then
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/kueue-clusterqueue.yaml"
+        print_success "ClusterQueue and ResourceFlavors created"
+    else
+        print_warning "ClusterQueue manifest not found, skipping"
+        return 0
+    fi
+    
+    # Create LocalQueue in redhat-ods-applications
+    oc apply -f - <<EOF
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: default
+  namespace: redhat-ods-applications
+  annotations:
+    kueue.x-k8s.io/default-queue: "true"
+spec:
+  clusterQueue: default
+EOF
+    
+    print_success "Kueue queues configured"
+}
+
+setup_grafana_dashboard() {
+    print_step "Setting up Grafana OdhApplication and ConsoleLinks..."
+    
+    get_cluster_domain
+    local apps_domain="apps.${CLUSTER_DOMAIN}"
+    
+    # Apply Grafana OdhApplication (template uses CLUSTER_DOMAIN as apps domain)
+    if [ -f "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" ]; then
+        CLUSTER_DOMAIN="$apps_domain" envsubst '$CLUSTER_DOMAIN' \
+            < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f -
+        print_success "Grafana OdhApplication created"
+    else
+        print_warning "Grafana OdhApplication manifest not found"
+    fi
+    
+    # Apply Grafana ConsoleLinks
+    if [ -f "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" ]; then
+        CLUSTER_DOMAIN="$apps_domain" envsubst '$CLUSTER_DOMAIN' \
+            < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f -
+        print_success "Grafana ConsoleLinks created"
+    else
+        print_warning "Grafana ConsoleLinks manifest not found"
+    fi
+}
+
+setup_persesdatasource() {
+    print_step "Setting up PersesDatasource for Thanos metrics..."
+    
+    # Ensure the monitoring namespace exists
+    oc create namespace redhat-ods-monitoring 2>/dev/null || true
+    
+    # Wait for COO/Perses CRD to be available
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        if oc get crd persesdatasources.perses.dev &>/dev/null; then
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
+    if ! oc get crd persesdatasources.perses.dev &>/dev/null; then
+        print_warning "PersesDatasource CRD not found (COO may not be ready), skipping"
+        return 0
+    fi
+    
+    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+    
+    print_success "PersesDatasource configured"
+}
+
+deploy_mcp_servers() {
+    print_step "Deploying MCP servers..."
+    
+    if [ -f "$ROOT_DIR/scripts/deploy-mcp-servers.sh" ]; then
+        bash "$ROOT_DIR/scripts/deploy-mcp-servers.sh"
+        print_success "MCP servers deployed"
+    else
+        print_warning "MCP server deployment script not found at scripts/deploy-mcp-servers.sh, skipping"
+    fi
+}
+
 print_summary() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -1036,6 +1231,10 @@ print_summary() {
         echo -e "${CYAN}Inference Gateway:${NC} https://inference-gateway.apps.${CLUSTER_DOMAIN}"
     fi
     
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        echo -e "${CYAN}Grafana Dashboards:${NC} https://grafana-monitoring.apps.${CLUSTER_DOMAIN}"
+    fi
+    
     echo ""
     echo -e "${YELLOW}Next Steps:${NC}"
     echo "  1. Access the dashboard and verify all components are ready"
@@ -1048,6 +1247,11 @@ print_summary() {
     echo "  oc get datasciencecluster"
     echo "  oc get csv -n redhat-ods-operator"
     echo "  oc get hardwareprofiles -n redhat-ods-applications"
+    echo "  oc get clusterqueue,localqueue -A"
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        echo "  oc get csv -n openshift-operators | grep cluster-observability"
+        echo "  oc get persesdatasource -n redhat-ods-monitoring"
+    fi
     echo ""
 }
 
@@ -1073,6 +1277,14 @@ main() {
                 ;;
             --skip-maas)
                 SKIP_MAAS=true
+                shift
+                ;;
+            --skip-observability)
+                SKIP_OBSERVABILITY=true
+                shift
+                ;;
+            --skip-mcp)
+                SKIP_MCP=true
                 shift
                 ;;
             --no-llmd)
@@ -1134,6 +1346,20 @@ main() {
         create_inference_gateway
     fi
     
+    # Install observability operators (COO, OpenTelemetry, Tempo)
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        install_coo_operator
+        install_opentelemetry_operator
+        install_tempo_operator
+    else
+        print_info "Skipping observability operators (--skip-observability)"
+    fi
+    
+    # Install JobSet (required for Trainer v2)
+    if [ "$SKIP_PREREQUISITES" = false ]; then
+        install_jobset_operator
+    fi
+    
     # Enable monitoring
     enable_user_workload_monitoring
     
@@ -1141,9 +1367,30 @@ main() {
     install_rhoai_operator
     create_datasciencecluster
     
+    # Configure DSCI observability (metrics and traces)
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        configure_dsci_observability
+    fi
+    
     # Post-installation configuration
     enable_dashboard_features
     create_hardware_profile
+    
+    # Setup Kueue ClusterQueue and LocalQueue for GPU scheduling
+    setup_kueue_queues
+    
+    # Setup observability dashboards
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        setup_grafana_dashboard
+        setup_persesdatasource
+    fi
+    
+    # Deploy MCP servers
+    if [ "$SKIP_MCP" = false ]; then
+        deploy_mcp_servers
+    else
+        print_info "Skipping MCP server deployment (--skip-mcp)"
+    fi
     
     print_summary
 }

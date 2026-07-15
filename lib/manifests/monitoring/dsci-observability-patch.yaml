@@ -1,0 +1,24 @@
+# DSCI Observability Patch
+# Configures the Monitoring spec on the default DSCInitialization
+# Usage: oc patch dsci default-dsci --type=merge --patch-file=dsci-observability-patch.yaml
+#
+# Prerequisites: COO, OpenTelemetry, and Tempo operators must be installed
+apiVersion: dscinitialization.opendatahub.io/v2
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+  collectorReplicas: 2
+  metrics:
+    replicas: 1
+    storage:
+      retention: 30d
+      size: 5Gi
+  traces:
+    sampleRatio: "0.1"
+    storage:
+      backend: pv
+      retention: 168h0m0s

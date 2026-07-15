@@ -21,7 +21,7 @@ get_rhoai_channel() {
         2.22) echo "stable-2.22" ;;
         2.23) echo "stable-2.23" ;;
         2.24|2.25) echo "stable" ;;
-        3.0|3.1|3.2|3.3) echo "fast-3.x" ;;
+        3.0|3.1|3.2|3.3|3.4) echo "stable-3.x" ;;
         *) echo "stable" ;;
     esac
 }
@@ -638,6 +638,21 @@ create_datasciencecluster_v2() {
     apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v2.yaml" "DataScienceCluster v2"
     
     print_success "DataScienceCluster created with GenAI and MaaS support"
+}
+
+# Create DataScienceCluster (RHOAI 3.4 with GenAI/MaaS/Trainer)
+create_datasciencecluster_v34() {
+    print_header "Creating DataScienceCluster (v34 - RHOAI 3.4)"
+    
+    if oc get datascienceclusters.datasciencecluster.opendatahub.io default-dsc &>/dev/null; then
+        print_success "DataScienceCluster already exists"
+        return 0
+    fi
+    
+    print_step "Creating DataScienceCluster with RHOAI 3.4 components..."
+    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v34.yaml" "DataScienceCluster v34"
+    
+    print_success "DataScienceCluster created with RHOAI 3.4 support"
 }
 
 # Configure RHOAI Dashboard
