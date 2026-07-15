@@ -20,6 +20,9 @@
 
 # Enable vLLM runtime for MaaS (Technology Preview)
 ./scripts/install-rhoai-34.sh --enable-vllm-maas
+
+# Skip admin user creation (if you already have an identity provider)
+./scripts/install-rhoai-34.sh --skip-admin-user
 ```
 
 ## Script Flags
@@ -36,6 +39,7 @@
 | `--enable-observability`      | Enable MaaS observability dashboard (Technology Preview)                                         |
 | `--postgres-connection <url>` | External PostgreSQL URL for MaaS (format: `postgresql://user:pass@host:5432/db?sslmode=require`) |
 | `--skip-maas-db`              | Skip MaaS PostgreSQL setup entirely                                                              |
+| `--skip-admin-user`           | Skip creating the htpasswd admin user (script prompts by default)                                |
 | `--channel <channel>`         | RHOAI channel (e.g., `stable-3.4`, `fast-3.x`)                                                   |
 | `--domain <domain>`           | Cluster domain                                                                                   |
 | `--timeout <seconds>`         | Operator wait timeout (default: 600)                                                             |

@@ -71,6 +71,7 @@ Step-by-step instructions for common tasks.
 | Guide | Description |
 |-------|-------------|
 | [Model Deployment Workshop](guides/RHOAI-MODEL-DEPLOYMENT-WORKSHOP.md) | Hands-on: deploy models via the UI + test with AI Playground |
+| [LLMOps GitOps Demo](guides/LLMOPS-GITOPS-DEMO.md) | Customer demo: deploy LLMs with ArgoCD GitOps (dev/staging/prod) |
 
 ### Demo Environment
 

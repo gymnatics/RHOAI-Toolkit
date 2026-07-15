@@ -36,10 +36,27 @@ setup_model_storage_interactive() {
             echo -e "${CYAN}MinIO Console:${NC} https://$minio_route"
         fi
         echo ""
-        read -p "Deploy MinIO in a different namespace? (y/N): " deploy_new
-        if [[ ! "$deploy_new" =~ ^[Yy]$ ]]; then
-            return 0
-        fi
+        echo -e "${YELLOW}1)${NC} Re-run setup (create bucket + data connection)"
+        echo -e "${YELLOW}2)${NC} Deploy MinIO in a different namespace"
+        echo -e "${YELLOW}0)${NC} Back"
+        echo ""
+        read -p "Select option: " storage_choice
+        case $storage_choice in
+            1)
+                echo ""
+                read -p "Bucket name [models]: " bucket
+                bucket=${bucket:-models}
+                read -p "Data connection namespace [$existing_ns]: " dc_ns
+                dc_ns=${dc_ns:-$existing_ns}
+                "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
+                    --namespace "$existing_ns" \
+                    --bucket "$bucket" \
+                    --data-connection-ns "$dc_ns"
+                return $?
+                ;;
+            2) ;;
+            *) return 0 ;;
+        esac
     fi
     
     echo ""
@@ -95,7 +112,7 @@ download_hf_model_interactive() {
     if [ -z "$minio_ns" ]; then
         print_warning "MinIO not found. Please set up model storage first."
         echo ""
-        echo "Run option 3 (Setup Model Storage) to deploy MinIO."
+        echo "Run option 4 (Setup Model Storage) to deploy MinIO."
         return 1
     fi
     
@@ -142,7 +159,6 @@ download_hf_model_interactive() {
         echo "Creating data connection..."
         "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
             --namespace "$minio_ns" \
-            --skip-data-connection \
             --data-connection-ns "$job_ns" 2>/dev/null || true
     fi
     

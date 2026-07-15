@@ -341,6 +341,9 @@ print_step "Creating bucket: $BUCKET_NAME"
 # Get MinIO internal URL
 MINIO_INTERNAL_URL="http://minio.${NAMESPACE}.svc:9000"
 
+# Delete previous job if it exists (Jobs are immutable)
+oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+
 # Create a job to create the bucket
 cat <<EOF | oc apply -n "$NAMESPACE" -f -
 apiVersion: batch/v1
@@ -361,14 +364,13 @@ spec:
           - |
             set -e
             
+            export MC_CONFIG_DIR=/tmp/.mc
+
             # Wait for MinIO
             echo "Waiting for MinIO..."
-            until curl -sf http://minio:9000/minio/health/live; do
+            until mc alias set myminio http://minio:9000 "${MINIO_USER}" "${MINIO_PASSWORD}" 2>/dev/null; do
               sleep 2
             done
-            
-            # Configure mc
-            mc alias set myminio http://minio:9000 "${MINIO_USER}" "${MINIO_PASSWORD}"
             
             # Create bucket if not exists
             if mc ls myminio/${BUCKET_NAME} 2>/dev/null; then
@@ -388,9 +390,9 @@ print_info "Waiting for bucket creation..."
 if oc wait --for=condition=complete job/create-bucket -n "$NAMESPACE" --timeout=120s 2>/dev/null; then
     print_success "Bucket ready"
 else
-    print_warn "Bucket creation job did not complete in 120s"
+    print_warning "Bucket creation job did not complete in 120s"
     oc logs job/create-bucket -n "$NAMESPACE" 2>/dev/null | tail -5
-    print_warn "Check MinIO health and retry: oc delete job create-bucket -n $NAMESPACE && re-run this script"
+    print_warning "Check MinIO health and retry: oc delete job create-bucket -n $NAMESPACE && re-run this script"
 fi
 oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
 
@@ -442,7 +444,7 @@ metadata:
     opendatahub.io/managed: "true"
   annotations:
     opendatahub.io/connection-type: s3
-    openshift.io/display-name: "Model Storage (MinIO)"
+    openshift.io/display-name: "Model Storage - MinIO"
 type: Opaque
 stringData:
   AWS_ACCESS_KEY_ID: "${MINIO_USER}"
