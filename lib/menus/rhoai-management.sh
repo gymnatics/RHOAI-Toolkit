@@ -105,7 +105,7 @@ quick_start_wizard() {
     read -p "Deploy model? (Y/n): " deploy_prompt
     
     if [[ ! "$deploy_prompt" =~ ^[Nn]$ ]]; then
-        if deploy_model_interactive; then
+        if deploy_model_from_menu; then
             print_success "✓ Model deployed"
             local model_deployed=true
         else
@@ -293,7 +293,7 @@ model_management_submenu() {
         
         case $model_choice in
             1)
-                deploy_model_interactive
+                deploy_model_from_menu
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
@@ -414,7 +414,7 @@ ai_services_submenu() {
 demos_submenu() {
     while true; do
         show_demos_submenu
-        read -p "Select an option (1-16, 0): " demo_choice
+        read -p "Select an option (1-19, 0): " demo_choice
         
         case $demo_choice in
             1)
@@ -492,7 +492,17 @@ demos_submenu() {
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
-            16)
+            17)
+                bash "$SCRIPT_DIR/demo/mlflow-tracing-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            18)
+                bash "$SCRIPT_DIR/demo/lightspeed-demo/deploy.sh" deploy
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            19)
                 bash "$SCRIPT_DIR/scripts/deploy-demo-environment.sh" --skip-core
                 echo ""
                 read -p "Press Enter to continue..."
@@ -501,7 +511,7 @@ demos_submenu() {
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-16 or 0."
+                print_error "Invalid option. Please select 1-19 or 0."
                 sleep 1
                 ;;
         esac

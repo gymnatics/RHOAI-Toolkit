@@ -254,9 +254,9 @@ configure_vllm_provider() {
         echo ""
     fi
     
-    read -p "vLLM/Model Serving URL (e.g., https://model-name.apps.cluster.example.com): " VLLM_URL
-    if [ -z "$VLLM_URL" ]; then
-        print_error "vLLM URL is required"
+    read -p "vLLM Base URL (e.g., https://model-name.apps.cluster.example.com/v1): " VLLM_BASE_URL
+    if [ -z "$VLLM_BASE_URL" ]; then
+        print_error "vLLM Base URL is required"
         return 1
     fi
     
@@ -267,7 +267,7 @@ configure_vllm_provider() {
     
     print_step "Creating vLLM secret..."
     export NAMESPACE="$target_ns"
-    export VLLM_URL
+    export VLLM_BASE_URL
     export VLLM_API_TOKEN="${VLLM_API_TOKEN:-}"
     envsubst < "$ROOT_DIR/lib/manifests/llamastack/vllm-secret.yaml" | oc apply -f -
     unset NAMESPACE
@@ -277,14 +277,12 @@ configure_vllm_provider() {
         valueFrom:
           secretKeyRef:
             name: vllm-secret
-            key: url
+            key: base-url
       - name: VLLM_API_TOKEN
         valueFrom:
           secretKeyRef:
             name: vllm-secret
             key: api-token
-      - name: VLLM_TLS_VERIFY
-        value: "false"
       - name: VLLM_MAX_TOKENS
         value: "4096"
 ENVEOF
@@ -499,10 +497,9 @@ deploy_llamastack_distribution_generic() {
         mcp_name="${mcp_name:-custom-mcp}"
         read -p "MCP Server URL (e.g., http://my-mcp-server.ns.svc.cluster.local:8000/mcp): " mcp_url
         if [ -n "$mcp_url" ]; then
-            mcp_config="    - toolgroup_id: mcp::$mcp_name
-      provider_id: model-context-protocol
-      mcp_endpoint:
-        uri: $mcp_url"
+            mcp_config="    - connector_id: $mcp_name
+      connector_type: mcp
+      url: $mcp_url"
         fi
     fi
     
@@ -511,10 +508,10 @@ deploy_llamastack_distribution_generic() {
     if [ -n "$mcp_config" ]; then
         sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" \
             -e "s/MODEL_ID_PLACEHOLDER/$MODEL_ID/g" \
-            -e "s|uri: http://weather-mcp-server.*|# Custom MCP configured below|g" \
+            -e "s|url: http://weather-mcp-server.*|# Custom MCP configured below|g" \
             "$CONFIG_FILE" | \
         awk -v mcp="$mcp_config" '
-            /toolgroup_id: mcp::weather-data/ { 
+            /connector_id: weather-data/ { 
                 print mcp
                 getline; getline; getline
                 next
@@ -526,7 +523,7 @@ deploy_llamastack_distribution_generic() {
             -e "s/MODEL_ID_PLACEHOLDER/$MODEL_ID/g" \
             "$CONFIG_FILE" | \
         awk '
-            /toolgroup_id: mcp::weather-data/,/uri:.*mcp$/ { next }
+            /connector_id: weather-data/,/url:.*mcp$/ { next }
             { print }
         ' | oc apply -f -
     fi
@@ -898,12 +895,11 @@ deploy_complete_llamastack_demo() {
     echo -e "   ${GREEN}https://$route_url${NC}"
     echo ""
     echo -e "${YELLOW}⚠️  Important: Register MCP with LlamaStack${NC}"
-    echo "   Add to your LlamaStack config under tool_groups:"
+    echo "   Add to your LlamaStack config under connectors:"
     echo ""
-    echo "   - toolgroup_id: mcp::weather-data"
-    echo "     provider_id: model-context-protocol"
-    echo "     mcp_endpoint:"
-    echo "       uri: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
+    echo "   - connector_id: weather-data"
+    echo "     connector_type: mcp"
+    echo "     url: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
     echo ""
     echo "   Then restart LlamaStack to load the new tools."
     echo ""

@@ -193,7 +193,7 @@ download_hf_model_interactive() {
     return $result
 }
 
-deploy_model_interactive() {
+deploy_model_from_menu() {
     print_header "Deploy Model"
     
     if ! oc whoami &>/dev/null; then

@@ -139,8 +139,7 @@ spec:
             - provider_id: vllm-inference-1
               provider_type: remote::vllm
               config:
-                url: https://llama-32-3b-instruct-ai-bu-shared.apps.cluster.example.com/v1
-                tls_verify: false
+                base_url: https://llama-32-3b-instruct-ai-bu-shared.apps.cluster.example.com/v1
         models:
           - provider_id: vllm-inference-1
             model_id: llama-32-3b-instruct
@@ -270,11 +269,11 @@ spec:
             - provider_id: vllm-inference-1
               provider_type: remote::vllm
               config:
-                url: https://llama-32-3b-instruct.../v1
+                base_url: https://llama-32-3b-instruct.../v1
             - provider_id: vllm-inference-2
               provider_type: remote::vllm
               config:
-                url: https://mistral-7b-instruct.../v1
+                base_url: https://mistral-7b-instruct.../v1
         models:
           - provider_id: vllm-inference-1
             model_id: llama-32-3b-instruct
@@ -303,7 +302,7 @@ data:
         - provider_id: remote::vllm
           provider_type: remote::vllm
           config:
-            url: https://llama-32-3b-instruct.../v1
+            base_url: https://llama-32-3b-instruct.../v1
     apis:
       - inference
     models:

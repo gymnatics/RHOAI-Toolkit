@@ -70,7 +70,7 @@ register_mcp_llamastack() {
     local mcp_url="$2"
     local namespace="$3"
     
-    print_step "Adding toolgroup '$toolgroup_id' to LlamaStack config..."
+    print_step "Adding connector '$toolgroup_id' to LlamaStack config..."
     
     if ! oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
         print_warning "LlamaStack config not found in namespace '$namespace'"
@@ -80,18 +80,17 @@ register_mcp_llamastack() {
     
     local current_config=$(oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}')
     
-    if echo "$current_config" | grep -q "toolgroup_id: $toolgroup_id"; then
-        print_info "Toolgroup '$toolgroup_id' already registered"
+    if echo "$current_config" | grep -q "connector_id: $toolgroup_id"; then
+        print_info "Connector '$toolgroup_id' already registered"
         return 0
     fi
     
-    print_info "Adding MCP toolgroup to LlamaStack config..."
+    print_info "Adding MCP connector to LlamaStack config..."
     print_warning "Manual step required: Edit the ConfigMap to add:"
     echo ""
-    echo "    - toolgroup_id: $toolgroup_id"
-    echo "      provider_id: model-context-protocol"
-    echo "      mcp_endpoint:"
-    echo "        uri: $mcp_url"
+    echo "    - connector_id: $toolgroup_id"
+    echo "      connector_type: mcp"
+    echo "      url: $mcp_url"
     echo ""
     print_info "Then restart LlamaStack: oc delete pod -l app=lsd-genai-playground -n $namespace"
 }
@@ -116,10 +115,10 @@ show_mcp_status() {
     fi
     echo ""
     
-    echo -e "${CYAN}LlamaStack Toolgroups:${NC}"
+    echo -e "${CYAN}LlamaStack Connectors:${NC}"
     if oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
         oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}' 2>/dev/null | \
-            grep "toolgroup_id: mcp::" | sed 's/.*toolgroup_id: /  - /' || echo "  No MCP toolgroups in $namespace"
+            grep "connector_id:" | sed 's/.*connector_id: /  - /' || echo "  No MCP connectors in $namespace"
     else
         echo "  LlamaStack config not found in $namespace"
     fi
@@ -140,7 +139,7 @@ try:
     tools = data if isinstance(data, list) else data.get('data', [])
     groups = {}
     for t in tools:
-        g = t.get('toolgroup_id', 'builtin')
+        g = t.get('connector_id', t.get('toolgroup_id', 'builtin'))
         if g not in groups:
             groups[g] = []
         groups[g].append(t.get('name', 'unknown'))
@@ -289,12 +288,11 @@ deploy_mcp_mongodb_only() {
         echo ""
         echo -e "${YELLOW}📝 Next Steps:${NC}"
         echo "   1. Register MCP server with LlamaStack:"
-        echo "      Add to your LlamaStack config under tool_groups:"
+        echo "      Add to your LlamaStack config under connectors:"
         echo ""
-        echo "      - toolgroup_id: mcp::weather-data"
-        echo "        provider_id: model-context-protocol"
-        echo "        mcp_endpoint:"
-        echo "          uri: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
+        echo "      - connector_id: weather-data"
+        echo "        connector_type: mcp"
+        echo "        url: http://weather-mcp-server.$target_ns.svc.cluster.local:8000/mcp"
         echo ""
         echo "   2. Restart LlamaStack to pick up the new tools"
         echo ""
@@ -477,11 +475,10 @@ deploy_kubernetes_mcp_server() {
     [ "$toolsets" = *"tekton"* ] && echo "  Tekton: start pipeline/task, get logs"
     echo ""
     echo -e "${YELLOW}Use with LlamaStack:${NC}"
-    echo "  tool_groups:"
-    echo "  - toolgroup_id: mcp::kubernetes"
-    echo "    provider_id: model-context-protocol"
-    echo "    mcp_endpoint:"
-    echo "      uri: $mcp_url"
+    echo "  connectors:"
+    echo "  - connector_id: kubernetes"
+    echo "    connector_type: mcp"
+    echo "    url: $mcp_url"
     echo ""
     
     read -p "Register in AI Asset endpoints (shows in RHOAI UI)? (Y/n): " register_ai

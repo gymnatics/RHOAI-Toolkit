@@ -8,21 +8,23 @@ _WORKSHOP_MENU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 show_workshop_setup_menu() {
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║         Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop)      ║${NC}"
+    echo -e "${CYAN}║          Workshop Demo Setup (RHOAI 3.4 + OpenWebUI)           ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}This sets up a complete workshop environment including:${NC}"
-    echo "  • RHOAI 2.25 installation (NFD, GPU Operator, dependencies)"
-    echo "  • GPU MachineSet creation"
+    echo "  • RHOAI 3.4 installation (NFD, GPU Operator, dependencies)"
+    echo "  • GPU hardware profile and MachineSet creation"
     echo "  • Worker node scaling"
     echo "  • Workshop users (htpasswd authentication)"
     echo "  • User workload monitoring (Prometheus)"
     echo "  • Grafana with pre-configured dashboards"
-    echo "  • Admin model deployment (qwen3-4b)"
-    echo "  • LlamaStack and MCP Server"
-    echo "  • AnythingLLM workbench image"
+    echo "  • Admin model deployment (qwen3-4b with tool calling)"
+    echo "  • Kubernetes MCP Server (tool calling)"
+    echo "  • LlamaStack operator (unified API layer)"
     echo ""
-    echo -e "${MAGENTA}Workshop Guide:${NC} https://github.com/cbtham/rhoai-genai-workshop"
+    echo -e "${CYAN}Participants deploy LlamaStack + OpenWebUI in their own namespaces.${NC}"
+    echo ""
+    echo -e "${MAGENTA}Workshop Guide:${NC} https://github.com/gymnatics/Red-Hat-Inference-Workshop"
     echo ""
     echo -e "${YELLOW}1)${NC} Complete Workshop Setup ${GREEN}[Full - Recommended]${NC}"
     echo "    Install everything from scratch"
@@ -34,7 +36,7 @@ show_workshop_setup_menu() {
     echo "    Create htpasswd users and RBAC"
     echo ""
     echo -e "${YELLOW}4)${NC} Deploy Admin Model and MCP Server Only"
-    echo "    Deploy qwen3-4b, LlamaStack, MCP server"
+    echo "    Deploy qwen3-4b (tool calling) + Kubernetes MCP server"
     echo ""
     echo -e "${YELLOW}5)${NC} Setup Grafana and Dashboards Only"
     echo "    Deploy Grafana with vLLM and DCGM dashboards"
@@ -77,7 +79,10 @@ workshop_setup_menu() {
                 echo ""
                 read -p "Number of users [150]: " user_count
                 user_count=${user_count:-150}
-                
+
+                print_step "Creating GPU hardware profile..."
+                oc apply -f "$_WORKSHOP_MENU_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml" 2>/dev/null || true
+
                 setup_user_workload_monitoring
                 setup_workshop_users "$user_count"
                 setup_workshop_grafana

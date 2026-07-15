@@ -44,13 +44,13 @@ register_mcp_llamastack_interactive() {
     print_header "Register MCP in LlamaStack Config"
     
     local namespace=$(oc project -q 2>/dev/null)
-    echo "This adds an MCP toolgroup to LlamaStack for tool calling"
+    echo "This adds an MCP connector to LlamaStack for tool calling"
     echo "Current namespace: $namespace"
     echo ""
     
-    read -p "Toolgroup ID (e.g., mcp::my-tools): " toolgroup_id
+    read -p "Connector ID (e.g., my-tools): " toolgroup_id
     if [ -z "$toolgroup_id" ]; then
-        print_error "Toolgroup ID is required"
+        print_error "Connector ID is required"
         return 1
     fi
     
@@ -269,7 +269,7 @@ setup_llamastack_interactive() {
         echo "      curl http://llamastack-demo-service.$target_ns.svc.cluster.local:8321/v1/models"
         echo ""
         echo "   2. Add MCP servers (optional):"
-        echo "      Edit the ConfigMap to add tool_groups with mcp_endpoint"
+        echo "      Edit the ConfigMap to add connectors with connector_id and url"
         echo ""
         echo "   3. Use from your application:"
         echo "      from llama_stack_client import LlamaStackClient"

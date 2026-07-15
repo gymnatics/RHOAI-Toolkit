@@ -1899,11 +1899,10 @@ Dashboard → Settings → AI asset endpoints → Add endpoint:
 
 **Use with LlamaStack:**
 ```yaml
-tool_groups:
-- toolgroup_id: mcp::kubernetes
-  provider_id: model-context-protocol
-  mcp_endpoint:
-    uri: http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
+connectors:
+- connector_id: kubernetes
+  connector_type: mcp
+  url: http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
 ```
 
 **Available toolset options:** `core`, `config`, `events`, `helm`, `tekton`, `exec`

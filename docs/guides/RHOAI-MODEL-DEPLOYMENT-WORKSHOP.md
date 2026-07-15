@@ -1,8 +1,8 @@
 # Red Hat OpenShift AI — Model Deployment Workshop
 
-> A hands-on guide for deploying AI models on Red Hat OpenShift AI (RHOAI) 3.4 via the web UI, and testing them with the AI Playground.
+> A hands-on guide for deploying AI models on Red Hat OpenShift AI (RHOAI) 3.4, testing them with the AI Playground, deploying Open WebUI as a chat interface, and enabling tool calling via MCP servers.
 
-**Total time:** ~1.5 hours
+**Total time:** ~2.5 hours
 
 ---
 
@@ -13,19 +13,26 @@ By the end of this workshop, you will:
 - Create a Data Science project in OpenShift AI
 - Deploy an AI model (Qwen3-4B) using the vLLM runtime via the dashboard
 - Enable the AI Playground and chat with your model
-- Understand hardware profiles and model serving configuration
+- Deploy LlamaStack as a unified API layer for inference and tool calling
+- Deploy Open WebUI as a self-hosted chat interface
+- Connect Open WebUI to LlamaStack and add an MCP server for live cluster querying
+- Understand hardware profiles, model serving, LlamaStack, and agentic AI concepts
 
 ### Workshop Structure
 
 
-| Part                             | Type           | Duration |
-| -------------------------------- | -------------- | -------- |
-| Part 1: Access OpenShift AI      | Hands-on       | ~10 min  |
-| Part 2: Create Your Project      | Hands-on       | ~5 min   |
-| Part 3: Deploy a Model           | Hands-on       | ~15 min  |
-| Part 4: Wait for Model & Monitor | Hands-on       | ~10 min  |
-| Part 5: Test with AI Playground  | Hands-on       | ~15 min  |
-| Appendix: Good to Know           | Optional       | —        |
+| Part                                    | Type           | Duration |
+| --------------------------------------- | -------------- | -------- |
+| Part 1: Access OpenShift AI             | Hands-on       | ~10 min  |
+| Part 2: Create Your Project             | Hands-on       | ~5 min   |
+| Part 3: Deploy a Model                  | Hands-on       | ~15 min  |
+| Part 4: Wait for Model & Monitor        | Hands-on       | ~10 min  |
+| Part 5: Test with AI Playground         | Hands-on       | ~15 min  |
+| Part 6: Deploy LlamaStack               | Hands-on       | ~10 min  |
+| Part 7: Deploy Open WebUI               | Hands-on       | ~10 min  |
+| Part 8: Connect OpenWebUI + Add MCP     | Hands-on       | ~10 min  |
+| Part 9: Test Tool Calling with MCP      | Hands-on       | ~10 min  |
+| Appendix: Good to Know                  | Optional       | —        |
 
 
 ---
@@ -355,6 +362,431 @@ The Playground's **Configure** panel on the left side lets you adjust the Temper
 
 ---
 
+# Part 6: Deploy LlamaStack (10 min)
+
+In the previous section, you tested your model using the built-in AI Playground. Now you'll deploy **LlamaStack** — a unified API layer that brings together inference, tool calling (MCP), and RAG under a single Kubernetes-managed endpoint.
+
+## What is LlamaStack?
+
+LlamaStack is a developer framework for building generative AI applications. On RHOAI, it's managed by the **LlamaStack Operator** — you deploy a `LlamaStackDistribution` custom resource, and the operator creates and manages the LlamaStack server for you.
+
+**Why LlamaStack?** Instead of connecting to the model and MCP servers separately, LlamaStack provides a **single endpoint** that handles:
+- **Inference** — forwards requests to your LLM (vLLM/RHOAI)
+- **Tool calling** — executes MCP tools on behalf of the model
+
+Your instructor has already deployed a shared model (qwen3-4b with tool calling) and a Kubernetes MCP server. You'll deploy LlamaStack in your own namespace, pointing to these shared services.
+
+## Step 6.1: Set Up Your Environment
+
+Open a terminal (or use the OpenShift Web Terminal) and set your environment variables. Replace the values with your assigned user number and the token provided by your instructor.
+
+```bash
+# Set your namespace (replace XX with your number)
+export NAMESPACE=user-XX
+
+# Set the model token (provided by your instructor)
+export MODEL_TOKEN=<paste-token-here>
+```
+
+## Step 6.2: Deploy LlamaStack
+
+Run the following command to deploy the LlamaStack Secret, ConfigMap, and Distribution CR in your namespace:
+
+```bash
+cat <<EOF | oc apply -f -
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vllm-secret
+  namespace: $NAMESPACE
+type: Opaque
+stringData:
+  base-url: "http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1"
+  api-token: "$MODEL_TOKEN"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llamastack-workshop-config
+  namespace: $NAMESPACE
+  labels:
+    llamastack.io/distribution: llamastack-workshop
+    opendatahub.io/dashboard: "true"
+data:
+  run.yaml: |
+    version: "2"
+    image_name: rh
+    apis:
+    - inference
+    - tool_runtime
+    providers:
+      inference:
+      - provider_id: vllm-inference
+        provider_type: remote::vllm
+        config:
+          base_url: http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1
+          max_tokens: 4096
+          api_token: placeholder
+      tool_runtime:
+      - provider_id: model-context-protocol
+        provider_type: remote::model-context-protocol
+        config: {}
+    connectors:
+    - connector_id: kubernetes
+      connector_type: mcp
+      url: http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp
+    metadata_store:
+      type: sqlite
+      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
+    models:
+    - provider_id: vllm-inference
+      model_id: qwen3-4b
+      provider_model_id: qwen3-4b
+      model_type: llm
+      metadata:
+        display_name: Qwen3-4B
+    shields: []
+    server:
+      port: 8321
+---
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: llamastack-workshop
+  namespace: $NAMESPACE
+  annotations:
+    openshift.io/display-name: LlamaStack Workshop
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  replicas: 1
+  server:
+    distribution:
+      name: rh-dev
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      command:
+      - /bin/sh
+      - -c
+      - llama stack run /etc/llama-stack/run.yaml
+      env:
+      - name: VLLM_URL
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: base-url
+      - name: VLLM_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: api-token
+      - name: FMS_ORCHESTRATOR_URL
+        value: http://localhost
+      - name: LLAMA_STACK_CONFIG_DIR
+        value: /opt/app-root/src/.llama/distributions/rh/
+      resources:
+        requests:
+          cpu: 250m
+          memory: 500Mi
+        limits:
+          cpu: "2"
+          memory: 8Gi
+    userConfig:
+      configMapName: llamastack-workshop-config
+EOF
+```
+
+> **What just happened?** You created three Kubernetes resources:
+> - A **Secret** with the shared model's URL and authentication token
+> - A **ConfigMap** with LlamaStack's `run.yaml` configuration — this tells LlamaStack where to find the model and the MCP server
+> - A **LlamaStackDistribution** custom resource — the LlamaStack Operator sees this and deploys a LlamaStack server pod in your namespace
+
+## Step 6.3: Wait for LlamaStack to Start
+
+```bash
+oc wait --for=condition=available deployment -l llamastack.io/distribution=llamastack-workshop \
+  -n $NAMESPACE --timeout=120s
+```
+
+This typically takes 1-2 minutes. When ready, verify:
+
+```bash
+oc get pods -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop
+```
+
+You should see a pod in `Running` state.
+
+> **Tip:** If the pod is in `CrashLoopBackOff`, check the logs: `oc logs -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop`
+
+---
+
+# Part 7: Deploy Open WebUI (10 min)
+
+Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to ChatGPT) that you'll connect to your LlamaStack instance.
+
+## Step 7.1: Deploy Open WebUI
+
+Make sure your `NAMESPACE` variable is still set, then apply the manifest:
+
+```bash
+cat <<EOF | oc apply -f -
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-config
+  namespace: $NAMESPACE
+data:
+  ENABLE_OLLAMA_API: "False"
+  OPENAI_API_BASE_URLS: "http://llamastack-workshop-service.$NAMESPACE.svc.cluster.local:8321/v1"
+  OPENAI_API_KEYS: ""
+  WEBUI_AUTH: "False"
+  WEBUI_SECRET_KEY: "rhoai-workshop-secret-key"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+  namespace: $NAMESPACE
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  namespace: $NAMESPACE
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:main
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: openwebui-config
+          env:
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "False"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: $NAMESPACE
+  labels:
+    app: open-webui
+spec:
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: open-webui
+  namespace: $NAMESPACE
+  labels:
+    app: open-webui
+spec:
+  to:
+    kind: Service
+    name: open-webui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+EOF
+```
+
+> **Notice:** The `OPENAI_API_BASE_URLS` in the ConfigMap points to your LlamaStack instance — not directly to the model. LlamaStack acts as the unified API layer between OpenWebUI and the backend services.
+
+## Step 7.2: Wait for Open WebUI
+
+```bash
+oc rollout status deployment/open-webui -n $NAMESPACE --timeout=120s
+```
+
+## Step 7.3: Access Open WebUI
+
+```bash
+echo "https://$(oc get route open-webui -n $NAMESPACE -o jsonpath='{.spec.host}')"
+```
+
+Open this URL in your browser. If you see a sign-up page, create any account — authentication is disabled for the workshop.
+
+## Step 7.4: Quick Test
+
+1. Click **"New Chat"**
+2. Select `qwen3-4b` from the model dropdown
+3. Type: `Hello, what model are you?`
+4. Verify you get a response — this confirms OpenWebUI → LlamaStack → vLLM is working
+
+> **Note:** When calling the LlamaStack API directly (e.g., via `curl`), the full model ID is `vllm-inference/qwen3-4b`. The OpenWebUI dropdown shows the short name.
+
+---
+
+# Part 8: Add MCP Server — Tool Calling (10 min)
+
+Your LlamaStack instance already knows about the Kubernetes MCP server (it's in the `connectors` config). But for OpenWebUI to execute tool calls, you need to connect OpenWebUI **directly** to the MCP server as well.
+
+## What is MCP?
+
+**Model Context Protocol (MCP)** is a standard that lets LLMs call external tools. Instead of relying only on training data, the model can make tool calls to fetch live information — like listing pods, checking deployments, or viewing cluster status.
+
+Your instructor has deployed a **Kubernetes MCP Server** that provides tools for querying the OpenShift cluster.
+
+## Step 8.1: Add the MCP Server to Open WebUI
+
+1. In Open WebUI, click the **gear icon** (bottom-left) to open **Settings**
+2. Navigate to **Admin Settings** (you may need to click your avatar/name → Admin Panel)
+3. Go to **Settings** → **Tools** (or **External Tools**)
+4. Click **+ Add Connection**
+5. Configure:
+
+   | Field | Value |
+   |-------|-------|
+   | **Type** | **MCP (Streamable HTTP)** |
+   | **URL** | `http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp` |
+   | **Auth** | **None** |
+
+6. Click **Save**
+
+## Step 8.2: Verify Tools Are Available
+
+After saving, you should see the Kubernetes MCP Server listed with its available tools. Common tools include:
+
+- **list_pods** — List pods in a namespace
+- **get_pod** — Get details of a specific pod
+- **list_deployments** — List deployments
+- **list_services** — List services
+- **get_logs** — Get pod logs
+- **list_namespaces** — List cluster namespaces
+
+> If tools don't appear immediately, try refreshing the page.
+
+---
+
+# Part 9: Test Tool Calling with MCP (10 min)
+
+Now test the model's ability to use MCP tools to query your cluster in real time.
+
+## Step 9.1: Start a New Chat
+
+1. Click **"New Chat"**
+2. Select `qwen3-4b` from the model dropdown
+3. Make sure **Function Calling** is enabled (check in the chat settings/advanced params — it should be set to **Native**)
+
+## Step 9.2: Try These Prompts
+
+Ask the model questions that require cluster data. Watch how it makes tool calls to the Kubernetes MCP server:
+
+**Query your own namespace:**
+```
+What pods are running in the user-XX namespace?
+```
+
+**Check model deployments:**
+```
+List all InferenceServices across all namespaces. Which ones are ready?
+```
+
+**Explore the cluster:**
+```
+What GPU nodes are available in this cluster? How much GPU memory do they have?
+```
+
+**Troubleshoot a deployment:**
+```
+Check the status of the qwen3-4b deployment in the admin-workshop namespace. Is it healthy?
+```
+
+**Get logs:**
+```
+Show me the recent logs from the kubernetes-mcp-server pod in admin-workshop namespace.
+```
+
+## Step 9.3: Observe Tool Calling in Action
+
+When the model uses an MCP tool, you'll see:
+
+1. The model decides which tool to call based on your question
+2. A **tool call** is displayed showing the function name and parameters
+3. The **tool response** returns real data from the cluster
+4. The model uses the real data to formulate its answer
+
+This is **agentic AI** in action — the model is not guessing, it's querying live infrastructure.
+
+## Step 9.4: Understand the Architecture
+
+Take a moment to appreciate what you've built:
+
+```
+You (browser)
+  → Open WebUI (chat interface in your namespace)
+    → LlamaStack (unified API layer in your namespace)
+      → vLLM model (shared, in admin-workshop)
+    → Kubernetes MCP Server (shared, in admin-workshop)
+      → OpenShift API (live cluster data)
+```
+
+- **LlamaStack** provides the unified API layer — one Kubernetes CR gives you inference and tool calling under a single endpoint
+- **Open WebUI** provides the chat interface and handles MCP tool execution
+- **MCP** provides the tools that let the model interact with real infrastructure
+
+> **Compare:** Try asking the same question in the AI Playground (Part 5). The Playground model will answer from training data only — it doesn't know what's actually running on your cluster. The MCP-connected model gives you real answers.
+
+---
+
 # Appendix: Good to Know
 
 These are optional topics for further exploration after the workshop.
@@ -410,13 +842,17 @@ You've completed the Model Deployment Workshop!
 ## What You Accomplished
 
 
-| Task                                       | Status |
-| ------------------------------------------ | ------ |
-| Logged into OpenShift AI                   | Done   |
-| Created a Data Science project             | Done   |
-| Deployed a model with vLLM runtime         | Done   |
-| Monitored deployment status                | Done   |
-| Tested the model via the AI Playground     | Done   |
+| Task                                                    | Status |
+| ------------------------------------------------------- | ------ |
+| Logged into OpenShift AI                                | Done   |
+| Created a Data Science project                          | Done   |
+| Deployed a model with vLLM runtime                      | Done   |
+| Monitored deployment status                             | Done   |
+| Tested the model via the AI Playground                  | Done   |
+| Deployed LlamaStack as a unified API layer              | Done   |
+| Deployed Open WebUI as a self-hosted chat interface     | Done   |
+| Added an MCP server for tool calling                    | Done   |
+| Tested agentic AI with live cluster queries             | Done   |
 
 
 ## What's Next?
@@ -426,7 +862,7 @@ After this workshop, you can explore:
 
 | Topic                          | Where to Learn More                                                                                                                         |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **MCP Tools**                  | Connect external tools (Weather, HR, etc.) to extend your model's capabilities. See [MCP Server Setup](MCP-SERVER-SETUP.md)                 |
+| **More MCP Tools**             | Deploy Weather, GitHub, or custom MCP servers for more tool capabilities. See [MCP Server Setup](MCP-SERVER-SETUP.md)                       |
 | **Models-as-a-Service (MaaS)** | API keys, subscriptions, and rate limiting for multi-tenant model access. See [MaaS Policy Enforcement](MAAS-POLICY-ENFORCEMENT.md)         |
 | **NeMo Guardrails**            | Add safety guardrails to your model responses. See [RHCL + Guardrails Architecture](RHCL-GUARDRAILS-ARCHITECTURE.md)                        |
 | **Model Registry**             | Version and manage your models. See [Model Registry](MODEL-REGISTRY.md)                                                                     |
@@ -470,6 +906,39 @@ After this workshop, you can explore:
 2. Ensure the model is registered as an AI asset endpoint
 3. Try refreshing the browser page
 4. Wait 1–2 minutes after the model becomes Available
+
+## "Open WebUI shows 'Connection error' or no models"
+
+**Cause:** Model URL or token is incorrect, or the model is not accessible from your namespace.
+
+**Fix:**
+
+1. Verify the model URL and token with your instructor
+2. Check that the model is running: `oc get inferenceservice qwen3-4b -n admin-workshop`
+3. In Open WebUI Settings → Connections, click the refresh icon to re-test
+4. Make sure the URL ends with `/v1`
+
+## "MCP tools don't appear in Open WebUI"
+
+**Cause:** MCP server URL is wrong, or the server is not running.
+
+**Fix:**
+
+1. Verify the MCP server is running: `oc get pods -n admin-workshop | grep mcp`
+2. Check the URL is exactly: `http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp`
+3. Make sure you selected **MCP (Streamable HTTP)** as the type (not OpenAPI)
+4. Try removing and re-adding the MCP server connection
+5. Refresh the Open WebUI page
+
+## "Model doesn't make tool calls"
+
+**Cause:** Function calling may not be enabled, or the model doesn't support tool calling.
+
+**Fix:**
+
+1. Make sure you're using the shared model (`qwen3-4b` from `admin-workshop`), not your own deployment
+2. In the chat, check that the MCP tools are enabled (look for a tools toggle)
+3. Be explicit in your prompt: "Use the available tools to check what pods are running in namespace user-XX"
 
 ## Still stuck?
 
@@ -526,55 +995,104 @@ This section is for workshop instructors setting up the environment.
 
 ## Pre-workshop Setup
 
-1. **Install RHOAI 3.4** using the automated script (no RHCL/MaaS needed):
+> **GPU Scaling:** Each participant deploys their own model (1 GPU each). For N participants, provision at least N GPU nodes using `scripts/create-gpu-machineset.sh`. A single GPU node can only serve 1-2 model deployments simultaneously. Without enough GPUs, participants will see models stuck in "Pending" status.
+
+### Option A: Automated (Recommended)
+
+Use the RHOAI Toolkit to set up everything:
+
+```bash
+./rhoai-toolkit.sh
+# Select option 4: Workshop Demo Setup (RHOAI 3.4 + OpenWebUI)
+# Select option 1: Complete Workshop Setup
+```
+
+This handles RHOAI 3.4 installation, GPU setup, user creation, Grafana dashboards, the shared model with tool calling, the Kubernetes MCP server, and enabling the LlamaStack operator.
+
+### Option B: Manual Steps
+
+1. **Install RHOAI 3.4** (no RHCL/MaaS needed for this workshop):
 
    ```bash
    ./scripts/install-rhoai-34.sh --skip-rhcl --skip-maas --setup-users --num-users <N> --user-password <password>
    ```
 
-   This installs RHOAI with direct model serving (Path A). Users will deploy models via the standard `InferenceService` path in the dashboard.
-
-2. **Verify GPU nodes** are available:
-
-   ```bash
-   oc get nodes -l nvidia.com/gpu.present=true
-   ```
-
-3. **Verify hardware profile** exists:
-
-   ```bash
-   oc get hardwareprofile gpu-profile -n redhat-ods-applications
-   ```
-
-   If missing, create it:
+2. **Create GPU hardware profile**:
 
    ```bash
    oc apply -f lib/manifests/rhoai/hardware-profile-gpu.yaml
    ```
 
-4. **Verify dashboard features** are enabled:
+3. **Deploy the shared model with tool calling** in `admin-workshop`:
 
    ```bash
-   oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
-     -o jsonpath='{.spec.dashboardConfig}' | jq '{disableModelCatalog, genAiStudio}'
+   oc new-project admin-workshop
+   oc apply -f lib/manifests/workshop/workshop-servingruntime.yaml
+   oc apply -f lib/manifests/workshop/workshop-inferenceservice.yaml
+   oc apply -f lib/manifests/workshop/workshop-model-service.yaml
+   oc create route edge qwen3-4b --service=qwen3-4b-external --port=8080 -n admin-workshop
    ```
 
-5. **Test a model deployment** yourself before the workshop to ensure images are cached on nodes.
+4. **Enable the LlamaStack operator** (participants deploy LlamaStack in their namespaces):
 
-6. **Review the guide images** in the `images/` directory to ensure they match your cluster's UI version.
+   ```bash
+   oc patch datasciencecluster default-dsc --type merge \
+     -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}'
+   ```
+
+5. **Deploy the Kubernetes MCP server** in `admin-workshop`:
+
+   ```bash
+   export NAMESPACE=admin-workshop CLUSTER_ROLE=view
+   export MCP_SERVER_IMAGE=quay.io/redhat-ai-services/kubernetes-mcp-server
+   export MCP_SERVER_ARGS='["--port=8080", "--read-only"]'
+   envsubst < lib/manifests/mcp/kubernetes-mcp-server.yaml | oc apply -f - -n admin-workshop
+   unset NAMESPACE CLUSTER_ROLE MCP_SERVER_IMAGE MCP_SERVER_ARGS
+   ```
+
+6. **Verify** everything is running:
+
+   ```bash
+   # GPU nodes
+   oc get nodes -l nvidia.com/gpu.present=true
+
+   # Hardware profile
+   oc get hardwareprofile gpu-profile -n redhat-ods-applications
+
+   # Shared model
+   oc get inferenceservice qwen3-4b -n admin-workshop
+
+   # MCP server
+   oc get pods -n admin-workshop -l app=kubernetes-mcp-server
+
+   # LlamaStack operator
+   oc get csv -n redhat-ods-operator | grep llamastack
+   ```
+
+7. **Get model token** to share with participants:
+
+   ```bash
+   SA_SECRET=$(oc get secret -n admin-workshop | grep "default-name-qwen3-4b-sa" | head -1 | awk '{print $1}')
+   oc get secret "$SA_SECRET" -n admin-workshop -o jsonpath='{.data.token}' | base64 -d
+   ```
+
+8. **Test a model deployment** yourself before the workshop to ensure images are cached on nodes.
 
 ## Workshop Credentials Template
 
 Provide each participant with:
 
 
-| Field                     | Value                                 |
-| ------------------------- | ------------------------------------- |
-| OpenShift AI Dashboard URL | `https://rh-ai.apps.<cluster-domain>` |
-| Login provider            | `htpasswd` or `workshop-users`        |
-| Username                  | `userXX`                              |
-| Password                  | (your chosen password)                |
-| User number (for project) | `XX`                                  |
+| Field                     | Value                                                                    |
+| ------------------------- | ------------------------------------------------------------------------ |
+| OpenShift AI Dashboard URL | `https://rh-ai.apps.<cluster-domain>`                                   |
+| Login provider            | `htpasswd` or `workshop-users`                                           |
+| Username                  | `userXX`                                                                 |
+| Password                  | (your chosen password)                                                   |
+| User number (for project) | `XX`                                                                     |
+| Shared Model URL          | `https://qwen3-4b-admin-workshop.<cluster-domain>/v1`                    |
+| Shared Model Token        | (from Step 6 above)                                                      |
+| MCP Server URL            | `http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp` |
 
 
 ---

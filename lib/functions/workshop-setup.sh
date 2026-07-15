@@ -1,12 +1,12 @@
 #!/bin/bash
 ################################################################################
-# workshop-setup.sh — Workshop environment setup (RHOAI 2.25 + GenAI Workshop)
+# workshop-setup.sh — Workshop environment setup (RHOAI 3.4 + OpenWebUI)
 ################################################################################
 # Provides:
 #   setup_workshop_users            — Create htpasswd users, OAuth, RBAC
 #   add_kubeadmin_to_rhods_admins   — Add kube:admin to rhods-admins group
 #   setup_workshop_grafana          — Deploy admin Grafana with dashboards
-#   setup_workshop_model_and_mcp    — Deploy qwen3-4b, LlamaStack, MCP server
+#   setup_workshop_model_and_mcp    — Deploy qwen3-4b (tool calling) + K8s MCP server
 #   setup_user_workload_monitoring  — Enable Prometheus UWM and vLLM metrics
 #   run_complete_workshop_setup     — Full workshop setup orchestrator
 #   create_gpu_machineset_for_workshop — Create AWS GPU MachineSet
@@ -233,25 +233,15 @@ setup_workshop_grafana() {
 }
 
 setup_workshop_model_and_mcp() {
-    print_header "Deploying Admin Model and MCP Server"
-    
+    print_header "Deploying Admin Model, MCP Server, and Enabling LlamaStack"
+
+    print_step "Enabling LlamaStack operator..."
+    oc patch datasciencecluster default-dsc --type merge \
+        -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}' 2>/dev/null || true
+    print_success "LlamaStack operator enabled"
+
     oc new-project admin-workshop 2>/dev/null || oc project admin-workshop 2>/dev/null || true
-    
-    if [ ! -d "/tmp/rhoai-genai-workshop" ]; then
-        print_step "Cloning workshop repository..."
-        cd /tmp
-        git clone https://github.com/cbtham/rhoai-genai-workshop.git
-    fi
-    cd /tmp/rhoai-genai-workshop
-    
-    print_step "Deploying MinIO..."
-    oc apply -f minio-setup.yaml -n admin-workshop
-    print_success "MinIO deployed"
-    
-    print_step "Registering AnythingLLM workbench image..."
-    oc apply -f "$ROOT_DIR/lib/manifests/workshop/anythingllm-imagestream.yaml"
-    print_success "AnythingLLM workbench image registered"
-    
+
     local gpu_nodes
     gpu_nodes=$(oc get nodes -l nvidia.com/gpu.present=true --no-headers 2>/dev/null | wc -l)
     if [ "$gpu_nodes" -eq 0 ]; then
@@ -264,20 +254,20 @@ setup_workshop_model_and_mcp() {
     else
         print_success "Found $gpu_nodes GPU node(s)"
     fi
-    
-    print_step "Deploying ServingRuntime..."
+
+    print_step "Deploying ServingRuntime (vLLM with tool calling)..."
     oc apply -f "$ROOT_DIR/lib/manifests/workshop/workshop-servingruntime.yaml"
     print_success "ServingRuntime created"
-    
+
     print_step "Deploying InferenceService (qwen3-4b)..."
     oc apply -f "$ROOT_DIR/lib/manifests/workshop/workshop-inferenceservice.yaml"
     print_success "InferenceService created"
-    
+
     print_step "Creating external route for model..."
     oc apply -f "$ROOT_DIR/lib/manifests/workshop/workshop-model-service.yaml"
     oc create route edge qwen3-4b --service=qwen3-4b-external --port=8080 -n admin-workshop 2>/dev/null || true
     print_success "External route created"
-    
+
     print_step "Waiting for model to be ready (this may take 5-10 minutes)..."
     local timeout=600
     local elapsed=0
@@ -292,46 +282,52 @@ setup_workshop_model_and_mcp() {
         sleep 30
         elapsed=$((elapsed + 30))
     done
-    
-    print_step "Deploying LlamaStack and MCP Server..."
-    
-    export MODEL_NAME="qwen3-4b"
-    export MODEL_NAMESPACE="admin-workshop"
-    
-    sleep 10
+
+    print_step "Deploying Kubernetes MCP Server..."
+
+    local mcp_image="quay.io/redhat-ai-services/kubernetes-mcp-server"
+    local mcp_args='["--port=8080", "--read-only"]'
+
+    export NAMESPACE="admin-workshop"
+    export CLUSTER_ROLE="view"
+    export MCP_SERVER_IMAGE="$mcp_image"
+    export MCP_SERVER_ARGS="$mcp_args"
+    envsubst < "$ROOT_DIR/lib/manifests/mcp/kubernetes-mcp-server.yaml" | oc apply -f - -n admin-workshop
+    unset NAMESPACE CLUSTER_ROLE MCP_SERVER_IMAGE MCP_SERVER_ARGS
+
+    print_step "Waiting for MCP Server to be ready..."
+    if oc rollout status deployment/kubernetes-mcp-server -n admin-workshop --timeout=180s 2>/dev/null; then
+        print_success "Kubernetes MCP Server is running"
+    else
+        print_warning "MCP Server may still be starting (check pods)"
+    fi
+
+    local cluster_domain
+    cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+
+    local model_token=""
     local sa_secret
     sa_secret=$(oc get secret -n admin-workshop 2>/dev/null | grep "default-name-qwen3-4b-sa" | head -1 | awk '{print $1}')
     if [ -n "$sa_secret" ]; then
-        export LLM_MODEL_TOKEN=$(oc get secret "$sa_secret" -n admin-workshop -o jsonpath='{.data.token}' | base64 -d)
-    else
-        print_warning "Model service account token not found, LlamaStack may not work correctly"
-        export LLM_MODEL_TOKEN="placeholder"
+        model_token=$(oc get secret "$sa_secret" -n admin-workshop -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
     fi
-    export LLM_MODEL_URL="https://${MODEL_NAME}-predictor.${MODEL_NAMESPACE}.svc.cluster.local:8443/v1"
-    
-    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/llama-stack/configmap.yaml | oc apply -f - -n admin-workshop
-    oc apply -f obs/llama-stack/llama-stack-server.yaml -n admin-workshop
-    oc apply -f obs/llama-stack/openshift-mcp.yaml -n admin-workshop
-    
-    export NAMESPACE="admin-workshop"
-    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/experimental/openshift-mcp/cluster-read-serviceaccount.yaml | oc apply -f -
-    
-    print_success "LlamaStack and MCP Server deployed"
-    
-    print_step "Preparing AnythingLLM MCP config..."
-    export MODEL_NAMESPACE="admin-workshop"
-    perl -pe 's/\$\{([^}]+)\}/$ENV{$1}/g' obs/experimental/anythingllm-mcp-config/anythingllm_mcp_servers.json > /tmp/anythingllm_mcp_servers.json
-    print_success "MCP config prepared at /tmp/anythingllm_mcp_servers.json"
-    echo "  To copy to AnythingLLM workbench, run:"
-    echo "  oc cp /tmp/anythingllm_mcp_servers.json anythingllm-0:/app/server/storage/plugins/anythingllm_mcp_servers.json -c anythingllm -n admin-workshop"
-    
-    local cluster_domain
-    cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-    
+
     print_success "Model and MCP Server deployment complete!"
     echo ""
-    echo -e "${GREEN}Model Endpoint:${NC} https://qwen3-4b-admin-workshop.${cluster_domain}"
-    echo -e "${GREEN}LlamaStack:${NC} https://llama-stack-admin-workshop.${cluster_domain}"
+    echo -e "${GREEN}Model Endpoint:${NC} https://qwen3-4b-admin-workshop.${cluster_domain}/v1"
+    if [ -n "$model_token" ]; then
+        echo -e "${GREEN}Model Token:${NC} $model_token"
+    fi
+    echo -e "${GREEN}MCP Server (internal):${NC} http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp"
+    echo -e "${GREEN}LlamaStack Operator:${NC} Enabled (participants deploy LlamaStackDistribution in their namespaces)"
+    echo ""
+    echo -e "${YELLOW}Share with participants:${NC}"
+    echo "  1. Model Token: (shown above)"
+    echo "  2. Workshop guide: https://github.com/gymnatics/Red-Hat-Inference-Workshop"
+    echo ""
+    echo -e "${YELLOW}Participants will deploy in their own namespaces:${NC}"
+    echo "  1. LlamaStack (unified API layer → shared model + MCP)"
+    echo "  2. OpenWebUI (chat interface → LlamaStack + MCP)"
 }
 
 setup_user_workload_monitoring() {
@@ -355,17 +351,21 @@ run_complete_workshop_setup() {
     local gpu_instance="${2:-g6e.xlarge}"
     local gpu_count="${3:-64}"
     local worker_count="${4:-12}"
-    
-    print_header "Complete Workshop Setup"
-    
+
+    print_header "Complete Workshop Setup (RHOAI 3.4 + OpenWebUI)"
+
     echo -e "${YELLOW}This will set up a complete workshop environment:${NC}"
-    echo "  • RHOAI 2.25 installation"
+    echo "  • RHOAI 3.4 installation"
+    echo "  • GPU hardware profile"
     echo "  • User Workload Monitoring (Prometheus)"
     echo "  • GPU MachineSet ($gpu_count x $gpu_instance)"
     echo "  • Worker nodes ($worker_count)"
     echo "  • Workshop users ($user_count users)"
     echo "  • Grafana with dashboards"
-    echo "  • Admin model (qwen3-4b) + MCP Server"
+    echo "  • Admin model (qwen3-4b with tool calling) + Kubernetes MCP Server"
+    echo "  • LlamaStack operator (participants deploy in their namespaces)"
+    echo ""
+    echo -e "${CYAN}Participants will deploy LlamaStack + OpenWebUI in their own namespaces.${NC}"
     echo ""
     read -p "Continue? (y/n): " -n 1 -r
     echo
@@ -373,26 +373,30 @@ run_complete_workshop_setup() {
         print_warning "Setup cancelled"
         return 0
     fi
-    
-    print_header "Step 1/7: Installing RHOAI 2.25"
-    install_rhoai_2x "2.25" "stable-2.25"
-    
-    print_header "Step 2/7: Enabling User Workload Monitoring"
+
+    print_header "Step 1/8: Installing RHOAI 3.4"
+    "$ROOT_DIR/scripts/install-rhoai-34.sh" --skip-admin-user --setup-users --num-users "$user_count"
+
+    print_header "Step 2/8: Creating GPU Hardware Profile"
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml"
+    print_success "GPU hardware profile created"
+
+    print_header "Step 3/8: Enabling User Workload Monitoring"
     setup_user_workload_monitoring
-    
-    print_header "Step 3/7: Creating GPU MachineSet"
+
+    print_header "Step 4/8: Creating GPU MachineSet"
     create_gpu_machineset_for_workshop "$gpu_instance" "$gpu_count"
-    
-    print_header "Step 4/7: Scaling Worker Nodes"
+
+    print_header "Step 5/8: Scaling Worker Nodes"
     scale_worker_nodes "$worker_count"
-    
-    print_header "Step 5/7: Setting Up Workshop Users"
+
+    print_header "Step 6/8: Setting Up Workshop Users"
     setup_workshop_users "$user_count"
-    
-    print_header "Step 6/7: Setting Up Grafana"
+
+    print_header "Step 7/8: Setting Up Grafana"
     setup_workshop_grafana
-    
-    print_header "Step 7/7: Deploying Model and MCP Server"
+
+    print_header "Step 8/8: Deploying Model and MCP Server"
     echo -e "${YELLOW}Note: Model deployment requires GPU nodes to be ready.${NC}"
     echo "Checking GPU node status..."
     local gpu_ready
@@ -402,10 +406,10 @@ run_complete_workshop_setup() {
     else
         print_warning "No GPU nodes ready yet. Run 'Deploy Admin Model and MCP Server' later."
     fi
-    
+
     local cluster_domain
     cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-    
+
     echo ""
     print_header "Workshop Setup Complete!"
     echo ""
@@ -414,15 +418,24 @@ run_complete_workshop_setup() {
     echo -e "${GREEN}GPU Nodes:${NC} $gpu_count x $gpu_instance (may still be provisioning)"
     echo -e "${GREEN}Worker Nodes:${NC} $worker_count"
     echo ""
+    local dashboard_url
+    if type get_dashboard_url &>/dev/null; then
+      dashboard_url=$(get_dashboard_url)
+    else
+      dashboard_url="https://rh-ai.apps.$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null)"
+    fi
+
     echo -e "${CYAN}URLs:${NC}"
     echo "  Console: https://console-openshift-console.${cluster_domain}"
-    echo "  RHOAI: https://rhods-dashboard-redhat-ods-applications.${cluster_domain}"
+    echo "  RHOAI: $dashboard_url"
     echo "  Grafana: https://grafana-grafana.${cluster_domain}"
-    echo "  Model: https://qwen3-4b-admin-workshop.${cluster_domain}"
+    echo "  Model: https://qwen3-4b-admin-workshop.${cluster_domain}/v1"
+    echo "  MCP: http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp"
     echo ""
     echo -e "${YELLOW}Next Steps:${NC}"
     echo "1. Wait for GPU nodes: oc get nodes -l nvidia.com/gpu.present=true -w"
     echo "2. If model not deployed, run option 4 from Workshop Setup menu"
+    echo "3. Share the workshop guide with participants"
     echo ""
 }
 
