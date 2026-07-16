@@ -120,6 +120,7 @@ RHOAI 3.x (Current):
 
 Management & Tools:
 9) Configure Kubeconfig [Connection]
+a) TLS Certificate Setup (Let's Encrypt / Self-signed)
 ```
 
 **What to do now:** Since there is no cluster yet, select `1`.
@@ -430,6 +431,62 @@ curl -k https://inference-gateway.apps.my-cluster.sandbox1785.opentlc.com/v1/mod
 
 ---
 
+## Step 7: TLS Certificate Setup (Optional)
+
+Replace the default self-signed certificates with trusted Let's Encrypt certificates. This eliminates browser security warnings for the RHOAI dashboard, console, and inference endpoints.
+
+### 7-1. Launch TLS Setup
+
+```bash
+./rhoai-toolkit.sh
+# Select a) TLS Certificate Setup
+```
+
+Or run directly:
+
+```bash
+./scripts/setup-letsencrypt-tls.sh
+```
+
+### 7-2. TLS Sub-menu
+
+```
+1) Let's Encrypt (Route53 DNS-01) [Recommended]
+   Trusted wildcard cert via ACME + AWS Route53
+2) Self-signed Certificate (OpenSSL)
+   Quick setup, but browsers will show warnings
+3) Show TLS Status
+4) Revert to Defaults
+```
+
+### 7-3. Let's Encrypt Flow
+
+The script will:
+1. Read AWS credentials from `~/.aws/credentials` (or prompt for input)
+2. Create a Route53 credentials Secret in cert-manager namespace
+3. Create a ClusterIssuer (production or staging)
+4. Request a wildcard Certificate (`*.apps.<cluster-domain>`)
+5. Wait for DNS-01 challenge completion (1-3 minutes)
+6. Apply the certificate to:
+   - OpenShift Ingress Router (default certificate)
+   - Gateway API (maas-default-gateway, openshift-ai-inference)
+   - KServe/Knative (DSC certificate type: Provided)
+
+> **Tip:** Use staging first to test, then switch to production. Let's Encrypt production has rate limits (50 certs/week per domain).
+
+### 7-4. Verify TLS
+
+```bash
+# Check certificate status
+./scripts/setup-letsencrypt-tls.sh status
+
+# Or manually
+oc get certificate -n openshift-ingress
+oc get clusterissuer
+```
+
+---
+
 ## Post-Installation Verification Commands
 
 ```bash
@@ -440,7 +497,28 @@ oc get nodes -l nvidia.com/gpu.present=true        # GPU nodes
 oc get hardwareprofiles -n redhat-ods-applications  # Hardware profiles
 oc get gateway -n openshift-ingress                 # MaaS gateway
 oc get inferenceservice -A                          # Deployed models
+oc get llminferenceservice -A                       # llm-d models
+oc get mcpserverregistration -A                     # MCP servers
+oc get certificate -n openshift-ingress             # TLS certificates
 ```
+
+### Dashboard Feature Flags
+
+The installer enables all RHOAI 3.4 features. To verify:
+
+```bash
+oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+  -o jsonpath='{.spec.dashboardConfig}' | python3 -m json.tool
+```
+
+Key flags (all should be set):
+- `genAiStudio: true` - Gen AI Studio menu
+- `modelAsService: true` - MaaS tab
+- `maasAuthPolicies: true` - Subscriptions & Auth Policies in Settings
+- `mcpCatalog: true` - MCP server catalog in AI Hub
+- `observabilityDashboard: true` - Observability dashboard
+- `llmGatewayField: true` - Gateway selector in model deployment
+- `disableKueue: false` - Kueue hardware profile integration
 
 ---
 
@@ -496,10 +574,12 @@ In sandbox environments such as the Red Hat Demo Platform, instance states may n
 
 | Step | Duration | Notes |
 |------|----------|-------|
-| Step 0: Environment setup | 5–10 min | Excluding tool installation |
-| Step 1: OpenShift installation | 30–45 min | Includes AWS infrastructure |
+| Step 0: Environment setup | 5-10 min | Excluding tool installation |
+| Step 1: OpenShift installation | 30-45 min | Includes AWS infrastructure |
 | Step 2: Connection verification | 2 min | |
-| Step 3: RHOAI installation | 20–30 min | 10 operators installed |
-| Step 4: GPU nodes | 5–10 min | Node provisioning |
-| Step 5: Model deployment | 5–15 min | Varies by model size |
-| **Total** | **~1 to 1.5 hours** | |
+| Step 3: RHOAI installation | 20-30 min | 10+ operators installed |
+| Step 4: GPU nodes | 5-10 min | Node provisioning |
+| Step 5: Model deployment | 5-15 min | Varies by model size |
+| Step 6: MaaS setup | 5 min | Optional |
+| Step 7: TLS certificates | 3-5 min | Optional, Let's Encrypt |
+| **Total** | **~1 to 1.5 hours** | Core steps (0-4) |

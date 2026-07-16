@@ -86,13 +86,35 @@ wait_for_operator() {
     local operator_name="$1"
     local namespace="$2"
     local timeout="${3:-$WAIT_TIMEOUT}"
-    
+
     print_step "Waiting for $operator_name operator to be ready..."
-    
+
     local elapsed=0
     local interval=10
-    
+    local approved_plans=""
+
     while [ $elapsed -lt $timeout ]; do
+        # Auto-approve any pending InstallPlans for this operator
+        local pending_plans=$(oc get installplan -n "$namespace" -o json 2>/dev/null | \
+            python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data.get('items', []):
+    csvs = item.get('spec', {}).get('clusterServiceVersionNames', [])
+    approved = item.get('spec', {}).get('approved', False)
+    name = item.get('metadata', {}).get('name', '')
+    if not approved and any('$operator_name' in c for c in csvs):
+        print(name)
+" 2>/dev/null)
+
+        for plan in $pending_plans; do
+            if [[ ! " $approved_plans " =~ " $plan " ]]; then
+                oc patch installplan "$plan" -n "$namespace" --type merge --patch '{"spec":{"approved":true}}' &>/dev/null
+                print_info "Auto-approved InstallPlan $plan for $operator_name"
+                approved_plans="$approved_plans $plan"
+            fi
+        done
+
         local status=$(oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | awk '{print $NF}')
         if [ "$status" = "Succeeded" ]; then
             print_success "$operator_name operator is ready"
@@ -102,7 +124,7 @@ wait_for_operator() {
         elapsed=$((elapsed + interval))
         echo -n "."
     done
-    
+
     echo ""
     print_error "$operator_name operator did not become ready within ${timeout}s"
     return 1

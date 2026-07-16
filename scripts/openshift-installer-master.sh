@@ -398,18 +398,19 @@ download_installer() {
     while true; do
         echo ""
         echo "Available OpenShift versions:"
-        echo "  1) 4.19 (latest 4.19.x)"
+        echo "  1) 4.21 (latest 4.21.x)"
         echo "  2) 4.20 (latest 4.20.x)"
-        echo "  3) 4.18 (latest 4.18.x)"
+        echo "  3) 4.19 (latest 4.19.x)"
         echo "  4) Custom version"
         echo ""
-        
-        read -p "$(echo -e ${BLUE}Select version${NC} [1]: )" version_choice
+
+        echo -e -n "${BLUE}Select version${NC} [1]: "
+        read version_choice
         version_choice="${version_choice:-1}"
-        
+
         case $version_choice in
             1)
-                VERSION="4.19"
+                VERSION="4.21"
                 break
                 ;;
             2)
@@ -417,11 +418,12 @@ download_installer() {
                 break
                 ;;
             3)
-                VERSION="4.18"
+                VERSION="4.19"
                 break
                 ;;
             4)
-                read -p "$(echo -e ${BLUE}Enter version (e.g., 4.19.5)${NC}: )" VERSION
+                echo -e -n "${BLUE}Enter version (e.g., 4.21.5)${NC}: "
+                read VERSION
                 if [ -n "$VERSION" ]; then
                     break
                 else
@@ -977,7 +979,8 @@ detect_and_choose_vpc() {
             if ! aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" &>/dev/null; then
                 print_error "VPC $VPC_ID not found in region $AWS_REGION"
                 echo ""
-                read -p "$(echo -e ${BLUE}Try again? (Y/n)${NC}: )" try_again
+                echo -e -n "${BLUE}Try again? (Y/n)${NC}: "
+                read try_again
                 if [[ "$try_again" =~ ^[Nn]$ ]]; then
                     return 1
                 fi
@@ -1103,7 +1106,8 @@ configure_cluster() {
     echo "  1) Standard  - Master 3 + Worker N (default, separate worker nodes)"
     echo "  2) Compact   - Master 3 only, masters are schedulable (no dedicated workers)"
     echo ""
-    read -p "$(echo -e ${BLUE}Select topology${NC} [1-2] (default: 1): )" TOPOLOGY_CHOICE
+    echo -e -n "${BLUE}Select topology${NC} [1-2] (default: 1): "
+    read TOPOLOGY_CHOICE
     TOPOLOGY_CHOICE="${TOPOLOGY_CHOICE:-1}"
 
     COMPACT_CLUSTER=false
@@ -1192,7 +1196,8 @@ use_existing_vpc() {
         --output table
     
     echo ""
-    read -p "$(echo -e ${BLUE}Subnet IDs${NC} (comma-separated): )" subnets_input
+    echo -e -n "${BLUE}Subnet IDs${NC} (comma-separated): "
+    read subnets_input
     
     if [ -z "$subnets_input" ]; then
         print_error "Subnet IDs are required"

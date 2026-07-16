@@ -98,6 +98,27 @@ End-to-end automation for:
 - **Resource naming** - Now uses `data-science-` prefix
 - **Feature Store visibility** - Stricter requirements for dashboard discovery
 
+### Dashboard Feature Flags (OdhDashboardConfig)
+The `enable_dashboard_features()` function in install scripts patches `OdhDashboardConfig` to activate menus.
+Many RHOAI 3.4 features default to `false` and must be explicitly enabled:
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `genAiStudio` | `false` | Gen AI Studio menu |
+| `modelAsService` | `false` | MaaS tab in AI asset endpoints |
+| `mcpCatalog` | `false` | AI Hub > MCP servers catalog (Dev Preview) |
+| `llmGatewayField` | `false` | Gateway selector in model deployment (TP) |
+| `observabilityDashboard` | `false` | Observe & monitor > Dashboard (TP) |
+| `promptManagement` | `false` | Prompt management in Gen AI Studio (TP) |
+| `vLLMDeploymentOnMaas` | `false` | vLLM deployment on MaaS option (TP) |
+| `deploymentWizardYAMLViewer` | `false` | YAML preview in deployment wizard |
+| `aiAssetCustomEndpoints` | `false` | Custom endpoint creation in Gen AI Studio |
+| `disableKueue` | `true` | Set to `false` to enable Kueue hardware profiles |
+| `disableLLMd` | `false` | llm-d distributed inference toggle |
+| `disableLMEval` | `true` | Set to `false` to show Eval Hub |
+
+**Reference**: [RHOAI 3.4 Dashboard Configuration](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/managing_resources/customizing-the-dashboard)
+
 ### Component Dependency Matrix (per [bryonbaker gist](https://gist.github.com/bryonbaker/7949f6d060181bfd6ae7a8ee2793207b))
 | Component | Required Dependencies |
 |-----------|----------------------|

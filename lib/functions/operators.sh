@@ -179,7 +179,11 @@ install_lws_operator() {
     print_step "Waiting for LWS operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n "$lws_namespace" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; do
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "leader-worker-set" "$lws_namespace"
+        if oc get csv -n "$lws_namespace" 2>/dev/null | grep -q "leader-worker-set.*Succeeded"; then
+            break
+        fi
         if [ $elapsed -ge $timeout ]; then
             print_warning "LWS operator not ready yet (continuing anyway)"
             return 1
@@ -221,15 +225,19 @@ install_certmanager_operator() {
     print_step "Waiting for cert-manager operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n "$cm_namespace" 2>/dev/null | grep -q "cert-manager-operator.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "cert-manager operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "openshift-cert-manager-operator" "$cm_namespace"
+        if oc get csv -n "$cm_namespace" 2>/dev/null | grep -q "cert-manager-operator.*Succeeded"; then
+            break
         fi
         echo "Waiting for cert-manager operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "cert-manager operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "cert-manager operator installation complete"
 }
@@ -268,15 +276,19 @@ install_kueue_operator() {
     print_step "Waiting for Kueue operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n openshift-operators 2>/dev/null | grep -q "kueue-operator.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "Kueue operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "kueue-operator" "openshift-operators"
+        if oc get csv -n openshift-operators 2>/dev/null | grep -q "kueue-operator.*Succeeded"; then
+            break
         fi
         echo "Waiting for Kueue operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "Kueue operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "Kueue operator installation complete"
 }
@@ -296,17 +308,21 @@ install_coo_operator() {
     
     # Wait for operator to be ready
     print_step "Waiting for COO operator to be ready..."
-    local timeout=180
+    local timeout=300
     local elapsed=0
-    until oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "COO operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "cluster-observability-operator" "openshift-operators"
+        if oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; then
+            break
         fi
         echo "Waiting for COO operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "COO operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "COO operator installation complete"
 }
@@ -328,15 +344,19 @@ install_opentelemetry_operator() {
     print_step "Waiting for OpenTelemetry operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "OpenTelemetry operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "opentelemetry-product" "openshift-opentelemetry-operator"
+        if oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry.*Succeeded"; then
+            break
         fi
         echo "Waiting for OpenTelemetry operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "OpenTelemetry operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "OpenTelemetry operator installation complete"
 }
@@ -358,15 +378,19 @@ install_tempo_operator() {
     print_step "Waiting for Tempo operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "Tempo operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "tempo-product" "openshift-tempo-operator"
+        if oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo.*Succeeded"; then
+            break
         fi
         echo "Waiting for Tempo operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "Tempo operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "Tempo operator installation complete"
 }
@@ -388,15 +412,19 @@ install_jobset_operator() {
     print_step "Waiting for JobSet operator to be ready..."
     local timeout=180
     local elapsed=0
-    until oc get csv -n jobset-system 2>/dev/null | grep -q "jobset.*Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "JobSet operator not ready yet (continuing anyway)"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        _auto_approve_installplans "jobset-operator" "jobset-system"
+        if oc get csv -n jobset-system 2>/dev/null | grep -q "jobset.*Succeeded"; then
+            break
         fi
         echo "Waiting for JobSet operator... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
+    if [ $elapsed -ge $timeout ]; then
+        print_warning "JobSet operator not ready yet (continuing anyway)"
+        return 1
+    fi
     
     print_success "JobSet operator installation complete"
 }

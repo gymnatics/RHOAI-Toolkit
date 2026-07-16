@@ -134,8 +134,34 @@ fi
 
 # --- Step 2: MCP Gateway ---
 if [ "$SERVERS_ONLY" != "true" ] && [ "$ROUTES_ONLY" != "true" ] && [ "$SKIP_GATEWAY" != "true" ]; then
-    print_header "Step 2: Deploying MCP Gateway Controller"
-    apply_with_envsubst "$MANIFESTS_DIR/mcp-gateway.yaml" "MCP Gateway controller + extension"
+    print_header "Step 2: Deploying MCP Gateway"
+
+    # 2a: Install CRDs (required before controller can start)
+    MCP_GATEWAY_VERSION="${MCP_GATEWAY_VERSION:-0.7.1}"
+    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null; then
+        print_info "MCP Gateway CRDs already installed"
+    else
+        print_step "Installing MCP Gateway CRDs (v${MCP_GATEWAY_VERSION})..."
+        if oc apply -k "https://github.com/kuadrant/mcp-gateway/config/crd?ref=v${MCP_GATEWAY_VERSION}"; then
+            print_success "MCP Gateway CRDs installed"
+        else
+            print_warning "Failed to install MCP Gateway CRDs - skipping MCP Gateway"
+        fi
+    fi
+
+    # 2b: Deploy controller (ServiceAccount, RBAC, Deployment)
+    apply_with_envsubst "$MANIFESTS_DIR/mcp-gateway.yaml" "MCP Gateway controller"
+
+    # 2c: Wait for controller to be ready
+    print_step "Waiting for MCP Gateway controller to be ready..."
+    oc rollout status deployment/mcp-gateway-controller -n mcp-gateway-system --timeout=120s 2>/dev/null || true
+
+    # 2d: Apply the MCPGatewayExtension CR
+    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null; then
+        apply_with_envsubst "$MANIFESTS_DIR/mcp-gateway-extension.yaml" "MCP Gateway extension"
+    else
+        print_warning "MCPGatewayExtension CRD not available - skipping extension"
+    fi
 fi
 
 # --- Step 3: Gateway Listener Patch ---

@@ -102,13 +102,35 @@ wait_for_operator() {
     local operator_name="$1"
     local namespace="$2"
     local timeout="${3:-$WAIT_TIMEOUT}"
-    
+
     print_step "Waiting for $operator_name operator to be ready..."
-    
+
     local elapsed=0
     local interval=10
-    
+    local approved_plans=""
+
     while [ $elapsed -lt $timeout ]; do
+        # Auto-approve any pending InstallPlans for this operator
+        local pending_plans=$(oc get installplan -n "$namespace" -o json 2>/dev/null | \
+            python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data.get('items', []):
+    csvs = item.get('spec', {}).get('clusterServiceVersionNames', [])
+    approved = item.get('spec', {}).get('approved', False)
+    name = item.get('metadata', {}).get('name', '')
+    if not approved and any('$operator_name' in c for c in csvs):
+        print(name)
+" 2>/dev/null)
+
+        for plan in $pending_plans; do
+            if [[ ! " $approved_plans " =~ " $plan " ]]; then
+                oc patch installplan "$plan" -n "$namespace" --type merge --patch '{"spec":{"approved":true}}' &>/dev/null
+                print_info "Auto-approved InstallPlan $plan for $operator_name"
+                approved_plans="$approved_plans $plan"
+            fi
+        done
+
         local status=$(oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | awk '{print $NF}')
         if [ "$status" = "Succeeded" ]; then
             print_success "$operator_name operator is ready"
@@ -118,7 +140,7 @@ wait_for_operator() {
         elapsed=$((elapsed + interval))
         echo -n "."
     done
-    
+
     echo ""
     print_error "$operator_name operator did not become ready within ${timeout}s"
     return 1
@@ -938,6 +960,7 @@ enable_dashboard_features() {
         elapsed=$((elapsed + 5))
     done
     
+    # Core feature flags (always enabled)
     oc patch odhdashboardconfig odh-dashboard-config \
         -n redhat-ods-applications \
         --type=merge \
@@ -947,14 +970,42 @@ enable_dashboard_features() {
                     "disableModelRegistry": false,
                     "disableModelCatalog": false,
                     "disableKServeMetrics": false,
+                    "disableKueue": false,
+                    "disableLLMd": false,
+                    "disableLMEval": false,
                     "genAiStudio": true,
                     "modelAsService": true,
-                    "disableLMEval": false
+                    "maasAuthPolicies": true,
+                    "llmGatewayField": true,
+                    "vLLMDeploymentOnMaas": true,
+                    "deploymentWizardYAMLViewer": true,
+                    "aiAssetCustomEndpoints": true,
+                    "promptManagement": true
                 }
             }
-        }' 2>/dev/null || print_warning "Could not patch dashboard config yet"
-    
-    print_success "Dashboard features enabled"
+        }' 2>/dev/null || print_warning "Could not patch dashboard config (core flags)"
+
+    # Conditional: Observability dashboard
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        oc patch odhdashboardconfig odh-dashboard-config \
+            -n redhat-ods-applications \
+            --type=merge \
+            -p '{"spec":{"dashboardConfig":{"observabilityDashboard": true}}}' \
+            2>/dev/null || true
+        print_info "  Observability dashboard enabled"
+    fi
+
+    # Conditional: MCP Catalog
+    if [ "$SKIP_MCP" = false ]; then
+        oc patch odhdashboardconfig odh-dashboard-config \
+            -n redhat-ods-applications \
+            --type=merge \
+            -p '{"spec":{"dashboardConfig":{"mcpCatalog": true}}}' \
+            2>/dev/null || true
+        print_info "  MCP Catalog enabled"
+    fi
+
+    print_success "Dashboard features enabled (RHOAI 3.4 full)"
 }
 
 create_inference_gateway() {
@@ -1213,6 +1264,117 @@ deploy_mcp_servers() {
     fi
 }
 
+generate_rhoai_info() {
+    local info_file="$ROOT_DIR/rhoai-info.txt"
+
+    local dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="data-science-gateway")].spec.host}' 2>/dev/null)
+    if [ -z "$dashboard_url" ]; then
+        dashboard_url="data-science-gateway.apps.${CLUSTER_DOMAIN}"
+    fi
+
+    local console_url="console-openshift-console.apps.${CLUSTER_DOMAIN}"
+    local kubeadmin_pw=""
+    local pw_file="$ROOT_DIR/openshift-cluster-install/auth/kubeadmin-password"
+    [ -f "$pw_file" ] && kubeadmin_pw=$(cat "$pw_file")
+
+    local inference_gw=""
+    if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
+        inference_gw="https://inference-gateway.apps.${CLUSTER_DOMAIN}"
+    fi
+
+    local grafana_url=""
+    if [ "$SKIP_OBSERVABILITY" = false ]; then
+        grafana_url="https://grafana-monitoring.apps.${CLUSTER_DOMAIN}"
+    fi
+
+    local mcp_url=""
+    if [ "$SKIP_MCP" = false ]; then
+        mcp_url="https://mcp.apps.${CLUSTER_DOMAIN}/mcp"
+    fi
+
+    cat > "$info_file" << INFOEOF
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    Red Hat OpenShift AI Information                        ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+Installation completed: $(date)
+RHOAI Version: 3.4
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RHOAI DASHBOARD:
+────────────────
+
+URL:      https://${dashboard_url}
+Username: kubeadmin
+Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GENAI PLAYGROUND:
+─────────────────
+
+Playground: https://${dashboard_url}/gen-ai-studio/playground
+AI Hub:     https://${dashboard_url}/ai-hub
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+API ENDPOINTS:
+──────────────
+
+${inference_gw:+Inference Gateway: ${inference_gw}}
+${grafana_url:+Grafana Dashboards: ${grafana_url}}
+${mcp_url:+MCP Gateway:         ${mcp_url}}
+
+# --- DEPLOYED MODELS (auto-updated) ---
+# Last updated: $(date '+%Y-%m-%d %H:%M')
+
+  (no models deployed yet)
+
+# --- END DEPLOYED MODELS ---
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPENSHIFT CONSOLE:
+──────────────────
+
+URL:      https://${console_url}
+Username: kubeadmin
+Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+QUICK STATUS COMMANDS:
+──────────────────────
+
+export KUBECONFIG=${ROOT_DIR}/openshift-cluster-install/auth/kubeconfig
+
+# Or login directly:
+oc login https://api.${CLUSTER_DOMAIN}:6443 -u kubeadmin -p ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>} --insecure-skip-tls-verify=true
+
+oc get datasciencecluster            # RHOAI status
+oc get inferenceservice -A           # Deployed models
+oc get llminferenceservice -A        # llm-d models
+oc get nodes -l nvidia.com/gpu.present=true   # GPU nodes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NOTES:
+──────
+
+- This file contains sensitive information. Keep it secure!
+- RHOAI Dashboard URL changed in 3.3+: uses data-science-gateway instead of rhods-dashboard
+- Deployed models are accessible after cluster restart (pods auto-recover)
+- GPU node may take extra 2-3 min to become Ready after cluster start
+- Model API endpoints are appended below as models are deployed
+- Run ./rhoai-toolkit.sh → A) to setup Let's Encrypt TLS certificates
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFOEOF
+
+    print_success "Saved RHOAI info to: $info_file"
+}
+
 print_summary() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -1242,6 +1404,7 @@ print_summary() {
     echo "  3. Deploy a model using the dashboard or CLI"
     echo "  4. MLflow is GA - use MLflow for experiment tracking"
     echo "  5. MaaS is GA - deploy models via Models as a Service"
+    echo "  6. Setup TLS certificates: ./rhoai-toolkit.sh → A) TLS Certificate Setup"
     echo ""
     echo -e "${BLUE}Verification commands:${NC}"
     echo "  oc get datasciencecluster"
@@ -1253,6 +1416,8 @@ print_summary() {
         echo "  oc get persesdatasource -n redhat-ods-monitoring"
     fi
     echo ""
+
+    generate_rhoai_info
 }
 
 ################################################################################

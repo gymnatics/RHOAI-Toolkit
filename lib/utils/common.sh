@@ -70,7 +70,7 @@ check_operator_installed() {
     fi
 }
 
-# Wait for operator to be ready
+# Wait for operator to be ready (with auto-approval of pending InstallPlans)
 wait_for_operator_ready() {
     local operator_name="$1"
     local namespace="$2"
@@ -79,18 +79,21 @@ wait_for_operator_ready() {
     print_step "Waiting for $operator_name operator to be ready..."
     
     local elapsed=0
-    until oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | grep -q "Succeeded"; do
-        if [ $elapsed -ge $timeout ]; then
-            print_warning "Timeout waiting for $operator_name operator"
-            return 1
+    while [ $elapsed -lt $timeout ]; do
+        # Auto-approve any pending InstallPlans for this operator
+        _auto_approve_installplans "$operator_name" "$namespace"
+
+        if oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | grep -q "Succeeded"; then
+            print_success "$operator_name operator is ready"
+            return 0
         fi
         echo "Waiting for $operator_name CSV... (${elapsed}s elapsed)"
         sleep 10
         elapsed=$((elapsed + 10))
     done
     
-    print_success "$operator_name operator is ready"
-    return 0
+    print_warning "Timeout waiting for $operator_name operator"
+    return 1
 }
 
 # Check if namespace exists, create if not
@@ -171,6 +174,28 @@ approve_installplan() {
     fi
 }
 
+# Internal helper: auto-approve pending InstallPlans matching an operator name
+_auto_approve_installplans() {
+    local operator_name="$1"
+    local namespace="$2"
+
+    local sub_name=$(oc get subscription -n "$namespace" \
+        -o jsonpath='{.items[?(@.spec.name=="'"$operator_name"'")].metadata.name}' 2>/dev/null)
+    if [ -n "$sub_name" ]; then
+        local installplan=$(oc get subscription "$sub_name" -n "$namespace" \
+            -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null)
+        if [ -n "$installplan" ]; then
+            local approved=$(oc get installplan "$installplan" -n "$namespace" \
+                -o jsonpath='{.spec.approved}' 2>/dev/null)
+            if [ "$approved" = "false" ]; then
+                print_info "Auto-approving InstallPlan $installplan for $operator_name"
+                oc patch installplan "$installplan" -n "$namespace" \
+                    --type merge -p '{"spec":{"approved":true}}' &>/dev/null
+            fi
+        fi
+    fi
+}
+
 # Wait for operator with InstallPlan approval handling
 # Usage: wait_for_operator_with_approval <operator-name> <namespace> [timeout]
 wait_for_operator_with_approval() {
@@ -181,7 +206,6 @@ wait_for_operator_with_approval() {
     print_step "Waiting for $operator_name operator to be ready..."
     
     local elapsed=0
-    local approval_checked=false
     
     while [ $elapsed -lt $timeout ]; do
         # Check if CSV is succeeded
@@ -198,16 +222,8 @@ wait_for_operator_with_approval() {
             return 1
         fi
         
-        # Try to approve InstallPlan if not yet checked
-        if [ "$approval_checked" = "false" ]; then
-            # Find subscription for this operator
-            local sub_name=$(oc get subscription -n "$namespace" \
-                -o jsonpath='{.items[?(@.spec.name=="'"$operator_name"'")].metadata.name}' 2>/dev/null)
-            if [ -n "$sub_name" ]; then
-                approve_installplan "$sub_name" "$namespace"
-                approval_checked=true
-            fi
-        fi
+        # Auto-approve any pending InstallPlans (checked every iteration)
+        _auto_approve_installplans "$operator_name" "$namespace"
         
         echo "Waiting for $operator_name CSV... (${elapsed}s elapsed)"
         sleep 10

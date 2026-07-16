@@ -120,6 +120,7 @@ RHOAI 3.x (Current):
 
 Management & Tools:
 9) Configure Kubeconfig [Connection]
+a) TLS Certificate Setup (Let's Encrypt / Self-signed)
 ```
 
 **지금 할 일:** 아직 클러스터가 없으므로, 메뉴에서 `1`을 선택합니다.
@@ -430,6 +431,62 @@ curl -k https://inference-gateway.apps.my-cluster.sandbox1785.opentlc.com/v1/mod
 
 ---
 
+## Step 7: TLS 인증서 설정 (선택)
+
+기본 자체 서명 인증서를 신뢰할 수 있는 Let's Encrypt 인증서로 교체합니다. RHOAI 대시보드, 콘솔, 추론 엔드포인트에서 브라우저 보안 경고가 사라집니다.
+
+### 7-1. TLS 설정 실행
+
+```bash
+./rhoai-toolkit.sh
+# a) TLS Certificate Setup 선택
+```
+
+또는 직접 실행:
+
+```bash
+./scripts/setup-letsencrypt-tls.sh
+```
+
+### 7-2. TLS 서브메뉴
+
+```
+1) Let's Encrypt (Route53 DNS-01) [Recommended]
+   ACME + AWS Route53를 통한 신뢰할 수 있는 와일드카드 인증서
+2) Self-signed Certificate (OpenSSL)
+   빠른 설정, 브라우저 경고 표시됨
+3) Show TLS Status
+4) Revert to Defaults
+```
+
+### 7-3. Let's Encrypt 설정 흐름
+
+스크립트가 자동으로 수행하는 작업:
+1. `~/.aws/credentials`에서 AWS 자격증명 읽기 (없으면 입력 요청)
+2. cert-manager 네임스페이스에 Route53 credentials Secret 생성
+3. ClusterIssuer 생성 (production 또는 staging 선택)
+4. 와일드카드 Certificate 요청 (`*.apps.<클러스터-도메인>`)
+5. DNS-01 challenge 완료 대기 (1~3분)
+6. 인증서 적용 대상:
+   - OpenShift Ingress Router (기본 인증서)
+   - Gateway API (maas-default-gateway, openshift-ai-inference)
+   - KServe/Knative (DSC certificate type: Provided)
+
+> **팁:** staging으로 먼저 테스트한 후 production으로 전환하세요. Let's Encrypt production은 rate limit(도메인당 주 50개)이 있습니다.
+
+### 7-4. TLS 확인
+
+```bash
+# 인증서 상태 확인
+./scripts/setup-letsencrypt-tls.sh status
+
+# 또는 수동 확인
+oc get certificate -n openshift-ingress
+oc get clusterissuer
+```
+
+---
+
 ## 설치 후 확인 명령어 모음
 
 ```bash
@@ -440,7 +497,28 @@ oc get nodes -l nvidia.com/gpu.present=true        # GPU 노드
 oc get hardwareprofiles -n redhat-ods-applications  # 하드웨어 프로필
 oc get gateway -n openshift-ingress                 # MaaS 게이트웨이
 oc get inferenceservice -A                          # 배포된 모델
+oc get llminferenceservice -A                       # llm-d 모델
+oc get mcpserverregistration -A                     # MCP 서버
+oc get certificate -n openshift-ingress             # TLS 인증서
 ```
+
+### 대시보드 Feature Flags 확인
+
+설치 스크립트가 RHOAI 3.4 전체 기능을 활성화합니다. 확인 방법:
+
+```bash
+oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+  -o jsonpath='{.spec.dashboardConfig}' | python3 -m json.tool
+```
+
+주요 플래그 (모두 설정되어야 함):
+- `genAiStudio: true` - Gen AI Studio 메뉴
+- `modelAsService: true` - MaaS 탭
+- `maasAuthPolicies: true` - Settings의 Subscriptions & Auth Policies
+- `mcpCatalog: true` - AI Hub의 MCP 서버 카탈로그
+- `observabilityDashboard: true` - 관측성 대시보드
+- `llmGatewayField: true` - 모델 배포 시 Gateway 선택
+- `disableKueue: false` - Kueue 하드웨어 프로필 통합
 
 ---
 
@@ -499,7 +577,9 @@ Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈�
 | Step 0: 환경 설정 | 5~10분 | 도구 설치 제외 |
 | Step 1: OpenShift 설치 | 30~45분 | AWS 인프라 생성 포함 |
 | Step 2: 연결 확인 | 2분 | |
-| Step 3: RHOAI 설치 | 20~30분 | 오퍼레이터 10개 설치 |
+| Step 3: RHOAI 설치 | 20~30분 | 오퍼레이터 10개+ 설치 |
 | Step 4: GPU 노드 | 5~10분 | 노드 프로비저닝 |
 | Step 5: 모델 배포 | 5~15분 | 모델 크기에 따라 다름 |
-| **합계** | **약 1시간~1시간 30분** | |
+| Step 6: MaaS 설정 | 5분 | 선택 |
+| Step 7: TLS 인증서 | 3~5분 | 선택, Let's Encrypt |
+| **합계** | **약 1시간~1시간 30분** | 핵심 단계 (0-4) |

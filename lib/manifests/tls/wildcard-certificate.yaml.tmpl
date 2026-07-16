@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: apps-wildcard-cert
+  namespace: openshift-ingress
+spec:
+  secretName: apps-wildcard-tls
+  issuerRef:
+    name: letsencrypt-${ACME_ENV}
+    kind: ClusterIssuer
+  dnsNames:
+  - "*.apps.${CLUSTER_DOMAIN}"
+  duration: 2160h
+  renewBefore: 360h

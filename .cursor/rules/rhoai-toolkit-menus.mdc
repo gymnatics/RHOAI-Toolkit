@@ -14,9 +14,11 @@ alwaysApply: false
 ╚════════════════════════════════════════════════════════════════╝
 
 RHOAI 3.x (Current):
-1) Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) [Full]
+1) Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) [From Scratch]
+   New cluster install, then full RHOAI 3.x (same installer as option 3)
 2) Minimal RHOAI 3.x Setup (choose operators) [Flexible]
-3) Install RHOAI 3.3 [NEW - Recommended]
+3) Install RHOAI 3.x (all prerequisites + MaaS included) [Recommended]
+   Choose version (3.4 latest, 3.3). Installs NFD, GPU, Kueue, RHCL, Gateway, etc.
 
 RHOAI 2.x / Workshop:
 4) Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop)
@@ -27,6 +29,7 @@ Management & Tools:
 7) Create GPU MachineSet
 8) GPU & ClusterPolicy Management [NVIDIA]
 9) Configure Kubeconfig [Connection]
+a) TLS Certificate Setup (Let's Encrypt / Self-signed) [NEW]
 h) Help
 0) Exit
 ```
@@ -189,6 +192,14 @@ GPU Nodes:
 
 ## Key Functions in rhoai-toolkit.sh
 
+### Complete Setup (Option 1)
+```bash
+run_complete_setup()                # Phase1: OpenShift → Phase2: GPU → Phase3: install-rhoai.sh
+install_openshift_cluster()         # Phase 1: Install OpenShift cluster (or use existing)
+create_gpu_nodes_interactive()      # Phase 2: Create GPU MachineSet nodes
+# Phase 3 delegates to scripts/install-rhoai.sh (same as menu option 3)
+```
+
 ### Helper Functions
 ```bash
 print_banner()                      # Display main banner
@@ -268,3 +279,29 @@ quick_start_wizard()                # Guided post-install workflow
 ```bash
 day2_operations_menu()              # Day 2 tasks menu
 ```
+
+### TLS Certificate Setup (Option A → scripts/setup-letsencrypt-tls.sh)
+```
+1) Let's Encrypt (Route53 DNS-01) [Recommended]
+   Trusted wildcard certificate via ACME + AWS Route53
+2) Self-signed Certificate (OpenSSL)
+   Quick setup, but browsers will show warnings
+3) Show TLS Status
+   Display current certificate configuration
+4) Revert to Defaults
+   Remove custom certificates, restore cluster defaults
+0) Back to Main Menu
+```
+
+```bash
+# scripts/setup-letsencrypt-tls.sh
+setup_letsencrypt()     # LE full flow (AWS creds → ClusterIssuer → Certificate → apply)
+setup_selfsigned()      # Self-signed OpenSSL wildcard cert
+apply_cert_to_targets() # Apply cert to Gateway, Ingress, KServe
+show_tls_status()       # Show current TLS configuration
+revert_to_default()     # Revert to cluster defaults
+```
+
+#### Manifests (lib/manifests/tls/)
+- `letsencrypt-clusterissuer.yaml.tmpl` - ClusterIssuer template (envsubst)
+- `wildcard-certificate.yaml.tmpl` - Certificate template (envsubst)

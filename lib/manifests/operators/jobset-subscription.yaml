@@ -12,6 +12,8 @@ metadata:
   name: jobset-operator
   namespace: jobset-system
 spec:
+  targetNamespaces:
+    - jobset-system
   upgradeStrategy: Default
 ---
 apiVersion: operators.coreos.com/v1alpha1
@@ -22,6 +24,6 @@ metadata:
 spec:
   channel: stable-v1.0
   installPlanApproval: Automatic
-  name: jobset-operator
+  name: job-set
   source: redhat-operators
   sourceNamespace: openshift-marketplace

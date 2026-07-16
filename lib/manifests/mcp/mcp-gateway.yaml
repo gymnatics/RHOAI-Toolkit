@@ -83,17 +83,3 @@ spec:
           limits:
             cpu: 500m
             memory: 256Mi
----
-apiVersion: mcp.kuadrant.io/v1alpha1
-kind: MCPGatewayExtension
-metadata:
-  name: mcp-gateway-ext
-  namespace: mcp-gateway-system
-spec:
-  httpRouteManagement: Enabled
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: maas-default-gateway
-    namespace: openshift-ingress
-    sectionName: mcp

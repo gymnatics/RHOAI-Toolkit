@@ -1,32 +1,30 @@
 #!/bin/bash
 
 ################################################################################
-# Complete OpenShift + RHOAI + MaaS Setup
+# OpenShift AI (RHOAI) Toolkit
 ################################################################################
-# This is a wrapper script that orchestrates the complete setup:
-# 1. OpenShift cluster installation
-# 2. GPU worker nodes
-# 3. RHOAI 3.0 with all features (GenAI Playground, etc.)
-# 4. Model as a Service (MaaS) API infrastructure (optional)
-# 5. GPU Hardware Profile creation (interactive)
+# Interactive toolkit for installing and managing OpenShift AI.
 #
 # Usage:
 #   ./rhoai-toolkit.sh                    # Interactive menu mode
-#   ./rhoai-toolkit.sh --with-maas        # Auto-enable MaaS (non-interactive)
-#   ./rhoai-toolkit.sh --skip-maas        # Skip MaaS setup (non-interactive)
+#   ./rhoai-toolkit.sh --skip-openshift   # Full RHOAI 3.x on existing cluster
 #   ./rhoai-toolkit.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
 #
 # Interactive Menu Options:
-#   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
+#   1. Complete Setup - OpenShift install + GPU + Full RHOAI 3.x (same as option 3)
 #   2. Minimal RHOAI Setup - Choose which operators to install (flexible)
-#   3. RHOAI Management - Configure features, deploy models, etc.
-#   4. Create GPU MachineSet - Add GPU nodes to existing cluster
-#   5. Help - Show scripts and documentation
-#   6. Exit
+#   3. Full RHOAI 3.x + MaaS - Version-specific installer (3.4/3.3) with all prerequisites
+#   4. Workshop Demo Setup - RHOAI 2.25 + GenAI Workshop
+#   5. Install RHOAI 2.x Only
+#   6. RHOAI Management - Configure features, deploy models, etc.
+#   7. Create GPU MachineSet - Add GPU nodes to existing cluster
+#   8. GPU & ClusterPolicy Management
+#   9. Configure Kubeconfig
+#   h. Help
+#   0. Exit
 #
-# RHOAI 3.0 Operator Requirements:
-#   REQUIRED: NFD, GPU Operator
-#   OPTIONAL: Kueue (distributed workloads), LWS (llm-d), RHCL (auth)
+# Option 1 and Option 3 share the same RHOAI installer (install-rhoai.sh).
+# Option 1 additionally installs OpenShift cluster and creates GPU nodes first.
 
 set -e
 
@@ -71,10 +69,11 @@ show_main_menu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${MAGENTA}RHOAI 3.x (Current):${NC}"
-    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
+    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[From Scratch]${NC}"
+    echo "    New cluster install, then full RHOAI 3.x (same installer as option 3)"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 3.x ${GREEN}[Recommended]${NC}"
-    echo "    Choose version (3.4 latest, 3.3) with MaaS, llm-d, Llama Stack"
+    echo -e "${YELLOW}3)${NC} Install RHOAI 3.x (all prerequisites + MaaS included) ${GREEN}[Recommended]${NC}"
+    echo "    Choose version (3.4 latest, 3.3). Installs NFD, GPU, Kueue, RHCL, Gateway, etc."
     echo ""
     echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
@@ -85,6 +84,7 @@ show_main_menu() {
     echo -e "${YELLOW}7)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
     echo -e "${YELLOW}8)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
     echo -e "${YELLOW}9)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}a)${NC} TLS Certificate Setup (Let's Encrypt / Self-signed) ${GREEN}[NEW]${NC}"
     echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
     echo ""
@@ -5039,14 +5039,6 @@ add_kubeconfig_to_profile() {
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --with-maas)
-                SETUP_MAAS="yes"
-                shift
-                ;;
-            --skip-maas)
-                SETUP_MAAS="no"
-                shift
-                ;;
             --maas-only)
                 MAAS_ONLY=true
                 SETUP_MAAS="yes"
@@ -5058,10 +5050,6 @@ parse_arguments() {
                 ;;
             --skip-gpu)
                 SKIP_GPU=true
-                shift
-                ;;
-            --skip-rhoai)
-                SKIP_RHOAI=true
                 shift
                 ;;
             -h|--help)
@@ -5081,29 +5069,29 @@ show_help() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Complete setup script for OpenShift + RHOAI + MaaS
+Complete setup script for OpenShift + RHOAI 3.x
 
 OPTIONS:
-    --with-maas         Automatically set up MaaS (no prompt)
-    --skip-maas         Skip MaaS setup (no prompt)
     --maas-only         Only set up MaaS (assumes RHOAI already installed)
     --skip-openshift    Skip OpenShift installation (use existing cluster)
     --skip-gpu          Skip GPU worker node creation
-    --skip-rhoai        Skip RHOAI installation
     -h, --help          Show this help message
 
 EXAMPLES:
-    $0                              # Interactive mode
-    $0 --with-maas                  # Full setup including MaaS
-    $0 --skip-maas                  # Setup without MaaS
-    $0 --skip-openshift             # Install RHOAI on existing cluster
-    $0 --skip-openshift --skip-gpu  # Install only RHOAI (no OpenShift, no GPU)
+    $0                              # Interactive menu mode
+    $0 --skip-openshift             # Full RHOAI 3.x on existing cluster
+    $0 --skip-openshift --skip-gpu  # Full RHOAI 3.x (no GPU node creation)
     $0 --maas-only                  # Only set up MaaS infrastructure
 
-WHAT THIS SCRIPT DOES:
-    1. Runs integrated-workflow-v2.sh for OpenShift + RHOAI installation
-    2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
-    3. Provides final summary and next steps
+WHAT THIS SCRIPT DOES (Complete Setup):
+    Phase 1: Install OpenShift cluster on AWS (or use existing)
+    Phase 2: Create GPU worker nodes (interactive)
+    Phase 3: Install RHOAI 3.x via version-specific installer:
+             - All prerequisite operators (NFD, GPU, Kueue, cert-manager, LWS)
+             - RHCL + MaaS Gateway (Authorino, Limitador)
+             - RHOAI operator + DataScienceCluster
+             - Observability (COO, OpenTelemetry, Tempo) [3.4]
+             - Dashboard features, Hardware Profiles, Kueue Queues
 
 EOF
 }
@@ -5334,32 +5322,28 @@ check_prerequisites() {
         fi
     fi
 
-    # Check for required workflow script
-    if [ ! -f "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-        print_error "integrated-workflow-v2.sh not found"
+    # Check for RHOAI installer script
+    if [ ! -f "$SCRIPT_DIR/scripts/install-rhoai.sh" ]; then
+        print_error "scripts/install-rhoai.sh not found"
         all_good=false
     else
-        print_success "integrated-workflow-v2.sh found"
+        print_success "scripts/install-rhoai.sh found"
+        if [ ! -x "$SCRIPT_DIR/scripts/install-rhoai.sh" ]; then
+            chmod +x "$SCRIPT_DIR/scripts/install-rhoai.sh"
+        fi
     fi
-    
-    # Make executable if needed
-    if [ ! -x "$SCRIPT_DIR/integrated-workflow-v2.sh" ]; then
-        print_warning "Making integrated-workflow-v2.sh executable..."
-        chmod +x "$SCRIPT_DIR/integrated-workflow-v2.sh"
-    fi
-    
-    # Check for setup-maas.sh
-    if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
-        print_error "scripts/setup-maas.sh not found"
-        all_good=false
-    else
-        print_success "scripts/setup-maas.sh found"
-    fi
-    
-    # Make setup-maas.sh executable if needed
-    if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
-        print_warning "Making scripts/setup-maas.sh executable..."
-        chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
+
+    # Check for setup-maas.sh (used by --maas-only mode)
+    if [ "$MAAS_ONLY" = true ]; then
+        if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+            print_error "scripts/setup-maas.sh not found"
+            all_good=false
+        else
+            print_success "scripts/setup-maas.sh found"
+            if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+                chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
+            fi
+        fi
     fi
     
     if [ "$all_good" = false ]; then
@@ -5376,7 +5360,7 @@ check_prerequisites() {
 
 display_setup_plan() {
     print_header "Setup Plan"
-    
+
     if [ "$MAAS_ONLY" = true ]; then
         echo -e "${CYAN}This script will:${NC}"
         echo ""
@@ -5386,79 +5370,166 @@ display_setup_plan() {
     else
         echo -e "${CYAN}This script will:${NC}"
         echo ""
-        
+
         local step=1
-        
-        # OpenShift installation
+
+        # Phase 1: OpenShift
         if [ "$SKIP_OPENSHIFT" = true ]; then
             echo "  $step. ⏭️  Skip OpenShift installation (use existing cluster)"
         else
             echo "  $step. ✅ Install OpenShift cluster on AWS (or use existing)"
         fi
         step=$((step + 1))
-        
-        # GPU nodes
+
+        # Phase 2: GPU nodes
         if [ "$SKIP_GPU" = true ]; then
             echo "  $step. ⏭️  Skip GPU worker node creation"
         else
             echo "  $step. ✅ Create GPU worker nodes (or use existing)"
         fi
         step=$((step + 1))
-        
-        # RHOAI installation
-        if [ "$SKIP_RHOAI" = true ]; then
-            echo "  $step. ⏭️  Skip RHOAI installation"
-        else
-            echo "  $step. ✅ Install RHOAI with all features:"
-            echo "      - GenAI Playground"
-            echo "      - Model Catalog"
-            echo "      - Feature Store"
-            echo "      - AI Pipelines"
-            echo "      - Model Registry"
-            echo "      - Distributed Training"
-            echo "      - TrustyAI"
-            echo "      - Required operators (NFD, GPU, RHCL, LWS, Kueue)"
-        fi
-        step=$((step + 1))
-        
-        # MaaS setup
-        if [ "$SETUP_MAAS" = "no" ]; then
-            echo "  $step. ⏭️  Skip MaaS setup"
-        else
-            echo "  $step. ✅ Set up MaaS API infrastructure"
-        fi
+
+        # Phase 3: Full RHOAI 3.x installation
+        echo "  $step. ✅ Install RHOAI 3.x with all prerequisites and features:"
+        echo "      Operators: NFD, GPU, Kueue, cert-manager, LWS, RHCL"
+        echo "      MaaS:     Gateway + Authorino (included by default)"
+        echo "      Features: GenAI Studio, Model Catalog, Model Registry,"
+        echo "                AI Pipelines, Distributed Training, TrustyAI"
+        echo "      Observability: COO, OpenTelemetry, Tempo, Grafana (3.4)"
     fi
-    
+
     echo ""
-    
-    # Estimate time based on what's being done
+
     local estimated_time="5-10 minutes"
     if [ "$MAAS_ONLY" = false ]; then
-        if [ "$SKIP_OPENSHIFT" = false ] && [ "$SKIP_RHOAI" = false ]; then
+        if [ "$SKIP_OPENSHIFT" = false ]; then
             estimated_time="45-60 minutes"
-        elif [ "$SKIP_OPENSHIFT" = true ] && [ "$SKIP_RHOAI" = false ]; then
+        else
             estimated_time="20-30 minutes"
-        elif [ "$SKIP_RHOAI" = true ]; then
-            estimated_time="30-40 minutes"
         fi
     fi
-    
+
     echo -e "${BLUE}Estimated time: $estimated_time${NC}"
     echo ""
 }
 
 ################################################################################
-# Run Integrated Workflow
+# Phase 1: OpenShift Installation
+################################################################################
+
+install_openshift_cluster() {
+    print_header "Phase 1: OpenShift Installation"
+
+    if [ "$SKIP_OPENSHIFT" = true ]; then
+        print_info "Skipping OpenShift installation (using existing cluster)"
+        return 0
+    fi
+
+    # Check if user explicitly cleared kubeconfig
+    if [ "${FORCE_NEW_CLUSTER}" = "true" ]; then
+        print_info "Kubeconfig was cleared - proceeding with fresh installation"
+    elif oc whoami &>/dev/null; then
+        local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+        local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
+
+        print_success "Already connected to an OpenShift cluster!"
+        echo "  Cluster: $cluster_url"
+        echo "  User: $cluster_user"
+        echo ""
+
+        echo -e "${YELLOW}Do you want to:${NC}"
+        echo "  1) Use this existing cluster"
+        echo "  2) Install a new OpenShift cluster (will require logout)"
+        echo ""
+        read -p "Enter choice [1-2] (default: 1): " cluster_choice
+        cluster_choice=${cluster_choice:-1}
+
+        if [ "$cluster_choice" = "1" ]; then
+            print_success "Using existing cluster"
+            return 0
+        else
+            print_warning "You'll need to logout and install a new cluster"
+            read -p "Press Enter to continue..."
+        fi
+    else
+        print_info "No existing OpenShift cluster connection detected"
+    fi
+
+    if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
+        print_step "Calling OpenShift installer script..."
+        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --full-install
+    else
+        print_warning "OpenShift installer script not found"
+        print_info "Please install OpenShift manually or run: ./scripts/openshift-installer-master.sh"
+        read -p "Press Enter when OpenShift is installed and you're logged in with oc..."
+    fi
+}
+
+################################################################################
+# Phase 2: GPU Worker Nodes
+################################################################################
+
+create_gpu_nodes_interactive() {
+    print_header "Phase 2: GPU Worker Nodes"
+
+    if [ "$SKIP_GPU" = true ]; then
+        print_info "Skipping GPU node creation (--skip-gpu flag)"
+        return 0
+    fi
+
+    local gpu_nodes=$(oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local gpu_machinesets=$(oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | .metadata.name' 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "$gpu_nodes" -gt 0 ] || [ "$gpu_machinesets" -gt 0 ]; then
+        print_success "GPU resources already exist in the cluster!"
+        if [ "$gpu_nodes" -gt 0 ]; then
+            echo "  GPU Nodes: $gpu_nodes"
+            oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | awk '{print "    - " $1}'
+        fi
+        if [ "$gpu_machinesets" -gt 0 ]; then
+            echo "  GPU MachineSets: $gpu_machinesets"
+            oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | "    - " + .metadata.name' 2>/dev/null
+        fi
+        echo ""
+        read -p "Do you want to create additional GPU nodes? (y/n, default: n): " create_more
+        create_more=${create_more:-n}
+
+        if [[ ! "$create_more" =~ ^[Yy]$ ]]; then
+            print_info "Using existing GPU resources"
+            return 0
+        fi
+    fi
+
+    echo -e "${YELLOW}GPU nodes can be created now or later.${NC}"
+    echo "You can always create GPU nodes later using: ./scripts/create-gpu-machineset.sh"
+    echo ""
+    read -p "Create GPU nodes now? [Y/n]: " create_gpu
+    create_gpu="${create_gpu:-y}"
+
+    if [[ "$create_gpu" =~ ^[Yy]$ ]]; then
+        local gpu_script_path="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
+        if [ -f "$gpu_script_path" ]; then
+            "$gpu_script_path"
+        else
+            print_error "GPU MachineSet script not found at: $gpu_script_path"
+            print_info "Please ensure the script exists or skip GPU creation."
+        fi
+    else
+        print_info "Skipping GPU node creation. You can create them later."
+    fi
+}
+
+################################################################################
+# Legacy: Run Integrated Workflow (deprecated -- use install_openshift_cluster
+# + create_gpu_nodes_interactive + install-rhoai.sh instead)
 ################################################################################
 
 run_integrated_workflow() {
     print_header "Phase 1: OpenShift + RHOAI + GenAI Playground"
     
-    # Choose which workflow to run
     local workflow_script
     local workflow_args=""
     
-    # Build arguments to pass to workflow script
     if [ "$SKIP_OPENSHIFT" = true ]; then
         workflow_args="$workflow_args --skip-openshift"
     fi
@@ -5477,7 +5548,6 @@ run_integrated_workflow() {
     fi
     echo ""
     
-    # Export flag for integrated workflow to detect
     if [ "$FORCE_NEW_CLUSTER" = true ]; then
         export FORCE_NEW_CLUSTER=true
     fi
@@ -5580,12 +5650,12 @@ run_maas_setup() {
 
 display_final_summary() {
     local maas_status=$1
-    
+
     print_header "🎉 Setup Complete!"
-    
+
     echo -e "${GREEN}✓ Your OpenShift + RHOAI environment is ready!${NC}"
     echo ""
-    
+
     if [ "$MAAS_ONLY" = true ]; then
         echo -e "${CYAN}What was set up:${NC}"
         echo "  ✅ MaaS API infrastructure"
@@ -5593,16 +5663,10 @@ display_final_summary() {
         echo -e "${CYAN}What was set up:${NC}"
         echo "  ✅ OpenShift cluster"
         echo "  ✅ GPU worker nodes"
-        echo "  ✅ RHOAI 3.0 with all features"
-        echo "  ✅ GenAI Playground"
-        
-        if [ "$maas_status" = "success" ]; then
-            echo "  ✅ Model as a Service (MaaS)"
-        elif [ "$maas_status" = "skipped" ]; then
-            echo "  ⏭️  Model as a Service (skipped)"
-        else
-            echo "  ❌ Model as a Service (failed)"
-        fi
+        echo "  ✅ RHOAI 3.x with all features"
+        echo "  ✅ Prerequisite operators (NFD, GPU, Kueue, cert-manager, LWS)"
+        echo "  ✅ RHCL + MaaS Gateway (Authorino, Limitador)"
+        echo "  ✅ GenAI Studio / Playground"
     fi
     
     echo ""
@@ -5677,18 +5741,12 @@ display_final_summary() {
     echo "   h) Click 'Add to Playground'"
     echo ""
     
-    if [ "$maas_status" = "success" ]; then
-        echo "5. Use Model as a Service:"
-        echo "   a) Deploy model with MaaS checkbox"
-        echo "   b) Go to Models as a Service"
-        echo "   c) Generate token"
-        echo "   d) Use MaaS API endpoint"
-        echo ""
-    elif [ "$maas_status" = "skipped" ]; then
-        echo "5. To add MaaS later:"
-        echo -e "   ${YELLOW}./scripts/setup-maas.sh${NC}"
-        echo ""
-    fi
+    echo "6. Use Model as a Service (MaaS):"
+    echo "   a) Deploy model with MaaS checkbox (or via LLMInferenceService)"
+    echo "   b) Go to Models as a Service in Dashboard"
+    echo "   c) Create subscription + generate API key"
+    echo "   d) Use MaaS API endpoint"
+    echo ""
     
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Documentation:${NC}"
@@ -5727,7 +5785,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -ep "Select an option (1-9, h, 0): " choice
+        read -ep "Select an option (1-9, a, h, 0): " choice
         
         case $choice in
             1)
@@ -5762,6 +5820,9 @@ main() {
             9)
                 configure_kubeconfig_interactive
                 ;;
+            a|A)
+                "$SCRIPT_DIR/scripts/setup-letsencrypt-tls.sh"
+                ;;
             h|H)
                 show_help
                 echo ""
@@ -5772,7 +5833,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9, h, or 0."
+                print_error "Invalid option. Please select 1-9, a, h, or 0."
                 sleep 2
                 ;;
         esac
@@ -5782,15 +5843,15 @@ main() {
 run_non_interactive_mode() {
     # Check prerequisites
     check_prerequisites
-    
+
     # Display setup plan
     display_setup_plan
-    
+
     # Confirm before proceeding
-    if [ "$MAAS_ONLY" = false ]; then
-        echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
-    else
+    if [ "$MAAS_ONLY" = true ]; then
         echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
+    else
+        echo -e "${YELLOW}This will install OpenShift and RHOAI 3.x with all features. This takes 45-60 minutes.${NC}"
     fi
     echo ""
     read -ep "Continue? [Y/n]: " continue_confirm
@@ -5799,42 +5860,49 @@ run_non_interactive_mode() {
         print_warning "Setup cancelled by user"
         exit 0
     fi
-    
+
     echo ""
-    
-    # Track overall status
+
     local overall_success=true
-    local maas_status="not_attempted"
-    
-    # Run integrated workflow (unless MaaS-only mode)
-    if [ "$MAAS_ONLY" = false ]; then
-        if ! run_integrated_workflow; then
-            overall_success=false
-            print_error "Integrated workflow failed. Stopping."
+
+    if [ "$MAAS_ONLY" = true ]; then
+        # MaaS-only mode: use legacy setup-maas.sh directly
+        if run_maas_setup; then
+            display_final_summary "success"
+        else
+            print_error "MaaS setup failed."
             exit 1
         fi
-        
-        # Ask about MaaS setup
-        ask_about_maas
-    fi
-    
-    # Run MaaS setup if requested
-    if [ "$SETUP_MAAS" = "yes" ]; then
-        if run_maas_setup; then
-            maas_status="success"
-        else
-            maas_status="failed"
-            overall_success=false
-            print_warning "MaaS setup failed, but RHOAI is still functional"
+    else
+        # Full setup: OpenShift + GPU + RHOAI 3.x (same flow as run_complete_setup)
+
+        # Phase 1: OpenShift
+        if ! install_openshift_cluster; then
+            print_error "OpenShift installation failed."
+            exit 1
         fi
-    elif [ "$SETUP_MAAS" = "no" ]; then
-        maas_status="skipped"
+
+        # Phase 2: GPU nodes
+        create_gpu_nodes_interactive || true
+
+        # Phase 3: RHOAI (delegates to version-specific installer)
+        local rhoai_script="$SCRIPT_DIR/scripts/install-rhoai.sh"
+        if [ ! -f "$rhoai_script" ]; then
+            print_error "install-rhoai.sh not found"
+            exit 1
+        fi
+        chmod +x "$rhoai_script"
+
+        if "$rhoai_script"; then
+            print_success "RHOAI installation completed successfully!"
+        else
+            print_error "RHOAI installation failed."
+            overall_success=false
+        fi
+
+        display_final_summary "included"
     fi
-    
-    # Display final summary
-    display_final_summary "$maas_status"
-    
-    # Exit with appropriate code
+
     if [ "$overall_success" = true ]; then
         exit 0
     else
@@ -5843,16 +5911,16 @@ run_non_interactive_mode() {
 }
 
 run_complete_setup() {
-    print_header "Complete Setup"
-    
+    print_header "Complete Setup (OpenShift + RHOAI 3.x)"
+
     # Check prerequisites
     check_prerequisites
-    
+
     # Display setup plan
     display_setup_plan
-    
+
     # Confirm before proceeding
-    echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
+    echo -e "${YELLOW}This will install OpenShift and RHOAI 3.x with all features. This takes 45-60 minutes.${NC}"
     echo ""
     read -ep "Continue? [Y/n]: " continue_confirm
     continue_confirm="${continue_confirm:-y}"
@@ -5860,39 +5928,66 @@ run_complete_setup() {
         print_warning "Setup cancelled by user"
         return 0
     fi
-    
+
     echo ""
-    
-    # Track overall status
-    local overall_success=true
-    local maas_status="not_attempted"
-    
-    # Run integrated workflow
-    if ! run_integrated_workflow; then
-        overall_success=false
-        print_error "Integrated workflow failed."
+
+    # Phase 1: OpenShift cluster installation
+    if ! install_openshift_cluster; then
+        print_error "OpenShift installation failed."
         return 1
     fi
-    
-    # Ask about MaaS setup
-    ask_about_maas
-    
-    # Run MaaS setup if requested
-    if [ "$SETUP_MAAS" = "yes" ]; then
-        if run_maas_setup; then
-            maas_status="success"
-        else
-            maas_status="failed"
-            overall_success=false
-            print_warning "MaaS setup failed, but RHOAI is still functional"
+
+    # Ensure kubeconfig is set for subsequent phases
+    # openshift-installer-master.sh creates the kubeconfig but does not export it
+    if ! oc whoami &>/dev/null; then
+        local kc_path=""
+        # Try cluster-info.txt first (has the exact path from install)
+        if [ -f "$SCRIPT_DIR/cluster-info.txt" ]; then
+            kc_path=$(grep 'export KUBECONFIG=' "$SCRIPT_DIR/cluster-info.txt" | head -1 | sed 's/.*export KUBECONFIG=//')
         fi
-    elif [ "$SETUP_MAAS" = "no" ]; then
-        maas_status="skipped"
+        # Fallback to default location
+        if [ -z "$kc_path" ] || [ ! -f "$kc_path" ]; then
+            kc_path="$SCRIPT_DIR/openshift-cluster-install/auth/kubeconfig"
+        fi
+        if [ -f "$kc_path" ]; then
+            export KUBECONFIG="$kc_path"
+            print_info "KUBECONFIG set to: $kc_path"
+        else
+            print_error "Cluster installed but kubeconfig not found. Please run: oc login"
+            return 1
+        fi
     fi
-    
+
+    # Phase 2: GPU worker nodes (interactive)
+    create_gpu_nodes_interactive || true
+
+    # Phase 3: Full RHOAI 3.x installation (same as menu option 3)
+    # Delegates to install-rhoai.sh which routes to install-rhoai-34.sh or 33.sh.
+    # These scripts handle all prerequisites (NFD, GPU Op, Kueue, cert-manager,
+    # LWS, RHCL, Gateway, Observability, MaaS) and are idempotent.
+    print_header "Phase 3: RHOAI Installation"
+    print_step "Launching RHOAI version-specific installer..."
+    print_info "This installs RHOAI with all prerequisites, MaaS, and Observability."
+    echo ""
+
+    local rhoai_script="$SCRIPT_DIR/scripts/install-rhoai.sh"
+    if [ ! -f "$rhoai_script" ]; then
+        print_error "install-rhoai.sh not found at: $rhoai_script"
+        return 1
+    fi
+    chmod +x "$rhoai_script"
+
+    # Pass --skip-node-scaling since Phase 2 already handled GPU nodes
+    if "$rhoai_script"; then
+        print_success "RHOAI installation completed successfully!"
+    else
+        print_error "RHOAI installation failed."
+        return 1
+    fi
+
     # Display final summary
-    display_final_summary "$maas_status"
-    
+    display_final_summary "included"
+
     return 0
 }
 
