@@ -25,13 +25,13 @@ By the end of this workshop, you will:
 | Part 2 | Create Your Project | Hands-on | ~5 min |
 | Part 3 | Deploy a Model | Hands-on | ~15 min |
 | Part 4 | Wait for Model & Monitor | Hands-on | ~10 min |
-| Part 5 | Deploy LlamaStack | Hands-on | ~10 min |
-| Part 6 | Deploy Open WebUI | Hands-on | ~5 min |
-| Part 7 | Connect Model to OpenWebUI | Hands-on | ~5 min |
-| Part 8 | Test LLM Chat | Hands-on | ~10 min |
-| Part 9 | Test RAG | Hands-on | ~10 min |
-| Part 10 | Deploy MCP Server | Hands-on | ~5 min |
-| Part 11 | Connect MCP to OpenWebUI | Hands-on | ~5 min |
+| Part 5 | Open Web Terminal, Clone Repo, Set Env Vars | Hands-on | ~5 min |
+| Part 6 | Deploy LlamaStack | Hands-on | ~5 min |
+| Part 7 | Deploy MCP Server | Hands-on | ~5 min |
+| Part 8 | Deploy Open WebUI | Hands-on | ~5 min |
+| Part 9 | Configure OpenWebUI | Hands-on | ~10 min |
+| Part 10 | Test LLM Chat | Hands-on | ~10 min |
+| Part 11 | Test RAG | Hands-on | ~10 min |
 | Part 12 | Test Tool Calling | Hands-on | ~10 min |
 | Instructor Demo | Observe Tab Metrics | Demo | ~10 min |
 | Appendix A | AI Playground (Optional) | Optional | -- |
@@ -300,22 +300,13 @@ Once the status shows **Ready** (green), your model is ready.
 
 ---
 
-# Part 5: Deploy LlamaStack (~10 min)
+# Part 5: Open Web Terminal, Clone Repo, Set Env Vars (~5 min)
 
-Now you'll deploy **LlamaStack** — a unified API layer that brings together inference and tool calling under a single Kubernetes-managed endpoint.
-
-## What is LlamaStack?
-
-LlamaStack is a developer framework for building generative AI applications. On RHOAI, it's managed by the **LlamaStack Operator** — you deploy a `LlamaStackDistribution` custom resource, and the operator creates and manages the LlamaStack server for you.
-
-> **What this deploys:**
-> - **Secret** — stores the shared model's endpoint URL and your authentication token
-> - **ConfigMap** — LlamaStack's `run.yaml` configuration that tells it where the model is
-> - **LlamaStackDistribution** — custom resource that the LlamaStack Operator uses to deploy and manage a LlamaStack server pod in your namespace
+You'll use the OpenShift Web Terminal for all command-line steps. It comes pre-installed with `oc`, `git`, and `sed` — no local CLI tools needed.
 
 ## Step 5.1: Open the Web Terminal
 
-Click the **`>_`** icon in the top-right masthead of the OpenShift console to open the Web Terminal. This gives you an in-browser terminal with `oc`, `git`, and `sed` pre-installed -- no local CLI tools needed.
+Access the **OpenShift Console** by clicking on the **waffle** icon on the top right of the RHOAI platform and select **OpenShift Console**. Click the **`>_`** icon in the top-right masthead of the OpenShift console to open the Web Terminal. This gives you an in-browser terminal with `oc`, `git`, and `sed` pre-installed -- no local CLI tools needed.
 
 ## Step 5.2: Clone the Workshop Repository
 
@@ -338,7 +329,7 @@ export NAMESPACE=user-XX
 Set your model's external route URL (copy it from the Deployments tab -- click the expand arrow next to your model, find the **Inference endpoint** URL):
 
 ```bash
-export MODEL_URL=https://qwen3-4b-user-XX.apps.<cluster-domain>
+export MODEL_URL=<paste your external model endpoint here>
 ```
 
 Set your model token (from the same expanded details in the Deployments tab):
@@ -347,22 +338,34 @@ Set your model token (from the same expanded details in the Deployments tab):
 export MODEL_TOKEN=<paste-token-here>
 ```
 
-## Step 5.4: Deploy LlamaStack
+---
+
+# Part 6: Deploy LlamaStack (~5 min)
+
+Now you'll deploy **OGX/LlamaStack** — a unified API layer that brings together inference and tool calling under a single Kubernetes-managed endpoint.
+
+## What is OGX/LlamaStack?
+
+LlamaStack is a developer framework for building generative AI applications. On RHOAI, it's managed by the **OGX/LlamaStack Operator** — you deploy a `LlamaStackDistribution` custom resource, and the operator creates and manages the OGX/LlamaStack server for you.
+
+> **What this deploys:**
+> - **Secret** — stores the shared model's endpoint URL and your authentication token
+> - **ConfigMap** — OGX/LlamaStack's `run.yaml` configuration that tells it where the model is
+> - **LlamaStackDistribution** — custom resource that the OGX/LlamaStack Operator uses to deploy and manage a OGX/LlamaStack server pod in your namespace
+
+## Step 6.1: Deploy OGX/LlamaStack
 
 ```bash
 sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
 ```
 
-## Step 5.5: Wait for LlamaStack to Start
+## Step 6.2: Wait for OGX/LlamaStack to Start
 
-```bash
-oc wait --for=condition=available deployment -l app.kubernetes.io/instance=llamastack-workshop \
-  -n $NAMESPACE --timeout=120s
-```
+Go to **Workloads** on the Openshift Console sidebar and select the **Pods** tab. Open the **Project** Drop-down and select your project and look for the llamastack-workshop pod and wait for it to be **Running 1/1**.
 
 This typically takes 1-2 minutes.
 
-## Step 5.6: Verify LlamaStack is Running
+## Step 6.3: Verify OGX/LlamaStack is Running
 
 ```bash
 oc get pods -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop
@@ -374,58 +377,111 @@ You should see a pod in `Running` state.
 
 ---
 
-# Part 6: Deploy Open WebUI (~10 min)
+# Part 7: Deploy MCP Server (~5 min)
 
-Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to ChatGPT).
+Now you'll deploy your own **MCP (Model Context Protocol) server** — a Kubernetes-native tool server that lets the LLM query live cluster resources.
+
+> **What this deploys:**
+> - **ServiceAccount** — identity for the MCP server pod
+> - **RoleBinding** — grants read-only access to resources in your namespace
+> - **Deployment** — runs the Kubernetes MCP server
+> - **Service** — exposes the MCP server at port 8080
+
+## Step 7.1: Deploy the MCP Server
+
+```bash
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcp-server.yaml | oc apply -f -
+```
+
+## Step 7.2: Wait for It to Start
+
+```bash
+oc rollout status deployment/kubernetes-mcp-server -n $NAMESPACE --timeout=60s
+```
+
+## Step 7.3: Verify
+
+```bash
+oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server
+```
+
+You should see a pod in `Running` state.
+
+---
+
+# Part 8: Deploy Open WebUI (~5 min)
+
+Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to ChatGPT) — along with the **mcpo proxy** that converts MCP tools into OpenAPI endpoints that OpenWebUI can call reliably.
 
 > **What this deploys:**
 > - **ConfigMap** — base configuration for OpenWebUI
 > - **PersistentVolumeClaim** — 2Gi storage for OpenWebUI data
-> - **Deployment** — the Open WebUI container
-> - **Service** — internal cluster access
-> - **Route** — external HTTPS URL for your browser
+> - **Deployment** — the Open WebUI container (v0.9.0)
+> - **Service + Route** — external HTTPS URL for your browser
+> - **mcpo ConfigMap** — tells the mcpo proxy where to find the MCP server
+> - **mcpo Deployment + Service** — proxy that converts MCP tools to OpenAPI for OpenWebUI
 
-## Step 6.1: Deploy Open WebUI
+## Step 8.1: Deploy Open WebUI + mcpo Proxy
 
 Make sure your `NAMESPACE` variable is still set and you're in the workshop repo directory, then deploy:
 
 ```bash
-sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/open-webui.yaml | oc apply -f -
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/open-webui.yaml | oc apply -f -
 ```
 
-## Step 6.2: Wait for Open WebUI
+This single command deploys both Open WebUI and the mcpo proxy.
+
+## Step 8.2: Wait for Open WebUI
 
 ```bash
 oc rollout status deployment/open-webui -n $NAMESPACE --timeout=120s
 ```
 
-## Step 6.3: Get the Open WebUI URL
+## Step 8.3: Get Your Workshop URLs
+
+Run the helper script to print all URLs you'll need:
+
+```bash
+bash show-urls.sh
+```
+
+This prints your OpenWebUI URL, LlamaStack URL, model token, and mcpo tools URL — all ready to copy-paste.
+
+Alternatively, get just the Open WebUI URL:
 
 ```bash
 echo "https://$(oc get route open-webui -n $NAMESPACE -o jsonpath='{.spec.host}')"
 ```
 
-## Step 6.4: Access Open WebUI
+## Step 8.4: Access Open WebUI
 
 Open the URL in your browser. If you see a sign-up page, create any account — authentication is disabled for the workshop.
 
 ---
 
-# Part 7: Connect Model to OpenWebUI (~10 min)
+# Part 9: Configure OpenWebUI (~10 min)
 
-OpenWebUI needs to know where your LlamaStack instance is. You'll add it as an external connection with your model token for authentication.
+OpenWebUI needs to know where your LlamaStack instance is (for inference) and where the mcpo proxy is (for tools). You'll add both connections before using the chat.
 
-## Step 7.1: Get Your LlamaStack URL
+## Step 9.1: Get Your URLs
 
 Back in the Web Terminal, run:
 
 ```bash
-echo "http://llamastack-workshop-service.$NAMESPACE.svc.cluster.local:8321/v1"
+echo ""
+echo "=== URLs for OpenWebUI Configuration ==="
+echo ""
+echo "LlamaStack URL (for Connections):"
+echo "  http://llamastack-workshop-service.$NAMESPACE.svc.cluster.local:8321/v1"
+echo ""
+echo "mcpo Tools URL (for Integrations):"
+echo "  http://mcpo.$NAMESPACE.svc.cluster.local:8000/kubernetes"
+echo ""
 ```
 
-Copy this URL -- you'll paste it in the next step.
+Copy both URLs — you'll paste them in the next steps.
 
-## Step 7.2: Add the Connection in OpenWebUI
+## Step 9.2: Add Model Connection
 
 1. In OpenWebUI, click your **profile icon** (bottom-left corner)
 2. Click **"Admin Panel"**
@@ -436,28 +492,69 @@ Copy this URL -- you'll paste it in the next step.
 
 | Field | Value |
 |-------|-------|
-| **URL** | Paste the LlamaStack URL from Step 7.1 |
+| **URL** | Paste the LlamaStack URL from Step 9.1 |
 | **Auth** | Select **Bearer**, then paste the **token** you copied from Part 4 Step 4.2 (the same value you used for `MODEL_TOKEN`) |
 
 ![OpenWebUI Connection Settings](images/openwebui-connection.png)
 
 7. Click **Save**
-8. The connection should show a **green toggle** -- this means OpenWebUI successfully connected and discovered your model
+8. The connection should show a **green toggle** — this means OpenWebUI successfully connected and discovered your model
 
 > **Troubleshooting:** If the toggle is red, double-check the URL and token. Make sure the LlamaStack pod is running (`oc get pods -n $NAMESPACE`).
 
+## Step 9.3: Add Tool Server
+
+1. Still in the Admin Panel, click **"Settings"** in the left sidebar
+2. Click **"Integrations"**
+
+![OpenWebUI Integrations](images/openwebui-integrations.png)
+
+3. Under **External Tool Servers**, click the **"+"** button
+
+![Add Connection Dialog](images/openwebui-add-connection.png)
+
+4. Fill in the fields:
+
+   | Field | Value |
+   |-------|-------|
+   | **Type** | Select **OpenAPI** |
+   | **Name** | `Kubernetes Tools` |
+   | **URL** | Paste the mcpo URL from Step 9.1 |
+   | **Auth** | Select **None** |
+
+5. Click **Save**
+
+After saving, you should see the Kubernetes tools listed. Common tools include:
+
+- **pods_list** — List pods in a namespace
+- **pods_get** — Get details of a specific pod
+- **resources_list** — List any Kubernetes resources
+- **pods_log** — Get pod logs
+- **namespaces_list** — List namespaces
+
+> If tools don't appear immediately, try refreshing the page.
+
+## Step 9.4: Configure Model
+
+1. In the Admin Panel, click **"Workspace"** in the top menu bar
+2. Click **"Models"**
+3. Find your model (`qwen3-4b` or `vllm-inference/qwen3-4b`) and click the **edit** (pencil) icon
+4. Scroll down to **Function Calling** and set it to **Native**
+5. Under **Tools**, enable the Kubernetes tools you want available
+6. Click **Save**
+
 ---
 
-# Part 8: Test LLM Chat (~10 min)
+# Part 10: Test LLM Chat (~10 min)
 
-Now that OpenWebUI is connected to your model via LlamaStack, test basic chat.
+Now that OpenWebUI is connected to your model via OGX/LlamaStack, test basic chat.
 
-## Step 8.1: Start a Chat
+## Step 10.1: Start a Chat
 
 1. Click **"New Chat"**
 2. Select the model from the dropdown (look for `qwen3-4b` or `vllm-inference/qwen3-4b`)
 
-## Step 8.2: Try These Prompts
+## Step 10.2: Try These Prompts
 
 ```
 What is Kubernetes?
@@ -471,33 +568,34 @@ Write a haiku about cloud computing.
 Write a Python function that calculates the Fibonacci sequence up to n terms.
 ```
 
-## Step 8.3: Verify the Pipeline
+## Step 10.3: Verify the Pipeline
 
 If you receive responses, this confirms the full pipeline is working:
 
 ```
-You (browser) → Open WebUI → LlamaStack → vLLM (your model)
+You (browser) → Open WebUI → OGX/LlamaStack → vLLM (your model)
 ```
 
-> **Note:** When calling the LlamaStack API directly (e.g., via `curl`), the full model ID is `vllm-inference/qwen3-4b`. The OpenWebUI dropdown may show the short name.
+> **Note:** When calling the OGX/LlamaStack API directly (e.g., via `curl`), the full model ID is `vllm-inference/qwen3-4b`. The OpenWebUI dropdown may show the short name.
 
 ---
 
-# Part 9: Test RAG (~10 min)
+# Part 11: Test RAG (~10 min)
 
-Open WebUI has built-in RAG (Retrieval-Augmented Generation) that lets you upload documents and ask questions about them — no external infrastructure needed.
+Open WebUI has built-in RAG (Retrieval-Augmented Generation) that lets you upload documents/websites and ask questions about them — no external infrastructure needed.
 
-## Step 9.1: Upload a Document
+## Step 11.1: Upload a Document
 
 1. In the chat sidebar, click the **+** icon (or the paperclip/attachment icon)
 2. Upload a document (PDF, text file, or paste text). Suggestion: upload any short document (e.g., a page from Red Hat documentation, a project README, or even this workshop guide)
+3. In this example, we will be using a website for the RAG: https://support.apple.com/en-sg/126322
 
-## Step 9.2: Ask Questions About the Document
+## Step 11.2: Ask Questions About the Document
 
 After upload, try these prompts:
 
 ```
-Summarize this document.
+What colors does the Maxbook Neo come in?
 ```
 
 ```
@@ -505,112 +603,12 @@ What are the key topics covered?
 ```
 
 ```
-What prerequisites are mentioned?
+What year was it introduced?
 ```
 
-## Step 9.3: Understand How It Works
+## Step 11.3: Understand How It Works
 
 > **How it works:** OpenWebUI has built-in RAG (Retrieval-Augmented Generation). When you upload a document, it splits it into chunks, generates embeddings using a local model, stores them in a vector database, and retrieves relevant chunks when you ask questions. No external infrastructure needed.
-
----
-
-# Part 10: Deploy MCP Server + Proxy (~5 min)
-
-Now you'll deploy your own **MCP (Model Context Protocol) server** and an **mcpo proxy** that converts MCP tools into OpenAPI endpoints that OpenWebUI can call reliably.
-
-> **What this deploys (two manifests):**
->
-> `mcp-server.yaml`:
-> - **ServiceAccount** — identity for the MCP server pod
-> - **RoleBinding** — grants read-only access to resources in your namespace
-> - **Deployment** — runs the Kubernetes MCP server
-> - **Service** — exposes the MCP server at port 8080
->
-> `mcpo-proxy.yaml`:
-> - **ConfigMap** — tells the proxy where to find the MCP server
-> - **Deployment** — runs the mcpo proxy that converts MCP to OpenAPI
-> - **Service** — exposes the proxy at port 8000
-
-## Step 10.1: Deploy the MCP Server
-
-```bash
-sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcp-server.yaml | oc apply -f -
-```
-
-## Step 10.2: Deploy the mcpo Proxy
-
-```bash
-sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcpo-proxy.yaml | oc apply -f -
-```
-
-## Step 10.3: Wait for Both to Start
-
-```bash
-oc rollout status deployment/kubernetes-mcp-server -n $NAMESPACE --timeout=60s
-oc rollout status deployment/mcpo -n $NAMESPACE --timeout=60s
-```
-
-## Step 10.4: Verify
-
-```bash
-oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server
-oc get pods -n $NAMESPACE -l app=mcpo
-```
-
-Both should show `Running`.
-
----
-
-# Part 11: Connect Tools to OpenWebUI (~5 min)
-
-Now you'll connect OpenWebUI to your tools via the mcpo proxy.
-
-## Step 11.1: Get the Proxy URL
-
-In the Web Terminal, run:
-
-```bash
-echo "http://mcpo.$NAMESPACE.svc.cluster.local:8000/kubernetes"
-```
-
-Copy this URL.
-
-## Step 11.2: Open Integrations Settings
-
-1. In Open WebUI, click your **profile icon** (bottom-left) → **Admin Panel**
-2. In the top menu bar, click **"Settings"**
-3. In the left sidebar, click **"Integrations"**
-
-![OpenWebUI Integrations](images/openwebui-integrations.png)
-
-## Step 11.3: Add the Tool Connection
-
-1. Under **External Tool Servers**, click the **"+"** button
-
-![Add Connection Dialog](images/openwebui-add-connection.png)
-
-2. Fill in the fields:
-
-   | Field | Value |
-   |-------|-------|
-   | **Type** | Select **OpenAPI** |
-   | **Name** | `Kubernetes Tools` |
-   | **URL** | Paste the URL from Step 11.1 |
-   | **Auth** | Select **None** |
-
-3. Click **Save**
-
-## Step 11.4: Verify Tools Are Available
-
-After saving, you should see the Kubernetes tools listed. Common tools include:
-
-- **pods_list** — List pods in a namespace
-- **pods_get** — Get details of a specific pod
-- **resources_list** — List any Kubernetes resources
-- **pods_log** — Get pod logs
-- **namespaces_list** — List namespaces
-
-> If tools don't appear immediately, try refreshing the page.
 
 ---
 
@@ -749,21 +747,22 @@ After this workshop, you can explore:
 **Fix:**
 
 1. Check that LlamaStack is running: `oc get pods -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop`
-2. Verify the `OPENAI_API_BASE_URLS` in the Open WebUI ConfigMap points to your LlamaStack service
-3. In Open WebUI Settings → Connections, click the refresh icon to re-test
+2. In Open WebUI Admin Panel → Settings → Connections, verify the URL and Bearer token are correct
+3. Click the refresh icon to re-test the connection
 4. Check LlamaStack logs: `oc logs -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop`
 
 ## "MCP tools not appearing"
 
-**Cause:** MCP server URL is wrong, or the server is not running.
+**Cause:** mcpo proxy or MCP server is not running, or the URL is wrong.
 
 **Fix:**
 
-1. Verify the MCP server is running: `oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server`
-2. Check the URL matches: `http://kubernetes-mcp-server.<your-namespace>.svc.cluster.local:8080/mcp`
-3. Make sure you selected **MCP (Streamable HTTP)** as the type (not OpenAPI)
-4. Try removing and re-adding the MCP server connection
-5. Refresh the Open WebUI page
+1. Verify both pods are running: `oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server` and `oc get pods -n $NAMESPACE -l app=mcpo`
+2. Check the URL matches: `http://mcpo.<your-namespace>.svc.cluster.local:8000/kubernetes`
+3. Make sure you selected **OpenAPI** as the type (not MCP/Streamable HTTP)
+4. Auth should be set to **None**
+5. Try removing and re-adding the tool server connection
+6. Refresh the Open WebUI page
 
 ## "Tool calls not working"
 
@@ -825,11 +824,14 @@ oc project user-XX
 # Deploy LlamaStack
 sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
 
-# Deploy Open WebUI
-sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/open-webui.yaml | oc apply -f -
-
 # Deploy MCP Server
-sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/mcp-server.yaml | oc apply -f -
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcp-server.yaml | oc apply -f -
+
+# Deploy Open WebUI + mcpo proxy
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/open-webui.yaml | oc apply -f -
+
+# Print all workshop URLs (LlamaStack, mcpo, OpenWebUI, token)
+bash show-urls.sh
 
 # Check all pods in your namespace
 oc get pods -n user-XX

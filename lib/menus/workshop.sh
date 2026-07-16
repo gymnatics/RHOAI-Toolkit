@@ -94,7 +94,7 @@ workshop_setup_menu() {
                 setup_user_workload_monitoring
                 setup_workshop_users "$user_count"
                 setup_workshop_grafana
-                setup_workshop_model_and_mcp
+                setup_workshop_model_and_mcp "$user_count"
                 
                 echo ""
                 read -p "Press Enter to continue..."
@@ -108,7 +108,10 @@ workshop_setup_menu() {
                 read -p "Press Enter to continue..."
                 ;;
             4)
-                setup_workshop_model_and_mcp
+                echo ""
+                read -p "Number of users [25]: " user_count
+                user_count=${user_count:-25}
+                setup_workshop_model_and_mcp "$user_count"
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;

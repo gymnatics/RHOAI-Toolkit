@@ -235,6 +235,8 @@ setup_workshop_grafana() {
 }
 
 setup_workshop_model_and_mcp() {
+    local user_count="${1:-25}"
+
     print_header "Deploying Admin Model, MCP Server, and Enabling LlamaStack"
 
     print_step "Enabling LlamaStack operator..."
@@ -313,6 +315,19 @@ setup_workshop_model_and_mcp() {
     if [ -n "$sa_secret" ]; then
         model_token=$(oc get secret "$sa_secret" -n admin-workshop -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
     fi
+
+    print_step "Creating ClusterRoleBindings for participant MCP servers..."
+    local crb_count=0
+    for i in $(seq 1 ${user_count:-25}); do
+        local ns="user-$(printf '%02d' $i)"
+        oc create clusterrolebinding "kubernetes-mcp-server-$ns" \
+            --clusterrole=view --serviceaccount="$ns:kubernetes-mcp-server" 2>/dev/null || true
+        crb_count=$((crb_count + 1))
+        if [ $((i % 25)) -eq 0 ]; then
+            echo "  Created ClusterRoleBindings for $i users..."
+        fi
+    done
+    print_success "ClusterRoleBindings created for $crb_count users (cluster-wide read access for MCP)"
 
     print_success "Model and MCP Server deployment complete!"
     echo ""
@@ -501,7 +516,7 @@ run_complete_workshop_setup() {
     local gpu_ready
     gpu_ready=$(oc get nodes -l nvidia.com/gpu.present=true --no-headers 2>/dev/null | wc -l)
     if [ "$gpu_ready" -gt 0 ]; then
-        setup_workshop_model_and_mcp
+        setup_workshop_model_and_mcp "$user_count"
     else
         print_warning "No GPU nodes ready yet. Run 'Deploy Admin Model and MCP Server' later."
     fi
