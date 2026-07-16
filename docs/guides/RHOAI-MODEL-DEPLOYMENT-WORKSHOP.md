@@ -211,11 +211,7 @@ After checking **"Add custom runtime arguments"**, add the following arguments. 
 ```
 --enable-auto-tool-choice
 --tool-call-parser=hermes
---override-generation-config
-{"think": false}
 ```
-
-> **Note:** `--override-generation-config` and `{"think": false}` are two separate lines -- the first is the flag, the second is its value.
 
 ![Custom Runtime Arguments](images/vllm-args.png)
 
@@ -227,7 +223,6 @@ After checking **"Add custom runtime arguments"**, add the following arguments. 
 |----------|---------|
 | `--enable-auto-tool-choice` | Allows the model to decide when to use tools |
 | `--tool-call-parser=hermes` | Tells vLLM how to parse Qwen's tool call output |
-| `--override-generation-config {"think": false}` | Disables Qwen3's "thinking" mode which consumes tokens with internal reasoning |
 
 Different model families require different tool call parsers:
 
