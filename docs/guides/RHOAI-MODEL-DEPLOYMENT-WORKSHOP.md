@@ -519,8 +519,8 @@ What prerequisites are mentioned?
 Now you'll deploy your own **MCP (Model Context Protocol) server** that provides tools for querying the OpenShift cluster.
 
 > **What this deploys:**
-> - **ServiceAccount** — identity for the MCP server with cluster read access
-> - **ClusterRoleBinding** — grants the `view` ClusterRole (read-only access to cluster resources)
+> - **ServiceAccount** — identity for the MCP server pod
+> - **RoleBinding** — grants the `view` ClusterRole in your namespace (read-only access to resources)
 > - **Deployment** — runs the Kubernetes MCP server container
 > - **Service** — exposes the MCP server at port 8080 within the cluster
 >
@@ -552,14 +552,17 @@ You should see a pod in `Running` state.
 
 This is a UI-only step in Open WebUI to connect the MCP server you just deployed.
 
-## Step 11.1: Open Admin Settings
+## Step 11.1: Open Integrations Settings
 
 1. In Open WebUI, click your **profile icon** (bottom-left) → **Admin Panel**
-2. Go to **Settings** → **Tools**
+2. In the top menu bar, click **"Settings"**
+3. In the left sidebar, click **"Integrations"**
+
+![OpenWebUI Integrations](images/openwebui-integrations.png)
 
 ## Step 11.2: Add the MCP Connection
 
-1. Click **"+ Add Connection"**
+1. Under **External Tool Servers**, click the **"+"** button
 2. Configure:
 
    | Field | Value |
