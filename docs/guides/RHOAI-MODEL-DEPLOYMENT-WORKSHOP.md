@@ -562,21 +562,26 @@ This is a UI-only step in Open WebUI to connect the MCP server you just deployed
 
 ## Step 11.2: Add the MCP Connection
 
-1. Under **External Tool Servers**, click the **"+"** button
-2. Configure:
+1. Under **External Tool Servers**, click the **"+"** button to open the **Add Connection** dialog
+
+![Add Connection Dialog](images/openwebui-add-connection.png)
+
+2. Fill in the fields:
 
    | Field | Value |
    |-------|-------|
-   | **Type** | **MCP (Streamable HTTP)** |
+   | **Type** | Select **OpenAPI** |
+   | **Name** | `Kubernetes MCP` (or any name you like) |
    | **URL** | `http://kubernetes-mcp-server.<your-namespace>.svc.cluster.local:8080/mcp` |
+   | **Auth** | Leave as **Bearer**, leave API Key empty |
 
-   Replace `<your-namespace>` with your actual namespace (e.g., `user-05`).
+   Replace `<your-namespace>` with your actual namespace (e.g., `user-03`).
 
 3. Click **Save**
 
 ## Step 11.3: Verify Tools Are Available
 
-After saving, you should see the Kubernetes tools listed. Common tools include:
+After saving, you should see the Kubernetes tools listed under External Tool Servers. Common tools include:
 
 - **list_pods** — List pods in a namespace
 - **get_pod** — Get details of a specific pod
