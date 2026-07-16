@@ -321,13 +321,7 @@ export MODEL_TOKEN=<paste-token-here>
 
 Open a terminal using the **Web Terminal** in the OpenShift console — click the **`>_`** icon in the top-right masthead. This gives you an in-browser terminal with `oc` and `git` pre-installed.
 
-First, install `envsubst` (needed to fill in your namespace/token in the manifests):
-
-```bash
-dnf install -y gettext-envsubst
-```
-
-This only needs to be done once per Web Terminal session.
+The Web Terminal has `oc`, `git`, and `sed` pre-installed — no additional setup needed.
 
 ## Step 5.3: Clone the Workshop Repository
 
@@ -338,7 +332,7 @@ git clone https://github.com/gymnatics/Red-Hat-Inference-Workshop.git && cd Red-
 ## Step 5.4: Deploy LlamaStack
 
 ```bash
-envsubst < manifests/llamastack.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g; s/\${MODEL_TOKEN}/$MODEL_TOKEN/g" manifests/llamastack.yaml | oc apply -f -
 ```
 
 ## Step 5.5: Wait for LlamaStack to Start
@@ -378,7 +372,7 @@ Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to Ch
 Make sure your `NAMESPACE` variable is still set and you're in the workshop repo directory, then deploy:
 
 ```bash
-envsubst < manifests/open-webui.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/open-webui.yaml | oc apply -f -
 ```
 
 ## Step 6.2: Wait for Open WebUI
@@ -480,7 +474,7 @@ Now you'll deploy your own **MCP (Model Context Protocol) server** that provides
 ## Step 9.1: Deploy the MCP Server
 
 ```bash
-envsubst < manifests/mcp-server.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/mcp-server.yaml | oc apply -f -
 ```
 
 ## Step 9.2: Wait for the MCP Server
@@ -745,13 +739,13 @@ oc whoami
 oc project user-XX
 
 # Deploy LlamaStack
-envsubst < manifests/llamastack.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g; s/\${MODEL_TOKEN}/$MODEL_TOKEN/g" manifests/llamastack.yaml | oc apply -f -
 
 # Deploy Open WebUI
-envsubst < manifests/open-webui.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/open-webui.yaml | oc apply -f -
 
 # Deploy MCP Server
-envsubst < manifests/mcp-server.yaml | oc apply -f -
+sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/mcp-server.yaml | oc apply -f -
 
 # Check all pods in your namespace
 oc get pods -n user-XX
