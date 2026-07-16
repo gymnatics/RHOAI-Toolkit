@@ -1,7 +1,7 @@
 # LlamaStack Workshop — OpenAI-compatible API layer for inference
 #
 # Deploys LlamaStack in a participant's namespace, connecting to
-# the shared vLLM model in admin-workshop.
+# their own vLLM model via its external route.
 #
 # Resources created:
 #   - Secret: stores the model endpoint URL and authentication token
@@ -10,8 +10,10 @@
 #     Operator to deploy and manage a LlamaStack server pod
 #
 # Usage:
-#   export NAMESPACE=user-XX MODEL_TOKEN=<token-from-instructor>
-#   envsubst < manifests/llamastack.yaml | oc apply -f -
+#   export NAMESPACE=user-XX
+#   export MODEL_URL=https://qwen3-4b-user-XX.apps.<cluster-domain>
+#   export MODEL_TOKEN=<token-from-deployments-tab>
+#   sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
 #
 ---
 apiVersion: v1
@@ -21,7 +23,7 @@ metadata:
   namespace: ${NAMESPACE}
 type: Opaque
 stringData:
-  base-url: "http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1"
+  base-url: "${MODEL_URL}/v1"
   api-token: "${MODEL_TOKEN}"
 ---
 apiVersion: v1
@@ -43,8 +45,8 @@ data:
       - provider_id: vllm-inference
         provider_type: remote::vllm
         config:
-          base_url: http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1
-          api_token: placeholder
+          base_url: ${MODEL_URL}/v1
+          api_token: ${MODEL_TOKEN}
     metadata_store:
       type: sqlite
       db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db

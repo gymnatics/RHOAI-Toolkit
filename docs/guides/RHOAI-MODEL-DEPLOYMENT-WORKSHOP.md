@@ -328,7 +328,13 @@ Set your namespace (replace `XX` with your assigned number, e.g., `05`):
 export NAMESPACE=user-XX
 ```
 
-Set the model token (the one you copied from the Deployments tab in Part 4):
+Set your model's external route URL (copy it from the Deployments tab -- click the expand arrow next to your model, find the **Inference endpoint** URL):
+
+```bash
+export MODEL_URL=https://qwen3-4b-user-XX.apps.<cluster-domain>
+```
+
+Set your model token (from the same expanded details in the Deployments tab):
 
 ```bash
 export MODEL_TOKEN=<paste-token-here>
@@ -337,7 +343,7 @@ export MODEL_TOKEN=<paste-token-here>
 ## Step 5.4: Deploy LlamaStack
 
 ```bash
-sed "s/\${NAMESPACE}/$NAMESPACE/g; s/\${MODEL_TOKEN}/$MODEL_TOKEN/g" manifests/llamastack.yaml | oc apply -f -
+sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
 ```
 
 ## Step 5.5: Wait for LlamaStack to Start
@@ -772,6 +778,7 @@ Raise your hand! The instructors are here to help.
 ```bash
 # Set environment variables
 export NAMESPACE=user-XX
+export MODEL_URL=https://qwen3-4b-user-XX.apps.<cluster-domain>
 export MODEL_TOKEN=<your-token>
 
 # Check your login
@@ -781,7 +788,7 @@ oc whoami
 oc project user-XX
 
 # Deploy LlamaStack
-sed "s/\${NAMESPACE}/$NAMESPACE/g; s/\${MODEL_TOKEN}/$MODEL_TOKEN/g" manifests/llamastack.yaml | oc apply -f -
+sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
 
 # Deploy Open WebUI
 sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/open-webui.yaml | oc apply -f -
