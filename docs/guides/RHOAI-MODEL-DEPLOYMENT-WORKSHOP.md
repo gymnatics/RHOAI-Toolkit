@@ -319,7 +319,15 @@ export MODEL_TOKEN=<paste-token-here>
 
 ## Step 5.2: Open the Web Terminal
 
-Open a terminal using the **Web Terminal** in the OpenShift console — click the **`>_`** icon in the top-right masthead. This gives you an in-browser terminal with `oc`, `git`, and `envsubst` pre-installed (no local CLI tools needed).
+Open a terminal using the **Web Terminal** in the OpenShift console — click the **`>_`** icon in the top-right masthead. This gives you an in-browser terminal with `oc` and `git` pre-installed.
+
+First, install `envsubst` (needed to fill in your namespace/token in the manifests):
+
+```bash
+dnf install -y gettext-envsubst
+```
+
+This only needs to be done once per Web Terminal session.
 
 ## Step 5.3: Clone the Workshop Repository
 
