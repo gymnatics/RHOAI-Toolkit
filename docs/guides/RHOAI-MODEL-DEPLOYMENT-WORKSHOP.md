@@ -514,45 +514,68 @@ What prerequisites are mentioned?
 
 ---
 
-# Part 10: Deploy MCP Server (~5 min)
+# Part 10: Deploy MCP Server + Proxy (~5 min)
 
-Now you'll deploy your own **MCP (Model Context Protocol) server** that provides tools for querying the OpenShift cluster.
+Now you'll deploy your own **MCP (Model Context Protocol) server** and an **mcpo proxy** that converts MCP tools into OpenAPI endpoints that OpenWebUI can call reliably.
 
-> **What this deploys:**
-> - **ServiceAccount** — identity for the MCP server pod
-> - **RoleBinding** — grants the `view` ClusterRole in your namespace (read-only access to resources)
-> - **Deployment** — runs the Kubernetes MCP server container
-> - **Service** — exposes the MCP server at port 8080 within the cluster
+> **What this deploys (two manifests):**
 >
-> The MCP server provides tools that let the LLM query live cluster data: listing pods, namespaces, deployments, services, and viewing logs.
+> `mcp-server.yaml`:
+> - **ServiceAccount** — identity for the MCP server pod
+> - **RoleBinding** — grants read-only access to resources in your namespace
+> - **Deployment** — runs the Kubernetes MCP server
+> - **Service** — exposes the MCP server at port 8080
+>
+> `mcpo-proxy.yaml`:
+> - **ConfigMap** — tells the proxy where to find the MCP server
+> - **Deployment** — runs the mcpo proxy that converts MCP to OpenAPI
+> - **Service** — exposes the proxy at port 8000
 
 ## Step 10.1: Deploy the MCP Server
 
 ```bash
-sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/mcp-server.yaml | oc apply -f -
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcp-server.yaml | oc apply -f -
 ```
 
-## Step 10.2: Wait for the MCP Server
+## Step 10.2: Deploy the mcpo Proxy
+
+```bash
+sed "s|\${NAMESPACE}|$NAMESPACE|g" manifests/mcpo-proxy.yaml | oc apply -f -
+```
+
+## Step 10.3: Wait for Both to Start
 
 ```bash
 oc rollout status deployment/kubernetes-mcp-server -n $NAMESPACE --timeout=60s
+oc rollout status deployment/mcpo -n $NAMESPACE --timeout=60s
 ```
 
-## Step 10.3: Verify the MCP Server
+## Step 10.4: Verify
 
 ```bash
 oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server
+oc get pods -n $NAMESPACE -l app=mcpo
 ```
 
-You should see a pod in `Running` state.
+Both should show `Running`.
 
 ---
 
-# Part 11: Connect MCP to OpenWebUI (~5 min)
+# Part 11: Connect Tools to OpenWebUI (~5 min)
 
-This is a UI-only step in Open WebUI to connect the MCP server you just deployed.
+Now you'll connect OpenWebUI to your tools via the mcpo proxy.
 
-## Step 11.1: Open Integrations Settings
+## Step 11.1: Get the Proxy URL
+
+In the Web Terminal, run:
+
+```bash
+echo "http://mcpo.$NAMESPACE.svc.cluster.local:8000/kubernetes"
+```
+
+Copy this URL.
+
+## Step 11.2: Open Integrations Settings
 
 1. In Open WebUI, click your **profile icon** (bottom-left) → **Admin Panel**
 2. In the top menu bar, click **"Settings"**
@@ -560,39 +583,32 @@ This is a UI-only step in Open WebUI to connect the MCP server you just deployed
 
 ![OpenWebUI Integrations](images/openwebui-integrations.png)
 
-## Step 11.2: Add the MCP Connection
+## Step 11.3: Add the Tool Connection
 
-1. Under **External Tool Servers**, click the **"+"** button to open the **Add Connection** dialog
+1. Under **External Tool Servers**, click the **"+"** button
 
 ![Add Connection Dialog](images/openwebui-add-connection.png)
 
-2. First, get your MCP server URL from the Web Terminal:
-
-```bash
-echo "http://kubernetes-mcp-server.$NAMESPACE.svc.cluster.local:8080/mcp"
-```
-
-3. Fill in the fields:
+2. Fill in the fields:
 
    | Field | Value |
    |-------|-------|
    | **Type** | Select **OpenAPI** |
-   | **Name** | `Kubernetes MCP` (or any name you like) |
-   | **URL** | Paste the URL from the terminal output above |
-   | **Auth** | Leave as **Bearer**, leave API Key empty |
+   | **Name** | `Kubernetes Tools` |
+   | **URL** | Paste the URL from Step 11.1 |
+   | **Auth** | Select **None** |
 
 3. Click **Save**
 
-## Step 11.3: Verify Tools Are Available
+## Step 11.4: Verify Tools Are Available
 
-After saving, you should see the Kubernetes tools listed under External Tool Servers. Common tools include:
+After saving, you should see the Kubernetes tools listed. Common tools include:
 
-- **list_pods** — List pods in a namespace
-- **get_pod** — Get details of a specific pod
-- **list_deployments** — List deployments
-- **list_services** — List services
-- **get_logs** — Get pod logs
-- **list_namespaces** — List cluster namespaces
+- **pods_list** — List pods in a namespace
+- **pods_get** — Get details of a specific pod
+- **resources_list** — List any Kubernetes resources
+- **pods_log** — Get pod logs
+- **namespaces_list** — List namespaces
 
 > If tools don't appear immediately, try refreshing the page.
 
