@@ -423,7 +423,13 @@ disable_vllm_on_maas() {
 
     if [ $? -eq 0 ]; then
         print_success "vLLM on MaaS disabled"
-        print_info "Dashboard will no longer show vLLM as a MaaS-compatible runtime"
+
+        print_step "Restarting dashboard pods to apply change..."
+        oc delete pods -n redhat-ods-applications -l app=odh-dashboard 2>/dev/null || \
+            oc delete pods -n redhat-ods-applications -l app.kubernetes.io/part-of=dashboard 2>/dev/null || true
+        sleep 5
+        oc wait --for=condition=ready pod -l app=odh-dashboard -n redhat-ods-applications --timeout=60s 2>/dev/null || true
+        print_success "Dashboard restarted"
     else
         print_error "Failed to patch OdhDashboardConfig"
         return 1
