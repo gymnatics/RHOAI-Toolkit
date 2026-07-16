@@ -44,6 +44,9 @@ WAIT_TIMEOUT=600
 RHOAI_CHANNEL=""  # Will be selected interactively or via --channel
 SKIP_OBSERVABILITY=false
 SKIP_MCP=false
+SKIP_MAAS_DB=false
+MAAS_DB_URL=""
+SKIP_EVALHUB=false
 
 ################################################################################
 # Helper Functions
@@ -84,6 +87,9 @@ usage() {
     echo "  --skip-prerequisites    Skip installing NFD, GPU, Kueue, cert-manager operators"
     echo "  --skip-rhcl            Skip RHCL/Kuadrant installation (no MaaS/llm-d auth)"
     echo "  --skip-maas            Skip MaaS configuration"
+    echo "  --skip-maas-db         Skip MaaS PostgreSQL database setup"
+    echo "  --maas-db-url <url>    External PostgreSQL URL for MaaS (skip interactive prompt)"
+    echo "  --skip-evalhub         Skip EvalHub (TrustyAI) deployment"
     echo "  --skip-node-scaling    Skip automatic worker/GPU node scaling"
     echo "  --no-llmd              Don't configure llm-d Gateway"
     echo "  --skip-observability   Skip COO, OpenTelemetry, Tempo, and observability config"
@@ -773,6 +779,18 @@ install_rhcl_operator() {
         wait_for_operator "rhcl-operator" "kuadrant-system"
     fi
     
+    # Check if Kuadrant is already fully ready (skip post-install steps on re-run)
+    local kuadrant_status=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$kuadrant_status" = "True" ]; then
+        print_info "Kuadrant is already Ready, skipping post-install configuration"
+        # Ensure Authorino TLS annotation is present (idempotent)
+        oc annotate svc/authorino-authorino-authorization \
+            service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+            -n kuadrant-system --overwrite 2>/dev/null || true
+        print_success "RHCL Operator already installed and configured"
+        return 0
+    fi
+
     # Create Kuadrant instance
     print_step "Creating Kuadrant instance..."
     oc apply -f "$ROOT_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
@@ -783,7 +801,7 @@ install_rhcl_operator() {
     print_step "Configuring Authorino TLS..."
     oc annotate svc/authorino-authorino-authorization \
         service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-        -n kuadrant-system 2>/dev/null || true
+        -n kuadrant-system --overwrite 2>/dev/null || true
     
     oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-tls.yaml"
     
@@ -1264,6 +1282,265 @@ deploy_mcp_servers() {
     fi
 }
 
+################################################################################
+# MaaS PostgreSQL + TLS Setup
+################################################################################
+
+deploy_postgres_in_cluster() {
+    print_step "Deploying PostgreSQL for MaaS (in-cluster)..."
+
+    local pg_password
+    pg_password=$(openssl rand -base64 16 | tr -d '=+/')
+
+    oc create secret generic postgres-creds \
+        -n redhat-ods-applications \
+        --from-literal=POSTGRES_USER=maas \
+        --from-literal=POSTGRES_PASSWORD="$pg_password" \
+        --from-literal=POSTGRES_DB=maas \
+        --dry-run=client -o yaml | oc apply -f -
+
+    oc apply -f "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml"
+
+    print_step "Waiting for PostgreSQL to be ready..."
+    oc rollout status deployment/postgres -n redhat-ods-applications --timeout=120s 2>/dev/null \
+        || print_warning "PostgreSQL rollout timed out"
+
+    export MAAS_DB_CONNECTION_URL="postgresql://maas:${pg_password}@postgres:5432/maas?sslmode=disable"
+    envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
+
+    oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
+
+    print_success "PostgreSQL deployed and maas-db-config secret created"
+}
+
+setup_maas_database() {
+    print_header "MaaS Database Configuration"
+
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        print_success "maas-db-config secret already exists"
+        return 0
+    fi
+
+    if [ -n "${MAAS_DB_URL:-}" ]; then
+        print_step "Using provided PostgreSQL URL..."
+        export MAAS_DB_CONNECTION_URL="$MAAS_DB_URL"
+        envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
+        oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
+        print_success "maas-db-config secret created from provided URL"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${CYAN}MaaS Subscription Management requires a PostgreSQL database.${NC}"
+    echo -e "${CYAN}This is needed for API key lifecycle and subscription tracking.${NC}"
+    echo ""
+    echo -e "${YELLOW}1)${NC} Deploy PostgreSQL in cluster ${GREEN}[Recommended for sandbox/dev]${NC}"
+    echo -e "${YELLOW}2)${NC} Use external PostgreSQL (enter connection URL)"
+    echo -e "${YELLOW}3)${NC} Skip (Subscriptions/AuthPolicies will not be available)"
+    echo ""
+    echo -n -e "${YELLOW}Select [1]: ${NC}"
+    read -r db_choice
+
+    case "${db_choice:-1}" in
+        1)
+            deploy_postgres_in_cluster
+            ;;
+        2)
+            echo ""
+            echo "  Format: postgresql://user:password@host:5432/dbname?sslmode=require"
+            echo -n -e "${BLUE}PostgreSQL connection URL: ${NC}"
+            read -r pg_url
+            if [ -z "$pg_url" ]; then
+                print_error "No URL provided, skipping MaaS DB setup"
+                return 1
+            fi
+            export MAAS_DB_CONNECTION_URL="$pg_url"
+            envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
+            oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
+            print_success "maas-db-config secret created"
+            ;;
+        3)
+            print_warning "Skipping MaaS DB setup. Subscriptions and AuthPolicies will not be available."
+            print_info "You can set this up later: oc create secret generic maas-db-config -n redhat-ods-applications --from-literal=DB_CONNECTION_URL='postgresql://...'"
+            return 1
+            ;;
+        *)
+            print_error "Invalid option, skipping"
+            return 1
+            ;;
+    esac
+}
+
+configure_maas_tls() {
+    print_step "Configuring MaaS TLS (Authorino + Gateway)..."
+
+    if ! oc get service authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
+        print_info "Authorino service not found, skipping TLS configuration"
+        return 0
+    fi
+
+    oc annotate service authorino-authorino-authorization \
+        -n kuadrant-system \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        --overwrite 2>/dev/null || true
+
+    oc patch authorino authorino -n kuadrant-system --type=merge \
+        -p '{"spec":{"listener":{"tls":{"enabled":true,"certSecretRef":{"name":"authorino-server-cert"}}}}}' \
+        2>/dev/null || true
+
+    if oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null; then
+        oc annotate gateway maas-default-gateway -n openshift-ingress \
+            security.opendatahub.io/authorino-tls-bootstrap="true" \
+            --overwrite 2>/dev/null || true
+    fi
+
+    print_success "MaaS TLS configured"
+}
+
+wait_for_maas_tenant() {
+    print_step "Waiting for MaaS Tenant to become Ready..."
+    local timeout=180
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local ready=$(oc get tenants.maas.opendatahub.io default-tenant \
+            -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            print_success "MaaS Tenant is Ready - Subscriptions and AuthPolicies are now available"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        echo -n "."
+    done
+    echo ""
+    print_warning "MaaS Tenant not ready within ${timeout}s"
+    local msg=$(oc get tenants.maas.opendatahub.io default-tenant \
+        -n models-as-a-service \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+    if [ -n "$msg" ]; then
+        print_info "Reason: $msg"
+    fi
+    print_info "Check status: oc get tenants.maas.opendatahub.io -n models-as-a-service"
+}
+
+################################################################################
+# EvalHub (TrustyAI) Deployment
+################################################################################
+
+deploy_evalhub() {
+    print_header "EvalHub Deployment (TrustyAI)"
+
+    # Idempotency: skip if already deployed and ready
+    if oc get evalhub evalhub -n redhat-ods-applications &>/dev/null; then
+        local eh_ready=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$eh_ready" = "True" ]; then
+            print_info "EvalHub is already deployed and Ready"
+            return 0
+        fi
+        print_info "EvalHub CR exists but not yet Available, checking prerequisites..."
+    fi
+
+    # Verify TrustyAI CRD is available
+    if ! oc get crd evalhubs.trustyai.opendatahub.io &>/dev/null; then
+        print_warning "EvalHub CRD not found. Ensure TrustyAI is Managed in DataScienceCluster."
+        return 1
+    fi
+
+    # Step 1: Create 'evalhub' database in existing PostgreSQL
+    if oc get secret evalhub-db-credentials -n redhat-ods-applications &>/dev/null; then
+        print_info "evalhub-db-credentials secret already exists"
+    else
+        print_step "Creating EvalHub database in existing PostgreSQL..."
+
+        if ! oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
+            print_warning "PostgreSQL not deployed. Run MaaS DB setup first (Option 3 includes it)."
+            print_info "Falling back to SQLite mode..."
+
+            oc apply -f - <<'EOF'
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: EvalHub
+metadata:
+  name: evalhub
+  namespace: redhat-ods-applications
+spec:
+  replicas: 1
+  database:
+    type: sqlite
+  providers:
+    - lm-evaluation-harness
+    - garak
+    - guidellm
+    - lighteval
+EOF
+            print_info "EvalHub deployed with SQLite (non-persistent). Upgrade to PostgreSQL by re-running after MaaS DB is set up."
+            # Still wait for it
+            _wait_for_evalhub
+            _setup_evalhub_rbac
+            return 0
+        fi
+
+        local pg_password=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+        local pg_user=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)
+        local pg_db=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_DB}' | base64 -d)
+
+        # Reuse the MaaS PostgreSQL instance (EvalHub tables have their own schema prefix)
+        export EVALHUB_DB_URL="postgres://${pg_user}:${pg_password}@postgres:5432/${pg_db}?sslmode=disable"
+        envsubst < "$ROOT_DIR/lib/manifests/evalhub/evalhub-db-secret.yaml.tmpl" | oc apply -f -
+        print_success "evalhub-db-credentials secret created (sharing MaaS PostgreSQL)"
+    fi
+
+    # Step 2: Deploy EvalHub CR
+    print_step "Deploying EvalHub CR..."
+    oc apply -f "$ROOT_DIR/lib/manifests/evalhub/evalhub-cr.yaml"
+
+    # Step 3: Wait for EvalHub to be ready
+    _wait_for_evalhub
+
+    # Step 4: RBAC for EvalHub service account
+    _setup_evalhub_rbac
+}
+
+_wait_for_evalhub() {
+    print_step "Waiting for EvalHub to become Ready..."
+    local timeout=180
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local ready=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        local phase=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [ "$ready" = "True" ] || [ "$phase" = "Ready" ]; then
+            print_success "EvalHub is Ready"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        echo -n "."
+    done
+    echo ""
+    local msg=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+    print_warning "EvalHub not Ready within ${timeout}s"
+    [ -n "$msg" ] && print_info "Reason: $msg"
+    print_info "Check: oc get evalhub -n redhat-ods-applications -o yaml"
+}
+
+_setup_evalhub_rbac() {
+    print_step "Configuring EvalHub RBAC..."
+
+    # Allow EvalHub SA to access InferenceServices for evaluation
+    oc adm policy add-cluster-role-to-user view \
+        system:serviceaccount:redhat-ods-applications:evalhub \
+        2>/dev/null || true
+
+    oc adm policy add-role-to-user edit \
+        system:serviceaccount:redhat-ods-applications:evalhub \
+        -n redhat-ods-applications \
+        2>/dev/null || true
+
+    print_success "EvalHub RBAC configured"
+}
+
+################################################################################
+
 generate_rhoai_info() {
     local info_file="$ROOT_DIR/rhoai-info.txt"
 
@@ -1444,6 +1721,18 @@ main() {
                 SKIP_MAAS=true
                 shift
                 ;;
+            --skip-maas-db)
+                SKIP_MAAS_DB=true
+                shift
+                ;;
+            --skip-evalhub)
+                SKIP_EVALHUB=true
+                shift
+                ;;
+            --maas-db-url)
+                MAAS_DB_URL="$2"
+                shift 2
+                ;;
             --skip-observability)
                 SKIP_OBSERVABILITY=true
                 shift
@@ -1539,6 +1828,23 @@ main() {
     
     # Post-installation configuration
     enable_dashboard_features
+    
+    # MaaS database setup (PostgreSQL + Authorino TLS → Tenant Ready)
+    if [ "$SKIP_MAAS" = false ] && [ "$SKIP_MAAS_DB" = false ]; then
+        setup_maas_database
+        configure_maas_tls
+        wait_for_maas_tenant
+    elif [ "$SKIP_MAAS_DB" = true ]; then
+        print_info "Skipping MaaS DB setup (--skip-maas-db)"
+    fi
+    
+    # Deploy EvalHub (TrustyAI)
+    if [ "$SKIP_EVALHUB" = false ]; then
+        deploy_evalhub
+    else
+        print_info "Skipping EvalHub deployment (--skip-evalhub)"
+    fi
+    
     create_hardware_profile
     
     # Setup Kueue ClusterQueue and LocalQueue for GPU scheduling

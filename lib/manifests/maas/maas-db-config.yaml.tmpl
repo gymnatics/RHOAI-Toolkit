@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: maas-db-config
+  namespace: redhat-ods-applications
+type: Opaque
+stringData:
+  DB_CONNECTION_URL: "${MAAS_DB_CONNECTION_URL}"

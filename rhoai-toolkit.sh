@@ -73,7 +73,7 @@ show_main_menu() {
     echo "    New cluster install, then full RHOAI 3.x (same installer as option 3)"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
     echo -e "${YELLOW}3)${NC} Install RHOAI 3.x (all prerequisites + MaaS included) ${GREEN}[Recommended]${NC}"
-    echo "    Choose version (3.4 latest, 3.3). Installs NFD, GPU, Kueue, RHCL, Gateway, etc."
+    echo "    Choose version (3.4 latest, 3.3). Installs NFD, GPU, Kueue, RHCL, Gateway, MaaS(PostgreSQL), basic MCP servers, etc."
     echo ""
     echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
