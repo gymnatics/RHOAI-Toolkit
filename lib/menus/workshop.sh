@@ -47,6 +47,9 @@ show_workshop_setup_menu() {
     echo -e "${YELLOW}7)${NC} Install Web Terminal Only"
     echo "    In-browser terminal for workshop participants"
     echo ""
+    echo -e "${YELLOW}8)${NC} Disable vLLM on MaaS (Tech Preview)"
+    echo "    Turn off vLLM MaaS runtime to avoid workshop confusion"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
@@ -54,7 +57,7 @@ show_workshop_setup_menu() {
 workshop_setup_menu() {
     while true; do
         show_workshop_setup_menu
-        read -p "Select an option (0-7): " choice
+        read -p "Select an option (0-8): " choice
         
         case $choice in
             1)
@@ -87,6 +90,7 @@ workshop_setup_menu() {
                 oc apply -f "$_WORKSHOP_MENU_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml" 2>/dev/null || true
 
                 install_web_terminal
+                disable_vllm_on_maas
                 setup_user_workload_monitoring
                 setup_workshop_users "$user_count"
                 setup_workshop_grafana
@@ -120,6 +124,11 @@ workshop_setup_menu() {
                 ;;
             7)
                 install_web_terminal
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                disable_vllm_on_maas
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;

@@ -10,6 +10,7 @@
 #   setup_user_workload_monitoring  — Enable Prometheus UWM and vLLM metrics
 #   run_complete_workshop_setup     — Full workshop setup orchestrator
 #   install_web_terminal             — Install Web Terminal operator
+#   disable_vllm_on_maas             — Disable vLLM on MaaS tech preview
 #   create_gpu_machineset_for_workshop — Create AWS GPU MachineSet
 #   scale_worker_nodes              — Scale worker MachineSet replicas
 ################################################################################
@@ -404,6 +405,31 @@ install_web_terminal() {
     print_warning "Web Terminal operator not ready after ${timeout}s (may still be installing)"
 }
 
+disable_vllm_on_maas() {
+    print_header "Disabling vLLM on MaaS (Tech Preview)"
+
+    local current
+    current=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.vLLMDeploymentOnMaaS}' 2>/dev/null)
+
+    if [ "$current" = "false" ]; then
+        print_success "vLLM on MaaS is already disabled"
+        return 0
+    fi
+
+    print_step "Patching OdhDashboardConfig..."
+    oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        --type merge -p '{"spec":{"dashboardConfig":{"vLLMDeploymentOnMaaS":false}}}' 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "vLLM on MaaS disabled"
+        print_info "Dashboard will no longer show vLLM as a MaaS-compatible runtime"
+    else
+        print_error "Failed to patch OdhDashboardConfig"
+        return 1
+    fi
+}
+
 run_complete_workshop_setup() {
     local user_count="${1:-150}"
     local gpu_instance="${2:-g6e.xlarge}"
@@ -415,6 +441,7 @@ run_complete_workshop_setup() {
     echo -e "${YELLOW}This will set up a complete workshop environment:${NC}"
     echo "  • RHOAI 3.4 installation"
     echo "  • Web Terminal operator (in-browser terminal for participants)"
+    echo "  • Disable vLLM on MaaS tech preview"
     echo "  • GPU hardware profile"
     echo "  • User Workload Monitoring (Prometheus)"
     echo "  • GPU MachineSet ($gpu_count x $gpu_instance)"
@@ -436,29 +463,32 @@ run_complete_workshop_setup() {
     print_header "Step 1/9: Installing RHOAI 3.4"
     "$ROOT_DIR/scripts/install-rhoai-34.sh" --skip-admin-user --setup-users --num-users "$user_count"
 
-    print_header "Step 2/9: Installing Web Terminal"
+    print_header "Step 2/10: Installing Web Terminal"
     install_web_terminal
 
-    print_header "Step 3/9: Creating GPU Hardware Profile"
+    print_header "Step 3/10: Disabling vLLM on MaaS Tech Preview"
+    disable_vllm_on_maas
+
+    print_header "Step 4/10: Creating GPU Hardware Profile"
     oc apply -f "$ROOT_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml"
     print_success "GPU hardware profile created"
 
-    print_header "Step 4/9: Enabling User Workload Monitoring"
+    print_header "Step 5/10: Enabling User Workload Monitoring"
     setup_user_workload_monitoring
 
-    print_header "Step 5/9: Creating GPU MachineSet"
+    print_header "Step 6/10: Creating GPU MachineSet"
     create_gpu_machineset_for_workshop "$gpu_instance" "$gpu_count"
 
-    print_header "Step 6/9: Scaling Worker Nodes"
+    print_header "Step 7/10: Scaling Worker Nodes"
     scale_worker_nodes "$worker_count"
 
-    print_header "Step 7/9: Setting Up Workshop Users"
+    print_header "Step 8/10: Setting Up Workshop Users"
     setup_workshop_users "$user_count"
 
-    print_header "Step 8/9: Setting Up Grafana"
+    print_header "Step 9/10: Setting Up Grafana"
     setup_workshop_grafana
 
-    print_header "Step 9/9: Deploying Model and MCP Server"
+    print_header "Step 10/10: Deploying Model and MCP Server"
     echo -e "${YELLOW}Note: Model deployment requires GPU nodes to be ready.${NC}"
     echo "Checking GPU node status..."
     local gpu_ready
