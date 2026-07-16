@@ -206,7 +206,7 @@ This step configures model availability, access, and tool calling. **Check all f
 | **Require token authentication** | **Check this box** |
 | **Add custom runtime arguments** | **Check this box** |
 
-After checking **"Add custom runtime arguments"**, add the following arguments (each on its own line):
+After checking **"Add custom runtime arguments"**, add the following arguments. Enter each on its own line in the text box:
 
 ```
 --enable-auto-tool-choice
@@ -214,6 +214,8 @@ After checking **"Add custom runtime arguments"**, add the following arguments (
 --override-generation-config
 {"think": false}
 ```
+
+> **Note:** `--override-generation-config` and `{"think": false}` are two separate lines -- the first is the flag, the second is its value.
 
 ![Custom Runtime Arguments](images/vllm-args.png)
 
