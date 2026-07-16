@@ -566,16 +566,20 @@ This is a UI-only step in Open WebUI to connect the MCP server you just deployed
 
 ![Add Connection Dialog](images/openwebui-add-connection.png)
 
-2. Fill in the fields:
+2. First, get your MCP server URL from the Web Terminal:
+
+```bash
+echo "http://kubernetes-mcp-server.$NAMESPACE.svc.cluster.local:8080/mcp"
+```
+
+3. Fill in the fields:
 
    | Field | Value |
    |-------|-------|
    | **Type** | Select **OpenAPI** |
    | **Name** | `Kubernetes MCP` (or any name you like) |
-   | **URL** | `http://kubernetes-mcp-server.<your-namespace>.svc.cluster.local:8080/mcp` |
+   | **URL** | Paste the URL from the terminal output above |
    | **Auth** | Leave as **Bearer**, leave API Key empty |
-
-   Replace `<your-namespace>` with your actual namespace (e.g., `user-03`).
 
 3. Click **Save**
 
