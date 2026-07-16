@@ -84,6 +84,8 @@ You should now see the **OpenShift AI Dashboard** with a left sidebar showing me
 
 > Can't log in? Double-check your username and password with your instructor.
 
+> **Tip:** To switch between the **OpenShift AI Dashboard** and the **OpenShift Console** (needed later for the Web Terminal), click the **grid icon** (3x3 squares) in the top-right corner of the header bar, then select **OpenShift Console** or **Red Hat OpenShift AI**. You can also switch via the URL: replace `rh-ai.apps` with `console-openshift-console.apps` (or vice versa).
+
 ---
 
 # Part 2: Create Your Project (~5 min)
@@ -285,11 +287,16 @@ Once the status shows **Ready** (green), your model is ready.
 
 ![Resource Name](images/resource-name.png)
 
-2. Click the **expand arrow** (>) to the left of the model name to see deployment details including inference endpoints, hardware profile, and token authentication
+2. Click the **expand arrow** (>) to the left of the model name to see deployment details
 
 ![Model Details Expanded](images/token.png)
 
-> **Important:** Copy the **authentication token** from the model's expanded details (click the expand arrow next to the model name in the Deployments tab). You'll need this token in Part 5.
+3. **Copy two things** from the expanded details — you'll need both in Part 5:
+
+   - **Inference endpoint URL** — the external route URL (e.g., `https://qwen3-4b-user-03.apps.cluster...`). Click the copy icon next to it.
+   - **Token secret** — click **"Show token"** (or the eye icon) to reveal the authentication token, then copy it.
+
+> **Keep these handy!** You'll paste the URL as `MODEL_URL` and the token as `MODEL_TOKEN` in Part 5.
 
 ---
 
@@ -349,7 +356,7 @@ sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKE
 ## Step 5.5: Wait for LlamaStack to Start
 
 ```bash
-oc wait --for=condition=available deployment -l llamastack.io/distribution=llamastack-workshop \
+oc wait --for=condition=available deployment -l app.kubernetes.io/instance=llamastack-workshop \
   -n $NAMESPACE --timeout=120s
 ```
 
@@ -358,12 +365,12 @@ This typically takes 1-2 minutes.
 ## Step 5.6: Verify LlamaStack is Running
 
 ```bash
-oc get pods -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop
+oc get pods -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop
 ```
 
 You should see a pod in `Running` state.
 
-> **Tip:** If the pod is in `CrashLoopBackOff`, check the logs: `oc logs -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop`
+> **Tip:** If the pod is in `CrashLoopBackOff`, check the logs: `oc logs -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop`
 
 ---
 
@@ -430,7 +437,7 @@ Copy this URL -- you'll paste it in the next step.
 | Field | Value |
 |-------|-------|
 | **URL** | Paste the LlamaStack URL from Step 7.1 |
-| **Auth** | Select **Bearer**, then paste your **model token** (from Part 4) |
+| **Auth** | Select **Bearer**, then paste the **token** you copied from Part 4 Step 4.2 (the same value you used for `MODEL_TOKEN`) |
 
 ![OpenWebUI Connection Settings](images/openwebui-connection.png)
 
@@ -713,10 +720,10 @@ After this workshop, you can explore:
 
 **Fix:**
 
-1. Check that LlamaStack is running: `oc get pods -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop`
+1. Check that LlamaStack is running: `oc get pods -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop`
 2. Verify the `OPENAI_API_BASE_URLS` in the Open WebUI ConfigMap points to your LlamaStack service
 3. In Open WebUI Settings → Connections, click the refresh icon to re-test
-4. Check LlamaStack logs: `oc logs -n $NAMESPACE -l llamastack.io/distribution=llamastack-workshop`
+4. Check LlamaStack logs: `oc logs -n $NAMESPACE -l app.kubernetes.io/instance=llamastack-workshop`
 
 ## "MCP tools not appearing"
 
