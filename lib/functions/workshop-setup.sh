@@ -9,6 +9,7 @@
 #   setup_workshop_model_and_mcp    — Deploy qwen3-4b (tool calling) + K8s MCP server
 #   setup_user_workload_monitoring  — Enable Prometheus UWM and vLLM metrics
 #   run_complete_workshop_setup     — Full workshop setup orchestrator
+#   install_web_terminal             — Install Web Terminal operator
 #   create_gpu_machineset_for_workshop — Create AWS GPU MachineSet
 #   scale_worker_nodes              — Scale worker MachineSet replicas
 ################################################################################
@@ -346,6 +347,43 @@ setup_user_workload_monitoring() {
     print_success "vLLM metrics allowlist created"
 }
 
+install_web_terminal() {
+    print_header "Installing Web Terminal Operator"
+
+    if oc get subscription web-terminal -n openshift-operators &>/dev/null; then
+        local phase
+        phase=$(oc get csv -n openshift-operators -l operators.coreos.com/web-terminal.openshift-operators 2>/dev/null \
+            | grep -v NAME | awk '{print $NF}' | head -1)
+        if [ "$phase" = "Succeeded" ]; then
+            print_success "Web Terminal operator already installed"
+            return 0
+        fi
+        print_step "Subscription exists, waiting for CSV..."
+    else
+        print_step "Creating Web Terminal subscription..."
+        oc apply -f "$ROOT_DIR/lib/manifests/operators/web-terminal-subscription.yaml"
+        print_success "Subscription created"
+    fi
+
+    print_step "Waiting for Web Terminal operator to become ready..."
+    local timeout=180 elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        local phase
+        phase=$(oc get csv -n openshift-operators 2>/dev/null \
+            | grep web-terminal | awk '{print $NF}' | head -1)
+        if [ "$phase" = "Succeeded" ]; then
+            print_success "Web Terminal operator ready"
+            print_info "Participants can use the >_ icon in the OpenShift console masthead"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        echo "  Waiting... (${elapsed}s)"
+    done
+
+    print_warning "Web Terminal operator not ready after ${timeout}s (may still be installing)"
+}
+
 run_complete_workshop_setup() {
     local user_count="${1:-150}"
     local gpu_instance="${2:-g6e.xlarge}"
@@ -356,6 +394,7 @@ run_complete_workshop_setup() {
 
     echo -e "${YELLOW}This will set up a complete workshop environment:${NC}"
     echo "  • RHOAI 3.4 installation"
+    echo "  • Web Terminal operator (in-browser terminal for participants)"
     echo "  • GPU hardware profile"
     echo "  • User Workload Monitoring (Prometheus)"
     echo "  • GPU MachineSet ($gpu_count x $gpu_instance)"
@@ -374,29 +413,32 @@ run_complete_workshop_setup() {
         return 0
     fi
 
-    print_header "Step 1/8: Installing RHOAI 3.4"
+    print_header "Step 1/9: Installing RHOAI 3.4"
     "$ROOT_DIR/scripts/install-rhoai-34.sh" --skip-admin-user --setup-users --num-users "$user_count"
 
-    print_header "Step 2/8: Creating GPU Hardware Profile"
+    print_header "Step 2/9: Installing Web Terminal"
+    install_web_terminal
+
+    print_header "Step 3/9: Creating GPU Hardware Profile"
     oc apply -f "$ROOT_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml"
     print_success "GPU hardware profile created"
 
-    print_header "Step 3/8: Enabling User Workload Monitoring"
+    print_header "Step 4/9: Enabling User Workload Monitoring"
     setup_user_workload_monitoring
 
-    print_header "Step 4/8: Creating GPU MachineSet"
+    print_header "Step 5/9: Creating GPU MachineSet"
     create_gpu_machineset_for_workshop "$gpu_instance" "$gpu_count"
 
-    print_header "Step 5/8: Scaling Worker Nodes"
+    print_header "Step 6/9: Scaling Worker Nodes"
     scale_worker_nodes "$worker_count"
 
-    print_header "Step 6/8: Setting Up Workshop Users"
+    print_header "Step 7/9: Setting Up Workshop Users"
     setup_workshop_users "$user_count"
 
-    print_header "Step 7/8: Setting Up Grafana"
+    print_header "Step 8/9: Setting Up Grafana"
     setup_workshop_grafana
 
-    print_header "Step 8/8: Deploying Model and MCP Server"
+    print_header "Step 9/9: Deploying Model and MCP Server"
     echo -e "${YELLOW}Note: Model deployment requires GPU nodes to be ready.${NC}"
     echo "Checking GPU node status..."
     local gpu_ready

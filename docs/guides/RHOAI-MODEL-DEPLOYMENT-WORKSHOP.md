@@ -378,7 +378,9 @@ Your instructor has already deployed a shared model (qwen3-4b with tool calling)
 
 ## Step 6.1: Set Up Your Environment
 
-Open a terminal (or use the OpenShift Web Terminal) and set your environment variables. Replace the values with your assigned user number and the token provided by your instructor.
+Open a terminal using the **Web Terminal** in the OpenShift console — click the **`>_`** icon in the top-right masthead. This gives you an in-browser terminal with `oc`, `git`, and `envsubst` pre-installed (no local CLI tools needed).
+
+Set your environment variables. Replace the values with your assigned user number and the token provided by your instructor.
 
 ```bash
 # Set your namespace (replace XX with your number)
@@ -798,7 +800,7 @@ Use the RHOAI Toolkit to set up everything:
 # Select option 1: Complete Workshop Setup
 ```
 
-This handles RHOAI 3.4 installation, GPU setup, user creation, Grafana dashboards, the shared model with tool calling, the Kubernetes MCP server, and enabling the LlamaStack operator.
+This handles RHOAI 3.4 installation, Web Terminal operator, GPU setup, user creation, Grafana dashboards, the shared model with tool calling, the Kubernetes MCP server, and enabling the LlamaStack operator.
 
 ### Option B: Manual Steps
 

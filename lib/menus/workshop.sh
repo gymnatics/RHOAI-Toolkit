@@ -44,6 +44,9 @@ show_workshop_setup_menu() {
     echo -e "${YELLOW}6)${NC} Enable User Workload Monitoring Only"
     echo "    Enable Prometheus UWM and vLLM metrics"
     echo ""
+    echo -e "${YELLOW}7)${NC} Install Web Terminal Only"
+    echo "    In-browser terminal for workshop participants"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
@@ -51,7 +54,7 @@ show_workshop_setup_menu() {
 workshop_setup_menu() {
     while true; do
         show_workshop_setup_menu
-        read -p "Select an option (0-6): " choice
+        read -p "Select an option (0-7): " choice
         
         case $choice in
             1)
@@ -83,6 +86,7 @@ workshop_setup_menu() {
                 print_step "Creating GPU hardware profile..."
                 oc apply -f "$_WORKSHOP_MENU_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml" 2>/dev/null || true
 
+                install_web_terminal
                 setup_user_workload_monitoring
                 setup_workshop_users "$user_count"
                 setup_workshop_grafana
@@ -111,6 +115,11 @@ workshop_setup_menu() {
                 ;;
             6)
                 setup_user_workload_monitoring
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                install_web_terminal
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
