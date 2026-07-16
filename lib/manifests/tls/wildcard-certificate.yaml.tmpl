@@ -9,6 +9,6 @@ spec:
     name: letsencrypt-${ACME_ENV}
     kind: ClusterIssuer
   dnsNames:
-  - "*.apps.${CLUSTER_DOMAIN}"
+  - "*.${CLUSTER_DOMAIN}"
   duration: 2160h
   renewBefore: 360h

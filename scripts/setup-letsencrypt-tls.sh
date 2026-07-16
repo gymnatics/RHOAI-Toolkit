@@ -65,6 +65,93 @@ get_aws_region() {
     export AWS_REGION
 }
 
+detect_public_hosted_zone() {
+    print_step "Detecting public Route53 hosted zone..."
+
+    local base_domain="$CLUSTER_BASE_DOMAIN"
+    local zone_id=""
+
+    while [ -n "$base_domain" ] && [ "$base_domain" != "${base_domain#*.}" -o -z "$zone_id" ]; do
+        zone_id=$(aws route53 list-hosted-zones --output json 2>/dev/null | \
+            python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for z in data.get('HostedZones', []):
+    if z['Name'].rstrip('.') == '${base_domain}' and not z['Config'].get('PrivateZone', False):
+        print(z['Id'].split('/')[-1])
+        break
+" 2>/dev/null)
+
+        if [ -n "$zone_id" ]; then
+            break
+        fi
+        base_domain="${base_domain#*.}"
+    done
+
+    if [ -z "$zone_id" ]; then
+        print_warning "Could not auto-detect public hosted zone. Listing available zones:"
+        aws route53 list-hosted-zones --output json 2>/dev/null | \
+            python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for z in data.get('HostedZones', []):
+    priv = '(private)' if z['Config'].get('PrivateZone', False) else '(public)'
+    zid = z['Id'].split('/')[-1]
+    print(f'  {zid}  {z[\"Name\"]}  {priv}')
+" 2>/dev/null
+        echo ""
+        echo -n -e "${BLUE}Enter the PUBLIC hosted zone ID: ${NC}"
+        read -r zone_id
+    fi
+
+    if [ -z "$zone_id" ]; then
+        print_error "Route53 public hosted zone ID is required"
+        return 1
+    fi
+
+    export ROUTE53_HOSTED_ZONE_ID="$zone_id"
+    print_success "Using public hosted zone: $ROUTE53_HOSTED_ZONE_ID (${base_domain})"
+}
+
+configure_certmanager_dns_resolvers() {
+    print_step "Configuring cert-manager to use public DNS resolvers..."
+
+    local current_args=$(oc get certmanager cluster -o jsonpath='{.spec.controllerConfig.overrideArgs}' 2>/dev/null)
+    if echo "$current_args" | grep -q "dns01-recursive-nameservers" 2>/dev/null; then
+        print_info "cert-manager already configured with recursive DNS resolvers"
+        return 0
+    fi
+
+    oc patch certmanager cluster --type=merge -p '{
+      "spec": {
+        "controllerConfig": {
+          "overrideArgs": [
+            "--dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53",
+            "--dns01-recursive-nameservers-only=true"
+          ]
+        }
+      }
+    }' 2>/dev/null
+
+    print_success "cert-manager configured to use Google/Cloudflare public DNS"
+    print_info "Waiting for cert-manager controller to restart..."
+    sleep 10
+
+    local cm_timeout=60
+    local cm_elapsed=0
+    while [ $cm_elapsed -lt $cm_timeout ]; do
+        if oc get pods -n cert-manager -l app=cert-manager --no-headers 2>/dev/null | grep -q "1/1.*Running"; then
+            print_success "cert-manager controller restarted"
+            return 0
+        fi
+        sleep 5
+        cm_elapsed=$((cm_elapsed + 5))
+        echo -n "."
+    done
+    echo ""
+    print_warning "cert-manager controller restart may still be in progress"
+}
+
 check_certmanager() {
     if oc get csv -A 2>/dev/null | grep -q "cert-manager.*Succeeded"; then
         print_success "cert-manager operator is installed"
@@ -177,8 +264,11 @@ setup_letsencrypt() {
     export AWS_ACCESS_KEY_ID="$aws_key_id"
     export AWS_SECRET_ACCESS_KEY="$aws_secret"
 
-    # Step 2: Choose ACME environment
-    print_step "Step 2: ACME environment"
+    # Step 2: Detect public Route53 hosted zone
+    detect_public_hosted_zone || return 1
+
+    # Step 3: Choose ACME environment
+    print_step "Step 3: ACME environment"
     echo ""
     echo "  1) Production (real trusted certificates)"
     echo "  2) Staging (test certificates, higher rate limits)"
@@ -196,7 +286,7 @@ setup_letsencrypt() {
         print_info "Using Let's Encrypt PRODUCTION"
     fi
 
-    # Step 3: ACME email
+    # Step 4: ACME email
     echo ""
     echo -n -e "${BLUE}ACME contact email [admin@${CLUSTER_BASE_DOMAIN}]: ${NC}"
     read -r acme_email
@@ -205,11 +295,12 @@ setup_letsencrypt() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}Configuration Summary:${NC}"
-    echo "  Domain:      *.apps.${CLUSTER_DOMAIN}"
+    echo "  Domain:      *.${CLUSTER_DOMAIN}"
     echo "  ACME Server: ${ACME_ENV}"
     echo "  Email:       ${ACME_EMAIL}"
     echo "  AWS Key:     ${AWS_ACCESS_KEY_ID:0:8}..."
     echo "  AWS Region:  ${AWS_REGION}"
+    echo "  Zone ID:     ${ROUTE53_HOSTED_ZONE_ID}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -n -e "${YELLOW}Proceed? [Y/n]: ${NC}"
@@ -221,7 +312,10 @@ setup_letsencrypt() {
 
     echo ""
 
-    # Step 4: Create Route53 credentials secret
+    # Step 5: Configure cert-manager DNS resolvers (prevents private zone NS issues)
+    configure_certmanager_dns_resolvers
+
+    # Step 6: Create Route53 credentials secret
     print_step "Creating Route53 credentials secret in cert-manager namespace..."
     local cm_ns="cert-manager"
     if ! oc get namespace "$cm_ns" &>/dev/null; then
@@ -234,12 +328,12 @@ setup_letsencrypt() {
         --dry-run=client -o yaml | oc apply -f -
     print_success "Route53 credentials secret created in $cm_ns"
 
-    # Step 5: Create ClusterIssuer
+    # Step 7: Create ClusterIssuer
     print_step "Creating ClusterIssuer (letsencrypt-${ACME_ENV})..."
     envsubst < "$MANIFESTS_DIR/letsencrypt-clusterissuer.yaml.tmpl" | oc apply -f -
     print_success "ClusterIssuer created"
 
-    # Step 6: Wait for ClusterIssuer to be ready
+    # Step 8: Wait for ClusterIssuer to be ready
     print_step "Waiting for ClusterIssuer to be ready..."
     local ci_timeout=60
     local ci_elapsed=0
@@ -257,12 +351,12 @@ setup_letsencrypt() {
         print_warning "ClusterIssuer not ready yet - check: oc describe clusterissuer letsencrypt-${ACME_ENV}"
     fi
 
-    # Step 7: Create wildcard Certificate
-    print_step "Creating wildcard Certificate (*.apps.${CLUSTER_DOMAIN})..."
+    # Step 9: Create wildcard Certificate
+    print_step "Creating wildcard Certificate (*.${CLUSTER_DOMAIN})..."
     envsubst < "$MANIFESTS_DIR/wildcard-certificate.yaml.tmpl" | oc apply -f -
     print_success "Certificate CR created"
 
-    # Step 8: Wait for certificate to be issued
+    # Step 10: Wait for certificate to be issued
     print_step "Waiting for certificate to be issued (DNS-01 challenge, may take 1-3 minutes)..."
     local cert_timeout=300
     local cert_elapsed=0
@@ -286,7 +380,7 @@ setup_letsencrypt() {
         return 1
     fi
 
-    # Step 9: Apply to targets
+    # Step 11: Apply to targets
     apply_cert_to_targets
 
     echo ""
@@ -306,7 +400,7 @@ setup_selfsigned() {
 
     echo -e "${CYAN}Cluster domain:${NC} $CLUSTER_DOMAIN"
     echo ""
-    print_info "This creates a self-signed wildcard certificate for *.apps.${CLUSTER_DOMAIN}"
+    print_info "This creates a self-signed wildcard certificate for *.${CLUSTER_DOMAIN}"
     print_warning "Browsers will show security warnings with self-signed certificates."
     echo ""
     echo -n -e "${YELLOW}Continue? [Y/n]: ${NC}"
@@ -331,7 +425,7 @@ req_extensions = req_ext
 x509_extensions = v3_ext
 
 [dn]
-CN = *.apps.${CLUSTER_DOMAIN}
+CN = *.${CLUSTER_DOMAIN}
 
 [req_ext]
 subjectAltName = @alt_names
@@ -342,8 +436,8 @@ basicConstraints = CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
 
 [alt_names]
-DNS.1 = *.apps.${CLUSTER_DOMAIN}
-DNS.2 = apps.${CLUSTER_DOMAIN}
+DNS.1 = *.${CLUSTER_DOMAIN}
+DNS.2 = ${CLUSTER_DOMAIN}
 EOF
 
     openssl req -x509 -newkey rsa:2048 \
@@ -396,23 +490,23 @@ apply_cert_to_targets() {
     # 1. Gateway TLS
     print_step "Applying to Gateway API resources..."
 
-    if oc get gateway maas-default-gateway -n "$GATEWAY_NS" &>/dev/null; then
-        oc patch gateway maas-default-gateway -n "$GATEWAY_NS" --type=json \
-            -p "[{\"op\":\"replace\",\"path\":\"/spec/listeners/0/tls/certificateRefs/0/name\",\"value\":\"$CERT_SECRET_NAME\"}]" 2>/dev/null \
-            && print_success "  maas-default-gateway updated" \
-            || print_warning "  Could not patch maas-default-gateway"
-    else
-        print_info "  maas-default-gateway not found (skipping)"
-    fi
-
-    if oc get gateway openshift-ai-inference -n "$GATEWAY_NS" &>/dev/null; then
-        oc patch gateway openshift-ai-inference -n "$GATEWAY_NS" --type=json \
-            -p "[{\"op\":\"replace\",\"path\":\"/spec/listeners/0/tls/certificateRefs/0/name\",\"value\":\"$CERT_SECRET_NAME\"}]" 2>/dev/null \
-            && print_success "  openshift-ai-inference updated" \
-            || print_warning "  Could not patch openshift-ai-inference"
-    else
-        print_info "  openshift-ai-inference not found (skipping)"
-    fi
+    for gw_name in maas-default-gateway openshift-ai-inference; do
+        if oc get gateway "$gw_name" -n "$GATEWAY_NS" &>/dev/null; then
+            local listener_count=$(oc get gateway "$gw_name" -n "$GATEWAY_NS" \
+                -o jsonpath='{range .spec.listeners[*]}{.name}{"\n"}{end}' 2>/dev/null | wc -l | tr -d ' ')
+            local patch_ops="["
+            for ((idx=0; idx<listener_count; idx++)); do
+                [ $idx -gt 0 ] && patch_ops+=","
+                patch_ops+="{\"op\":\"replace\",\"path\":\"/spec/listeners/$idx/tls/certificateRefs/0/name\",\"value\":\"$CERT_SECRET_NAME\"}"
+            done
+            patch_ops+="]"
+            oc patch gateway "$gw_name" -n "$GATEWAY_NS" --type=json -p "$patch_ops" 2>/dev/null \
+                && print_success "  $gw_name: updated $listener_count listener(s)" \
+                || print_warning "  Could not patch $gw_name"
+        else
+            print_info "  $gw_name not found (skipping)"
+        fi
+    done
 
     # 2. Ingress Router
     print_step "Applying to OpenShift Ingress Router..."

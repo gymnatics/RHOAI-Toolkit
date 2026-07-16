@@ -1063,7 +1063,7 @@ spec:
         certificateRefs:
           - group: ''
             kind: Secret
-            name: default-gateway-tls
+            name: apps-wildcard-tls
         mode: Terminate
 EOF
     
@@ -1100,7 +1100,7 @@ spec:
         certificateRefs:
           - group: ''
             kind: Secret
-            name: default-gateway-tls
+            name: apps-wildcard-tls
         mode: Terminate
 EOF
     
