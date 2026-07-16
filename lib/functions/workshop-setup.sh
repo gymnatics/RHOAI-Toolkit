@@ -367,6 +367,7 @@ install_web_terminal() {
 
     print_step "Waiting for Web Terminal operator to become ready..."
     local timeout=180 elapsed=0
+    local approval_done=false
     while [ $elapsed -lt $timeout ]; do
         local phase
         phase=$(oc get csv -n openshift-operators 2>/dev/null \
@@ -376,6 +377,25 @@ install_web_terminal() {
             print_info "Participants can use the >_ icon in the OpenShift console masthead"
             return 0
         fi
+
+        if [ "$approval_done" = "false" ]; then
+            local plan_name
+            plan_name=$(oc get subscription web-terminal -n openshift-operators \
+                -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null)
+            if [ -n "$plan_name" ]; then
+                local plan_approved
+                plan_approved=$(oc get installplan "$plan_name" -n openshift-operators \
+                    -o jsonpath='{.spec.approved}' 2>/dev/null)
+                if [ "$plan_approved" = "false" ]; then
+                    print_step "Approving pending InstallPlan ($plan_name)..."
+                    oc patch installplan "$plan_name" -n openshift-operators \
+                        --type merge -p '{"spec":{"approved":true}}' 2>/dev/null
+                    print_success "InstallPlan approved"
+                fi
+                approval_done=true
+            fi
+        fi
+
         sleep 10
         elapsed=$((elapsed + 10))
         echo "  Waiting... (${elapsed}s)"
