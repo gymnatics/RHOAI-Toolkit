@@ -26,12 +26,13 @@ By the end of this workshop, you will:
 | Part 3 | Deploy a Model | Hands-on | ~15 min |
 | Part 4 | Wait for Model & Monitor | Hands-on | ~10 min |
 | Part 5 | Deploy LlamaStack | Hands-on | ~10 min |
-| Part 6 | Deploy Open WebUI | Hands-on | ~10 min |
-| Part 7 | Test LLM Chat | Hands-on | ~10 min |
-| Part 8 | Test RAG | Hands-on | ~10 min |
-| Part 9 | Deploy MCP Server | Hands-on | ~5 min |
-| Part 10 | Connect MCP to OpenWebUI | Hands-on | ~5 min |
-| Part 11 | Test Tool Calling | Hands-on | ~10 min |
+| Part 6 | Deploy Open WebUI | Hands-on | ~5 min |
+| Part 7 | Connect Model to OpenWebUI | Hands-on | ~5 min |
+| Part 8 | Test LLM Chat | Hands-on | ~10 min |
+| Part 9 | Test RAG | Hands-on | ~10 min |
+| Part 10 | Deploy MCP Server | Hands-on | ~5 min |
+| Part 11 | Connect MCP to OpenWebUI | Hands-on | ~5 min |
+| Part 12 | Test Tool Calling | Hands-on | ~10 min |
 | Instructor Demo | Observe Tab Metrics | Demo | ~10 min |
 | Appendix A | AI Playground (Optional) | Optional | -- |
 | Appendix B | Model Catalog | Optional | -- |
@@ -210,6 +211,8 @@ After checking **"Add custom runtime arguments"**, add the following arguments (
 ```
 --enable-auto-tool-choice
 --tool-call-parser=hermes
+--override-generation-config
+{"think": false}
 ```
 
 ![Custom Runtime Arguments](images/vllm-args.png)
@@ -222,6 +225,7 @@ After checking **"Add custom runtime arguments"**, add the following arguments (
 |----------|---------|
 | `--enable-auto-tool-choice` | Allows the model to decide when to use tools |
 | `--tool-call-parser=hermes` | Tells vLLM how to parse Qwen's tool call output |
+| `--override-generation-config {"think": false}` | Disables Qwen3's "thinking" mode which consumes tokens with internal reasoning |
 
 Different model families require different tool call parsers:
 
@@ -305,28 +309,32 @@ LlamaStack is a developer framework for building generative AI applications. On 
 > - **ConfigMap** — LlamaStack's `run.yaml` configuration that tells it where the model is
 > - **LlamaStackDistribution** — custom resource that the LlamaStack Operator uses to deploy and manage a LlamaStack server pod in your namespace
 
-## Step 5.1: Set Up Your Environment
+## Step 5.1: Open the Web Terminal
 
-Set your environment variables. Replace the values with your assigned user number and the token you copied from Part 4.
+Click the **`>_`** icon in the top-right masthead of the OpenShift console to open the Web Terminal. This gives you an in-browser terminal with `oc`, `git`, and `sed` pre-installed -- no local CLI tools needed.
+
+## Step 5.2: Clone the Workshop Repository
 
 ```bash
-# Set your namespace (replace XX with your number)
-export NAMESPACE=user-XX
-
-# Set the model token (copied from the Deployments tab in Part 4)
-export MODEL_TOKEN=<paste-token-here>
+git clone https://github.com/gymnatics/Red-Hat-Inference-Workshop.git
 ```
 
-## Step 5.2: Open the Web Terminal
+```bash
+cd Red-Hat-Inference-Workshop
+```
 
-Open a terminal using the **Web Terminal** in the OpenShift console — click the **`>_`** icon in the top-right masthead. This gives you an in-browser terminal with `oc` and `git` pre-installed.
+## Step 5.3: Set Your Environment Variables
 
-The Web Terminal has `oc`, `git`, and `sed` pre-installed — no additional setup needed.
-
-## Step 5.3: Clone the Workshop Repository
+Set your namespace (replace `XX` with your assigned number, e.g., `05`):
 
 ```bash
-git clone https://github.com/gymnatics/Red-Hat-Inference-Workshop.git && cd Red-Hat-Inference-Workshop
+export NAMESPACE=user-XX
+```
+
+Set the model token (the one you copied from the Deployments tab in Part 4):
+
+```bash
+export MODEL_TOKEN=<paste-token-here>
 ```
 
 ## Step 5.4: Deploy LlamaStack
@@ -358,10 +366,10 @@ You should see a pod in `Running` state.
 
 # Part 6: Deploy Open WebUI (~10 min)
 
-Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to ChatGPT) that you'll connect to your LlamaStack instance.
+Now you'll deploy **Open WebUI** — a self-hosted chat interface (similar to ChatGPT).
 
 > **What this deploys:**
-> - **ConfigMap** — configures OpenWebUI to connect to your LlamaStack instance
+> - **ConfigMap** — base configuration for OpenWebUI
 > - **PersistentVolumeClaim** — 2Gi storage for OpenWebUI data
 > - **Deployment** — the Open WebUI container
 > - **Service** — internal cluster access
@@ -393,16 +401,53 @@ Open the URL in your browser. If you see a sign-up page, create any account — 
 
 ---
 
-# Part 7: Test LLM Chat (~10 min)
+# Part 7: Connect Model to OpenWebUI (~10 min)
 
-Now that Open WebUI is connected to LlamaStack, test basic LLM chat functionality.
+OpenWebUI needs to know where your LlamaStack instance is. You'll add it as an external connection with your model token for authentication.
 
-## Step 7.1: Start a Chat
+## Step 7.1: Get Your LlamaStack URL
+
+Back in the Web Terminal, run:
+
+```bash
+echo "http://llamastack-workshop-service.$NAMESPACE.svc.cluster.local:8321/v1"
+```
+
+Copy this URL -- you'll paste it in the next step.
+
+## Step 7.2: Add the Connection in OpenWebUI
+
+1. In OpenWebUI, click your **profile icon** (bottom-left corner)
+2. Click **"Admin Panel"**
+3. In the left sidebar, click **"Settings"**
+4. Click **"Connections"**
+5. Click the **"+"** button to add a new connection
+6. Fill in:
+
+| Field | Value |
+|-------|-------|
+| **URL** | Paste the LlamaStack URL from Step 7.1 |
+| **Auth** | Select **Bearer**, then paste your **model token** (from Part 4) |
+
+![OpenWebUI Connection Settings](images/openwebui-connection.png)
+
+7. Click **Save**
+8. The connection should show a **green toggle** -- this means OpenWebUI successfully connected and discovered your model
+
+> **Troubleshooting:** If the toggle is red, double-check the URL and token. Make sure the LlamaStack pod is running (`oc get pods -n $NAMESPACE`).
+
+---
+
+# Part 8: Test LLM Chat (~10 min)
+
+Now that OpenWebUI is connected to your model via LlamaStack, test basic chat.
+
+## Step 8.1: Start a Chat
 
 1. Click **"New Chat"**
 2. Select the model from the dropdown (look for `qwen3-4b` or `vllm-inference/qwen3-4b`)
 
-## Step 7.2: Try These Prompts
+## Step 8.2: Try These Prompts
 
 ```
 What is Kubernetes?
@@ -416,7 +461,7 @@ Write a haiku about cloud computing.
 Write a Python function that calculates the Fibonacci sequence up to n terms.
 ```
 
-## Step 7.3: Verify the Pipeline
+## Step 8.3: Verify the Pipeline
 
 If you receive responses, this confirms the full pipeline is working:
 
@@ -428,16 +473,16 @@ You (browser) → Open WebUI → LlamaStack → vLLM (your model)
 
 ---
 
-# Part 8: Test RAG (~10 min)
+# Part 9: Test RAG (~10 min)
 
 Open WebUI has built-in RAG (Retrieval-Augmented Generation) that lets you upload documents and ask questions about them — no external infrastructure needed.
 
-## Step 8.1: Upload a Document
+## Step 9.1: Upload a Document
 
 1. In the chat sidebar, click the **+** icon (or the paperclip/attachment icon)
 2. Upload a document (PDF, text file, or paste text). Suggestion: upload any short document (e.g., a page from Red Hat documentation, a project README, or even this workshop guide)
 
-## Step 8.2: Ask Questions About the Document
+## Step 9.2: Ask Questions About the Document
 
 After upload, try these prompts:
 
@@ -453,13 +498,13 @@ What are the key topics covered?
 What prerequisites are mentioned?
 ```
 
-## Step 8.3: Understand How It Works
+## Step 9.3: Understand How It Works
 
 > **How it works:** OpenWebUI has built-in RAG (Retrieval-Augmented Generation). When you upload a document, it splits it into chunks, generates embeddings using a local model, stores them in a vector database, and retrieves relevant chunks when you ask questions. No external infrastructure needed.
 
 ---
 
-# Part 9: Deploy MCP Server (~5 min)
+# Part 10: Deploy MCP Server (~5 min)
 
 Now you'll deploy your own **MCP (Model Context Protocol) server** that provides tools for querying the OpenShift cluster.
 
@@ -471,19 +516,19 @@ Now you'll deploy your own **MCP (Model Context Protocol) server** that provides
 >
 > The MCP server provides tools that let the LLM query live cluster data: listing pods, namespaces, deployments, services, and viewing logs.
 
-## Step 9.1: Deploy the MCP Server
+## Step 10.1: Deploy the MCP Server
 
 ```bash
 sed "s/\${NAMESPACE}/$NAMESPACE/g" manifests/mcp-server.yaml | oc apply -f -
 ```
 
-## Step 9.2: Wait for the MCP Server
+## Step 10.2: Wait for the MCP Server
 
 ```bash
 oc rollout status deployment/kubernetes-mcp-server -n $NAMESPACE --timeout=60s
 ```
 
-## Step 9.3: Verify the MCP Server
+## Step 10.3: Verify the MCP Server
 
 ```bash
 oc get pods -n $NAMESPACE -l app=kubernetes-mcp-server
@@ -493,16 +538,16 @@ You should see a pod in `Running` state.
 
 ---
 
-# Part 10: Connect MCP to OpenWebUI (~5 min)
+# Part 11: Connect MCP to OpenWebUI (~5 min)
 
 This is a UI-only step in Open WebUI to connect the MCP server you just deployed.
 
-## Step 10.1: Open Admin Settings
+## Step 11.1: Open Admin Settings
 
 1. In Open WebUI, click your **profile icon** (bottom-left) → **Admin Panel**
 2. Go to **Settings** → **Tools**
 
-## Step 10.2: Add the MCP Connection
+## Step 11.2: Add the MCP Connection
 
 1. Click **"+ Add Connection"**
 2. Configure:
@@ -516,7 +561,7 @@ This is a UI-only step in Open WebUI to connect the MCP server you just deployed
 
 3. Click **Save**
 
-## Step 10.3: Verify Tools Are Available
+## Step 11.3: Verify Tools Are Available
 
 After saving, you should see the Kubernetes tools listed. Common tools include:
 
@@ -531,16 +576,16 @@ After saving, you should see the Kubernetes tools listed. Common tools include:
 
 ---
 
-# Part 11: Test Tool Calling (~10 min)
+# Part 12: Test Tool Calling (~10 min)
 
 Now test the model's ability to use MCP tools to query your cluster in real time.
 
-## Step 11.1: Start a New Chat
+## Step 12.1: Start a New Chat
 
 1. Start a **New Chat** in OpenWebUI
 2. Make sure the model is selected and tools are enabled (look for a tools icon in the chat bar)
 
-## Step 11.2: Try These Prompts
+## Step 12.2: Try These Prompts
 
 Ask the model questions that require cluster data. Watch how it makes tool calls to the Kubernetes MCP server:
 
@@ -560,13 +605,13 @@ Show me the deployments in the admin-workshop namespace.
 What events happened recently in my namespace?
 ```
 
-## Step 11.3: Observe Tool Calling in Action
+## Step 12.3: Observe Tool Calling in Action
 
 The model should make tool calls to the MCP server and return live cluster data. You can see the tool calls in the response (OpenWebUI shows them as expandable sections).
 
 > **What's happening:** The model recognizes that it needs live data, generates a tool call (thanks to `--enable-auto-tool-choice`), OpenWebUI executes the call against the MCP server, and returns the results to the model for a natural language answer.
 
-## Step 11.4: Understand the Architecture
+## Step 12.4: Understand the Architecture
 
 Take a moment to appreciate what you've built:
 

@@ -1,12 +1,17 @@
-# Workshop LlamaStack — unified API layer for inference + MCP tools
+# LlamaStack Workshop — OpenAI-compatible API layer for inference
 #
-# Deploys LlamaStack in a participant's namespace, connecting to:
-#   - Shared vLLM model in admin-workshop (inference)
-#   - Shared Kubernetes MCP Server in admin-workshop (tool calling)
+# Deploys LlamaStack in a participant's namespace, connecting to
+# the shared vLLM model in admin-workshop.
+#
+# Resources created:
+#   - Secret: stores the model endpoint URL and authentication token
+#   - ConfigMap: LlamaStack run.yaml configuration (model connection details)
+#   - LlamaStackDistribution: custom resource that tells the LlamaStack
+#     Operator to deploy and manage a LlamaStack server pod
 #
 # Usage:
 #   export NAMESPACE=user-XX MODEL_TOKEN=<token-from-instructor>
-#   envsubst < workshop-llamastack.yaml | oc apply -f -
+#   envsubst < manifests/llamastack.yaml | oc apply -f -
 #
 ---
 apiVersion: v1
@@ -33,23 +38,14 @@ data:
     image_name: rh
     apis:
     - inference
-    - tool_runtime
     providers:
       inference:
       - provider_id: vllm-inference
         provider_type: remote::vllm
         config:
           base_url: http://qwen3-4b-predictor.admin-workshop.svc.cluster.local/v1
-          max_tokens: 4096
+          max_tokens: 2048
           api_token: placeholder
-      tool_runtime:
-      - provider_id: model-context-protocol
-        provider_type: remote::model-context-protocol
-        config: {}
-    connectors:
-    - connector_id: kubernetes
-      connector_type: mcp
-      url: http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp
     metadata_store:
       type: sqlite
       db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
