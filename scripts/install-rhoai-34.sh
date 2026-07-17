@@ -1700,9 +1700,17 @@ create_gateway_tls_secret() {
 
     print_step "Creating default-gateway-tls secret for gateway HTTPS listeners..."
 
-    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
+    # Strategy 0: If no ClusterIssuer exists, try to set up Let's Encrypt automatically
     local issuer
     issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$issuer" ] && [ -f "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" ]; then
+        print_info "No ClusterIssuer found. Running Let's Encrypt TLS setup..."
+        "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" letsencrypt 2>/dev/null || \
+            "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" selfsigned 2>/dev/null || true
+        issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
@@ -1721,7 +1729,7 @@ create_gateway_tls_secret() {
     fi
 
     # Strategy 2: Copy from existing wildcard cert (e.g. cert-manager-ingress-cert)
-    local wildcard_secrets=("cert-manager-ingress-cert" "router-certs-default")
+    local wildcard_secrets=("apps-wildcard-tls" "cert-manager-ingress-cert" "router-certs-default")
     for src in "${wildcard_secrets[@]}"; do
         if oc get secret "$src" -n openshift-ingress &>/dev/null 2>&1; then
             local cert_cn
