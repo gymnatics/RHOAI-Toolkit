@@ -5,7 +5,7 @@ metadata:
   namespace: mcp-servers
   labels:
     app: mcp-searxng
-    app.kubernetes.io/part-of: code-assistant-lab
+    app.kubernetes.io/part-of: rhoai-toolkit
 spec:
   replicas: 1
   selector:
