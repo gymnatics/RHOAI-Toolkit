@@ -110,6 +110,7 @@ usage() {
     echo "  --postgres-connection <url>  External PostgreSQL for MaaS (skips POC DB deployment)"
     echo "                         Format: postgresql://user:pass@host:5432/db?sslmode=require"
     echo "  --skip-maas-db         Skip MaaS PostgreSQL setup entirely"
+    echo "  --create-admin-user    Create htpasswd admin user (admin/openshiftai) without prompting"
     echo "  --skip-admin-user      Skip creating the htpasswd admin user"
     echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
@@ -441,7 +442,7 @@ recover_router_if_crashlooping() {
 
 create_admin_user() {
     local admin_user="admin"
-    local admin_pass='R3dh4t1!'
+    local admin_pass='openshiftai'
 
     # Check if admin user already exists in htpasswd
     local admin_exists=false
@@ -1406,6 +1407,161 @@ install_coo_operator() {
     print_warning "COO operator not ready after 180s (may still be installing)"
 }
 
+setup_observability_uiplugins() {
+    print_step "Setting up observability UIPlugins..."
+
+    if ! oc get crd uiplugins.observability.openshift.io &>/dev/null 2>&1; then
+        print_warning "UIPlugin CRD not found — COO may not be installed yet"
+        return 0
+    fi
+
+    # Dashboards UIPlugin (manages PersesDashboard rendering)
+    if oc get uiplugin dashboards &>/dev/null 2>&1; then
+        local dash_avail
+        dash_avail=$(oc get uiplugin dashboards -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$dash_avail" = "True" ]; then
+            print_info "UIPlugin 'dashboards' already available [SKIP]"
+        fi
+    else
+        oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: dashboards
+spec:
+  type: Dashboards
+EOF
+    fi
+
+    # Monitoring UIPlugin (requires perses.enabled for PersesDashboard support)
+    oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: monitoring
+spec:
+  type: Monitoring
+  monitoring:
+    perses:
+      enabled: true
+EOF
+
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        local mon_avail
+        mon_avail=$(oc get uiplugin monitoring -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mon_avail" = "True" ]; then
+            print_success "UIPlugins ready (dashboards + monitoring with Perses)"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_warning "UIPlugin 'monitoring' not yet Available — check: oc get uiplugin monitoring -o yaml"
+}
+
+setup_observability_perses() {
+    local mon_ns="redhat-ods-monitoring"
+
+    if ! oc get crd perses.perses.dev &>/dev/null 2>&1; then
+        print_warning "Perses CRD not found — skipping Perses server setup"
+        return 0
+    fi
+
+    if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+        print_info "Perses already running in $mon_ns [SKIP]"
+    else
+        print_step "Creating Perses server in $mon_ns..."
+
+        oc create sa perses-sa -n "$mon_ns" 2>/dev/null || true
+        oc create clusterrolebinding perses-sa-${mon_ns} \
+            --clusterrole=system:openshift:scc:nonroot-v2 \
+            --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
+
+        oc apply -f - <<EOF
+apiVersion: perses.dev/v1alpha2
+kind: Perses
+metadata:
+  name: data-science-perses
+  namespace: ${mon_ns}
+spec:
+  serviceAccountName: perses-sa
+  config:
+    database:
+      file:
+        case_sensitive: false
+        extension: yaml
+        folder: /perses
+    datasource:
+      disable_local: false
+      global:
+        disable: false
+      project:
+        disable: false
+    ephemeral_dashboard:
+      enable: true
+      cleanup_interval: 300s
+  client:
+    kubernetesAuth:
+      enable: false
+EOF
+
+        print_step "Waiting for Perses pod..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+                print_success "Perses server running in $mon_ns"
+                break
+            fi
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+    fi
+
+    # NetworkPolicy: allow perses-operator (openshift-operators) to sync dashboards
+    oc apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perses-operator-access
+  namespace: ${mon_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: perses-operator
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-operators
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+EOF
+
+    # Service-CA ConfigMap for PersesDatasource TLS to Thanos
+    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+        oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-web-tls-ca
+  namespace: ${mon_ns}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}
+EOF
+        print_info "Created service-ca ConfigMap for PersesDatasource"
+    fi
+
+    print_success "Observability Perses setup complete"
+}
+
 configure_gateway_telemetry() {
     print_step "Configuring gateway telemetry for MaaS usage metrics..."
 
@@ -1602,13 +1758,15 @@ install_mcp_lifecycle_operator() {
     while [ $elapsed -lt 120 ]; do
         if oc get pods -n mcp-lifecycle-operator-system 2>/dev/null | grep -q "1/1.*Running"; then
             print_success "MCP Lifecycle Operator is running"
-            return 0
+            break
         fi
         sleep 5
         elapsed=$((elapsed + 5))
     done
 
-    print_warning "MCP Lifecycle Operator not ready yet — check: oc get pods -n mcp-lifecycle-operator-system"
+    if [ $elapsed -ge 120 ]; then
+        print_warning "MCP Lifecycle Operator not ready yet — check: oc get pods -n mcp-lifecycle-operator-system"
+    fi
 }
 
 # MCP Catalog prerequisites — the catalog creates MCPServer CRs but does NOT
@@ -1648,6 +1806,512 @@ EOF
         print_success "openshift-mcp-server-config ConfigMap created"
     else
         print_success "openshift-mcp-server-config ConfigMap already exists [SKIP]"
+    fi
+}
+
+################################################################################
+# MCP Server Deployment (SearXNG)
+#
+# Full pipeline: namespace → deployment → gateway listener → HTTPRoute →
+# RBAC fix → ReferenceGrants → MCPGatewayExtension → MCPServerRegistration
+#
+# The mcp-gateway-controller shipped with RHCL has an incomplete ClusterRole.
+# This function detects and patches the missing permissions so the controller
+# can reconcile MCPServerRegistrations and mark them Ready.
+#
+# Additional MCP servers (code-sandbox, codebase-search, etc.) can be deployed
+# separately from https://github.com/hyogrin/rhoai-coding-assistant-lab
+################################################################################
+
+deploy_mcp_searxng() {
+    print_step "Deploying SearXNG MCP server..."
+
+    local mcp_ns="mcp-servers"
+    local gw_ns="openshift-ingress"
+
+    # Prerequisite: maas-default-gateway must exist (created by create_inference_gateway)
+    if ! oc get gateway maas-default-gateway -n "$gw_ns" &>/dev/null 2>&1; then
+        print_warning "maas-default-gateway not found — skipping MCP server deployment"
+        print_info "MCP servers require the gateway created by RHCL/MaaS setup"
+        return 0
+    fi
+
+    get_cluster_domain
+    local mcp_host="mcp.${CLUSTER_DOMAIN}"
+
+    # --- 1. Namespace ---
+    if ! oc get namespace "$mcp_ns" &>/dev/null 2>&1; then
+        oc create namespace "$mcp_ns"
+        print_info "Created namespace $mcp_ns"
+    fi
+    oc label namespace "$mcp_ns" \
+        opendatahub.io/dashboard=true \
+        app.kubernetes.io/part-of=rhoai-toolkit --overwrite 2>/dev/null || true
+    oc annotate namespace "$mcp_ns" \
+        openshift.io/display-name="MCP Servers" --overwrite 2>/dev/null || true
+
+    # --- 2. SearXNG Deployment + Service ---
+    if oc get deploy mcp-searxng -n "$mcp_ns" &>/dev/null; then
+        print_info "SearXNG deployment already exists [SKIP]"
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/mcp/searxng.yaml"
+        print_step "Waiting for SearXNG pod..."
+        oc wait --for=condition=ready pod -l app=mcp-searxng -n "$mcp_ns" --timeout=120s 2>/dev/null \
+            && print_success "SearXNG pod is running" \
+            || print_warning "SearXNG pod not ready yet (may still be pulling image)"
+    fi
+
+    # --- 3. Gateway MCP listener ---
+    # HTTPRoutes with sectionName:mcp need a matching listener on the gateway
+    local has_mcp_listener
+    has_mcp_listener=$(oc get gateway maas-default-gateway -n "$gw_ns" \
+        -o jsonpath='{.spec.listeners[?(@.name=="mcp")].name}' 2>/dev/null || true)
+
+    if [ -z "$has_mcp_listener" ]; then
+        print_step "Adding MCP listener to maas-default-gateway..."
+        local tls_secret="default-gateway-tls"
+        for candidate in apps-wildcard-tls cert-manager-ingress-cert; do
+            if oc get secret "$candidate" -n "$gw_ns" &>/dev/null; then
+                tls_secret="$candidate"
+                break
+            fi
+        done
+
+        oc patch gateway maas-default-gateway -n "$gw_ns" --type=json -p "[
+          {\"op\": \"add\", \"path\": \"/spec/listeners/-\", \"value\": {
+            \"name\": \"mcp\",
+            \"hostname\": \"${mcp_host}\",
+            \"port\": 443,
+            \"protocol\": \"HTTPS\",
+            \"allowedRoutes\": {\"namespaces\": {\"from\": \"All\"}},
+            \"tls\": {\"mode\": \"Terminate\", \"certificateRefs\": [{\"group\": \"\", \"kind\": \"Secret\", \"name\": \"${tls_secret}\"}]}
+          }}
+        ]" 2>/dev/null && print_success "MCP listener added (tls: $tls_secret)" \
+            || print_warning "Could not add MCP listener"
+    else
+        print_info "MCP listener already on gateway [SKIP]"
+    fi
+
+    # --- 4. ReferenceGrants (must exist before HTTPRoute/MCPGatewayExtension) ---
+    oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: mcp-gateway-to-ingress
+  namespace: ${gw_ns}
+spec:
+  from:
+  - group: mcp.kuadrant.io
+    kind: MCPGatewayExtension
+    namespace: mcp-gateway-system
+  to:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: mcp-servers-to-ingress
+  namespace: ${gw_ns}
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: ${mcp_ns}
+  to:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+EOF
+
+    # --- 5. HTTPRoute ---
+    oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-searxng
+  namespace: ${mcp_ns}
+spec:
+  hostnames:
+  - "${mcp_host}"
+  parentRefs:
+  - name: maas-default-gateway
+    namespace: ${gw_ns}
+    sectionName: mcp
+  rules:
+  - backendRefs:
+    - name: mcp-searxng
+      port: 8000
+EOF
+
+    # --- 6. Fix mcp-gateway-controller RBAC ---
+    # The ClusterRole shipped with RHCL is missing permissions for:
+    #   mcpvirtualservers, envoyfilters, referencegrants, gateways/status, namespaces
+    # Without these the controller crashes in CrashLoopBackOff.
+    if oc get clusterrole mcp-gateway-controller &>/dev/null 2>&1; then
+        local current_rules
+        current_rules=$(oc get clusterrole mcp-gateway-controller -o json 2>/dev/null)
+        local needs_patch=false
+        for resource in mcpvirtualservers envoyfilters "gateways/status" namespaces; do
+            echo "$current_rules" | grep -q "$resource" || needs_patch=true
+        done
+
+        if [ "$needs_patch" = true ]; then
+            print_step "Patching mcp-gateway-controller ClusterRole (missing permissions)..."
+            oc apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-gateway-controller
+rules:
+- apiGroups: ["mcp.kuadrant.io"]
+  resources:
+  - mcpgatewayextensions
+  - mcpgatewayextensions/status
+  - mcpgatewayextensions/finalizers
+  - mcpserverregistrations
+  - mcpserverregistrations/status
+  - mcpserverregistrations/finalizers
+  - mcpvirtualservers
+  - mcpvirtualservers/status
+  - mcpvirtualservers/finalizers
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources:
+  - gateways
+  - gateways/status
+  - httproutes
+  - httproutes/status
+  - referencegrants
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["envoyfilters"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: [""]
+  resources: ["services","secrets","configmaps","serviceaccounts","namespaces"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles","clusterrolebindings","roles","rolebindings"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+EOF
+            print_success "ClusterRole patched"
+            oc rollout restart deploy/mcp-gateway-controller -n mcp-gateway-system 2>/dev/null || true
+            print_step "Waiting for mcp-gateway-controller to restart..."
+            local ctr_elapsed=0
+            while [ $ctr_elapsed -lt 60 ]; do
+                if oc get pods -n mcp-gateway-system -l app.kubernetes.io/name=mcp-gateway-controller \
+                    --no-headers 2>/dev/null | grep -q "1/1.*Running"; then
+                    print_success "MCP gateway controller is running"
+                    break
+                fi
+                sleep 5
+                ctr_elapsed=$((ctr_elapsed + 5))
+            done
+        fi
+    fi
+
+    # --- 7. MCPGatewayExtension ---
+    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null 2>&1; then
+        oc apply -f - <<'EOF'
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPGatewayExtension
+metadata:
+  name: mcp-gateway-ext
+  namespace: mcp-gateway-system
+spec:
+  httpRouteManagement: Enabled
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+    sectionName: mcp
+EOF
+    else
+        print_warning "MCPGatewayExtension CRD not found — RHCL MCP Gateway not installed"
+        return 0
+    fi
+
+    # --- 8. MCPServerRegistration ---
+    if oc get crd mcpserverregistrations.mcp.kuadrant.io &>/dev/null 2>&1; then
+        oc apply -f - <<'EOF'
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: searxng
+  namespace: mcp-servers
+spec:
+  category:
+  - search
+  hint: Web search capability for real-time information retrieval
+  path: /mcp
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-searxng
+EOF
+    fi
+
+    # --- 9. Wait for registration ---
+    print_step "Waiting for SearXNG MCPServerRegistration to become Ready..."
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        local ready
+        ready=$(oc get mcpserverregistration searxng -n "$mcp_ns" \
+            -o jsonpath='{.status.ready}' 2>/dev/null || true)
+        if [ "$ready" = "true" ]; then
+            local tools
+            tools=$(oc get mcpserverregistration searxng -n "$mcp_ns" \
+                -o jsonpath='{.status.totalTools}' 2>/dev/null || echo "?")
+            print_success "SearXNG MCP server Ready ($tools tools)"
+            print_info "MCP endpoint: https://${mcp_host}/mcp"
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+
+    if [ $elapsed -ge 120 ]; then
+        print_warning "SearXNG not yet Ready — the gateway controller pings backends every 60s"
+        print_info "Check status: oc get mcpserverregistration -n $mcp_ns"
+        print_info "Check controller: oc logs -n mcp-gateway-system deploy/mcp-gateway-controller --tail=10"
+    fi
+
+    # --- 10. Sync mcp-gateway-config to dashboard namespace ---
+    local dashboard_ns="redhat-ods-applications"
+    if oc get secret mcp-gateway-config -n mcp-gateway-system &>/dev/null 2>&1; then
+        print_step "Syncing mcp-gateway-config to $dashboard_ns..."
+        oc get secret mcp-gateway-config -n mcp-gateway-system -o json | \
+            python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+s['metadata'] = {'name': s['metadata']['name'], 'namespace': '$dashboard_ns'}
+json.dump(s, sys.stdout)
+" | oc apply -f - &>/dev/null \
+            && print_success "mcp-gateway-config secret synced to $dashboard_ns" \
+            || print_warning "Could not sync mcp-gateway-config secret"
+
+    fi
+
+    # --- 11. Dashboard RBAC for MCP resources ---
+    if ! oc get clusterrole rhods-dashboard-mcp-reader &>/dev/null 2>&1; then
+        print_step "Creating dashboard RBAC for MCP resources..."
+        oc apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rhods-dashboard-mcp-reader
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+rules:
+- apiGroups: ["mcp.kuadrant.io"]
+  resources:
+  - mcpserverregistrations
+  - mcpserverregistrations/status
+  - mcpgatewayextensions
+  - mcpgatewayextensions/status
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources:
+  - gateways
+  - httproutes
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rhods-dashboard-mcp-reader
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rhods-dashboard-mcp-reader
+subjects:
+- kind: ServiceAccount
+  name: rhods-dashboard
+  namespace: redhat-ods-applications
+EOF
+        print_success "Dashboard MCP RBAC created"
+    fi
+
+    # --- 12. (Removed) gen-ai-aa-mcp-servers ConfigMap ---
+    # The mcp-gateway-config Secret (step 10 + 15) already provides
+    # MCP server info to the dashboard. Do NOT create gen-ai-aa-mcp-servers
+    # or a ConfigMap variant — duplicates cause double entries in AI Asset Endpoints.
+
+    # --- 13. Bypass MCP ext_proc for non-MCP traffic ---
+    # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
+    # ALL port 443 traffic, breaking maas-api calls with "invalid mcp request".
+    # This per-route override disables ext_proc for the MaaS hostname.
+    local maas_host="maas.${CLUSTER_DOMAIN}"
+    if oc get envoyfilter mcp-ext-proc-mcp-gateway-system-gateway -n "$gw_ns" &>/dev/null 2>&1; then
+        if ! oc get envoyfilter mcp-ext-proc-bypass-maas -n "$gw_ns" &>/dev/null 2>&1; then
+            print_step "Creating ext_proc bypass for MaaS traffic..."
+            oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: mcp-ext-proc-bypass-maas
+  namespace: ${gw_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        vhost:
+          name: "${maas_host}:443"
+    patch:
+      operation: MERGE
+      value:
+        typed_per_filter_config:
+          envoy.filters.http.ext_proc:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+            disabled: true
+EOF
+            print_success "ext_proc bypass created for MaaS traffic"
+        fi
+    fi
+
+    # --- 14. Create AuthPolicy for MCP route ---
+    # The gateway-default-auth has empty authentication (= deny all).
+    # MCP route needs its own AuthPolicy to accept MaaS API keys.
+    if ! oc get authpolicy mcp-gateway-auth -n mcp-gateway-system &>/dev/null 2>&1; then
+        print_step "Creating AuthPolicy for MCP route (API key auth)..."
+        oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: mcp-gateway-auth
+  namespace: mcp-gateway-system
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-gateway-route
+  rules:
+    authentication:
+      api-keys:
+        plain:
+          selector: "request.headers.authorization"
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+      openshift-identities:
+        kubernetesTokenReview:
+          audiences:
+            - "https://kubernetes.default.svc"
+            - "maas-default-gateway-sa"
+        when:
+          - predicate: '!request.headers.authorization.startsWith("Bearer sk-oai-")'
+        priority: 1
+        metrics: false
+    metadata:
+      apiKeyValidation:
+        http:
+          url: "https://maas-api.redhat-ods-applications.svc.cluster.local:8443/internal/v1/api-keys/validate"
+          method: POST
+          contentType: application/json
+          body:
+            expression: '{"key": request.headers.authorization.replace("Bearer ", "")}'
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+    authorization:
+      api-key-valid:
+        patternMatching:
+          patterns:
+            - operator: eq
+              selector: auth.metadata.apiKeyValidation.valid
+              value: "true"
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+EOF
+        print_success "MCP AuthPolicy created"
+    fi
+
+    # --- 15. Update mcp-gateway-config with transport type ---
+    local config_yaml="servers:
+- category:
+  - search
+  hint: Web search capability for real-time information retrieval
+  hostname: ${mcp_host}
+  name: mcp-servers/searxng
+  state: Enabled
+  transport: streamable-http
+  url: http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
+
+    for ns in mcp-gateway-system "$dashboard_ns"; do
+        oc create secret generic mcp-gateway-config \
+            -n "$ns" \
+            --from-literal="config.yaml=${config_yaml}" \
+            --dry-run=client -o yaml | oc apply -f -
+    done
+    print_success "mcp-gateway-config updated with transport type"
+
+    # --- 16. Auto-generate MaaS API key for MCP access ---
+    if oc get maassubscription -n models-as-a-service --no-headers 2>/dev/null | grep -q "Active"; then
+        local existing_key
+        existing_key=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
+            "https://localhost:8443/v1/api-keys/search" \
+            -X POST -H "Content-Type: application/json" \
+            -H "X-MaaS-Username: admin" \
+            -H "X-MaaS-Group: [\"rhods-admins\"]" \
+            -d '{"owner":"admin"}' 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    keys = d if isinstance(d, list) else d.get('items', [])
+    for k in keys:
+        if k.get('name') == 'mcp-access-key':
+            print(k.get('keyPrefix','exists'))
+            break
+except: pass" 2>/dev/null)
+
+        if [ -z "$existing_key" ]; then
+            print_step "Generating MaaS API key for MCP access..."
+            local api_key_json
+            api_key_json=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
+                "https://localhost:8443/v1/api-keys" \
+                -X POST -H "Content-Type: application/json" \
+                -H "X-MaaS-Username: admin" \
+                -H "X-MaaS-Group: [\"rhods-admins\"]" \
+                -d '{"name":"mcp-access-key"}' 2>/dev/null)
+            local api_key
+            api_key=$(echo "$api_key_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('key',''))" 2>/dev/null)
+            if [ -n "$api_key" ]; then
+                print_success "MaaS API key created for MCP: ${api_key:0:20}..."
+                echo ""
+                echo -e "  ${YELLOW}MCP Access Token:${NC} $api_key"
+                echo -e "  ${CYAN}Use this token in the RHOAI dashboard to authorize MCP servers${NC}"
+            else
+                print_warning "Could not create API key — create one manually in the MaaS dashboard"
+            fi
+        else
+            print_info "MaaS API key 'mcp-access-key' already exists"
+        fi
+    else
+        print_info "No active MaaS subscription found — skipping API key generation"
     fi
 }
 
@@ -1703,9 +2367,17 @@ create_gateway_tls_secret() {
 
     print_step "Creating default-gateway-tls secret for gateway HTTPS listeners..."
 
-    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
+    # Strategy 0: If no ClusterIssuer exists but setup-letsencrypt-tls.sh is available, run it
     local issuer
     issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$issuer" ] && [ -f "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" ]; then
+        print_info "No ClusterIssuer found. Running Let's Encrypt TLS setup..."
+        "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" letsencrypt 2>/dev/null || \
+            "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" selfsigned 2>/dev/null || true
+        issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
@@ -1723,8 +2395,8 @@ create_gateway_tls_secret() {
         print_warning "cert-manager did not create secret within 120s"
     fi
 
-    # Strategy 2: Copy from existing wildcard cert (e.g. cert-manager-ingress-cert)
-    local wildcard_secrets=("cert-manager-ingress-cert" "router-certs-default")
+    # Strategy 2: Copy from existing wildcard cert
+    local wildcard_secrets=("apps-wildcard-tls" "cert-manager-ingress-cert" "router-certs-default")
     for src in "${wildcard_secrets[@]}"; do
         if oc get secret "$src" -n openshift-ingress &>/dev/null 2>&1; then
             local cert_cn
@@ -1840,11 +2512,55 @@ create_mlflow_server() {
         return 0
     fi
 
-    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+    # Use PostgreSQL if available (MaaS DB), otherwise SQLite with PVC
+    if oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
+        print_info "Using existing PostgreSQL for MLflow backend..."
+        local pg_pod
+        pg_pod=$(oc get pods -n redhat-ods-applications -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$pg_pod" ]; then
+            oc exec "$pg_pod" -n redhat-ods-applications -- bash -c \
+                'PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='"'"'mlflow'"'"'" | grep -q 1 || \
+                 PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -c "CREATE DATABASE mlflow OWNER maas;"' 2>/dev/null || true
+        fi
+
+        local pg_url
+        pg_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null | base64 -d 2>/dev/null | sed 's|/maas|/mlflow|')
+
+        if [ -n "$pg_url" ]; then
+            oc create secret generic mlflow-db-credentials \
+                --from-literal=database-url="$pg_url" \
+                -n redhat-ods-applications \
+                --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+
+            oc apply -f - <<'EOF'
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  replicas: 1
+  backendStoreUriFrom:
+    name: mlflow-db-credentials
+    key: database-url
+  serveArtifacts: true
+  artifactsDestination: "file:///mlflow/artifacts"
+  storage:
+    size: 10Gi
+EOF
+            print_info "MLflow configured with PostgreSQL backend"
+        else
+            print_warning "Could not read PostgreSQL URL, falling back to SQLite"
+            oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        fi
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        print_info "MLflow configured with SQLite backend (PVC)"
+    fi
 
     print_step "Waiting for MLflow server to be ready..."
     local wait=0
-    while [ $wait -lt 120 ]; do
+    while [ $wait -lt 180 ]; do
         local ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
         if [ "$ready" = "True" ]; then
             local url=$(oc get mlflow mlflow -o jsonpath='{.status.url}' 2>/dev/null)
@@ -1856,6 +2572,167 @@ create_mlflow_server() {
     done
 
     print_warning "MLflow server not ready yet (may still be starting) — check: oc get mlflow mlflow"
+}
+
+################################################################################
+# Grafana Monitoring Deployment
+################################################################################
+
+deploy_grafana_monitoring() {
+    print_step "Deploying Grafana monitoring stack..."
+
+    local grafana_ns="monitoring"
+    oc create namespace "$grafana_ns" 2>/dev/null || true
+
+    if oc get deployment grafana -n "$grafana_ns" &>/dev/null; then
+        print_info "Grafana already deployed [SKIP]"
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/grafana/grafana-deployment.yaml" -n "$grafana_ns"
+        print_step "Waiting for Grafana pod..."
+        oc wait --for=condition=ready pod -l app=grafana -n "$grafana_ns" --timeout=120s 2>/dev/null || true
+        print_success "Grafana deployed"
+    fi
+
+    # Create Prometheus token for Grafana datasource
+    oc apply -f "$ROOT_DIR/lib/manifests/grafana/prometheus-token.yaml" 2>/dev/null || true
+
+    local token=""
+    local retries=0
+    while [ $retries -lt 6 ] && [ -z "$token" ]; do
+        token=$(oc get secret grafana-prometheus-token -n openshift-monitoring \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
+        [ -z "$token" ] && sleep 5 && retries=$((retries + 1))
+    done
+
+    if [ -z "$token" ]; then
+        token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null || true)
+    fi
+
+    if [ -z "$token" ]; then
+        print_warning "Could not get Prometheus token for Grafana datasource"
+        return 0
+    fi
+
+    # Configure Prometheus datasource via Grafana API
+    local grafana_route
+    grafana_route=$(oc get route grafana -n "$grafana_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+
+    if [ -n "$grafana_route" ]; then
+        print_step "Configuring Prometheus datasource..."
+        curl -sk -X POST "https://${grafana_route}/api/datasources" \
+            -u admin:admin \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"Prometheus\",
+                \"type\": \"prometheus\",
+                \"url\": \"https://thanos-querier.openshift-monitoring.svc:9091\",
+                \"access\": \"proxy\",
+                \"isDefault\": true,
+                \"jsonData\": {
+                    \"httpHeaderName1\": \"Authorization\",
+                    \"tlsSkipVerify\": true
+                },
+                \"secureJsonData\": {
+                    \"httpHeaderValue1\": \"Bearer ${token}\"
+                }
+            }" &>/dev/null && print_success "Prometheus datasource configured" \
+            || print_info "Datasource may already exist"
+
+        # Import dashboards
+        for dashboard_file in "$ROOT_DIR"/lib/manifests/grafana/*-dashboard.json; do
+            [ -f "$dashboard_file" ] || continue
+            local dash_name
+            dash_name=$(basename "$dashboard_file" .json)
+            print_step "Importing dashboard: $dash_name..."
+            local dash_json
+            dash_json=$(cat "$dashboard_file")
+            curl -sk -X POST "https://${grafana_route}/api/dashboards/db" \
+                -u admin:admin \
+                -H "Content-Type: application/json" \
+                -d "{\"dashboard\": ${dash_json}, \"overwrite\": true}" &>/dev/null \
+                && print_success "  Imported: $dash_name" \
+                || print_warning "  Failed to import: $dash_name"
+        done
+    fi
+
+    # Create console links for OpenShift menu
+    get_cluster_domain
+    export CLUSTER_DOMAIN
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    # Create OdhApplication tile in RHOAI dashboard
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    print_success "Grafana monitoring stack deployed"
+    print_info "Grafana URL: https://${grafana_route}"
+    print_info "Dashboards: GPU Metrics, vLLM Inference, MaaS Usage"
+}
+
+################################################################################
+# Thanos Proxy Secret (for RHOAI Observability Dashboard)
+################################################################################
+
+create_thanos_proxy_secret() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    local obs_enabled
+    obs_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n "$dash_ns" \
+        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null || echo "")
+    if [ "$obs_enabled" != "true" ]; then
+        return 0
+    fi
+
+    print_step "Creating Thanos proxy secret for observability dashboard..."
+
+    # Check if existing secret has a valid token
+    if oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null; then
+        local existing_token thanos_host http_code
+        existing_token=$(oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$existing_token" ] && [ -n "$thanos_host" ]; then
+            http_code=$(curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${existing_token}" \
+                "https://${thanos_host}/api/v1/query?query=up" 2>/dev/null || echo "000")
+            if [ "$http_code" -eq 200 ] 2>/dev/null; then
+                print_success "Thanos proxy secret valid (HTTP 200)"
+                return 0
+            fi
+        fi
+        oc delete secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null || true
+    fi
+
+    local new_token thanos_host
+    new_token=$(oc create token rhods-dashboard -n "$dash_ns" --duration=87600h 2>/dev/null || echo "")
+    thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+        -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+    if [ -z "$new_token" ] || [ -z "$thanos_host" ]; then
+        print_warning "Could not generate token or find Thanos route"
+        return 0
+    fi
+
+    oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-thanos-proxy-secret
+  namespace: ${dash_ns}
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    opendatahub.io/dashboard: "true"
+type: Opaque
+stringData:
+  token: "${new_token}"
+  url: "https://${thanos_host}"
+EOF
+
+    print_success "Thanos proxy secret created (10-year token)"
 }
 
 verify_maas_deployment() {
@@ -2116,10 +2993,10 @@ print_summary() {
     fi
 
     if [ "$admin_in_htpasswd" = true ]; then
-        echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
+        echo -e "${CYAN}Admin Login:${NC}  admin / openshiftai"
         echo ""
         echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
-        echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+        echo "  oc login -u admin -p 'openshiftai' $(oc whoami --show-server 2>/dev/null)"
         echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
     else
         echo ""
@@ -2173,6 +3050,22 @@ print_summary() {
     fi
     echo ""
 
+    # MCP Server status
+    if oc get mcpserverregistration searxng -n mcp-servers &>/dev/null 2>&1; then
+        local mcp_ready
+        mcp_ready=$(oc get mcpserverregistration searxng -n mcp-servers \
+            -o jsonpath='{.status.ready}' 2>/dev/null || true)
+        local mcp_tools
+        mcp_tools=$(oc get mcpserverregistration searxng -n mcp-servers \
+            -o jsonpath='{.status.totalTools}' 2>/dev/null || echo "?")
+        if [ "$mcp_ready" = "true" ]; then
+            echo -e "${CYAN}MCP SearXNG:${NC} Ready ($mcp_tools tools) — https://mcp.apps.${CLUSTER_DOMAIN}/mcp"
+        else
+            echo -e "${YELLOW}MCP SearXNG:${NC} Not Ready yet — check: oc get mcpserverregistration -n mcp-servers"
+        fi
+        echo ""
+    fi
+
     echo -e "${BLUE}Verification commands:${NC}"
     echo "  oc get datasciencecluster"
     echo "  oc get csv -n redhat-ods-operator"
@@ -2180,6 +3073,7 @@ print_summary() {
     echo "  oc get crd | grep maas.opendatahub.io"
     echo "  oc get tenant -n models-as-a-service"
     echo "  oc get gateway maas-default-gateway -n openshift-ingress"
+    echo "  oc get mcpserverregistration -n mcp-servers"
     echo "  oc get authorino authorino -n kuadrant-system -o jsonpath='{.spec.listener.tls}'"
     echo ""
 }
@@ -2229,6 +3123,10 @@ main() {
                 ;;
             --skip-admin-user)
                 SKIP_ADMIN_USER=true
+                shift
+                ;;
+            --create-admin-user)
+                CREATE_ADMIN_USER="yes"
                 shift
                 ;;
             --channel)
@@ -2296,7 +3194,7 @@ main() {
     else
         echo ""
         echo -e "${CYAN}Would you like to create an htpasswd admin user?${NC}"
-        echo -e "  This creates user ${YELLOW}'admin'${NC} with password ${YELLOW}'R3dh4t1!'${NC} and cluster-admin role."
+        echo -e "  This creates user ${YELLOW}'admin'${NC} with password ${YELLOW}'openshiftai'${NC} and cluster-admin role."
         echo -e "  You can skip this if you already have an identity provider configured."
         echo ""
         read -p "Create admin user? (Y/n): " admin_choice
@@ -2341,6 +3239,11 @@ main() {
 
     enable_dashboard_features
     install_mcp_lifecycle_operator
+    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
+        deploy_mcp_searxng
+    else
+        print_info "Skipping MCP server deployment (requires RHCL/MaaS gateway)"
+    fi
     create_hardware_profile
     create_mlflow_server
 
@@ -2363,9 +3266,14 @@ main() {
         verify_maas_deployment
     fi
 
-    # Observability stack (COO + gateway telemetry)
+    # Observability stack — always install COO + UIPlugins + Perses + Grafana + Thanos proxy
+    install_coo_operator
+    setup_observability_uiplugins
+    setup_observability_perses
+    deploy_grafana_monitoring
+    create_thanos_proxy_secret
+
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
-        install_coo_operator
         configure_gateway_telemetry
     fi
 
