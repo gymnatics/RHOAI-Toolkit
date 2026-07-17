@@ -1837,11 +1837,55 @@ create_mlflow_server() {
         return 0
     fi
 
-    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+    # Use PostgreSQL if the MaaS DB is available, otherwise fall back to SQLite with PVC
+    if oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
+        print_info "Using existing PostgreSQL for MLflow backend..."
+        local pg_pod
+        pg_pod=$(oc get pods -n redhat-ods-applications -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$pg_pod" ]; then
+            oc exec "$pg_pod" -n redhat-ods-applications -- bash -c \
+                'PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='"'"'mlflow'"'"'" | grep -q 1 || \
+                 PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -c "CREATE DATABASE mlflow OWNER maas;"' 2>/dev/null || true
+        fi
+
+        local pg_url
+        pg_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null | base64 -d 2>/dev/null | sed 's|/maas|/mlflow|')
+
+        if [ -n "$pg_url" ]; then
+            oc create secret generic mlflow-db-credentials \
+                --from-literal=database-url="$pg_url" \
+                -n redhat-ods-applications \
+                --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+
+            oc apply -f - <<'EOF'
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  replicas: 1
+  backendStoreUriFrom:
+    name: mlflow-db-credentials
+    key: database-url
+  serveArtifacts: true
+  artifactsDestination: "file:///mlflow/artifacts"
+  storage:
+    size: 10Gi
+EOF
+            print_info "MLflow configured with PostgreSQL backend"
+        else
+            print_warning "Could not read PostgreSQL URL, falling back to SQLite"
+            oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        fi
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        print_info "MLflow configured with SQLite backend (PVC)"
+    fi
 
     print_step "Waiting for MLflow server to be ready..."
     local wait=0
-    while [ $wait -lt 120 ]; do
+    while [ $wait -lt 180 ]; do
         local ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
         if [ "$ready" = "True" ]; then
             local url=$(oc get mlflow mlflow -o jsonpath='{.status.url}' 2>/dev/null)
