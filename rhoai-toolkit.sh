@@ -99,6 +99,7 @@ show_main_menu() {
     echo -e "${YELLOW}6)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
     echo -e "${YELLOW}7)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
     echo -e "${YELLOW}8)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}a)${NC} TLS Certificate Setup (Let's Encrypt / Self-signed) ${GREEN}[NEW]${NC}"
     echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
     echo ""
@@ -6408,6 +6409,9 @@ main() {
             8)
                 configure_kubeconfig_interactive
                 ;;
+            a|A)
+                "$SCRIPT_DIR/scripts/setup-letsencrypt-tls.sh"
+                ;;
             h|H)
                 show_help
                 echo ""
@@ -6418,7 +6422,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8, h, or 0."
+                print_error "Invalid option. Please select 1-8, a, h, or 0."
                 sleep 2
                 ;;
         esac

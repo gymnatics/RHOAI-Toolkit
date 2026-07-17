@@ -1403,6 +1403,161 @@ install_coo_operator() {
     print_warning "COO operator not ready after 180s (may still be installing)"
 }
 
+setup_observability_uiplugins() {
+    print_step "Setting up observability UIPlugins..."
+
+    if ! oc get crd uiplugins.observability.openshift.io &>/dev/null 2>&1; then
+        print_warning "UIPlugin CRD not found — COO may not be installed yet"
+        return 0
+    fi
+
+    # Dashboards UIPlugin (manages PersesDashboard rendering)
+    if oc get uiplugin dashboards &>/dev/null 2>&1; then
+        local dash_avail
+        dash_avail=$(oc get uiplugin dashboards -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$dash_avail" = "True" ]; then
+            print_info "UIPlugin 'dashboards' already available [SKIP]"
+        fi
+    else
+        oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: dashboards
+spec:
+  type: Dashboards
+EOF
+    fi
+
+    # Monitoring UIPlugin (requires perses.enabled for PersesDashboard support)
+    oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: monitoring
+spec:
+  type: Monitoring
+  monitoring:
+    perses:
+      enabled: true
+EOF
+
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        local mon_avail
+        mon_avail=$(oc get uiplugin monitoring -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mon_avail" = "True" ]; then
+            print_success "UIPlugins ready (dashboards + monitoring with Perses)"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_warning "UIPlugin 'monitoring' not yet Available — check: oc get uiplugin monitoring -o yaml"
+}
+
+setup_observability_perses() {
+    local mon_ns="redhat-ods-monitoring"
+
+    if ! oc get crd perses.perses.dev &>/dev/null 2>&1; then
+        print_warning "Perses CRD not found — skipping Perses server setup"
+        return 0
+    fi
+
+    if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+        print_info "Perses already running in $mon_ns [SKIP]"
+    else
+        print_step "Creating Perses server in $mon_ns..."
+
+        oc create sa perses-sa -n "$mon_ns" 2>/dev/null || true
+        oc create clusterrolebinding perses-sa-${mon_ns} \
+            --clusterrole=system:openshift:scc:nonroot-v2 \
+            --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
+
+        oc apply -f - <<EOF
+apiVersion: perses.dev/v1alpha2
+kind: Perses
+metadata:
+  name: data-science-perses
+  namespace: ${mon_ns}
+spec:
+  serviceAccountName: perses-sa
+  config:
+    database:
+      file:
+        case_sensitive: false
+        extension: yaml
+        folder: /perses
+    datasource:
+      disable_local: false
+      global:
+        disable: false
+      project:
+        disable: false
+    ephemeral_dashboard:
+      enable: true
+      cleanup_interval: 300s
+  client:
+    kubernetesAuth:
+      enable: false
+EOF
+
+        print_step "Waiting for Perses pod..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+                print_success "Perses server running in $mon_ns"
+                break
+            fi
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+    fi
+
+    # NetworkPolicy: allow perses-operator (openshift-operators) to sync dashboards
+    oc apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perses-operator-access
+  namespace: ${mon_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: perses-operator
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-operators
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+EOF
+
+    # Service-CA ConfigMap for PersesDatasource TLS to Thanos
+    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+        oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-web-tls-ca
+  namespace: ${mon_ns}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}
+EOF
+        print_info "Created service-ca ConfigMap for PersesDatasource"
+    fi
+
+    print_success "Observability Perses setup complete"
+}
+
 configure_gateway_telemetry() {
     print_step "Configuring gateway telemetry for MaaS usage metrics..."
 
@@ -1700,9 +1855,17 @@ create_gateway_tls_secret() {
 
     print_step "Creating default-gateway-tls secret for gateway HTTPS listeners..."
 
-    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
+    # Strategy 0: If no ClusterIssuer exists but setup-letsencrypt-tls.sh is available, run it
     local issuer
     issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$issuer" ] && [ -f "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" ]; then
+        print_info "No ClusterIssuer found. Running Let's Encrypt TLS setup..."
+        "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" letsencrypt 2>/dev/null || \
+            "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" selfsigned 2>/dev/null || true
+        issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
@@ -1720,8 +1883,8 @@ create_gateway_tls_secret() {
         print_warning "cert-manager did not create secret within 120s"
     fi
 
-    # Strategy 2: Copy from existing wildcard cert (e.g. cert-manager-ingress-cert)
-    local wildcard_secrets=("cert-manager-ingress-cert" "router-certs-default")
+    # Strategy 2: Copy from existing wildcard cert
+    local wildcard_secrets=("apps-wildcard-tls" "cert-manager-ingress-cert" "router-certs-default")
     for src in "${wildcard_secrets[@]}"; do
         if oc get secret "$src" -n openshift-ingress &>/dev/null 2>&1; then
             local cert_cn
@@ -1837,11 +2000,55 @@ create_mlflow_server() {
         return 0
     fi
 
-    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+    # Use PostgreSQL if available (MaaS DB), otherwise SQLite with PVC
+    if oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
+        print_info "Using existing PostgreSQL for MLflow backend..."
+        local pg_pod
+        pg_pod=$(oc get pods -n redhat-ods-applications -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$pg_pod" ]; then
+            oc exec "$pg_pod" -n redhat-ods-applications -- bash -c \
+                'PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='"'"'mlflow'"'"'" | grep -q 1 || \
+                 PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -c "CREATE DATABASE mlflow OWNER maas;"' 2>/dev/null || true
+        fi
+
+        local pg_url
+        pg_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null | base64 -d 2>/dev/null | sed 's|/maas|/mlflow|')
+
+        if [ -n "$pg_url" ]; then
+            oc create secret generic mlflow-db-credentials \
+                --from-literal=database-url="$pg_url" \
+                -n redhat-ods-applications \
+                --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+
+            oc apply -f - <<'EOF'
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  replicas: 1
+  backendStoreUriFrom:
+    name: mlflow-db-credentials
+    key: database-url
+  serveArtifacts: true
+  artifactsDestination: "file:///mlflow/artifacts"
+  storage:
+    size: 10Gi
+EOF
+            print_info "MLflow configured with PostgreSQL backend"
+        else
+            print_warning "Could not read PostgreSQL URL, falling back to SQLite"
+            oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        fi
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        print_info "MLflow configured with SQLite backend (PVC)"
+    fi
 
     print_step "Waiting for MLflow server to be ready..."
     local wait=0
-    while [ $wait -lt 120 ]; do
+    while [ $wait -lt 180 ]; do
         local ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
         if [ "$ready" = "True" ]; then
             local url=$(oc get mlflow mlflow -o jsonpath='{.status.url}' 2>/dev/null)
@@ -1853,6 +2060,167 @@ create_mlflow_server() {
     done
 
     print_warning "MLflow server not ready yet (may still be starting) — check: oc get mlflow mlflow"
+}
+
+################################################################################
+# Grafana Monitoring Deployment
+################################################################################
+
+deploy_grafana_monitoring() {
+    print_step "Deploying Grafana monitoring stack..."
+
+    local grafana_ns="monitoring"
+    oc create namespace "$grafana_ns" 2>/dev/null || true
+
+    if oc get deployment grafana -n "$grafana_ns" &>/dev/null; then
+        print_info "Grafana already deployed [SKIP]"
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/grafana/grafana-deployment.yaml" -n "$grafana_ns"
+        print_step "Waiting for Grafana pod..."
+        oc wait --for=condition=ready pod -l app=grafana -n "$grafana_ns" --timeout=120s 2>/dev/null || true
+        print_success "Grafana deployed"
+    fi
+
+    # Create Prometheus token for Grafana datasource
+    oc apply -f "$ROOT_DIR/lib/manifests/grafana/prometheus-token.yaml" 2>/dev/null || true
+
+    local token=""
+    local retries=0
+    while [ $retries -lt 6 ] && [ -z "$token" ]; do
+        token=$(oc get secret grafana-prometheus-token -n openshift-monitoring \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
+        [ -z "$token" ] && sleep 5 && retries=$((retries + 1))
+    done
+
+    if [ -z "$token" ]; then
+        token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null || true)
+    fi
+
+    if [ -z "$token" ]; then
+        print_warning "Could not get Prometheus token for Grafana datasource"
+        return 0
+    fi
+
+    # Configure Prometheus datasource via Grafana API
+    local grafana_route
+    grafana_route=$(oc get route grafana -n "$grafana_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+
+    if [ -n "$grafana_route" ]; then
+        print_step "Configuring Prometheus datasource..."
+        curl -sk -X POST "https://${grafana_route}/api/datasources" \
+            -u admin:admin \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"Prometheus\",
+                \"type\": \"prometheus\",
+                \"url\": \"https://thanos-querier.openshift-monitoring.svc:9091\",
+                \"access\": \"proxy\",
+                \"isDefault\": true,
+                \"jsonData\": {
+                    \"httpHeaderName1\": \"Authorization\",
+                    \"tlsSkipVerify\": true
+                },
+                \"secureJsonData\": {
+                    \"httpHeaderValue1\": \"Bearer ${token}\"
+                }
+            }" &>/dev/null && print_success "Prometheus datasource configured" \
+            || print_info "Datasource may already exist"
+
+        # Import dashboards
+        for dashboard_file in "$ROOT_DIR"/lib/manifests/grafana/*-dashboard.json; do
+            [ -f "$dashboard_file" ] || continue
+            local dash_name
+            dash_name=$(basename "$dashboard_file" .json)
+            print_step "Importing dashboard: $dash_name..."
+            local dash_json
+            dash_json=$(cat "$dashboard_file")
+            curl -sk -X POST "https://${grafana_route}/api/dashboards/db" \
+                -u admin:admin \
+                -H "Content-Type: application/json" \
+                -d "{\"dashboard\": ${dash_json}, \"overwrite\": true}" &>/dev/null \
+                && print_success "  Imported: $dash_name" \
+                || print_warning "  Failed to import: $dash_name"
+        done
+    fi
+
+    # Create console links for OpenShift menu
+    get_cluster_domain
+    export CLUSTER_DOMAIN
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    # Create OdhApplication tile in RHOAI dashboard
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    print_success "Grafana monitoring stack deployed"
+    print_info "Grafana URL: https://${grafana_route}"
+    print_info "Dashboards: GPU Metrics, vLLM Inference, MaaS Usage"
+}
+
+################################################################################
+# Thanos Proxy Secret (for RHOAI Observability Dashboard)
+################################################################################
+
+create_thanos_proxy_secret() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    local obs_enabled
+    obs_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n "$dash_ns" \
+        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null || echo "")
+    if [ "$obs_enabled" != "true" ]; then
+        return 0
+    fi
+
+    print_step "Creating Thanos proxy secret for observability dashboard..."
+
+    # Check if existing secret has a valid token
+    if oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null; then
+        local existing_token thanos_host http_code
+        existing_token=$(oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$existing_token" ] && [ -n "$thanos_host" ]; then
+            http_code=$(curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${existing_token}" \
+                "https://${thanos_host}/api/v1/query?query=up" 2>/dev/null || echo "000")
+            if [ "$http_code" -eq 200 ] 2>/dev/null; then
+                print_success "Thanos proxy secret valid (HTTP 200)"
+                return 0
+            fi
+        fi
+        oc delete secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null || true
+    fi
+
+    local new_token thanos_host
+    new_token=$(oc create token rhods-dashboard -n "$dash_ns" --duration=87600h 2>/dev/null || echo "")
+    thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+        -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+    if [ -z "$new_token" ] || [ -z "$thanos_host" ]; then
+        print_warning "Could not generate token or find Thanos route"
+        return 0
+    fi
+
+    oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-thanos-proxy-secret
+  namespace: ${dash_ns}
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    opendatahub.io/dashboard: "true"
+type: Opaque
+stringData:
+  token: "${new_token}"
+  url: "https://${thanos_host}"
+EOF
+
+    print_success "Thanos proxy secret created (10-year token)"
 }
 
 verify_maas_deployment() {
@@ -2322,9 +2690,14 @@ main() {
         verify_maas_deployment
     fi
 
-    # Observability stack (COO + gateway telemetry)
+    # Observability stack — always install COO + UIPlugins + Perses + Grafana + Thanos proxy
+    install_coo_operator
+    setup_observability_uiplugins
+    setup_observability_perses
+    deploy_grafana_monitoring
+    create_thanos_proxy_secret
+
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
-        install_coo_operator
         configure_gateway_telemetry
     fi
 
