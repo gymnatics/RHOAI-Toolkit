@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-viewer
+  namespace: mcp-servers
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-viewer-cluster-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: mcp-viewer
+  namespace: mcp-servers
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-mcp-server-config
+  namespace: mcp-servers
+data:
+  config.toml: |
+    read_only = true
+    disable_destructive = true
+    toolsets = ["core", "config", "openshift"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocp-mcp-server
+  namespace: mcp-servers
+  labels:
+    app: mcp-server
+    mcp-server: ocp-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      mcp-server: ocp-mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+        mcp-server: ocp-mcp-server
+    spec:
+      serviceAccountName: mcp-viewer
+      containers:
+      - name: mcp-server
+        image: registry.redhat.io/openshift-mcp-beta/openshift-mcp-server-rhel9:0.2
+        imagePullPolicy: IfNotPresent
+        args:
+        - --config
+        - /etc/mcp-config/config.toml
+        - --port
+        - "8080"
+        ports:
+        - name: mcp
+          containerPort: 8080
+          protocol: TCP
+        resources: {}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: vol-0
+          mountPath: /etc/mcp-config
+          readOnly: true
+      volumes:
+      - name: vol-0
+        configMap:
+          name: openshift-mcp-server-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocp-mcp-server
+  namespace: mcp-servers
+  labels:
+    app: mcp-server
+    mcp-server: ocp-mcp-server
+spec:
+  selector:
+    mcp-server: ocp-mcp-server
+  ports:
+  - name: mcp
+    port: 8080
+    protocol: TCP
+    targetPort: mcp
