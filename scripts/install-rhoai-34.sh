@@ -2137,10 +2137,37 @@ EOF
         print_success "Dashboard MCP RBAC created"
     fi
 
-    # --- 12. (Removed) gen-ai-aa-mcp-servers ConfigMap ---
-    # The mcp-gateway-config Secret (step 10 + 15) already provides
-    # MCP server info to the dashboard. Do NOT create gen-ai-aa-mcp-servers
-    # or a ConfigMap variant — duplicates cause double entries in AI Asset Endpoints.
+    # --- 12. Register MCP servers in gen-ai-aa-mcp-servers ConfigMap ---
+    # The dashboard reads this ConfigMap per-namespace for AI Asset Endpoints.
+    # mcp-gateway-config Secret provides server info to the gateway controller;
+    # gen-ai-aa-mcp-servers provides it to the dashboard UI (different consumers).
+    # Create in redhat-ods-applications + all dashboard-labeled namespaces.
+    print_step "Registering MCP servers in AI Asset Endpoints..."
+    local aa_namespaces
+    aa_namespaces=$(oc get ns -l opendatahub.io/dashboard=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    aa_namespaces="${aa_namespaces} ${dashboard_ns}"
+    # deduplicate
+    aa_namespaces=$(echo "$aa_namespaces" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    for aa_ns in $aa_namespaces; do
+        [ -z "$aa_ns" ] && continue
+        oc apply -f - <<EOF &>/dev/null
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: ${aa_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+    opendatahub.io/dashboard: "true"
+data:
+  searxng: |
+    {
+      "url": "https://${mcp_host}/mcp",
+      "description": "Web search capability for real-time information retrieval via SearXNG"
+    }
+EOF
+    done
+    print_success "gen-ai-aa-mcp-servers ConfigMap created in: $aa_namespaces"
 
     # --- 13. Bypass MCP ext_proc for non-MCP traffic ---
     # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
