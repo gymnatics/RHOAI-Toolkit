@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-context7
+  namespace: mcp-servers
+  labels:
+    app: mcp-context7
+    app.kubernetes.io/part-of: code-assistant-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-context7
+  template:
+    metadata:
+      labels:
+        app: mcp-context7
+    spec:
+      containers:
+      - name: context7
+        image: node:20-slim
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        args:
+        - |
+          npx -y supergateway \
+            --stdio 'npx -y @upstash/context7-mcp@latest' \
+            --outputTransport streamableHttp \
+            --port 3001 \
+            --healthEndpoint /health \
+            --name context7
+        env:
+        - name: HOME
+          value: /tmp
+        - name: NPM_CONFIG_CACHE
+          value: /tmp/.npm
+        ports:
+        - containerPort: 3001
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1536Mi
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 30
+          timeoutSeconds: 60
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          periodSeconds: 10
+          timeoutSeconds: 30
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          periodSeconds: 60
+          failureThreshold: 15
+          timeoutSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-context7
+  namespace: mcp-servers
+  labels:
+    app: mcp-context7
+spec:
+  selector:
+    app: mcp-context7
+  ports:
+  - port: 3001
+    protocol: TCP
+    targetPort: 3001

@@ -752,3 +752,158 @@ _mcp_deploy_manifest() {
         return 1
     fi
 }
+
+################################################################################
+# Gateway-based MCP Server Deployment
+################################################################################
+
+setup_mcp_gateway() {
+    print_step "Setting up MCP Gateway infrastructure..."
+
+    local mcp_manifest_dir="$ROOT_DIR/lib/manifests/mcp"
+    local MCP_GATEWAY_VERSION="${MCP_GATEWAY_VERSION:-0.7.1}"
+
+    oc apply -f "$mcp_manifest_dir/namespace.yaml"
+
+    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null; then
+        print_info "MCP Gateway CRDs already installed"
+    else
+        print_step "Installing MCP Gateway CRDs (v${MCP_GATEWAY_VERSION})..."
+        if oc apply -k "https://github.com/kuadrant/mcp-gateway/config/crd?ref=v${MCP_GATEWAY_VERSION}" 2>/dev/null; then
+            print_success "MCP Gateway CRDs installed"
+        else
+            print_warning "Failed to install MCP Gateway CRDs — gateway routing will not work"
+            return 1
+        fi
+    fi
+
+    oc apply -f "$mcp_manifest_dir/mcp-gateway.yaml"
+    oc rollout status deployment/mcp-gateway-controller -n mcp-gateway-system --timeout=120s 2>/dev/null || true
+
+    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null; then
+        oc apply -f "$mcp_manifest_dir/mcp-gateway-extension.yaml"
+    fi
+
+    print_success "MCP Gateway infrastructure ready"
+}
+
+setup_mcp_gateway_listener() {
+    print_step "Adding MCP listener to maas-default-gateway..."
+
+    local CLUSTER_DOMAIN
+    CLUSTER_DOMAIN=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    if [ -z "$CLUSTER_DOMAIN" ]; then
+        print_error "Could not detect cluster domain"
+        return 1
+    fi
+
+    local existing_listeners
+    existing_listeners=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[*].name}' 2>/dev/null || echo "")
+    if echo "$existing_listeners" | grep -q "mcp"; then
+        print_info "MCP listener already exists on maas-default-gateway [SKIP]"
+        return 0
+    fi
+
+    export CLUSTER_DOMAIN
+    local MCP_LISTENER
+    MCP_LISTENER=$(envsubst '${CLUSTER_DOMAIN}' <<'PATCH_EOF'
+[{
+  "op": "add",
+  "path": "/spec/listeners/-",
+  "value": {
+    "name": "mcp",
+    "hostname": "mcp.${CLUSTER_DOMAIN}",
+    "port": 443,
+    "protocol": "HTTPS",
+    "allowedRoutes": { "namespaces": { "from": "All" } },
+    "tls": {
+      "mode": "Terminate",
+      "certificateRefs": [{ "group": "", "kind": "Secret", "name": "apps-wildcard-tls" }]
+    }
+  }
+}]
+PATCH_EOF
+)
+    if oc patch gateway maas-default-gateway -n openshift-ingress --type=json -p "$MCP_LISTENER"; then
+        print_success "MCP listener added to gateway"
+        print_info "MCP endpoint: https://mcp.${CLUSTER_DOMAIN}/mcp"
+    else
+        print_warning "Failed to patch gateway — apply lib/manifests/mcp/gateway-mcp-listener.yaml manually"
+    fi
+}
+
+deploy_mcp_server() {
+    local server_name="$1"
+    local mcp_manifest_dir="$ROOT_DIR/lib/manifests/mcp"
+    local manifest_file="$mcp_manifest_dir/${server_name}.yaml"
+
+    if [ ! -f "$manifest_file" ]; then
+        print_error "Manifest not found: $manifest_file"
+        return 1
+    fi
+
+    oc create namespace mcp-servers 2>/dev/null || true
+
+    print_step "Deploying $server_name..."
+    oc apply -f "$manifest_file"
+
+    local deploy_name="mcp-${server_name}"
+    if [ "$server_name" = "ocp-mcp-server" ]; then
+        deploy_name="ocp-mcp-server"
+    fi
+
+    if oc rollout status deployment/"$deploy_name" -n mcp-servers --timeout=300s 2>/dev/null; then
+        print_success "$server_name deployed"
+    else
+        print_warning "$server_name may still be starting"
+    fi
+}
+
+deploy_mcp_httproutes() {
+    local mcp_manifest_dir="$ROOT_DIR/lib/manifests/mcp"
+
+    local CLUSTER_DOMAIN
+    CLUSTER_DOMAIN=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    if [ -z "$CLUSTER_DOMAIN" ]; then
+        print_error "Could not detect cluster domain"
+        return 1
+    fi
+
+    export CLUSTER_DOMAIN
+    print_step "Applying HTTPRoutes for MCP servers..."
+    envsubst '${CLUSTER_DOMAIN}' < "$mcp_manifest_dir/httproutes.yaml" | oc apply -f -
+    print_success "HTTPRoutes applied"
+    print_info "MCP servers accessible via: https://mcp.${CLUSTER_DOMAIN}/mcp"
+}
+
+deploy_all_mcp_servers() {
+    print_header "Deploy All MCP Servers (Gateway-based)"
+
+    local servers=("context7" "code-sandbox" "searxng" "ocp-mcp-server")
+    local build_servers=("codebase-search" "repo-docs")
+
+    setup_mcp_gateway
+    setup_mcp_gateway_listener
+
+    for server in "${servers[@]}"; do
+        deploy_mcp_server "$server"
+    done
+
+    for server in "${build_servers[@]}"; do
+        deploy_mcp_server "$server"
+    done
+
+    deploy_mcp_httproutes
+
+    echo ""
+    print_header "MCP Server Deployment Summary"
+    echo ""
+    print_info "MCP Servers (mcp-servers namespace):"
+    oc get deployment -n mcp-servers --no-headers 2>/dev/null | while read -r line; do
+        echo "  $line"
+    done
+    echo ""
+    local CLUSTER_DOMAIN
+    CLUSTER_DOMAIN=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    print_success "MCP endpoint: https://mcp.${CLUSTER_DOMAIN}/mcp"
+}

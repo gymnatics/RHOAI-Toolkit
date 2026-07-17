@@ -108,7 +108,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-8, h, 0): " choice
+        read -p "Select an option (1-8, a, h, 0): " choice
         
         case $choice in
             1)
@@ -137,6 +137,15 @@ main() {
             8)
                 configure_kubeconfig_interactive
                 ;;
+            a|A)
+                if [ -f "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" ]; then
+                    "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh"
+                else
+                    print_error "scripts/setup-letsencrypt-tls.sh not found"
+                fi
+                echo ""
+                read -p "Press Enter to return to main menu..."
+                ;;
             h|H)
                 show_cli_help
                 echo ""
@@ -147,7 +156,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8, h, or 0."
+                print_error "Invalid option. Please select 1-8, a, h, or 0."
                 sleep 2
                 ;;
         esac

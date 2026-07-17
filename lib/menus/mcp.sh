@@ -86,26 +86,35 @@ setup_mcp_servers_interactive() {
     echo ""
     echo -e "${YELLOW}MCP (Model Context Protocol) enables AI agents to use external tools.${NC}"
     echo ""
-    echo -e "${MAGENTA}Deploy MCP Servers:${NC}"
+    echo -e "${MAGENTA}Deploy MCP Servers (Individual):${NC}"
     echo -e "${YELLOW}1)${NC} Deploy Kubernetes MCP Server ${GREEN}[Recommended]${NC}"
     echo "   └─ Query pods, deployments, services, logs via natural language"
     echo -e "${YELLOW}2)${NC} Deploy Weather MCP Server + MongoDB"
     echo "   └─ Sample MCP server with weather data tools (14 airports)"
-    echo -e "${YELLOW}3)${NC} Deploy All MCP Servers"
-    echo "   └─ Kubernetes + Weather MCP servers"
+    echo -e "${YELLOW}3)${NC} Deploy Context7 MCP Server"
+    echo "   └─ Documentation lookup for libraries and frameworks"
+    echo -e "${YELLOW}4)${NC} Deploy SearXNG MCP Server"
+    echo "   └─ Privacy-respecting web search engine"
+    echo -e "${YELLOW}5)${NC} Deploy Code Sandbox MCP Server"
+    echo "   └─ Sandboxed Python code execution"
+    echo -e "${YELLOW}6)${NC} Deploy OCP MCP Server"
+    echo "   └─ Red Hat OpenShift cluster operations"
     echo ""
-    echo -e "${MAGENTA}Register MCP Servers:${NC}"
-    echo -e "${YELLOW}4)${NC} Register MCP in AI Asset Endpoints ${CYAN}[UI]${NC}"
-    echo "   └─ Shows in OpenShift AI Dashboard → Settings → AI asset endpoints"
-    echo -e "${YELLOW}5)${NC} Register MCP in LlamaStack Config ${CYAN}[Tool Calling]${NC}"
-    echo "   └─ Enables tool calling in LlamaStack/Playground"
+    echo -e "${MAGENTA}Deploy All:${NC}"
+    echo -e "${YELLOW}7)${NC} Deploy All Gateway MCP Servers ${CYAN}[Gateway API]${NC}"
+    echo "   └─ Context7 + SearXNG + Code Sandbox + OCP + Codebase Search + Repo Docs"
     echo ""
-    echo -e "${MAGENTA}Status:${NC}"
-    echo -e "${YELLOW}6)${NC} Show MCP Server Status"
-    echo -e "${YELLOW}7)${NC} List Available Tools (from LlamaStack)"
+    echo -e "${MAGENTA}Gateway Infrastructure:${NC}"
+    echo -e "${YELLOW}8)${NC} Setup MCP Gateway + Listener"
+    echo "   └─ Install MCP Gateway controller and add listener to maas-default-gateway"
+    echo -e "${YELLOW}9)${NC} Deploy HTTPRoutes"
+    echo "   └─ Create routes for deployed MCP servers"
     echo ""
-    echo -e "${YELLOW}8)${NC} Full MCP Management Menu"
-    echo "   └─ Advanced options via manage-mcp-servers.sh"
+    echo -e "${MAGENTA}Register & Status:${NC}"
+    echo -e "${YELLOW}r)${NC} Register MCP in AI Asset Endpoints / LlamaStack"
+    echo -e "${YELLOW}s)${NC} Show MCP Server Status"
+    echo -e "${YELLOW}t)${NC} List Available Tools (from LlamaStack)"
+    echo -e "${YELLOW}m)${NC} Full MCP Management Menu (manage-mcp-servers.sh)"
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
     
@@ -119,22 +128,46 @@ setup_mcp_servers_interactive() {
             deploy_mcp_mongodb_only
             ;;
         3)
-            deploy_kubernetes_mcp_server
-            deploy_mcp_mongodb_only
+            deploy_mcp_server "context7"
             ;;
         4)
-            register_mcp_ai_asset_interactive
+            deploy_mcp_server "searxng"
             ;;
         5)
-            register_mcp_llamastack_interactive
+            deploy_mcp_server "code-sandbox"
             ;;
         6)
-            show_mcp_status
+            deploy_mcp_server "ocp-mcp-server"
             ;;
         7)
-            show_mcp_tools
+            deploy_all_mcp_servers
             ;;
         8)
+            setup_mcp_gateway
+            setup_mcp_gateway_listener
+            ;;
+        9)
+            deploy_mcp_httproutes
+            ;;
+        r|R)
+            echo ""
+            echo -e "${YELLOW}1)${NC} Register in AI Asset Endpoints (Dashboard UI)"
+            echo -e "${YELLOW}2)${NC} Register in LlamaStack Config (Tool Calling)"
+            echo ""
+            read -p "Select: " reg_choice
+            case $reg_choice in
+                1) register_mcp_ai_asset_interactive ;;
+                2) register_mcp_llamastack_interactive ;;
+                *) print_error "Invalid option" ;;
+            esac
+            ;;
+        s|S)
+            show_mcp_status
+            ;;
+        t|T)
+            show_mcp_tools
+            ;;
+        m|M)
             if [ -f "$_MCP_MENU_DIR/scripts/manage-mcp-servers.sh" ]; then
                 "$_MCP_MENU_DIR/scripts/manage-mcp-servers.sh"
             else

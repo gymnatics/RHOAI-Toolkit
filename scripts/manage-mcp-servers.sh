@@ -502,8 +502,16 @@ case "${1:-}" in
             weather)
                 deploy_weather_mcp "$(get_namespace)"
                 ;;
+            context7|searxng|code-sandbox|ocp-mcp-server|codebase-search|repo-docs)
+                source "$PROJECT_DIR/lib/functions/mcp.sh" 2>/dev/null || true
+                deploy_mcp_server "$2"
+                ;;
+            all-gateway)
+                source "$PROJECT_DIR/lib/functions/mcp.sh" 2>/dev/null || true
+                deploy_all_mcp_servers
+                ;;
             *)
-                echo "Usage: $0 deploy <kubernetes|weather>"
+                echo "Usage: $0 deploy <kubernetes|weather|context7|searxng|code-sandbox|ocp-mcp-server|codebase-search|repo-docs|all-gateway>"
                 exit 1
                 ;;
         esac
