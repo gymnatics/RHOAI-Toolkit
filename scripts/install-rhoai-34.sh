@@ -1843,6 +1843,7 @@ deploy_mcp_searxng() {
         oc create namespace "$mcp_ns"
         print_info "Created namespace $mcp_ns"
     fi
+    oc label namespace "$mcp_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
 
     # --- 2. SearXNG Deployment + Service ---
     if oc get deploy mcp-searxng -n "$mcp_ns" &>/dev/null; then
