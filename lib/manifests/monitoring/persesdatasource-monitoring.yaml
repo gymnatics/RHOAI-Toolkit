@@ -1,0 +1,37 @@
+# PersesDatasource for RHOAI Observability Dashboard
+# Connects Perses to the OpenShift Thanos Querier for Prometheus metrics.
+#
+# IMPORTANT: The proxy.spec.secret MUST follow the {datasource-name}-secret naming convention.
+# The COO Perses operator auto-creates a Perses internal secret named {datasource-name}-secret.
+# Using a different name (e.g., monitoring-thanos-proxy-secret) will cause:
+#   "document not found: unable to forward the request to the datasource ... secret ... doesn't exist"
+apiVersion: perses.dev/v1alpha2
+kind: PersesDatasource
+metadata:
+  name: monitoring-prometheus-datasource
+  namespace: redhat-ods-monitoring
+  labels:
+    app: rhoai-toolkit
+    component: monitoring
+spec:
+  client:
+    tls:
+      caCert:
+        certPath: service-ca.crt
+        name: prometheus-web-tls-ca
+        namespace: redhat-ods-monitoring
+        type: configmap
+      enable: true
+  config:
+    default: true
+    display:
+      name: "Prometheus (Thanos Querier)"
+    plugin:
+      kind: PrometheusDatasource
+      spec:
+        proxy:
+          kind: HTTPProxy
+          spec:
+            secret: monitoring-prometheus-datasource-secret
+            url: "https://thanos-querier.openshift-monitoring.svc:9091"
+        scrapeInterval: "30s"

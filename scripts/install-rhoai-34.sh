@@ -1403,6 +1403,229 @@ install_coo_operator() {
     print_warning "COO operator not ready after 180s (may still be installing)"
 }
 
+setup_observability_uiplugins() {
+    print_step "Setting up observability UIPlugins..."
+
+    if ! oc get crd uiplugins.observability.openshift.io &>/dev/null 2>&1; then
+        print_warning "UIPlugin CRD not found — COO may not be installed yet"
+        return 0
+    fi
+
+    # Dashboards UIPlugin (manages PersesDashboard rendering)
+    if oc get uiplugin dashboards &>/dev/null 2>&1; then
+        local dash_avail
+        dash_avail=$(oc get uiplugin dashboards -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$dash_avail" = "True" ]; then
+            print_info "UIPlugin 'dashboards' already available [SKIP]"
+        fi
+    else
+        oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: dashboards
+spec:
+  type: Dashboards
+EOF
+    fi
+
+    # Monitoring UIPlugin — perses.enabled is required for PersesDashboard support
+    oc apply -f - <<'EOF'
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: monitoring
+spec:
+  type: Monitoring
+  monitoring:
+    perses:
+      enabled: true
+EOF
+
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        local mon_avail
+        mon_avail=$(oc get uiplugin monitoring -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mon_avail" = "True" ]; then
+            print_success "UIPlugins ready (dashboards + monitoring with Perses)"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_warning "UIPlugin 'monitoring' not yet Available — check: oc get uiplugin monitoring -o yaml"
+}
+
+setup_observability_perses() {
+    local mon_ns="redhat-ods-monitoring"
+
+    if ! oc get crd perses.perses.dev &>/dev/null 2>&1; then
+        print_warning "Perses CRD not found — skipping Perses server setup"
+        return 0
+    fi
+
+    # RHOAI dashboard proxies to data-science-perses.<mon_ns>:8080 via HTTP.
+    # COO creates its own Perses in openshift-operators (HTTPS), so we need
+    # a separate HTTP Perses instance here for the dashboard to reach.
+    if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+        print_info "Perses already running in $mon_ns [SKIP]"
+    else
+        print_step "Creating Perses server in $mon_ns..."
+
+        # Perses operator sets fsGroup:65534 which requires nonroot-v2 SCC
+        oc create sa perses-sa -n "$mon_ns" 2>/dev/null || true
+        oc create clusterrolebinding perses-sa-${mon_ns} \
+            --clusterrole=system:openshift:scc:nonroot-v2 \
+            --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
+
+        oc apply -f - <<EOF
+apiVersion: perses.dev/v1alpha2
+kind: Perses
+metadata:
+  name: data-science-perses
+  namespace: ${mon_ns}
+spec:
+  serviceAccountName: perses-sa
+  config:
+    database:
+      file:
+        case_sensitive: false
+        extension: yaml
+        folder: /perses
+    datasource:
+      disable_local: false
+      global:
+        disable: false
+      project:
+        disable: false
+    ephemeral_dashboard:
+      enable: true
+      cleanup_interval: 300s
+  client:
+    kubernetesAuth:
+      enable: false
+EOF
+
+        print_step "Waiting for Perses pod..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+                print_success "Perses server running in $mon_ns"
+                break
+            fi
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
+    fi
+
+    # The default NetworkPolicy only allows ingress from the dashboard namespace.
+    # The perses-operator (in openshift-operators) also needs access to sync
+    # PersesDashboard and PersesDatasource CRs into the Perses server.
+    oc apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perses-operator-access
+  namespace: ${mon_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: perses-operator
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-operators
+      ports:
+        - port: 8080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+EOF
+
+    # PersesDatasource needs service-ca bundle for TLS to Thanos Querier
+    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+        oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-web-tls-ca
+  namespace: ${mon_ns}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}
+EOF
+        print_info "Created service-ca ConfigMap for PersesDatasource"
+    fi
+
+    print_success "Observability Perses setup complete"
+}
+
+create_thanos_proxy_secret() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    local obs_enabled
+    obs_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n "$dash_ns" \
+        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null || echo "")
+    if [ "$obs_enabled" != "true" ]; then
+        return 0
+    fi
+
+    print_step "Creating Thanos proxy secret for observability dashboard..."
+
+    if oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null; then
+        local existing_token thanos_host http_code
+        existing_token=$(oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$existing_token" ] && [ -n "$thanos_host" ]; then
+            http_code=$(curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${existing_token}" \
+                "https://${thanos_host}/api/v1/query?query=up" 2>/dev/null || echo "000")
+            if [ "$http_code" -eq 200 ] 2>/dev/null; then
+                print_success "Thanos proxy secret valid (HTTP 200)"
+                return 0
+            fi
+        fi
+        oc delete secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null || true
+    fi
+
+    local new_token thanos_host
+    new_token=$(oc create token rhods-dashboard -n "$dash_ns" --duration=87600h 2>/dev/null || echo "")
+    thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+        -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+    if [ -z "$new_token" ] || [ -z "$thanos_host" ]; then
+        print_warning "Could not generate token or find Thanos route"
+        return 0
+    fi
+
+    oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-thanos-proxy-secret
+  namespace: ${dash_ns}
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    opendatahub.io/dashboard: "true"
+type: Opaque
+stringData:
+  token: "${new_token}"
+  url: "https://${thanos_host}"
+EOF
+
+    print_success "Thanos proxy secret created (10-year token)"
+}
+
 configure_gateway_telemetry() {
     print_step "Configuring gateway telemetry for MaaS usage metrics..."
 
@@ -2322,9 +2545,15 @@ main() {
         verify_maas_deployment
     fi
 
-    # Observability stack (COO + gateway telemetry)
+    # Observability stack — COO + UIPlugins + Perses + Thanos proxy are always installed.
+    # Without these the RHOAI "Observability dashboard" shows "Service Unavailable".
+    install_coo_operator
+    setup_observability_uiplugins
+    setup_observability_perses
+    create_thanos_proxy_secret
+
+    # Gateway telemetry (MaaS usage metrics) is optional
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
-        install_coo_operator
         configure_gateway_telemetry
     fi
 
