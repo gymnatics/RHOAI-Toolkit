@@ -5,17 +5,21 @@ Each file exports menu display + handler functions.
 
 ## Structure
 
-| File | Menu | Functions |
-|------|------|-----------|
-| `main.sh` | Main Menu | `show_main_menu`, `main_menu_loop` |
-| `management.sh` | RHOAI Management | `show_rhoai_management_menu`, `rhoai_management_menu` |
-| `models.sh` | Model Management | `show_model_management_submenu`, `model_management_submenu` |
-| `services.sh` | AI Services | `show_ai_services_submenu`, `ai_services_submenu` |
-| `demos.sh` | Demos | `show_demos_submenu`, `demos_submenu` |
-| `gpu.sh` | GPU & ClusterPolicy | `show_gpu_clusterpolicy_menu`, `gpu_clusterpolicy_menu` |
-| `troubleshooting.sh` | Troubleshooting | `show_troubleshooting_submenu`, `troubleshooting_submenu` |
+| File | Purpose |
+|------|---------|
+| `commands.sh` | Flat command-mode registry (`./rhoai-toolkit.sh <cmd>`) |
+| `day2.sh` | Day 2 operations (CSR approval, kubeadmin removal) |
+| `display.sh` | Banner, all menu displays, print helpers |
+| `gpu.sh` | GPU & ClusterPolicy management menu |
+| `install.sh` | Installation menu handlers |
+| `kubeconfig.sh` | Kubeconfig management menu |
+| `mcp.sh` | MCP server management menu |
+| `models.sh` | Model storage & deployment interactive wrappers |
+| `rhoai-management.sh` | RHOAI Management top-level menu + submenus |
+| `troubleshooting.sh` | Troubleshooting & fixes menu |
+| `workshop.sh` | Workshop setup menu |
 
 ## Command Mode
 
 `./rhoai-toolkit.sh <command> [args]` bypasses the menu system entirely.
-Commands are registered in `lib/menus/commands.sh`.
+Commands are registered in `commands.sh`.

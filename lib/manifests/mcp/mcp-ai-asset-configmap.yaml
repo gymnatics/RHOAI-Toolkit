@@ -1,0 +1,11 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+data:
+  ${MCP_ENTRY_KEY}: |
+    {
+      "url": "${MCP_URL}",
+      "description": "${MCP_DESCRIPTION}"
+    }

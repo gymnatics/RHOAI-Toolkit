@@ -107,9 +107,12 @@ route_command() {
                 demo)
                     route_demo_command "$@"
                     ;;
+                dashboards)
+                    exec "$_COMMANDS_DIR/scripts/deploy-dashboards.sh" "${@:3}"
+                    ;;
                 *)
                     print_error "Unknown deploy target: $subcmd"
-                    echo "Available: model, demo <name>"
+                    echo "Available: model, demo <name>, dashboards"
                     return 1
                     ;;
             esac
@@ -172,10 +175,10 @@ route_command() {
         fix)
             case "$subcmd" in
                 gpu-operator|gpu)
-                    fix_gpu_cuda_compatibility
+                    fix_gpu_operator_cuda_compatibility
                     ;;
                 operators)
-                    fix_operator_channels
+                    print_warning "fix operators: not yet implemented"
                     ;;
                 *)
                     print_error "Unknown fix target: $subcmd"
@@ -187,7 +190,7 @@ route_command() {
         status)
             case "$subcmd" in
                 operators|ops)
-                    check_all_operators
+                    check_all_operator_status
                     ;;
                 gpu)
                     check_gpu_operator_status
@@ -253,6 +256,12 @@ route_demo_command() {
             ;;
         lemonade|lemonade-stand)
             exec "$_COMMANDS_DIR/demo/lemonade-stand-demo/deploy.sh" "$@"
+            ;;
+        mlflow-tracing|mlflow)
+            bash "$_COMMANDS_DIR/demo/mlflow-tracing-demo/deploy.sh"
+            ;;
+        lightspeed)
+            bash "$_COMMANDS_DIR/demo/lightspeed-demo/deploy.sh" deploy
             ;;
         "")
             print_error "Demo name required"

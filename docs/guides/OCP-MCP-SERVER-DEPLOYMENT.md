@@ -436,11 +436,10 @@ http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
 Add to your LlamaStack distribution config or ConfigMap:
 
 ```yaml
-tool_groups:
-- toolgroup_id: mcp::kubernetes
-  provider_id: model-context-protocol
-  mcp_endpoint:
-    uri: http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
+connectors:
+- connector_id: kubernetes
+  connector_type: mcp
+  url: http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
 ```
 
 ### GenAI Playground (MCP ConfigMap)

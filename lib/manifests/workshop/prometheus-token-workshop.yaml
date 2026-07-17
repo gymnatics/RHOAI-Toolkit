@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheus-token
+  namespace: admin-workshop
+type: Opaque
+data:
+  token: ${PROMETHEUS_TOKEN}

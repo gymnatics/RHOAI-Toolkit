@@ -18,7 +18,6 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-HOOK_SOURCE="$SCRIPT_DIR/pre-commit-hook-template.sh"
 HOOK_DEST="$REPO_ROOT/.git/hooks/pre-commit"
 
 print_header() {

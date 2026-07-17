@@ -56,6 +56,8 @@ WAIT_TIMEOUT=600
 RHOAI_CHANNEL=""
 SETUP_PIPELINES=false
 PIPELINE_NAMESPACE=""
+SKIP_ADMIN_USER=false
+CREATE_ADMIN_USER=""
 SETUP_USERS=false
 NUM_USERS=5
 ADMIN_GROUP="rhods-admins"
@@ -108,6 +110,7 @@ usage() {
     echo "  --postgres-connection <url>  External PostgreSQL for MaaS (skips POC DB deployment)"
     echo "                         Format: postgresql://user:pass@host:5432/db?sslmode=require"
     echo "  --skip-maas-db         Skip MaaS PostgreSQL setup entirely"
+    echo "  --skip-admin-user      Skip creating the htpasswd admin user"
     echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
     echo "  --timeout <seconds>    Wait timeout for operators (default: 600)"
@@ -2325,12 +2328,28 @@ print_summary() {
     fi
 
     echo -e "${CYAN}Dashboard URL:${NC} https://${dashboard_url}"
-    echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
     echo -e "${CYAN}Current User:${NC} $(oc whoami 2>/dev/null)"
-    echo ""
-    echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
-    echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
-    echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
+
+    local admin_in_htpasswd=false
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
+        if oc get secret htpasswd-secret -n openshift-config \
+            -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null | grep -q "^admin:"; then
+            admin_in_htpasswd=true
+        fi
+    fi
+
+    if [ "$admin_in_htpasswd" = true ]; then
+        echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
+        echo ""
+        echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
+        echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+        echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
+    else
+        echo ""
+        echo -e "${YELLOW}Post-install:${NC} No htpasswd admin user was created."
+        echo "  To create one later: $0 (re-run and choose Y at the admin user prompt)"
+        echo "  Or use: scripts/setup-users.sh to create demo users"
+    fi
 
     if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
         echo -e "${CYAN}MaaS Gateway:${NC} https://maas.apps.${CLUSTER_DOMAIN}"
@@ -2431,6 +2450,10 @@ main() {
                 SKIP_MAAS_DB=true
                 shift
                 ;;
+            --skip-admin-user)
+                SKIP_ADMIN_USER=true
+                shift
+                ;;
             --channel)
                 RHOAI_CHANNEL="$2"
                 shift 2
@@ -2488,7 +2511,25 @@ main() {
     print_banner
     check_prerequisites
     get_cluster_domain
-    create_admin_user
+
+    if [ "$SKIP_ADMIN_USER" = true ]; then
+        print_info "Skipping admin user creation (--skip-admin-user)"
+    elif [ "$CREATE_ADMIN_USER" = "yes" ]; then
+        create_admin_user
+    else
+        echo ""
+        echo -e "${CYAN}Would you like to create an htpasswd admin user?${NC}"
+        echo -e "  This creates user ${YELLOW}'admin'${NC} with password ${YELLOW}'R3dh4t1!'${NC} and cluster-admin role."
+        echo -e "  You can skip this if you already have an identity provider configured."
+        echo ""
+        read -p "Create admin user? (Y/n): " admin_choice
+        admin_choice=${admin_choice:-Y}
+        if [[ "$admin_choice" =~ ^[Yy]$ ]]; then
+            create_admin_user
+        else
+            print_info "Skipping admin user creation"
+        fi
+    fi
 
     if [ "$SKIP_NODE_SCALING" = false ]; then
         scale_cluster_nodes

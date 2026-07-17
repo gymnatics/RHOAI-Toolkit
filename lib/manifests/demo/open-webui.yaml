@@ -1,4 +1,4 @@
-# Open WebUI Deployment
+# Open WebUI Deployment (v0.9.0)
 # A user-friendly web interface for interacting with LLMs
 #
 # Usage: 
@@ -14,10 +14,11 @@ metadata:
   name: openwebui-config
 data:
   ENABLE_OLLAMA_API: "False"
-  OPENAI_API_BASE_URLS: "${MODEL_URL:-http://localhost:8080/v1}"
+  OPENAI_API_BASE_URLS: "${MODEL_URL:-}"
   OPENAI_API_KEYS: ""
   WEBUI_AUTH: "False"
   WEBUI_SECRET_KEY: "rhoai-workshop-secret-key"
+  MCP_ENABLE: "true"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -48,7 +49,7 @@ spec:
     spec:
       containers:
         - name: open-webui
-          image: ghcr.io/open-webui/open-webui:main
+          image: ghcr.io/open-webui/open-webui:v0.9.0
           ports:
             - containerPort: 8080
               name: http

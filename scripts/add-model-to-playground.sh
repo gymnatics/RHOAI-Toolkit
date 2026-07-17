@@ -358,14 +358,8 @@ data:
     version: "2"
     image_name: rh
     apis:
-    - agents
-    - datasetio
-    - files
     - inference
-    - safety
-    - scoring
     - tool_runtime
-    - vector_io
     providers:
       inference:
       - provider_id: sentence-transformers
@@ -376,52 +370,7 @@ data:
         config:
           api_token: ${API_TOKEN}
           max_tokens: ${MAX_TOKENS}
-          tls_verify: ${TLS_VERIFY}
-          url: ${endpoint}/v1
-      vector_io:
-      - provider_id: milvus
-        provider_type: inline::milvus
-        config:
-          db_path: /opt/app-root/src/.llama/distributions/rh/milvus.db
-          kvstore:
-            db_path: /opt/app-root/src/.llama/distributions/rh/milvus_registry.db
-            namespace: null
-            type: sqlite
-      agents:
-      - provider_id: meta-reference
-        provider_type: inline::meta-reference
-        config:
-          persistence_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/agents_store.db
-            namespace: null
-            type: sqlite
-          responses_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/responses_store.db
-            type: sqlite
-      eval: []
-      files:
-      - provider_id: meta-reference-files
-        provider_type: inline::localfs
-        config:
-          metadata_store:
-            db_path: /opt/app-root/src/.llama/distributions/rh/files_metadata.db
-            type: sqlite
-          storage_dir: /opt/app-root/src/.llama/distributions/rh/files
-      datasetio:
-      - provider_id: huggingface
-        provider_type: remote::huggingface
-        config:
-          kvstore:
-            db_path: /opt/app-root/src/.llama/distributions/rh/huggingface_datasetio.db
-            namespace: null
-            type: sqlite
-      scoring:
-      - provider_id: basic
-        provider_type: inline::basic
-        config: {}
-      - provider_id: llm-as-judge
-        provider_type: inline::llm-as-judge
-        config: {}
+          base_url: ${endpoint}/v1
       tool_runtime:
       - provider_id: rag-runtime
         provider_type: inline::rag-runtime
@@ -450,9 +399,7 @@ data:
     datasets: []
     scoring_fns: []
     benchmarks: []
-    tool_groups:
-    - toolgroup_id: builtin::rag
-      provider_id: rag-runtime
+    connectors: []
     server:
       port: 8321
 EOF
@@ -519,8 +466,6 @@ spec:
         - -c
         - llama stack run /etc/llama-stack/run.yaml
       env:
-        - name: VLLM_TLS_VERIFY
-          value: "${TLS_VERIFY}"
         - name: MILVUS_DB_PATH
           value: ~/.llama/milvus.db
         - name: FMS_ORCHESTRATOR_URL

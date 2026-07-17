@@ -1,0 +1,117 @@
+# LlamaStack Workshop — OpenAI-compatible API layer for inference
+#
+# Deploys LlamaStack in a participant's namespace, connecting to
+# their own vLLM model via its external route.
+#
+# Resources created:
+#   - Secret: stores the model endpoint URL and authentication token
+#   - ConfigMap: LlamaStack run.yaml configuration (model connection details)
+#   - LlamaStackDistribution: custom resource that tells the LlamaStack
+#     Operator to deploy and manage a LlamaStack server pod
+#
+# Usage:
+#   export NAMESPACE=user-XX
+#   export MODEL_URL=https://qwen3-4b-user-XX.apps.<cluster-domain>
+#   export MODEL_TOKEN=<token-from-deployments-tab>
+#   sed "s|\${NAMESPACE}|$NAMESPACE|g; s|\${MODEL_URL}|$MODEL_URL|g; s|\${MODEL_TOKEN}|$MODEL_TOKEN|g" manifests/llamastack.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vllm-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  base-url: "${MODEL_URL}/v1"
+  api-token: "${MODEL_TOKEN}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llamastack-workshop-config
+  namespace: ${NAMESPACE}
+  labels:
+    llamastack.io/distribution: llamastack-workshop
+    opendatahub.io/dashboard: "true"
+data:
+  run.yaml: |
+    version: "2"
+    image_name: rh
+    apis:
+    - inference
+    - tool_runtime
+    providers:
+      inference:
+      - provider_id: vllm-inference
+        provider_type: remote::vllm
+        config:
+          base_url: ${MODEL_URL}/v1
+          api_token: ${MODEL_TOKEN}
+      tool_runtime:
+      - provider_id: model-context-protocol
+        provider_type: remote::model-context-protocol
+        config: {}
+    connectors:
+    - connector_id: kubernetes
+      connector_type: mcp
+      url: http://kubernetes-mcp-server.${NAMESPACE}.svc.cluster.local:8080/mcp
+    metadata_store:
+      type: sqlite
+      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
+    models:
+    - provider_id: vllm-inference
+      model_id: qwen3-4b
+      provider_model_id: qwen3-4b
+      model_type: llm
+      metadata:
+        display_name: Qwen3-4B
+    shields: []
+    server:
+      port: 8321
+---
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: llamastack-workshop
+  namespace: ${NAMESPACE}
+  annotations:
+    openshift.io/display-name: LlamaStack Workshop
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  replicas: 1
+  server:
+    distribution:
+      name: rh-dev
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      command:
+      - /bin/sh
+      - -c
+      - llama stack run /etc/llama-stack/run.yaml
+      env:
+      - name: VLLM_URL
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: base-url
+      - name: VLLM_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: api-token
+      - name: FMS_ORCHESTRATOR_URL
+        value: http://localhost
+      - name: LLAMA_STACK_CONFIG_DIR
+        value: /opt/app-root/src/.llama/distributions/rh/
+      resources:
+        requests:
+          cpu: 250m
+          memory: 500Mi
+        limits:
+          cpu: "2"
+          memory: 8Gi
+    userConfig:
+      configMapName: llamastack-workshop-config

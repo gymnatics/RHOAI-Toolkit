@@ -1,0 +1,47 @@
+# Custom GPU Hardware Profile Template (interactive creation)
+# Usage:
+#   export NAMESPACE=redhat-ods-applications PROFILE_NAME=gpu-profile DISPLAY_NAME="GPU Profile"
+#   export DEFAULT_CPU=2 MIN_CPU=1 MAX_CPU=16
+#   export DEFAULT_MEM=16Gi MIN_MEM=1Gi MAX_MEM=64Gi
+#   export DEFAULT_GPU=1 MIN_GPU=1 MAX_GPU=8
+#   envsubst < hardwareprofile-custom.yaml.tmpl | oc apply -f -
+#
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: ${PROFILE_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: '${DISPLAY_NAME}'
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
+spec:
+  identifiers:
+    - defaultCount: '${DEFAULT_CPU}'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '${MAX_CPU}'
+      minCount: ${MIN_CPU}
+      resourceType: CPU
+    - defaultCount: ${DEFAULT_MEM}
+      displayName: Memory
+      identifier: memory
+      maxCount: ${MAX_MEM}
+      minCount: ${MIN_MEM}
+      resourceType: Memory
+    - defaultCount: ${DEFAULT_GPU}
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: ${MAX_GPU}
+      minCount: ${MIN_GPU}
+      resourceType: Accelerator
+  scheduling:
+    kueue:
+      localQueueName: default
+      priorityClass: None
+    type: Queue

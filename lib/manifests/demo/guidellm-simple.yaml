@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guidellm
+  labels:
+    app: guidellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guidellm
+  template:
+    metadata:
+      labels:
+        app: guidellm
+    spec:
+      containers:
+        - name: guidellm
+          image: quay.io/ltsai/guidellm:0.3.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - tail
+          args:
+            - '-f'
+            - /dev/null
+          env:
+            - name: TARGET
+              value: "${MODEL_URL}"
+            - name: MODEL
+              value: "${MODEL_NAME}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 4Gi

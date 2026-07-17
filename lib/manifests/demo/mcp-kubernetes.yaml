@@ -9,11 +9,10 @@
 # - Service exposing the MCP endpoint
 #
 # After deployment, register in LlamaStack config:
-#   tool_groups:
-#   - toolgroup_id: mcp::kubernetes
-#     provider_id: model-context-protocol
-#     mcp_endpoint:
-#       uri: http://kubernetes-mcp-server.<namespace>.svc.cluster.local/mcp
+#   connectors:
+#   - connector_id: kubernetes
+#     connector_type: mcp
+#     url: http://kubernetes-mcp-server.<namespace>.svc.cluster.local:8080/mcp
 #
 ---
 apiVersion: v1
