@@ -1,0 +1,21 @@
+# NeMo Guardrails RBAC
+# Grants the SA view permissions to discover and communicate with model endpoints.
+#
+# Usage:
+#   export NAMESPACE=my-project
+#   envsubst < nemo-guardrails-rbac.yaml | oc apply -f -
+#
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nemo-guardrails-service-account-view
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: nemo-guardrails-service-account
+    namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view

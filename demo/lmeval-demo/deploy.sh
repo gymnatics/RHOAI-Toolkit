@@ -1,0 +1,299 @@
+#!/bin/bash
+################################################################################
+# Deploy LMEval Demo
+################################################################################
+# Sets up infrastructure for LLM evaluation benchmarks with MLflow tracking.
+# Supports English benchmarks (MMLU, ARC, HellaSwag, etc.) via LMEvalJob CRs,
+# Korean benchmarks (KMMLU, CLIcK, KoBEST, HAE-RAE) via EvalHub lab, and
+# EvalHub (Technology Preview) for centralized evaluation orchestration.
+#
+# EvalHub is deployed via the official TrustyAI Operator EvalHub CR.
+# Supports providers: lm-evaluation-harness, garak, guidellm, lighteval
+# Dashboard UI: Develop and train > Evaluations
+#
+# Usage:
+#   ./deploy.sh                    # Deploy to lmeval-demo namespace
+#   ./deploy.sh -n my-namespace    # Custom namespace
+#   ./deploy.sh --delete           # Remove deployment
+################################################################################
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$ROOT_DIR/lib/utils/colors.sh"
+source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/functions/external-repos.sh"
+
+NAMESPACE="${1:-lmeval-demo}"
+DELETE_MODE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n|--namespace) NAMESPACE="$2"; shift 2 ;;
+        --delete) DELETE_MODE=true; shift ;;
+        -h|--help)
+            echo "Usage: $0 [-n namespace] [--delete]"
+            exit 0
+            ;;
+        *) shift ;;
+    esac
+done
+
+print_header "LMEval Demo"
+
+if [ "$DELETE_MODE" = true ]; then
+    print_step "Removing LMEval infrastructure from $NAMESPACE..."
+    oc delete rolebinding evalhub-central-mlflow-access evalhub-central-jobs-writer evalhub-central-job-config -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    print_info "Note: EvalHub CR in redhat-ods-applications is shared -- not deleting it"
+    export NAMESPACE MLFLOW_TRACKING_URI="placeholder"
+    envsubst < "$SCRIPT_DIR/manifests/lmeval-rbac.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
+    oc delete lmevaljob --all -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    print_success "LMEval infrastructure removed"
+    exit 0
+fi
+
+if ! oc whoami &>/dev/null; then
+    print_error "Not logged in to OpenShift. Run: oc login <cluster-url>"
+    exit 1
+fi
+
+# Check TrustyAI is available (required for both LMEvalJob CRs and EvalHub CR)
+if ! oc get crd lmevaljobs.trustyai.opendatahub.io &>/dev/null; then
+    print_warning "LMEvalJob CRD not found. Ensure TrustyAI is enabled in your DataScienceCluster."
+fi
+
+EVALHUB_CRD_AVAILABLE=false
+if oc get crd evalhubs.trustyai.opendatahub.io &>/dev/null 2>&1; then
+    EVALHUB_CRD_AVAILABLE=true
+fi
+
+clone_or_update_repo "lmeval-builder-lab"
+REPO_PATH=$(get_repo_path "lmeval-builder-lab")
+
+ensure_namespace "$NAMESPACE"
+oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+
+# Enable observability dashboard for EvalHub metrics
+oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+    --type=merge -p '{"spec":{"dashboardConfig":{"observabilityDashboard":true}}}' 2>/dev/null || true
+
+print_step "Deploying LMEval RBAC..."
+export NAMESPACE
+envsubst < "$SCRIPT_DIR/manifests/lmeval-rbac.yaml" | oc apply -f -
+
+print_step "Deploying EvalHub service (TrustyAI Operator CR)..."
+EVALHUB_NAMESPACE="redhat-ods-applications"
+export MLFLOW_TRACKING_URI="https://mlflow.${EVALHUB_NAMESPACE}.svc:8443"
+
+if [ "$EVALHUB_CRD_AVAILABLE" = true ]; then
+    if oc get evalhub evalhub -n "$EVALHUB_NAMESPACE" &>/dev/null; then
+        print_info "EvalHub CR already exists in $EVALHUB_NAMESPACE"
+    else
+        print_info "Deploying EvalHub CR in $EVALHUB_NAMESPACE (required for dashboard UI)"
+        NAMESPACE="$EVALHUB_NAMESPACE" envsubst < "$SCRIPT_DIR/manifests/evalhub.yaml" | oc apply -f -
+        print_info "EvalHub CR applied -- TrustyAI Operator will reconcile the deployment"
+        print_info "Waiting for EvalHub to become Ready..."
+        for i in $(seq 1 30); do
+            PHASE=$(oc get evalhub evalhub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+            if [ "$PHASE" = "Ready" ]; then
+                print_success "EvalHub is Ready"
+                break
+            fi
+            sleep 5
+        done
+    fi
+
+    # Grant the central EvalHub SA access to this project's MLflow workspace
+    print_info "Granting EvalHub access to MLflow workspace in $NAMESPACE..."
+    cat <<EORBAC | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-mlflow-access
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-jobs-writer
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-jobs-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-job-config
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-job-config
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${EVALHUB_NAMESPACE}
+EORBAC
+
+    # Create the SA that EvalHub uses to run eval jobs in this namespace
+    oc create sa evalhub-${EVALHUB_NAMESPACE}-job -n "$NAMESPACE" 2>/dev/null || true
+    oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:evalhub-${EVALHUB_NAMESPACE}-job" -n "$NAMESPACE" 2>/dev/null || true
+
+    # Grant job SA access to MLflow experiments (required for results to appear in MLflow UI)
+    cat <<EOMLFLOW | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-job-mlflow-access
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access
+subjects:
+- kind: ServiceAccount
+  name: evalhub-${EVALHUB_NAMESPACE}-job
+  namespace: ${NAMESPACE}
+EOMLFLOW
+
+    # Grant evalhub-service SA permission to submit evaluations via SDK
+    cat <<EOROLE | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluations-writer
+  namespace: ${NAMESPACE}
+rules:
+- apiGroups:
+  - trustyai.opendatahub.io
+  resources:
+  - evaluations
+  - status-events
+  verbs:
+  - get
+  - create
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-evaluations-writer-rb
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-evaluations-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${EVALHUB_NAMESPACE}-job
+  namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${NAMESPACE}-job
+  namespace: ${NAMESPACE}
+EOROLE
+
+    EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
+    if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then
+        EVALHUB_URL="(deploying -- check: oc get pods -l app=eval-hub -n $EVALHUB_NAMESPACE)"
+    fi
+else
+    print_warning "EvalHub CRD not available. Ensure TrustyAI is Managed in your DSC."
+    print_info "EvalHub requires RHOAI 3.4 with trustyai.managementState: Managed"
+    EVALHUB_URL="(not deployed -- EvalHub CRD not available)"
+fi
+
+# --- Generate demo-config.env for vendored notebooks ---
+CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+EVALHUB_SVC="https://evalhub.redhat-ods-applications.svc:8443"
+
+FIRST_MODEL=""
+FIRST_MODEL_URL=""
+FIRST_ISVC=$(oc get inferenceservice -n "$NAMESPACE" --no-headers 2>/dev/null | head -1)
+if [ -n "$FIRST_ISVC" ]; then
+    FIRST_MODEL=$(echo "$FIRST_ISVC" | awk '{print $1}')
+    FIRST_MODEL_URL="https://${FIRST_MODEL}-predictor.${NAMESPACE}.svc.cluster.local:8443/v1"
+fi
+
+CONFIG_ENV_CONTENT="# Auto-generated by deploy.sh -- $(date -u +%Y-%m-%dT%H:%M:%SZ)
+NAMESPACE=${NAMESPACE}
+MODEL_NAME=${FIRST_MODEL}
+BASE_URL=${FIRST_MODEL_URL}
+EVALHUB_URL=${EVALHUB_SVC}
+"
+
+oc create configmap demo-config-env \
+    --from-literal=".env=${CONFIG_ENV_CONTENT}" \
+    -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null && \
+    print_success "ConfigMap demo-config-env created (mount as .env in workbench)" || true
+
+echo ""
+print_success "LMEval Demo infrastructure deployed"
+print_info "Namespace: $NAMESPACE"
+print_info "EvalHub: $EVALHUB_URL"
+echo ""
+echo "  EVALHUB (Technology Preview):"
+echo "    Dashboard UI: Develop and train > Evaluations"
+echo "    SDK: pip install 'eval-hub-sdk[client]'"
+echo "    CLI: pip install 'eval-hub-sdk[cli]'"
+echo "    Providers: lm-evaluation-harness, garak, guidellm, lighteval"
+echo ""
+echo "  ⚠ Tokenizer mismatch (common UI issue):"
+echo "    The 'Model or agent name' field is used as BOTH the served model name"
+echo "    and the HuggingFace tokenizer ID. For Red Hat AI models these differ:"
+echo "      Served name: redhataiqwen3-8b-fp8-dynamic"
+echo "      Tokenizer:   RedHatAI/Qwen3-8B-FP8-dynamic"
+echo "    Fix: use served name in the model field, check 'Add additional arguments'"
+echo "    and add: tokenizer=RedHatAI/Qwen3-8B-FP8-dynamic"
+echo ""
+echo "  Vendored notebooks (run in workbench):"
+echo "    1. Create a workbench in RHOAI dashboard for namespace $NAMESPACE"
+echo "    2. Clone this repo in the workbench terminal:"
+echo "       git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
+echo "    3. Open demo/lmeval-demo/notebooks/"
+echo "         guidellm-benchmark.ipynb  -- GuideLLM performance benchmark"
+echo "         korean-mcq-benchmark.ipynb -- Korean multiple-choice evaluation"
+echo "    4. Config is auto-detected. To override, copy the ConfigMap:"
+echo "       oc get cm demo-config-env -n $NAMESPACE -o jsonpath='{.data.\.env}' > .env"
+echo ""
+echo "  English benchmarks (run from CLI):"
+echo "    ./run-benchmark.sh --list              # See available benchmarks"
+echo "    ./run-benchmark.sh mmlu                # Run MMLU"
+echo "    ./run-benchmark.sh reasoning           # ARC + HellaSwag + Winogrande"
+echo "    ./run-benchmark.sh all-english          # Run all English benchmarks"
+echo "    ./run-benchmark.sh --status            # Check job progress"
+echo ""
+echo "  For the full Korean lab workshop, also clone the upstream repo:"
+echo "    git clone https://github.com/hyogrin/rhoai-lmeval-builder-lab.git"
+echo ""
+echo "  All results tracked in MLflow via EvalHub"
+echo ""
+
+# --- Create workbench + clone repo ---
+source "$ROOT_DIR/lib/functions/workbench.sh"
+ensure_workbench "$NAMESPACE" "model-benchmarking"
+
+# --- Inject notebook environment variables into workbench ---
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
+inject_notebook_env "$NAMESPACE" \
+    "MLFLOW_TRACKING_URI=https://mlflow.redhat-ods-applications.svc:8443" \
+    "LIMIT=5"
+print_success "notebook-env ConfigMap created (auto-injected into workbenches)"

@@ -1,0 +1,40 @@
+# AutoGluon ServingRuntime for KServe
+# Required to deploy models trained by AutoML for inference.
+# Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html-single/working_with_automl/
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: kserve-autogluonserver
+  annotations:
+    openshift.io/display-name: "AutoGluon ServingRuntime for KServe"
+spec:
+  annotations:
+    prometheus.kserve.io/port: "8080"
+    prometheus.kserve.io/path: "/metrics"
+  supportedModelFormats:
+    - name: autogluon
+      version: "1"
+  protocolVersions:
+    - v1
+    - v2
+  containers:
+    - name: kserve-container
+      image: registry.redhat.io/rhoai/odh-kserve-autogluon-server-rhel9@sha256:6d55374ef2e2ac09d772701a72d2ea370c57c34eb89c7b7a71ee204559c699a3
+      args:
+        - --model_name={{.Name}}
+        - --model_dir=/mnt/models
+        - --http_port=8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        runAsNonRoot: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "1"
+          memory: 2Gi

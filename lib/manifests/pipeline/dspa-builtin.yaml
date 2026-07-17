@@ -1,0 +1,29 @@
+# DataSciencePipelinesApplication — built-in storage variant
+# DSPA operator manages its own MinIO + MariaDB instances.
+#
+# Variables:
+#   ${DSPA_NAME}       - DSPA resource name
+#   ${MARIADB_PVC_SIZE} - MariaDB PVC size (e.g. 10Gi)
+#   ${MINIO_PVC_SIZE}  - MinIO PVC size (e.g. 10Gi)
+---
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: ${DSPA_NAME}
+spec:
+  dspVersion: v2
+  apiServer:
+    deploy: true
+    cacheEnabled: true
+    pipelineStore: kubernetes
+  database:
+    mariaDB:
+      deploy: true
+      pvcSize: ${MARIADB_PVC_SIZE}
+  objectStorage:
+    minio:
+      deploy: true
+      pvcSize: ${MINIO_PVC_SIZE}
+      image: 'quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance'
+  mlmd:
+    deploy: true

@@ -1,0 +1,12 @@
+# NeMo Guardrails Service Account
+#
+# Usage:
+#   export NAMESPACE=my-project
+#   envsubst < nemo-guardrails-sa.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nemo-guardrails-service-account
+  namespace: ${NAMESPACE}

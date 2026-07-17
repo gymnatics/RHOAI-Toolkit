@@ -207,7 +207,7 @@ Automatically detects kubeconfig and offers management options
 ### openshift-installer-master.sh
 Will guide you through downloading installer if missing
 
-### integrated-workflow-v2.sh
+### scripts/integrated-workflow-v2.sh
 Can skip OpenShift installation if already logged in
 
 ---

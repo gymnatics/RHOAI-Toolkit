@@ -1,97 +1,54 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  namespace: redhat-ods-applications
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: redhat-ods-applications
   labels:
     app: postgres
-    app.kubernetes.io/part-of: maas
+    purpose: poc
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: postgres
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
         app: postgres
     spec:
       containers:
-      - name: postgresql
-        image: registry.redhat.io/rhel9/postgresql-16:latest
-        ports:
-        - containerPort: 5432
-          protocol: TCP
-        env:
-        - name: POSTGRESQL_USER
-          valueFrom:
-            secretKeyRef:
-              name: postgres-creds
-              key: POSTGRES_USER
-        - name: POSTGRESQL_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-creds
-              key: POSTGRES_PASSWORD
-        - name: POSTGRESQL_DATABASE
-          valueFrom:
-            secretKeyRef:
-              name: postgres-creds
-              key: POSTGRES_DB
-        volumeMounts:
-        - name: postgres-data
-          mountPath: /var/lib/pgsql/data
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-        readinessProbe:
-          exec:
-            command:
-            - /usr/libexec/check-container
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - /usr/libexec/check-container
-            - --live
-          initialDelaySeconds: 30
-          periodSeconds: 15
+        - name: postgres
+          image: ${PG_IMAGE}
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: "${PG_USER}"
+            - name: POSTGRESQL_PASSWORD
+              value: "${PG_PASSWORD}"
+            - name: POSTGRESQL_DATABASE
+              value: "${PG_DB}"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "${PG_USER}", "-d", "${PG_DB}"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "${PG_USER}", "-d", "${PG_DB}"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
       volumes:
-      - name: postgres-data
-        persistentVolumeClaim:
-          claimName: postgres-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: redhat-ods-applications
-  labels:
-    app: postgres
-    app.kubernetes.io/part-of: maas
-spec:
-  ports:
-  - port: 5432
-    targetPort: 5432
-    protocol: TCP
-  selector:
-    app: postgres
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data

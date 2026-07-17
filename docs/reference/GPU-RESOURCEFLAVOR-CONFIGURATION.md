@@ -197,7 +197,7 @@ This is a standalone version you can run anytime:
 ```
 
 **3. Integrated into workflows**:
-- `integrated-workflow-v2.sh` (line 362)
+- `scripts/integrated-workflow-v2.sh` (line 362)
 - `scripts/integrated-workflow.sh` (line 1040)
 
 Both call `configure_gpu_resourceflavor` after RHOAI installation.

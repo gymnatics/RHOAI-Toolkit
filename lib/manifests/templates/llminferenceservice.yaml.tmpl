@@ -1,0 +1,49 @@
+# LLMInferenceService template for llm-d model deployment (RHOAI 3.2+)
+#
+# Variables:
+#   ${MODEL_NAME}       - Model deployment name
+#   ${NAMESPACE}        - Target namespace
+#   ${AUTH_ANNOTATION}  - "true" or "false" for auth
+#   ${MODEL_URI}        - Model URI (oci://, hf://)
+#   ${GPU_COUNT}        - Number of GPUs
+#   ${MEMORY_LIMIT}     - Memory limit (e.g. 16Gi)
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    kueue.x-k8s.io/queue-name: default
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    security.opendatahub.io/enable-auth: "${AUTH_ANNOTATION}"
+spec:
+  replicas: 1
+  model:
+    uri: ${MODEL_URI}
+    name: ${MODEL_NAME}
+  router:
+    route: {}
+    gateway: {}
+    scheduler: {}
+  template:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    containers:
+    - name: main
+      env:
+        - name: VLLM_ADDITIONAL_ARGS
+          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+      resources:
+        limits:
+          cpu: '4'
+          memory: ${MEMORY_LIMIT}
+          nvidia.com/gpu: "${GPU_COUNT}"
+        requests:
+          cpu: '1'
+          memory: 8Gi
+          nvidia.com/gpu: "${GPU_COUNT}"

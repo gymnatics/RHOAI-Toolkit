@@ -1,0 +1,35 @@
+# MaaS Gateway for RHOAI 3.4+
+# Required annotations:
+#   opendatahub.io/managed: "false" — lets MaaS controller manage auth policies
+#   security.opendatahub.io/authorino-tls-bootstrap: "true" — enables TLS to Authorino
+# Requires: GatewayClass, default-gateway-tls Secret, gateway-resources ConfigMap
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maas-default-gateway
+  namespace: openshift-ingress
+  annotations:
+    opendatahub.io/managed: "false"
+    security.opendatahub.io/authorino-tls-bootstrap: "true"
+spec:
+  gatewayClassName: openshift-gateway-controller
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: maas-gateway-options
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: maas.apps.${CLUSTER_DOMAIN}
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: ${CERT_NAME}
+        mode: Terminate

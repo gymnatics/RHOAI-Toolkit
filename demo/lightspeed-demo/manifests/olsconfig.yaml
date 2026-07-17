@@ -1,0 +1,56 @@
+apiVersion: ols.openshift.io/v1alpha1
+kind: OLSConfig
+metadata:
+  name: cluster
+  labels:
+    app.kubernetes.io/created-by: lightspeed-operator
+    app.kubernetes.io/instance: olsconfig-sample
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: olsconfig
+    app.kubernetes.io/part-of: lightspeed-operator
+spec:
+  featureGates:
+    - MCPServer
+  llm:
+    providers:
+      - name: ${OLS_PROVIDER_NAME}
+        type: openai
+        url: "${OLS_MODEL_URL}"
+        credentialsSecretRef:
+          name: ${OLS_CREDENTIALS_SECRET}
+        models:
+          - name: ${OLS_MODEL_NAME}
+            parameters:
+              maxTokensForResponse: 4096
+              toolBudgetRatio: 0.25
+  mcpServers:
+    - name: ${MCP_SERVER_NAME}
+      url: "http://${MCP_SERVER_NAME}.${MCP_SERVER_NAMESPACE}.svc.cluster.local:8080/mcp"
+      timeout: 30
+      headers:
+        - name: Authorization
+          valueFrom:
+            type: kubernetes
+  ols:
+    defaultModel: ${OLS_MODEL_NAME}
+    defaultProvider: ${OLS_PROVIDER_NAME}
+    conversationCache:
+      type: postgres
+      postgres:
+        maxConnections: 2000
+        sharedBuffers: 256MB
+    deployment:
+      api:
+        replicas: 1
+      console:
+        replicas: 1
+      dataCollector: {}
+      database:
+        replicas: 1
+      mcpServer: {}
+    introspectionEnabled: true
+    logLevel: DEBUG
+    maxIterations: 5
+    userDataCollection: {}
+  olsDataCollector:
+    logLevel: INFO

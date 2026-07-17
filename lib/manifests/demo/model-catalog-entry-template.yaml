@@ -1,0 +1,21 @@
+# Single Model Catalog Entry Template
+# Used by manage-model-catalog.sh to generate entries for the catalog ConfigMap.
+#
+# This is NOT applied directly -- it is used as a reference template.
+# The manage-model-catalog.sh script patches the catalog ConfigMap.
+#
+# Required variables:
+#   MODEL_NAME, MODEL_DESCRIPTION, MODEL_PROVIDER, MODEL_LICENSE, MODEL_ARTIFACT_URI
+#
+    - name: ${MODEL_NAME}
+      description: ${MODEL_DESCRIPTION}
+      readme: |-
+        # ${MODEL_NAME}
+
+        ${MODEL_DESCRIPTION}
+      provider: ${MODEL_PROVIDER}
+      license: ${MODEL_LICENSE}
+      licenseLink: https://www.apache.org/licenses/LICENSE-2.0.txt
+      libraryName: transformers
+      artifacts:
+        - uri: ${MODEL_ARTIFACT_URI}

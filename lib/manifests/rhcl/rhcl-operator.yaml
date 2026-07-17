@@ -1,3 +1,6 @@
+# RHCL Operator for RHOAI 3.3 (also works with 3.4)
+# Follows RHCL official CLI install: all resources in kuadrant-system
+# Reference: https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3/html-single/installing_on_openshift_container_platform/index
 ---
 apiVersion: v1
 kind: Namespace
@@ -7,9 +10,10 @@ metadata:
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: kuadrant-system
+  name: kuadrant
   namespace: kuadrant-system
-spec: {}
+spec:
+  upgradeStrategy: Default
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription

@@ -16,7 +16,7 @@ The **Interactive Model Deployment** feature provides a user-friendly way to dep
 
 ### During Workflow Installation
 
-When running `./rhoai-toolkit.sh` or `./integrated-workflow-v2.sh`, you'll be prompted to deploy a model after RHOAI installation is complete.
+When running `./rhoai-toolkit.sh` or `./scripts/integrated-workflow-v2.sh`, you'll be prompted to deploy a model after RHOAI installation is complete.
 
 ---
 
@@ -254,7 +254,7 @@ When running the integrated workflow scripts for RHOAI 3.0, you'll be automatica
 ```bash
 ./rhoai-toolkit.sh
 # or
-./integrated-workflow-v2.sh
+./scripts/integrated-workflow-v2.sh
 ```
 
 After RHOAI setup completes:

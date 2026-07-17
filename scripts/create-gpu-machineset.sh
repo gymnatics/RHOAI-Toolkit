@@ -10,7 +10,7 @@
 #   ./create-gpu-machineset.sh --instance-type g6e.4xlarge --spot --apply
 #
 # Options:
-#   --instance-type TYPE   GPU instance type (g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.48xlarge)
+#   --instance-type TYPE   GPU instance type (g6.xlarge, g6.2xlarge, g6.4xlarge, g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.4xlarge, p5.48xlarge, p5en.48xlarge)
 #   --spot                 Use spot instances
 #   --spot-max-price PRICE Maximum spot price per hour
 #   --az ZONE              Availability zone (e.g., us-east-2a)
@@ -24,7 +24,7 @@
 # 2. machine-type: worker → gpu-worker  
 # 3. Add label: node-role.kubernetes.io/gpu-worker: ''
 # 4. Add taint: nvidia.com/gpu:NoSchedule
-# 5. Change instanceType to GPU instance (g6e.*, p5.*)
+# 5. Change instanceType to GPU instance (g6.*, g6e.*, p5.*)
 # 6. Update annotations for GPU count, vCPU, memory
 #############################################################################
 
@@ -84,10 +84,18 @@ while [[ $# -gt 0 ]]; do
             echo "  --help                 Show this help"
             echo ""
             echo "Instance Types:"
+            echo "  NVIDIA L4 (24 GB GPU memory):"
+            echo "  g6.xlarge    - 1x NVIDIA L4   | 4 vCPU  | 16 GB RAM"
+            echo "  g6.2xlarge   - 1x NVIDIA L4   | 8 vCPU  | 32 GB RAM"
+            echo "  g6.4xlarge   - 1x NVIDIA L4   | 16 vCPU | 64 GB RAM"
+            echo "  NVIDIA L40S (48 GB GPU memory):"
             echo "  g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM"
             echo "  g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM"
             echo "  g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM"
+            echo "  NVIDIA H100/H200 (80+ GB GPU memory):"
+            echo "  p5.4xlarge   - 1x NVIDIA H100 | 16 vCPU | 256 GB RAM"
             echo "  p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM"
+            echo "  p5en.48xlarge- 8x NVIDIA H200 | 192 vCPU| 2048 GB RAM"
             exit 0
             ;;
         *)
@@ -194,6 +202,24 @@ echo ""
 if [ "$NON_INTERACTIVE" = true ]; then
     # Set instance type from CLI
     case "$CLI_INSTANCE_TYPE" in
+        g6.xlarge)
+            INSTANCE_TYPE="g6.xlarge"
+            GPU_COUNT=1
+            VCPU=4
+            MEMORY_MB=16384
+            ;;
+        g6.2xlarge)
+            INSTANCE_TYPE="g6.2xlarge"
+            GPU_COUNT=1
+            VCPU=8
+            MEMORY_MB=32768
+            ;;
+        g6.4xlarge)
+            INSTANCE_TYPE="g6.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=65536
+            ;;
         g6e.xlarge)
             INSTANCE_TYPE="g6e.xlarge"
             GPU_COUNT=1
@@ -212,15 +238,27 @@ if [ "$NON_INTERACTIVE" = true ]; then
             VCPU=16
             MEMORY_MB=65536
             ;;
+        p5.4xlarge)
+            INSTANCE_TYPE="p5.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=262144
+            ;;
         p5.48xlarge)
             INSTANCE_TYPE="p5.48xlarge"
             GPU_COUNT=8
             VCPU=192
             MEMORY_MB=2097152
             ;;
+        p5en.48xlarge)
+            INSTANCE_TYPE="p5en.48xlarge"
+            GPU_COUNT=8
+            VCPU=192
+            MEMORY_MB=2097152
+            ;;
         *)
             print_error "Invalid instance type: $CLI_INSTANCE_TYPE"
-            print_info "Valid types: g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.48xlarge"
+            print_info "Valid types: g6.xlarge, g6.2xlarge, g6.4xlarge, g6e.xlarge, g6e.2xlarge, g6e.4xlarge, p5.4xlarge, p5.48xlarge, p5en.48xlarge"
             exit 1
             ;;
     esac
@@ -242,34 +280,74 @@ else
     # Question 1: GPU Instance Type
     echo "1️⃣  Select GPU instance type:"
     echo ""
-    echo "  1) g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM   | ~\$0.69/hr"
-    echo "  2) g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM   | ~\$1.10/hr"
-    echo "  3) g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM   | ~\$1.92/hr"
-    echo "  4) p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM | ~\$98/hr"
+    echo "  NVIDIA L4 (24 GB GPU memory):"
+    echo "  1) g6.xlarge    - 1x NVIDIA L4   | 4 vCPU  | 16 GB RAM   | ~\$0.80/hr"
+    echo "  2) g6.2xlarge   - 1x NVIDIA L4   | 8 vCPU  | 32 GB RAM   | ~\$0.98/hr"
+    echo "  3) g6.4xlarge   - 1x NVIDIA L4   | 16 vCPU | 64 GB RAM   | ~\$1.32/hr"
     echo ""
-    read -p "Enter choice [1-4]: " instance_choice
+    echo "  NVIDIA L40S (48 GB GPU memory):"
+    echo "  4) g6e.xlarge   - 1x NVIDIA L40S | 4 vCPU  | 16 GB RAM   | ~\$0.69/hr"
+    echo "  5) g6e.2xlarge  - 1x NVIDIA L40S | 8 vCPU  | 32 GB RAM   | ~\$1.10/hr"
+    echo "  6) g6e.4xlarge  - 1x NVIDIA L40S | 16 vCPU | 64 GB RAM   | ~\$1.92/hr"
+    echo ""
+    echo "  NVIDIA H100/H200 (80+ GB GPU memory):"
+    echo "  7) p5.4xlarge   - 1x NVIDIA H100 | 16 vCPU | 256 GB RAM  | ~\$6.88/hr"
+    echo "  8) p5.48xlarge  - 8x NVIDIA H100 | 192 vCPU| 2048 GB RAM | ~\$98/hr"
+    echo "  9) p5en.48xlarge- 8x NVIDIA H200 | 192 vCPU| 2048 GB RAM | ~\$63/hr"
+    echo ""
+    read -p "Enter choice [1-9]: " instance_choice
 
     case $instance_choice in
         1)
-            INSTANCE_TYPE="g6e.xlarge"
+            INSTANCE_TYPE="g6.xlarge"
             GPU_COUNT=1
             VCPU=4
             MEMORY_MB=16384
             ;;
         2)
-            INSTANCE_TYPE="g6e.2xlarge"
+            INSTANCE_TYPE="g6.2xlarge"
             GPU_COUNT=1
             VCPU=8
             MEMORY_MB=32768
             ;;
         3)
-            INSTANCE_TYPE="g6e.4xlarge"
+            INSTANCE_TYPE="g6.4xlarge"
             GPU_COUNT=1
             VCPU=16
             MEMORY_MB=65536
             ;;
         4)
+            INSTANCE_TYPE="g6e.xlarge"
+            GPU_COUNT=1
+            VCPU=4
+            MEMORY_MB=16384
+            ;;
+        5)
+            INSTANCE_TYPE="g6e.2xlarge"
+            GPU_COUNT=1
+            VCPU=8
+            MEMORY_MB=32768
+            ;;
+        6)
+            INSTANCE_TYPE="g6e.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=65536
+            ;;
+        7)
+            INSTANCE_TYPE="p5.4xlarge"
+            GPU_COUNT=1
+            VCPU=16
+            MEMORY_MB=262144
+            ;;
+        8)
             INSTANCE_TYPE="p5.48xlarge"
+            GPU_COUNT=8
+            VCPU=192
+            MEMORY_MB=2097152
+            ;;
+        9)
+            INSTANCE_TYPE="p5en.48xlarge"
             GPU_COUNT=8
             VCPU=192
             MEMORY_MB=2097152
@@ -349,11 +427,16 @@ if [ "$NON_INTERACTIVE" = true ]; then
         AZ=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.placement.availabilityZone}')
     fi
     
-    # Get subnet config from source machineset
+    # Get subnet config from source machineset, adjusting for target AZ
     SOURCE_MS=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].metadata.name}')
     SUBNET_FILTER_NAME=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.filters[0].values[0]}' 2>/dev/null)
     if [ -n "$SUBNET_FILTER_NAME" ]; then
         USE_SUBNET_FILTER=true
+        # If AZ differs from source, update the subnet tag to match the target AZ
+        SOURCE_AZ=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.placement.availabilityZone}')
+        if [ "$AZ" != "$SOURCE_AZ" ]; then
+            SUBNET_FILTER_NAME="${SUBNET_FILTER_NAME%-*}-${AZ##*-}"
+        fi
         print_success "Using AZ: $AZ - Subnet Tag: $SUBNET_FILTER_NAME"
     else
         SUBNET_ID=$(oc get machineset "$SOURCE_MS" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.subnet.id}' 2>/dev/null)
@@ -696,6 +779,10 @@ if [ "$SHOULD_APPLY" = true ]; then
     if [ $? -eq 0 ]; then
         echo ""
         print_success "✅ MachineSet applied successfully!"
+
+        # Clean up the generated YAML since it contains cluster-specific data
+        rm -f "$OUTPUT_FILE"
+        print_info "Cleaned up generated YAML ($OUTPUT_FILE)"
         echo ""
         
         # Check if GPU ClusterPolicy needs to be created
@@ -781,6 +868,9 @@ else
     echo ""
     echo "Monitor machines:"
     echo "  oc get machines -n openshift-machine-api -w"
+    echo ""
+    print_warning "The YAML contains cluster-specific data (AMI, subnets, IAM)."
+    print_warning "Delete it after applying: rm $OUTPUT_FILE"
     echo ""
 fi
 

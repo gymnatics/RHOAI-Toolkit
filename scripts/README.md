@@ -215,8 +215,8 @@ cat scripts/CLEANUP-USAGE.md
 
 ### Fresh Installation
 ```bash
-# 1. Install OpenShift + RHOAI (from root)
-./integrated-workflow.sh
+# 1. Install OpenShift + RHOAI
+./scripts/integrated-workflow-v2.sh
 
 # 2. Create GPU nodes
 ./scripts/create-gpu-machineset.sh
@@ -252,7 +252,7 @@ cat scripts/CLEANUP-USAGE.md
 
 ## See Also
 
-- **Main Scripts** (in root): `openshift-installer-master.sh`, `integrated-workflow.sh`, `rhoai-toolkit.sh`, `restart-cluster-instances.sh`
+- **Main Scripts**: `rhoai-toolkit.sh` (root), `scripts/integrated-workflow-v2.sh`
 - **Diagnostics** (in diagnostics/): Tools for troubleshooting
 - **Tests** (in tests/): Test scripts for validation
 - **Documentation** (in docs/): Detailed guides and troubleshooting

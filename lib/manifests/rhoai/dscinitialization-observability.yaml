@@ -1,0 +1,32 @@
+# DSCInitialization with Observability settings (RHOAI 3.2+)
+# Configures metrics collection and distributed tracing.
+#
+# Variables:
+#   ${METRICS_RETENTION} - Metrics retention period (e.g. 90d)
+#   ${METRICS_SIZE}      - Metrics storage size (e.g. 5Gi)
+#   ${TRACE_RATIO}       - Trace sample ratio 0.0-1.0 (e.g. 0.1)
+#   ${TRACE_RETENTION}   - Trace retention period (e.g. 2160h0m0s)
+---
+apiVersion: dscinitialization.opendatahub.io/v2
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    alerting: {}
+    managementState: Managed
+    metrics:
+      replicas: 1
+      storage:
+        retention: ${METRICS_RETENTION}
+        size: ${METRICS_SIZE}
+    namespace: redhat-ods-monitoring
+    traces:
+      sampleRatio: '${TRACE_RATIO}'
+      storage:
+        backend: pv
+        retention: ${TRACE_RETENTION}
+  trustedCABundle:
+    customCABundle: ''
+    managementState: Managed

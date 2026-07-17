@@ -68,6 +68,7 @@ spec:
     genAiStudio: true                # ✓ Enable GenAI Studio/Playground
     modelAsService: true             # ✓ Enable Model as a Service (MaaS)
     disableLMEval: false             # ✓ Enable LM Eval
+    mcpCatalog: true                 # ✓ Enable MCP Catalog (AI Hub > MCP Servers)
   hardwareProfileOrder: []
   notebookController:
     enabled: true

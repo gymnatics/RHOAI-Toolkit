@@ -1,0 +1,32 @@
+# ModelRegistry CR for RHOAI Model Registry
+#
+# Variables:
+#   ${REGISTRY_NAME}     - Registry name
+#   ${REGISTRY_NS}       - Target namespace
+#   ${MYSQL_SVC_NAME}    - MySQL service name
+#   ${MYSQL_DB}          - Database name
+#   ${MYSQL_USER}        - Database username
+#   ${MYSQL_DEPLOY_NAME} - MySQL deployment name (for secret ref)
+---
+apiVersion: modelregistry.opendatahub.io/v1beta1
+kind: ModelRegistry
+metadata:
+  name: ${REGISTRY_NAME}
+  namespace: ${REGISTRY_NS}
+  labels:
+    app: ${REGISTRY_NAME}
+    app.kubernetes.io/part-of: model-registry
+spec:
+  grpc:
+    port: 9090
+  rest:
+    port: 8080
+    serviceRoute: enabled
+  mysql:
+    host: ${MYSQL_SVC_NAME}.${REGISTRY_NS}.svc.cluster.local
+    port: 3306
+    database: ${MYSQL_DB}
+    username: ${MYSQL_USER}
+    passwordSecret:
+      name: ${MYSQL_DEPLOY_NAME}-credentials
+      key: MYSQL_PASSWORD

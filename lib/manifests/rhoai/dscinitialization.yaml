@@ -1,0 +1,16 @@
+# DSCInitialization for RHOAI 3.4
+# Controls applications namespace, monitoring, and trusted CA bundle.
+# Applied before DataScienceCluster to ensure operator reconciles correctly.
+---
+apiVersion: dscinitialization.opendatahub.io/v1
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+  trustedCABundle:
+    managementState: Managed
+    customCABundle: ""

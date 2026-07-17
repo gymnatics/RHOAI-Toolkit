@@ -1,0 +1,18 @@
+# Free tier subscription for simulator model (100 tokens/min)
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: simulator-free
+  namespace: models-as-a-service
+spec:
+  modelRef:
+    name: simulator
+    namespace: ${MODEL_NAMESPACE}
+  priority: 10
+  subjects:
+    - kind: Group
+      name: system:authenticated
+  tokenRateLimits:
+    - limit: 100
+      window: 1m

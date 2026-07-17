@@ -1,30 +1,32 @@
 #!/bin/bash
 
 ################################################################################
-# OpenShift AI (RHOAI) Toolkit
+# Complete OpenShift + RHOAI + MaaS Setup
 ################################################################################
-# Interactive toolkit for installing and managing OpenShift AI.
+# This is a wrapper script that orchestrates the complete setup:
+# 1. OpenShift cluster installation
+# 2. GPU worker nodes
+# 3. RHOAI 3.0 with all features (GenAI Playground, etc.)
+# 4. Model as a Service (MaaS) API infrastructure (optional)
+# 5. GPU Hardware Profile creation (interactive)
 #
 # Usage:
 #   ./rhoai-toolkit.sh                    # Interactive menu mode
-#   ./rhoai-toolkit.sh --skip-openshift   # Full RHOAI 3.x on existing cluster
+#   ./rhoai-toolkit.sh --with-maas        # Auto-enable MaaS (non-interactive)
+#   ./rhoai-toolkit.sh --skip-maas        # Skip MaaS setup (non-interactive)
 #   ./rhoai-toolkit.sh --maas-only        # Only set up MaaS (assumes RHOAI exists)
 #
 # Interactive Menu Options:
-#   1. Complete Setup - OpenShift install + GPU + Full RHOAI 3.x (same as option 3)
+#   1. Complete Setup - Full OpenShift + RHOAI + GPU + MaaS installation
 #   2. Minimal RHOAI Setup - Choose which operators to install (flexible)
-#   3. Full RHOAI 3.x + MaaS - Version-specific installer (3.4/3.3) with all prerequisites
-#   4. Workshop Demo Setup - RHOAI 2.25 + GenAI Workshop
-#   5. Install RHOAI 2.x Only
-#   6. RHOAI Management - Configure features, deploy models, etc.
-#   7. Create GPU MachineSet - Add GPU nodes to existing cluster
-#   8. GPU & ClusterPolicy Management
-#   9. Configure Kubeconfig
-#   h. Help
-#   0. Exit
+#   3. RHOAI Management - Configure features, deploy models, etc.
+#   4. Create GPU MachineSet - Add GPU nodes to existing cluster
+#   5. Help - Show scripts and documentation
+#   6. Exit
 #
-# Option 1 and Option 3 share the same RHOAI installer (install-rhoai.sh).
-# Option 1 additionally installs OpenShift cluster and creates GPU nodes first.
+# RHOAI 3.0 Operator Requirements:
+#   REQUIRED: NFD, GPU Operator
+#   OPTIONAL: Kueue (distributed workloads), LWS (llm-d), RHCL (auth)
 
 set -e
 
@@ -39,6 +41,24 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source library functions
+source "$SCRIPT_DIR/lib/utils/colors.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/common.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/os-compat.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/operators.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/menus/commands.sh" 2>/dev/null || true
+
+# Command mode: if first arg doesn't start with -- and isn't a known flag,
+# route it through the command registry (bypasses interactive menus)
+if [ $# -gt 0 ] && [[ "$1" != --* ]] && [[ "$1" != -* ]]; then
+    if route_command "$@"; then
+        exit 0
+    fi
+    # route_command returns 1 for "menu" command or errors — fall through to interactive
+fi
 
 # Default flags
 SETUP_MAAS="ask"
@@ -68,25 +88,22 @@ show_main_menu() {
     echo -e "${CYAN}║                    Main Menu                                   ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${MAGENTA}RHOAI 3.x (Current):${NC}"
-    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[From Scratch]${NC}"
-    echo "    New cluster install, then full RHOAI 3.x (same installer as option 3)"
+    echo -e "${MAGENTA}Installation:${NC}"
+    echo -e "${YELLOW}1)${NC} Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) ${MAGENTA}[Full]${NC}"
     echo -e "${YELLOW}2)${NC} Minimal RHOAI 3.x Setup (choose operators) ${GREEN}[Flexible]${NC}"
-    echo -e "${YELLOW}3)${NC} Install RHOAI 3.x (all prerequisites + MaaS included) ${GREEN}[Recommended]${NC}"
-    echo "    Choose version (3.4 latest, 3.3). Installs NFD, GPU, Kueue, RHCL, Gateway, MaaS(PostgreSQL), basic MCP servers, etc."
-    echo ""
-    echo -e "${MAGENTA}RHOAI 2.x / Workshop:${NC}"
+    echo -e "${YELLOW}3)${NC} Install RHOAI ${GREEN}[auto-detects available versions]${NC}"
     echo -e "${YELLOW}4)${NC} Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop) ${GREEN}[Recommended for Workshops]${NC}"
-    echo -e "${YELLOW}5)${NC} Install RHOAI 2.x Only ${CYAN}[2.25, 2.22, 2.19]${NC}"
     echo ""
     echo -e "${MAGENTA}Management & Tools:${NC}"
-    echo -e "${YELLOW}6)${NC} RHOAI Management (configure features, deploy models, etc.)"
-    echo -e "${YELLOW}7)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
-    echo -e "${YELLOW}8)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
-    echo -e "${YELLOW}9)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
-    echo -e "${YELLOW}a)${NC} TLS Certificate Setup (Let's Encrypt / Self-signed) ${GREEN}[NEW]${NC}"
+    echo -e "${YELLOW}5)${NC} RHOAI Management (configure features, deploy models, etc.)"
+    echo -e "${YELLOW}6)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
+    echo -e "${YELLOW}7)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
+    echo -e "${YELLOW}8)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
     echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
+    echo ""
+    echo -e "${CYAN}Tip:${NC} Use command mode to skip menus: ${GREEN}./rhoai-toolkit.sh deploy demo webui${NC}"
+    echo -e "     Type ${GREEN}./rhoai-toolkit.sh help${NC} for all available commands."
     echo ""
 }
 
@@ -114,8 +131,8 @@ show_rhoai_management_menu() {
     echo -e "${YELLOW}6)${NC} Quick Start Wizard ${MAGENTA}✨${NC}"
     echo "    Run typical post-install workflow"
     echo ""
-    echo -e "${YELLOW}7)${NC} Day 2 Operations"
-    echo "    Approve CSRs, cluster maintenance"
+    echo -e "${YELLOW}7)${NC} Day 2 Operations ${BLUE}→${NC}"
+    echo "    Approve CSRs, remove kubeadmin, cluster maintenance"
     echo ""
     echo -e "${YELLOW}8)${NC} Troubleshooting & Fixes ${RED}[Fixes]${NC}"
     echo "    GPU operator issues, CUDA compatibility, common problems"
@@ -168,29 +185,36 @@ show_model_management_submenu() {
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${MAGENTA}Model Deployment:${NC}"
-    echo -e "${YELLOW}1)${NC} Deploy Model"
-    echo "    Interactive model deployment to OpenShift AI"
+    echo -e "${YELLOW}1)${NC} Deploy GenAI Model"
+    echo "    Interactive LLM deployment (vLLM, llm-d, etc.)"
     echo ""
-    echo -e "${YELLOW}2)${NC} Add Model to Playground"
+    echo -e "${YELLOW}2)${NC} Deploy Predictive Model ${GREEN}[New]${NC}"
+    echo "    Deploy sklearn/xgboost/lightgbm/onnx from S3/MinIO (CPU)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Add Model to Playground"
     echo "    Test models interactively in GenAI Studio"
     echo ""
     echo -e "${MAGENTA}Model Storage (HuggingFace → S3):${NC}"
-    echo -e "${YELLOW}3)${NC} Setup Model Storage (MinIO) ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}4)${NC} Setup Model Storage (MinIO) ${GREEN}[New]${NC}"
     echo "    Deploy MinIO S3 storage for HuggingFace models"
     echo ""
-    echo -e "${YELLOW}4)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}5)${NC} Download Model from HuggingFace ${GREEN}[New]${NC}"
     echo "    Download models to S3 for deployment"
     echo ""
     echo -e "${MAGENTA}Serving Runtimes:${NC}"
-    echo -e "${YELLOW}5)${NC} Manage Serving Runtimes ${GREEN}[New]${NC}"
+    echo -e "${YELLOW}6)${NC} Manage Serving Runtimes ${GREEN}[New]${NC}"
     echo "    Add/export runtimes (vLLM-Omni, Community vLLM, Red Hat vLLM)"
     echo ""
     echo -e "${MAGENTA}Hardware Profiles:${NC}"
-    echo -e "${YELLOW}6)${NC} Create GPU Hardware Profile (Custom)"
+    echo -e "${YELLOW}7)${NC} Create GPU Hardware Profile (Custom)"
     echo "    Define custom GPU resources for model deployments"
     echo ""
-    echo -e "${YELLOW}7)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
+    echo -e "${YELLOW}8)${NC} Quick GPU Profile Setup ${GREEN}[Recommended]${NC}"
     echo "    Create pre-configured profiles (Small/Medium/Large)"
+    echo ""
+    echo -e "${MAGENTA}Model Catalog:${NC}"
+    echo -e "${YELLOW}9)${NC} Manage Model Catalog ${GREEN}[Add/Remove/List]${NC}"
+    echo "    Add, remove, rename entries in the RHOAI Model Catalog"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -217,8 +241,16 @@ show_ai_services_submenu() {
     echo -e "${YELLOW}4)${NC} Feature Store Management ${BLUE}→${NC}"
     echo "    Setup and manage Feature Store for ML features"
     echo ""
+    echo -e "${MAGENTA}Model Registry:${NC}"
+    echo -e "${YELLOW}5)${NC} Setup Model Registry ${GREEN}[NEW]${NC}"
+    echo "    Deploy MySQL + create ModelRegistry instance"
+    echo ""
+    echo -e "${MAGENTA}AI Pipelines:${NC}"
+    echo -e "${YELLOW}6)${NC} Setup Pipeline Server ${GREEN}[NEW]${NC}"
+    echo "    Deploy DSPA with S3 storage (reuse existing MinIO or new)"
+    echo ""
     echo -e "${MAGENTA}MCP Servers (Tool Calling):${NC}"
-    echo -e "${YELLOW}5)${NC} MCP Server Management ${BLUE}→${NC}"
+    echo -e "${YELLOW}7)${NC} MCP Server Management ${BLUE}→${NC}"
     echo "    Weather MCP, Kubernetes MCP, and other tool servers"
     echo ""
     echo -e "${CYAN}Tip: Deploy demos from: RHOAI Management → Demos${NC}"
@@ -255,6 +287,39 @@ show_demos_submenu() {
     echo -e "${MAGENTA}API Gateway:${NC}"
     echo -e "${YELLOW}6)${NC} MaaS Demo ${GREEN}[Interactive]${NC}"
     echo "    Chat with models, compare responses, view metrics"
+    echo ""
+    echo -e "${MAGENTA}Additional Demos:${NC}"
+    echo -e "${YELLOW}7)${NC} Financial Loan Demo ${GREEN}[Predictive + GenAI]${NC}"
+    echo "    ML model training + LLM fine-tuning + web app"
+    echo ""
+    echo -e "${YELLOW}8)${NC} Marketing Assistant Demo ${YELLOW}[3x L40S GPU]${NC}"
+    echo "    Multi-agent A2A campaign manager with TrustyAI guardrails"
+    echo ""
+    echo -e "${YELLOW}9)${NC} AI Pipeline Demo ${GREEN}[KFP + Elyra]${NC}"
+    echo "    End-to-end ML pipeline with Model Registry versioning"
+    echo ""
+    echo -e "${YELLOW}10)${NC} NeMo Guardrails Demo ${GREEN}[RHOAI 3.4]${NC}"
+    echo "    CRD-based guardrails with PII detection and self-check rails"
+    echo ""
+    echo -e "${YELLOW}11)${NC} LMEval Builder Lab ${GREEN}[Benchmarks]${NC}"
+    echo "    Korean language benchmarks + GuideLLM + MLflow tracking"
+    echo ""
+    echo -e "${YELLOW}12)${NC} n8n Workflow Automation"
+    echo "    Deploy n8n workflow automation tool"
+    echo ""
+    echo -e "${YELLOW}13)${NC} MaaS Rate Limiting Demo ${GREEN}[API Keys + 429]${NC}"
+    echo "    Workbench with notebook to test API key auth and token rate limits"
+    echo ""
+    echo -e "${MAGENTA}Technology Preview:${NC}"
+    echo -e "${YELLOW}14)${NC} AutoML Demo ${YELLOW}[Tech Preview]${NC}"
+    echo "    Automated ML model training via AutoGluon + Kubeflow Pipelines"
+    echo ""
+    echo -e "${YELLOW}15)${NC} AutoRAG Demo ${YELLOW}[Tech Preview]${NC}"
+    echo "    Automated RAG pipeline optimization (requires Llama Stack + Milvus)"
+    echo ""
+    echo -e "${MAGENTA}Environment:${NC}"
+    echo -e "${YELLOW}16)${NC} Deploy Full Demo Environment ${GREEN}[All-in-One]${NC}"
+    echo "    Deploy all demos (except Marketing Assistant)"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management"
     echo ""
@@ -449,7 +514,7 @@ approve_pending_csrs() {
     echo "  • Kubelet certificates need renewal"
     echo ""
     
-    read -ep "Approve all pending CSRs? (y/N): " confirm
+    read -p "Approve all pending CSRs? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "CSR approval cancelled"
         return 0
@@ -495,7 +560,7 @@ approve_pending_csrs() {
         print_warning "More pending CSRs detected (nodes may generate multiple CSRs):"
         echo "$more_pending"
         echo ""
-        read -ep "Approve these as well? (y/N): " confirm_more
+        read -p "Approve these as well? (y/N): " confirm_more
         if [[ "$confirm_more" =~ ^[Yy]$ ]]; then
             while IFS= read -r csr_name; do
                 if [ -n "$csr_name" ]; then
@@ -516,6 +581,132 @@ approve_pending_csrs() {
     oc get nodes 2>/dev/null || echo "  Unable to get node status"
     
     return 0
+}
+
+################################################################################
+# Remove kubeadmin (Day 2 Operations)
+################################################################################
+
+remove_kubeadmin() {
+    print_header "Remove kubeadmin User"
+
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        return 1
+    fi
+
+    local current_user
+    current_user=$(oc whoami 2>/dev/null)
+
+    # Safety: don't allow removal while logged in as kube:admin
+    if [ "$current_user" = "kube:admin" ]; then
+        print_error "You are currently logged in as kube:admin!"
+        echo ""
+        echo "You must log in as a different cluster-admin user before removing kubeadmin."
+        echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+        return 1
+    fi
+
+    # Verify the current user has cluster-admin
+    if ! oc auth can-i '*' '*' --all-namespaces &>/dev/null; then
+        print_error "Current user '$current_user' does not have cluster-admin privileges"
+        return 1
+    fi
+
+    # Check if kubeadmin secret exists
+    if ! oc get secret kubeadmin -n kube-system &>/dev/null; then
+        print_info "kubeadmin has already been removed"
+        return 0
+    fi
+
+    echo -e "${YELLOW}WARNING: This will permanently remove the kubeadmin user.${NC}"
+    echo ""
+    echo "  Current user: $current_user"
+    echo "  You will no longer be able to log in as kube:admin"
+    echo "  Make sure you can log in via htpasswd (admin / R3dh4t1!)"
+    echo ""
+
+    read -p "Are you sure you want to remove kubeadmin? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then
+        print_info "Cancelled"
+        return 0
+    fi
+
+    print_step "Removing kubeadmin..."
+    oc delete secret kubeadmin -n kube-system
+
+    print_success "kubeadmin has been removed"
+    print_info "Log in via: oc login -u admin -p 'R3dh4t1!'"
+}
+
+################################################################################
+# Day 2 Operations Submenu
+################################################################################
+
+day2_operations_submenu() {
+    while true; do
+        echo ""
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║                 Day 2 Operations                               ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${YELLOW}1)${NC} Approve Pending CSRs"
+        echo "    Approve certificate signing requests for new/rebooted nodes"
+        echo ""
+        echo -e "${YELLOW}2)${NC} Remove kubeadmin ${RED}[Destructive]${NC}"
+        echo "    Permanently remove the kubeadmin user (requires htpasswd admin)"
+        echo ""
+        echo -e "${YELLOW}3)${NC} Recover Ingress Router"
+        echo "    Fix router pod stuck in CrashLoopBackOff"
+        echo ""
+        echo -e "${YELLOW}0)${NC} Back"
+        echo ""
+
+        read -p "Select an option (0-3): " day2_choice
+        case $day2_choice in
+            1)
+                approve_pending_csrs
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                remove_kubeadmin
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                print_header "Router Recovery"
+                source "$ROOT_DIR/scripts/install-rhoai-34.sh" --source-only 2>/dev/null || true
+                local router_status
+                router_status=$(oc get pods -n openshift-ingress \
+                    -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                    -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+                if [ "$router_status" = "CrashLoopBackOff" ]; then
+                    print_warning "Router is in CrashLoopBackOff — restarting..."
+                    oc delete pod -n openshift-ingress \
+                        -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                        --wait=false 2>/dev/null
+                    sleep 10
+                    oc get pods -n openshift-ingress --no-headers
+                    print_success "Router pod restarted"
+                else
+                    local phase
+                    phase=$(oc get pods -n openshift-ingress \
+                        -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                        -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Unknown")
+                    print_success "Router is healthy (status: $phase)"
+                fi
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                print_error "Invalid option"
+                ;;
+        esac
+    done
 }
 
 ################################################################################
@@ -561,7 +752,7 @@ fix_gpu_operator_cuda_compatibility() {
     if [[ "$current_channel" == "v24.6" ]]; then
         print_success "GPU Operator is already on v24.6 channel (CUDA 12.x compatible)"
         echo ""
-        read -ep "Do you want to check/fix InstallPlanApproval to Manual? (y/N): " fix_approval
+        read -p "Do you want to check/fix InstallPlanApproval to Manual? (y/N): " fix_approval
         if [[ "$fix_approval" =~ ^[Yy]$ ]]; then
             oc patch subscription gpu-operator-certified -n nvidia-gpu-operator --type=merge -p '{"spec":{"installPlanApproval":"Manual"}}'
             print_success "InstallPlanApproval set to Manual"
@@ -580,7 +771,7 @@ fix_gpu_operator_cuda_compatibility() {
     echo "  4. The driver pods will be recreated (may take a few minutes)"
     echo ""
     
-    read -ep "Proceed with downgrade to v24.6? (y/N): " confirm
+    read -p "Proceed with downgrade to v24.6? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Operation cancelled"
         return 0
@@ -720,7 +911,7 @@ uncordon_gpu_nodes() {
     echo "$cordoned_nodes"
     echo ""
     
-    read -ep "Uncordon all these nodes? (y/N): " confirm
+    read -p "Uncordon all these nodes? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Operation cancelled"
         return 0
@@ -825,7 +1016,7 @@ restart_failed_model_pods() {
     echo "$failed_isvc"
     echo ""
     
-    read -ep "Enter namespace/name to restart (or 'all' for all failed, 'q' to quit): " selection
+    read -p "Enter namespace/name to restart (or 'all' for all failed, 'q' to quit): " selection
     
     if [ "$selection" = "q" ]; then
         return 0
@@ -854,28 +1045,28 @@ restart_failed_model_pods() {
 troubleshooting_submenu() {
     while true; do
         show_troubleshooting_submenu
-        read -ep "Select an option (1-8, 0): " ts_choice
+        read -p "Select an option (1-8, 0): " ts_choice
         
         case $ts_choice in
             1)
                 fix_gpu_operator_cuda_compatibility
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 pin_nvidia_driver_version
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 check_gpu_operator_status
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 uncordon_gpu_nodes
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
                 print_info "Re-running operator channel validation..."
@@ -894,24 +1085,24 @@ troubleshooting_submenu() {
                     print_info "To fix channel issues, re-run: ./scripts/install-rhoai-minimal.sh"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
                 check_all_operator_status
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             7)
                 restart_failed_model_pods
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             8)
                 print_header "Restart RHOAI Controllers"
                 echo "This will restart odh-model-controller and kserve-controller-manager"
                 echo "Useful when authentication/Authorino changes aren't being picked up"
                 echo ""
-                read -ep "Continue? (y/N): " restart_confirm
+                read -p "Continue? (y/N): " restart_confirm
                 if [[ "$restart_confirm" =~ ^[Yy]$ ]]; then
                     print_step "Restarting odh-model-controller..."
                     oc delete pod -n redhat-ods-applications -l app=odh-model-controller 2>/dev/null || true
@@ -920,7 +1111,7 @@ troubleshooting_submenu() {
                     print_success "Controllers restarted"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
@@ -937,7 +1128,7 @@ troubleshooting_submenu() {
 gpu_clusterpolicy_menu() {
     while true; do
         show_gpu_clusterpolicy_menu
-        read -ep "Select an option (1-9, 0): " gcp_choice
+        read -p "Select an option (1-9, 0): " gcp_choice
         
         case $gcp_choice in
             1)
@@ -958,7 +1149,7 @@ gpu_clusterpolicy_menu() {
                     oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.spec.driver.version}' 2>/dev/null && echo "" || echo "  Using default"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 # Create/Apply ClusterPolicy
@@ -969,7 +1160,7 @@ gpu_clusterpolicy_menu() {
                     local current_state=$(oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null)
                     echo "Current state: $current_state"
                     echo ""
-                    read -ep "Re-apply ClusterPolicy? (y/N): " reapply
+                    read -p "Re-apply ClusterPolicy? (y/N): " reapply
                     if [[ ! "$reapply" =~ ^[Yy]$ ]]; then
                         continue
                     fi
@@ -980,7 +1171,7 @@ gpu_clusterpolicy_menu() {
                 if [ "$gpu_nodes" -eq 0 ]; then
                     print_warning "No GPU nodes detected in the cluster"
                     echo "ClusterPolicy requires GPU nodes to function properly."
-                    read -ep "Create ClusterPolicy anyway? (y/N): " create_anyway
+                    read -p "Create ClusterPolicy anyway? (y/N): " create_anyway
                     if [[ ! "$create_anyway" =~ ^[Yy]$ ]]; then
                         continue
                     fi
@@ -1027,7 +1218,7 @@ EOF
                 print_info "ClusterPolicy will take a few minutes to initialize."
                 print_info "Check status with option 1 or: oc get clusterpolicy"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 # Delete ClusterPolicy
@@ -1035,13 +1226,13 @@ EOF
                 echo ""
                 if ! oc get clusterpolicy gpu-cluster-policy &>/dev/null; then
                     print_info "No ClusterPolicy found"
-                    read -ep "Press Enter to continue..."
+                    read -p "Press Enter to continue..."
                     continue
                 fi
                 
                 print_warning "This will delete the ClusterPolicy and stop GPU workloads!"
                 echo ""
-                read -ep "Are you sure? (type 'delete' to confirm): " confirm_delete
+                read -p "Are you sure? (type 'delete' to confirm): " confirm_delete
                 if [ "$confirm_delete" = "delete" ]; then
                     print_step "Deleting ClusterPolicy..."
                     oc delete clusterpolicy gpu-cluster-policy
@@ -1050,22 +1241,22 @@ EOF
                     print_info "Operation cancelled"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 check_gpu_operator_status
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
                 fix_gpu_operator_cuda_compatibility
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
                 pin_nvidia_driver_version
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             7)
                 # Show GPU Nodes
@@ -1080,12 +1271,12 @@ EOF
                 echo -e "${CYAN}GPU Resources:${NC}"
                 oc get nodes -o custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu' 2>/dev/null | grep -v "<none>" || echo "  No GPU resources found"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             8)
                 uncordon_gpu_nodes
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             9)
                 # Run nvidia-smi
@@ -1095,7 +1286,7 @@ EOF
                 if [ -z "$driver_pod" ]; then
                     print_error "No NVIDIA driver pod found"
                     echo "Make sure GPU Operator and ClusterPolicy are installed."
-                    read -ep "Press Enter to continue..."
+                    read -p "Press Enter to continue..."
                     continue
                 fi
                 
@@ -1103,7 +1294,7 @@ EOF
                 echo ""
                 oc exec -n nvidia-gpu-operator $driver_pod -c nvidia-driver-ctr -- nvidia-smi 2>/dev/null || print_error "Failed to run nvidia-smi"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
@@ -1118,55 +1309,9 @@ EOF
 
 ################################################################################
 # MCP Server Functions
+# Note: deploy_kubernetes_mcp_server() is defined later in the file
+# with full multi-strategy deployment (Helm, BuildConfig, local build, manifest)
 ################################################################################
-
-# Deploy Kubernetes MCP Server
-deploy_kubernetes_mcp_server() {
-    print_header "Deploy Kubernetes MCP Server"
-    
-    local namespace=$(oc project -q 2>/dev/null)
-    echo "Current namespace: $namespace"
-    read -ep "Deploy to namespace [$namespace]: " target_ns
-    target_ns="${target_ns:-$namespace}"
-    
-    # Check/create namespace
-    if ! oc get namespace "$target_ns" &>/dev/null; then
-        print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
-        if [[ "$create_ns" =~ ^[Yy]$ ]]; then
-            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
-        else
-            return 1
-        fi
-    fi
-    
-    print_step "Deploying Kubernetes MCP Server..."
-    oc apply -f "$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml" -n "$target_ns"
-    
-    print_step "Waiting for deployment..."
-    oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s || true
-    
-    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
-    
-    print_success "Kubernetes MCP Server deployed"
-    echo ""
-    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
-    echo ""
-    
-    # Ask to register in AI Assets
-    read -ep "Register in AI Asset endpoints (shows in UI)? (Y/n): " register_ai
-    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
-        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
-            "Kubernetes cluster operations - list pods, deployments, services, get logs." \
-            "streamable-http"
-    fi
-    
-    # Ask to register in LlamaStack
-    read -ep "Register in LlamaStack config (enables tool calling)? (Y/n): " register_ls
-    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
-        register_mcp_llamastack "mcp::kubernetes" "$mcp_url" "$target_ns"
-    fi
-}
 
 # Deploy Weather MCP Server with MongoDB
 deploy_mcp_mongodb_only() {
@@ -1174,7 +1319,7 @@ deploy_mcp_mongodb_only() {
     
     local namespace=$(oc project -q 2>/dev/null)
     echo "Current namespace: $namespace"
-    read -ep "Deploy to namespace [$namespace]: " target_ns
+    read -p "Deploy to namespace [$namespace]: " target_ns
     target_ns="${target_ns:-$namespace}"
     
     local mcp_dir="$SCRIPT_DIR/demo/llamastack-demo/mcp"
@@ -1209,14 +1354,14 @@ deploy_mcp_mongodb_only() {
     echo ""
     
     # Ask to register
-    read -ep "Register in AI Asset endpoints? (Y/n): " register_ai
+    read -p "Register in AI Asset endpoints? (Y/n): " register_ai
     if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
         register_mcp_ai_asset "Weather-MCP-Server" "$mcp_url" \
             "Weather data with MongoDB backend. Tools: search_weather, get_current_weather, list_stations." \
             "streamable-http"
     fi
     
-    read -ep "Register in LlamaStack config? (Y/n): " register_ls
+    read -p "Register in LlamaStack config? (Y/n): " register_ls
     if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
         register_mcp_llamastack "mcp::weather-data" "$mcp_url" "$target_ns"
     fi
@@ -1311,21 +1456,21 @@ register_mcp_ai_asset_interactive() {
     echo "Location: Settings → AI asset endpoints"
     echo ""
     
-    read -ep "MCP Server Name (e.g., My-MCP-Server): " mcp_name
+    read -p "MCP Server Name (e.g., My-MCP-Server): " mcp_name
     if [ -z "$mcp_name" ]; then
         print_error "Name is required"
         return 1
     fi
     
-    read -ep "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
+    read -p "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
     if [ -z "$mcp_url" ]; then
         print_error "URL is required"
         return 1
     fi
     
-    read -ep "Description: " description
+    read -p "Description: " description
     echo "Transport options: sse, streamable-http"
-    read -ep "Transport [streamable-http]: " transport
+    read -p "Transport [streamable-http]: " transport
     transport="${transport:-streamable-http}"
     
     register_mcp_ai_asset "$mcp_name" "$mcp_url" "$description" "$transport"
@@ -1340,19 +1485,19 @@ register_mcp_llamastack_interactive() {
     echo "Current namespace: $namespace"
     echo ""
     
-    read -ep "Toolgroup ID (e.g., mcp::my-tools): " toolgroup_id
+    read -p "Toolgroup ID (e.g., mcp::my-tools): " toolgroup_id
     if [ -z "$toolgroup_id" ]; then
         print_error "Toolgroup ID is required"
         return 1
     fi
     
-    read -ep "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
+    read -p "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
     if [ -z "$mcp_url" ]; then
         print_error "URL is required"
         return 1
     fi
     
-    read -ep "Namespace for LlamaStack config [$namespace]: " ls_namespace
+    read -p "Namespace for LlamaStack config [$namespace]: " ls_namespace
     ls_namespace="${ls_namespace:-$namespace}"
     
     register_mcp_llamastack "$toolgroup_id" "$mcp_url" "$ls_namespace"
@@ -1473,7 +1618,7 @@ setup_mcp_servers_interactive() {
     echo -e "${YELLOW}0)${NC} Back to RHOAI Management Menu"
     echo ""
     
-    read -ep "Enter your choice: " mcp_choice
+    read -p "Enter your choice: " mcp_choice
     
     case $mcp_choice in
         1)
@@ -1568,13 +1713,13 @@ deploy_llamastack_demo_interactive() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check if namespace exists
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -1603,12 +1748,11 @@ deploy_llamastack_demo_interactive() {
         echo "No LlamaStack service auto-detected"
     fi
     
-    read -ep "LlamaStack URL [$default_llamastack_url]: " llamastack_url
+    read -p "LlamaStack URL [$default_llamastack_url]: " llamastack_url
     llamastack_url="${llamastack_url:-$default_llamastack_url}"
     
-    # Model ID (LlamaStack 0.4.0+ uses provider_id/model_id format)
-    echo -e "${YELLOW}Note: LlamaStack 0.4.0+ uses provider_id/model_id format (e.g., vllm-inference/qwen3-8b)${NC}"
-    read -ep "Model ID [qwen3-8b]: " model_id
+    # Model ID
+    read -p "Model ID [qwen3-8b]: " model_id
     model_id="${model_id:-qwen3-8b}"
     
     # MCP Server URL
@@ -1622,17 +1766,17 @@ deploy_llamastack_demo_interactive() {
         local default_mcp_url="http://mcp-server.${target_ns}.svc.cluster.local:8000"
     fi
     
-    read -ep "MCP Server URL [$default_mcp_url]: " mcp_url
+    read -p "MCP Server URL [$default_mcp_url]: " mcp_url
     mcp_url="${mcp_url:-$default_mcp_url}"
     
     echo ""
     echo -e "${CYAN}UI Customization (optional, press Enter to use defaults):${NC}"
     echo ""
     
-    read -ep "App Title [LlamaStack + MCP Demo]: " app_title
+    read -p "App Title [LlamaStack + MCP Demo]: " app_title
     app_title="${app_title:-LlamaStack + MCP Demo}"
     
-    read -ep "MCP Server Name [MCP Server]: " mcp_name
+    read -p "MCP Server Name [MCP Server]: " mcp_name
     mcp_name="${mcp_name:-MCP Server}"
     
     echo ""
@@ -1644,7 +1788,7 @@ deploy_llamastack_demo_interactive() {
     echo "  App Title: $app_title"
     echo ""
     
-    read -ep "Proceed with deployment? (Y/n): " confirm
+    read -p "Proceed with deployment? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Deployment cancelled"
         return 0
@@ -1716,7 +1860,7 @@ deploy_llamastack_demo_interactive() {
         echo "   4. Start chatting!"
         echo ""
         echo -e "${CYAN}📚 To update configuration later:${NC}"
-        echo "   oc edit configmap llamastack-mcp-demo-config -n $target_ns"
+        echo "   oc edit configmap llamastack-demo-config -n $target_ns"
         echo "   oc rollout restart deployment/llamastack-mcp-demo -n $target_ns"
         echo ""
     else
@@ -1877,35 +2021,35 @@ deploy_llamastack_demo_menu() {
     
     while true; do
         show_llamastack_demo_submenu
-        read -ep "Enter your choice: " demo_choice
+        read -p "Enter your choice: " demo_choice
         
         case $demo_choice in
             1)
                 # Full stack with LlamaStack
                 deploy_full_stack_with_llamastack || true
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             2)
                 # Complete demo stack (existing LlamaStack)
                 deploy_complete_llamastack_demo || true
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             3)
                 # MCP + MongoDB only
                 deploy_mcp_mongodb_only || true
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             4)
                 # UI only
                 deploy_llamastack_demo_interactive || true
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 return 0
                 ;;
             0)
@@ -1953,7 +2097,7 @@ setup_llamastack_interactive() {
         echo ""
         echo "  3. Wait for the operator to be ready (~2-3 minutes)"
         echo ""
-        read -ep "Would you like to enable LlamaStack now? (y/N): " enable_llamastack
+        read -p "Would you like to enable LlamaStack now? (y/N): " enable_llamastack
         if [[ "$enable_llamastack" =~ ^[Yy]$ ]]; then
             print_step "Enabling LlamaStack operator..."
             if oc patch datasciencecluster default-dsc --type merge \
@@ -1994,13 +2138,13 @@ setup_llamastack_interactive() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -2020,7 +2164,7 @@ setup_llamastack_interactive() {
     echo "  • Agent orchestration"
     echo ""
     
-    read -ep "Proceed? (Y/n): " confirm
+    read -p "Proceed? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Cancelled"
         return 0
@@ -2066,7 +2210,7 @@ deploy_llamastack_distribution_generic() {
     
     # Select and configure provider
     show_llm_provider_menu
-    read -ep "Enter your choice [1]: " provider_choice
+    read -p "Enter your choice [1]: " provider_choice
     provider_choice="${provider_choice:-1}"
     
     case $provider_choice in
@@ -2080,12 +2224,12 @@ deploy_llamastack_distribution_generic() {
     
     # Ask about MCP server (optional)
     echo ""
-    read -ep "Do you want to configure an MCP server? (y/N): " configure_mcp
+    read -p "Do you want to configure an MCP server? (y/N): " configure_mcp
     local mcp_config=""
     if [[ "$configure_mcp" =~ ^[Yy]$ ]]; then
-        read -ep "MCP Server Name (e.g., weather-data): " mcp_name
+        read -p "MCP Server Name (e.g., weather-data): " mcp_name
         mcp_name="${mcp_name:-custom-mcp}"
-        read -ep "MCP Server URL (e.g., http://my-mcp-server.ns.svc.cluster.local:8000/mcp): " mcp_url
+        read -p "MCP Server URL (e.g., http://my-mcp-server.ns.svc.cluster.local:8000/mcp): " mcp_url
         if [ -n "$mcp_url" ]; then
             mcp_config="    - toolgroup_id: mcp::$mcp_name
       provider_id: model-context-protocol
@@ -2129,20 +2273,17 @@ deploy_llamastack_distribution_generic() {
     
     local dist_file="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-distribution.yaml"
     
-    # Build final YAML by injecting env vars after the first 'env:' line
-    local tmp_yaml
-    tmp_yaml=$(mktemp)
-    local _env_done=""
-    while IFS= read -r line; do
-        printf '%s\n' "$line"
-        if [[ -z "$_env_done" ]] && [[ "$line" == *"env:"* ]]; then
-            printf '%s\n' "$DISTRIBUTION_ENV_VARS"
-            _env_done=1
-        fi
-    done < <(sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file") > "$tmp_yaml"
-
-    oc apply -f "$tmp_yaml"
-    rm -f "$tmp_yaml"
+    # Read base distribution and inject env vars
+    sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file" | \
+    awk -v env_vars="$DISTRIBUTION_ENV_VARS" '
+        /env:/ && !done {
+            print
+            print env_vars
+            done=1
+            next
+        }
+        { print }
+    ' | oc apply -f -
     
     print_step "Waiting for LlamaStack pod to be ready..."
     sleep 5
@@ -2205,16 +2346,16 @@ configure_vllm_provider() {
         echo ""
     fi
     
-    read -ep "vLLM/Model Serving URL (e.g., https://model-name.apps.cluster.example.com): " VLLM_URL
+    read -p "vLLM/Model Serving URL (e.g., https://model-name.apps.cluster.example.com): " VLLM_URL
     if [ -z "$VLLM_URL" ]; then
         print_error "vLLM URL is required"
         return 1
     fi
     
-    read -ep "Model ID (e.g., qwen3-8b, llama-3-8b): " MODEL_ID
+    read -p "Model ID (e.g., qwen3-8b, llama-3-8b): " MODEL_ID
     MODEL_ID="${MODEL_ID:-qwen3-8b}"
     
-    read -ep "API Token (leave empty if not required): " VLLM_API_TOKEN
+    read -p "API Token (leave empty if not required): " VLLM_API_TOKEN
     
     # Create secret for vLLM
     print_step "Creating vLLM secret..."
@@ -2250,7 +2391,6 @@ ENVEOF
     )
     
     LLM_PROVIDER="vllm"
-    INFERENCE_PROVIDER_ID="vllm-inference"
     CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-vllm.yaml"
 }
 
@@ -2261,23 +2401,23 @@ configure_azure_provider() {
     print_step "Configuring Azure OpenAI provider..."
     echo ""
     
-    read -ep "Azure OpenAI Endpoint (e.g., https://your-resource.openai.azure.com): " AZURE_ENDPOINT
+    read -p "Azure OpenAI Endpoint (e.g., https://your-resource.openai.azure.com): " AZURE_ENDPOINT
     if [ -z "$AZURE_ENDPOINT" ]; then
         print_error "Azure endpoint is required"
         return 1
     fi
     
-    read -ep "Deployment Name (e.g., gpt-4o): " AZURE_DEPLOYMENT
+    read -p "Deployment Name (e.g., gpt-4o): " AZURE_DEPLOYMENT
     AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4o}"
     MODEL_ID="$AZURE_DEPLOYMENT"
     
-    read -ep "API Key: " AZURE_API_KEY
+    read -p "API Key: " AZURE_API_KEY
     if [ -z "$AZURE_API_KEY" ]; then
         print_error "API key is required"
         return 1
     fi
     
-    read -ep "API Version [2024-08-01-preview]: " AZURE_API_VERSION
+    read -p "API Version [2024-08-01-preview]: " AZURE_API_VERSION
     AZURE_API_VERSION="${AZURE_API_VERSION:-2024-08-01-preview}"
     
     # Create secret
@@ -2321,7 +2461,6 @@ ENVEOF
     )
     
     LLM_PROVIDER="azure"
-    INFERENCE_PROVIDER_ID="azure-openai"
     CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-azure.yaml"
 }
 
@@ -2332,13 +2471,13 @@ configure_openai_provider() {
     print_step "Configuring OpenAI provider..."
     echo ""
     
-    read -ep "OpenAI API Key: " OPENAI_API_KEY
+    read -p "OpenAI API Key: " OPENAI_API_KEY
     if [ -z "$OPENAI_API_KEY" ]; then
         print_error "API key is required"
         return 1
     fi
     
-    read -ep "Model ID [gpt-4o]: " MODEL_ID
+    read -p "Model ID [gpt-4o]: " MODEL_ID
     MODEL_ID="${MODEL_ID:-gpt-4o}"
     
     # Create secret
@@ -2364,7 +2503,6 @@ ENVEOF
     )
     
     LLM_PROVIDER="openai"
-    INFERENCE_PROVIDER_ID="openai"
     CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-openai.yaml"
 }
 
@@ -2375,10 +2513,10 @@ configure_ollama_provider() {
     print_step "Configuring Ollama provider..."
     echo ""
     
-    read -ep "Ollama URL [http://ollama.${target_ns}.svc.cluster.local:11434]: " OLLAMA_URL
+    read -p "Ollama URL [http://ollama.${target_ns}.svc.cluster.local:11434]: " OLLAMA_URL
     OLLAMA_URL="${OLLAMA_URL:-http://ollama.${target_ns}.svc.cluster.local:11434}"
     
-    read -ep "Model ID [llama3.2]: " MODEL_ID
+    read -p "Model ID [llama3.2]: " MODEL_ID
     MODEL_ID="${MODEL_ID:-llama3.2}"
     
     DISTRIBUTION_ENV_VARS=$(cat <<ENVEOF
@@ -2388,7 +2526,6 @@ ENVEOF
     )
     
     LLM_PROVIDER="ollama"
-    INFERENCE_PROVIDER_ID="ollama"
     CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-ollama.yaml"
 }
 
@@ -2399,22 +2536,22 @@ configure_bedrock_provider() {
     print_step "Configuring AWS Bedrock provider..."
     echo ""
     
-    read -ep "AWS Access Key ID: " AWS_ACCESS_KEY_ID
+    read -p "AWS Access Key ID: " AWS_ACCESS_KEY_ID
     if [ -z "$AWS_ACCESS_KEY_ID" ]; then
         print_error "AWS Access Key ID is required"
         return 1
     fi
     
-    read -ep "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    read -p "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
     if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
         print_error "AWS Secret Access Key is required"
         return 1
     fi
     
-    read -ep "AWS Region [us-east-1]: " AWS_REGION
+    read -p "AWS Region [us-east-1]: " AWS_REGION
     AWS_REGION="${AWS_REGION:-us-east-1}"
     
-    read -ep "Model ID [anthropic.claude-3-sonnet-20240229-v1:0]: " MODEL_ID
+    read -p "Model ID [anthropic.claude-3-sonnet-20240229-v1:0]: " MODEL_ID
     MODEL_ID="${MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}"
     
     # Create secret
@@ -2452,7 +2589,6 @@ ENVEOF
     )
     
     LLM_PROVIDER="bedrock"
-    INFERENCE_PROVIDER_ID="bedrock"
     CONFIG_FILE="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-config-bedrock.yaml"
 }
 
@@ -2483,7 +2619,7 @@ deploy_llamastack_distribution() {
     
     # Select and configure provider
     show_llm_provider_menu
-    read -ep "Enter your choice [1]: " provider_choice
+    read -p "Enter your choice [1]: " provider_choice
     provider_choice="${provider_choice:-1}"
     
     case $provider_choice in
@@ -2506,20 +2642,17 @@ deploy_llamastack_distribution() {
     
     local dist_file="$SCRIPT_DIR/demo/llamastack-demo/llamastack/llamastack-distribution.yaml"
     
-    # Build final YAML by injecting env vars after the first 'env:' line
-    local tmp_yaml
-    tmp_yaml=$(mktemp)
-    local _env_done=""
-    while IFS= read -r line; do
-        printf '%s\n' "$line"
-        if [[ -z "$_env_done" ]] && [[ "$line" == *"env:"* ]]; then
-            printf '%s\n' "$DISTRIBUTION_ENV_VARS"
-            _env_done=1
-        fi
-    done < <(sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file") > "$tmp_yaml"
-
-    oc apply -f "$tmp_yaml"
-    rm -f "$tmp_yaml"
+    # Read base distribution and inject env vars
+    sed -e "s/NAMESPACE_PLACEHOLDER/$target_ns/g" "$dist_file" | \
+    awk -v env_vars="$DISTRIBUTION_ENV_VARS" '
+        /env:/ && !done {
+            print
+            print env_vars
+            done=1
+            next
+        }
+        { print }
+    ' | oc apply -f -
     
     print_step "Waiting for LlamaStack pod to be ready..."
     sleep 5
@@ -2544,13 +2677,13 @@ deploy_full_stack_with_llamastack() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -2574,7 +2707,7 @@ deploy_full_stack_with_llamastack() {
     echo "  • Access to your chosen LLM provider"
     echo ""
     
-    read -ep "Proceed? (Y/n): " confirm
+    read -p "Proceed? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Cancelled"
         return 0
@@ -2612,16 +2745,14 @@ deploy_full_stack_with_llamastack() {
     
     local demo_dir="$SCRIPT_DIR/demo/llamastack-demo"
     local mcp_url="http://weather-mcp-server.${target_ns}.svc.cluster.local:8000"
-    local ui_model_id="${INFERENCE_PROVIDER_ID}/${MODEL_ID}"
     
     print_step "Applying ConfigMap and Deployment manifests..."
     
     # Apply deployment.yaml with namespace and config values substituted
-    # LlamaStack 0.4.0+ registers models as {provider_id}/{model_id}
     sed -e "s/namespace: demo-test/namespace: $target_ns/g" \
         -e "s|demo-test/|$target_ns/|g" \
         -e "s|LLAMASTACK_URL:.*|LLAMASTACK_URL: \"$LLAMASTACK_URL\"|g" \
-        -e "s|MODEL_ID:.*|MODEL_ID: \"$ui_model_id\"|g" \
+        -e "s|MODEL_ID:.*|MODEL_ID: \"$MODEL_ID\"|g" \
         -e "s|MCP_SERVER_URL:.*|MCP_SERVER_URL: \"$mcp_url\"|g" \
         -e "s|APP_TITLE:.*|APP_TITLE: \"LlamaStack + MCP Demo\"|g" \
         -e "s|APP_SUBTITLE:.*|APP_SUBTITLE: \"AI Agent with Weather Data Tools\"|g" \
@@ -2662,7 +2793,7 @@ deploy_full_stack_with_llamastack() {
     echo -e "${CYAN}📦 Deployed Components:${NC}"
     echo "   • LlamaStack: llamastack-demo-service.$target_ns.svc.cluster.local:8321"
     echo "   • Provider: $LLM_PROVIDER"
-    echo "   • Model: $ui_model_id"
+    echo "   • Model: $MODEL_ID"
     echo "   • MongoDB: mongodb.$target_ns.svc.cluster.local:27017"
     echo "   • Weather MCP: weather-mcp-server.$target_ns.svc.cluster.local:8000"
     echo ""
@@ -2694,13 +2825,13 @@ deploy_open_webui() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -2745,7 +2876,7 @@ deploy_open_webui() {
     fi
     
     echo ""
-    read -ep "Enter model URL(s) [semicolon-separated, or press Enter for detected]: " custom_urls
+    read -p "Enter model URL(s) [semicolon-separated, or press Enter for detected]: " custom_urls
     if [ -n "$custom_urls" ]; then
         model_urls="$custom_urls"
     fi
@@ -2764,7 +2895,7 @@ deploy_open_webui() {
     echo "Model URL(s): $model_urls"
     echo ""
     
-    read -ep "Proceed? (Y/n): " confirm
+    read -p "Proceed? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Cancelled"
         return 0
@@ -2847,7 +2978,7 @@ deploy_guidellm() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
@@ -2883,12 +3014,12 @@ deploy_guidellm() {
         echo ""
     fi
     
-    read -ep "Enter model endpoint URL (e.g., http://model-predictor.$target_ns.svc.cluster.local:8080): " model_url
-    read -ep "Enter model name [default: model]: " model_name
+    read -p "Enter model endpoint URL (e.g., http://model-predictor.$target_ns.svc.cluster.local:8080): " model_url
+    read -p "Enter model name [default: model]: " model_name
     model_name="${model_name:-model}"
     
     echo ""
-    read -ep "Deploy GuideLLM to $target_ns? (Y/n): " confirm
+    read -p "Deploy GuideLLM to $target_ns? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Cancelled"
         return 0
@@ -2988,11 +3119,16 @@ EOF
 }
 
 ################################################################################
-# Kubernetes MCP Server Deployment
+# Kubernetes MCP Server Deployment (Multi-Strategy)
+# Source: https://github.com/openshift/openshift-mcp-server
 ################################################################################
 
 deploy_kubernetes_mcp_server() {
     print_header "Deploy Kubernetes MCP Server"
+    print_info "Source: github.com/openshift/openshift-mcp-server"
+    echo ""
+    
+    local MCP_REPO="https://github.com/openshift/openshift-mcp-server.git"
     
     # Check if logged in
     if ! oc whoami &>/dev/null; then
@@ -3000,94 +3136,574 @@ deploy_kubernetes_mcp_server() {
         return 1
     fi
     
-    # Get target namespace
-    echo -e "${CYAN}Target Namespace Configuration:${NC}"
+    # Check if already deployed
     local current_project=$(oc project -q 2>/dev/null)
-    echo "Current project: $current_project"
+    if oc get deployment kubernetes-mcp-server -n "$current_project" &>/dev/null 2>&1; then
+        local ready=$(oc get deployment kubernetes-mcp-server -n "$current_project" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        if [ "${ready:-0}" -gt 0 ]; then
+            print_success "Kubernetes MCP Server already running in '$current_project'"
+            local mcp_url="http://kubernetes-mcp-server.${current_project}.svc.cluster.local:8080/mcp"
+            echo -e "  ${CYAN}Endpoint:${NC} $mcp_url"
+            echo ""
+            read -p "Redeploy/upgrade? (y/N): " redeploy
+            if [[ ! "$redeploy" =~ ^[Yy]$ ]]; then
+                return 0
+            fi
+        fi
+    fi
+    
+    ############################################################################
+    # Namespace selection
+    ############################################################################
+    echo -e "${CYAN}Target Namespace:${NC}"
+    echo "  Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Deploy to namespace [$current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
-    # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
         else
-            print_error "Namespace required"
             return 1
         fi
     fi
     
-    oc project "$target_ns" &>/dev/null
-    
+    ############################################################################
+    # Configuration
+    ############################################################################
     echo ""
-    echo -e "${CYAN}This will deploy:${NC}"
-    echo "  • Kubernetes MCP Server"
-    echo "  • ServiceAccount with read-only cluster access"
-    echo "  • Enables querying pods, deployments, services, logs via LLM"
-    echo ""
-    echo -e "${YELLOW}Available tools after deployment:${NC}"
-    echo "  • List/describe pods, deployments, services"
-    echo "  • Get pod logs"
-    echo "  • Query InferenceServices"
-    echo "  • Check namespace resources"
+    print_step "Configuration"
     echo ""
     
-    read -ep "Proceed? (Y/n): " confirm
-    if [[ "$confirm" =~ ^[Nn]$ ]]; then
-        print_info "Cancelled"
+    # Read-only mode
+    echo -e "${BLUE}Read-only mode${NC} (prevents write/delete operations on the cluster):"
+    read -p "  Enable read-only? (Y/n): " readonly_choice
+    local read_only="true"
+    if [[ "$readonly_choice" =~ ^[Nn]$ ]]; then
+        read_only="false"
+        print_warning "Write operations enabled -- be careful in shared clusters"
+    fi
+    
+    # Toolsets
+    echo ""
+    echo -e "${BLUE}Toolsets${NC} (which capabilities to enable):"
+    echo "  1) core          - Pods, Deployments, Services, Namespaces"
+    echo "  2) core + events - Add Kubernetes events"
+    echo "  3) core + helm   - Add Helm chart management"
+    echo "  4) full           - core + events + helm + tekton + exec"
+    echo "  5) custom         - Choose individually"
+    echo ""
+    read -p "  Select toolset profile [1]: " toolset_choice
+    toolset_choice="${toolset_choice:-1}"
+    
+    local toolsets="core"
+    case "$toolset_choice" in
+        2) toolsets="core,events" ;;
+        3) toolsets="core,helm" ;;
+        4) toolsets="core,events,helm,tekton,exec" ;;
+        5)
+            echo ""
+            echo "  Available: core, config, events, helm, tekton, exec"
+            read -p "  Enter comma-separated toolsets: " toolsets
+            toolsets="${toolsets:-core}"
+            ;;
+        *) toolsets="core" ;;
+    esac
+    print_info "Toolsets: $toolsets"
+    
+    ############################################################################
+    # Deployment method selection
+    ############################################################################
+    echo ""
+    print_step "Deployment Method"
+    echo ""
+    
+    # Auto-detect available tools
+    local has_helm=false
+    local has_podman=false
+    if command -v helm &>/dev/null; then has_helm=true; fi
+    if command -v podman &>/dev/null || command -v docker &>/dev/null; then has_podman=true; fi
+    
+    local suggested="2"
+    if [ "$has_helm" = true ]; then suggested="1"; fi
+    
+    echo -e "${YELLOW}1)${NC} Helm chart install ${GREEN}$([ "$has_helm" = true ] && echo '[detected]' || echo '[helm not found]')${NC}"
+    echo "   Clone chart from GitHub, deploy with helm"
+    echo ""
+    echo -e "${YELLOW}2)${NC} OpenShift BuildConfig ${GREEN}[works with oc only]${NC}"
+    echo "   Build image on-cluster from GitHub repo (no local tools needed)"
+    echo ""
+    echo -e "${YELLOW}3)${NC} Local container build ${GREEN}$([ "$has_podman" = true ] && echo '[podman/docker detected]' || echo '[not detected]')${NC}"
+    echo "   Clone repo, build locally with podman/docker, push to cluster"
+    echo ""
+    echo -e "${YELLOW}4)${NC} Quick static manifest ${GREEN}[offline/air-gapped]${NC}"
+    echo "   Apply bundled manifest (limited toolset, older image)"
+    echo ""
+    
+    read -p "Select method [$suggested]: " method_choice
+    method_choice="${method_choice:-$suggested}"
+    
+    ############################################################################
+    # Execute selected method
+    ############################################################################
+    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local:8080/mcp"
+    
+    case "$method_choice" in
+        1) _mcp_deploy_helm "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        2) _mcp_deploy_buildconfig "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        3) _mcp_deploy_local_build "$target_ns" "$read_only" "$toolsets" "$MCP_REPO" ;;
+        4) _mcp_deploy_manifest "$target_ns" ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
+    
+    local deploy_rc=$?
+    if [ $deploy_rc -ne 0 ]; then
+        print_error "Deployment failed"
+        return 1
+    fi
+    
+    ############################################################################
+    # Wait for rollout
+    ############################################################################
+    print_step "Waiting for MCP Server to be ready..."
+    if oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=180s 2>/dev/null; then
+        print_success "Kubernetes MCP Server is running"
+    else
+        print_warning "MCP Server may still be starting (check pods)"
+    fi
+    
+    ############################################################################
+    # Registration and summary
+    ############################################################################
+    echo ""
+    print_header "Kubernetes MCP Server Deployed"
+    echo ""
+    echo -e "${CYAN}MCP Endpoint:${NC} $mcp_url"
+    echo -e "${CYAN}Namespace:${NC}    $target_ns"
+    echo -e "${CYAN}Toolsets:${NC}     $toolsets"
+    echo -e "${CYAN}Read-Only:${NC}    $read_only"
+    echo ""
+    echo -e "${YELLOW}Available tools:${NC}"
+    echo "  Pods: list, get, delete, logs, exec, top, run"
+    echo "  Resources: create/update, get, list, delete (any K8s/OCP resource)"
+    echo "  Namespaces, Events, Projects (OpenShift)"
+    [ "$toolsets" = *"helm"* ] && echo "  Helm: install, list, uninstall"
+    [ "$toolsets" = *"tekton"* ] && echo "  Tekton: start pipeline/task, get logs"
+    echo ""
+    echo -e "${YELLOW}Use with LlamaStack:${NC}"
+    echo "  tool_groups:"
+    echo "  - toolgroup_id: mcp::kubernetes"
+    echo "    provider_id: model-context-protocol"
+    echo "    mcp_endpoint:"
+    echo "      uri: $mcp_url"
+    echo ""
+    
+    # Ask to register
+    read -p "Register in AI Asset endpoints (shows in RHOAI UI)? (Y/n): " register_ai
+    if [[ ! "$register_ai" =~ ^[Nn]$ ]]; then
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs, helm, tekton." \
+            "streamable-http"
+    fi
+    
+    read -p "Register in LlamaStack config (tool calling)? (Y/n): " register_ls
+    if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
+        register_mcp_llamastack "mcp::kubernetes" "$mcp_url" "$target_ns"
+    fi
+    
+    return 0
+}
+
+# Method 1: Helm chart install
+_mcp_deploy_helm() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    if ! command -v helm &>/dev/null; then
+        print_error "helm CLI not found. Install helm or choose another method."
+        return 1
+    fi
+    
+    print_step "Cloning Helm chart from GitHub..."
+    local tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+    
+    git clone --depth=1 --filter=blob:none --sparse "$repo_url" "$tmpdir/repo" 2>&1 | tail -1
+    cd "$tmpdir/repo" && git sparse-checkout set charts/kubernetes-mcp-server 2>/dev/null
+    
+    if [ ! -d "$tmpdir/repo/charts/kubernetes-mcp-server" ]; then
+        print_error "Failed to clone Helm chart"
+        return 1
+    fi
+    
+    # The upstream chart defaults to image.version=latest, but the :latest tag
+    # is frequently deleted from quay.io. Resolve a concrete commit-SHA tag
+    # from the cloned repo that has a matching container image.
+    local image_tag=""
+    local image_registry="quay.io"
+    local image_repo="redhat-user-workloads/crt-nshift-lightspeed-tenant/openshift-mcp-server"
+    
+    print_step "Resolving container image tag..."
+    for sha in $(git log --format='%H' -n 10 2>/dev/null); do
+        if skopeo inspect --raw "docker://${image_registry}/${image_repo}:${sha}" &>/dev/null; then
+            image_tag="$sha"
+            break
+        fi
+    done
+    
+    if [ -z "$image_tag" ]; then
+        print_warning "Could not resolve image tag from git history, falling back to latest"
+        image_tag="latest"
+    else
+        print_info "Resolved image tag: ${image_tag:0:12}..."
+    fi
+    
+    print_step "Installing via Helm..."
+    helm upgrade --install kubernetes-mcp-server \
+        "$tmpdir/repo/charts/kubernetes-mcp-server" \
+        --namespace "$target_ns" \
+        --set image.version="$image_tag" \
+        --set server.readOnly="$read_only" \
+        --set server.port=8080 \
+        --set server.stateless=true \
+        --set "server.toolsets={$toolsets}" \
+        --set ingress.enabled=false \
+        --set route.enabled=false \
+        --create-namespace 2>&1
+    
+    local rc=$?
+    
+    if [ $rc -eq 0 ]; then
+        # Helm chart only creates namespace-scoped RBAC; add cluster-wide access
+        _mcp_ensure_cluster_rbac "$target_ns" "$read_only"
+    fi
+    
+    cd - &>/dev/null
+    return $rc
+}
+
+# Helper: Ensure cluster-wide RBAC for MCP server ServiceAccount
+_mcp_ensure_cluster_rbac() {
+    local target_ns="$1"
+    local read_only="${2:-true}"
+    
+    local cluster_role="view"
+    if [ "$read_only" != "true" ]; then
+        cluster_role="edit"
+    fi
+    
+    # Detect the ServiceAccount name (Helm may use release-name based SA)
+    local sa_name=$(oc get sa -n "$target_ns" --no-headers 2>/dev/null | awk '{print $1}' | grep -E "mcp|kubernetes-mcp" | head -1)
+    sa_name="${sa_name:-kubernetes-mcp-server}"
+    
+    local crb_name="kubernetes-mcp-server-${target_ns}"
+    
+    if oc get clusterrolebinding "$crb_name" &>/dev/null; then
+        print_info "ClusterRoleBinding '$crb_name' already exists"
         return 0
     fi
     
-    # Deploy Kubernetes MCP Server
-    print_step "Deploying Kubernetes MCP Server..."
+    print_step "Creating ClusterRoleBinding for cluster-wide $cluster_role access..."
+    cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: $crb_name
+  labels:
+    app: kubernetes-mcp-server
+subjects:
+- kind: ServiceAccount
+  name: $sa_name
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $cluster_role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+    
+    if [ $? -eq 0 ]; then
+        print_success "ClusterRoleBinding created (SA: $sa_name, Role: $cluster_role)"
+    fi
+}
+
+# Method 2: OpenShift BuildConfig (build on cluster)
+_mcp_deploy_buildconfig() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    print_step "Creating BuildConfig from GitHub..."
+    
+    # Check if build already exists
+    if oc get bc kubernetes-mcp-server -n "$target_ns" &>/dev/null; then
+        print_info "BuildConfig already exists, starting new build..."
+        oc start-build kubernetes-mcp-server -n "$target_ns" --follow 2>&1 || true
+    else
+        # Create build from GitHub repo using Dockerfile.ocp
+        oc new-build "$repo_url" \
+            --name=kubernetes-mcp-server \
+            --strategy=docker \
+            --dockerfile='FROM registry.access.redhat.com/ubi9/go-toolset:latest AS builder
+WORKDIR /opt/app-root/src
+RUN git clone --depth=1 https://github.com/openshift/openshift-mcp-server.git . && \
+    CGO_ENABLED=0 go build -o /opt/app-root/kubernetes-mcp-server ./cmd/kubernetes-mcp-server/
+FROM registry.access.redhat.com/ubi9-micro:latest
+COPY --from=builder /opt/app-root/kubernetes-mcp-server /usr/local/bin/kubernetes-mcp-server
+USER 1001
+ENTRYPOINT ["kubernetes-mcp-server"]' \
+            -n "$target_ns" 2>&1
+        
+        print_step "Waiting for build to complete (this may take 2-3 minutes)..."
+        oc logs -f bc/kubernetes-mcp-server -n "$target_ns" 2>&1 | tail -5
+    fi
+    
+    # Wait for ImageStream to be available
+    local elapsed=0
+    while [ $elapsed -lt 30 ]; do
+        if oc get istag kubernetes-mcp-server:latest -n "$target_ns" &>/dev/null; then
+            break
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    
+    # Create deployment from built image
+    print_step "Deploying from built image..."
+    
+    local args="--port=8080 --stateless"
+    if [ "$read_only" = "true" ]; then
+        args="$args --read-only"
+    fi
+    args="$args --toolsets=$toolsets"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-${target_ns}
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-mcp-server
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $([ "$read_only" = "true" ] && echo "view" || echo "edit")
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      containers:
+      - name: server
+        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/kubernetes-mcp-server:latest
+        args: [$(echo "$args" | sed 's/ /", "/g' | sed 's/^/"/;s/$/"/')]
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+EOF
+    
+    return $?
+}
+
+# Method 3: Local podman/docker build + push to cluster registry
+_mcp_deploy_local_build() {
+    local target_ns="$1" read_only="$2" toolsets="$3" repo_url="$4"
+    
+    local container_cmd=""
+    if command -v podman &>/dev/null; then
+        container_cmd="podman"
+    elif command -v docker &>/dev/null; then
+        container_cmd="docker"
+    else
+        print_error "Neither podman nor docker found"
+        return 1
+    fi
+    
+    print_step "Cloning repository..."
+    local tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+    
+    git clone --depth=1 "$repo_url" "$tmpdir/repo" 2>&1 | tail -1
+    
+    if [ ! -f "$tmpdir/repo/Dockerfile.ocp" ] && [ ! -f "$tmpdir/repo/Dockerfile" ]; then
+        print_error "Dockerfile not found in cloned repo"
+        return 1
+    fi
+    
+    local dockerfile="Dockerfile.ocp"
+    [ ! -f "$tmpdir/repo/$dockerfile" ] && dockerfile="Dockerfile"
+    
+    print_step "Building image with $container_cmd..."
+    $container_cmd build -f "$tmpdir/repo/$dockerfile" -t kubernetes-mcp-server:latest "$tmpdir/repo" 2>&1 | tail -5
+    
+    if [ $? -ne 0 ]; then
+        print_error "Container build failed"
+        return 1
+    fi
+    
+    # Get cluster registry route
+    print_step "Pushing to cluster internal registry..."
+    local registry=""
+    registry=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null)
+    
+    if [ -z "$registry" ]; then
+        # Try to expose the registry if not exposed
+        oc patch configs.imageregistry.operator.openshift.io/cluster --type merge \
+            -p '{"spec":{"defaultRoute":true}}' 2>/dev/null || true
+        sleep 5
+        registry=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null)
+    fi
+    
+    if [ -z "$registry" ]; then
+        print_error "Could not get cluster registry route"
+        print_info "Expose it with: oc patch configs.imageregistry.operator.openshift.io/cluster --type merge -p '{\"spec\":{\"defaultRoute\":true}}'"
+        return 1
+    fi
+    
+    $container_cmd login -u "$(oc whoami)" -p "$(oc whoami -t)" "$registry" --tls-verify=false 2>&1
+    $container_cmd tag kubernetes-mcp-server:latest "$registry/$target_ns/kubernetes-mcp-server:latest"
+    $container_cmd push "$registry/$target_ns/kubernetes-mcp-server:latest" --tls-verify=false 2>&1
+    
+    if [ $? -ne 0 ]; then
+        print_error "Push to registry failed"
+        return 1
+    fi
+    
+    print_success "Image pushed to cluster registry"
+    
+    # Deploy using the same manifest as BuildConfig method
+    local args="--port=8080 --stateless"
+    if [ "$read_only" = "true" ]; then
+        args="$args --read-only"
+    fi
+    args="$args --toolsets=$toolsets"
+    
+    cat <<EOF | oc apply -f - -n "$target_ns"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-mcp-server-${target_ns}
+subjects:
+- kind: ServiceAccount
+  name: kubernetes-mcp-server
+  namespace: $target_ns
+roleRef:
+  kind: ClusterRole
+  name: $([ "$read_only" = "true" ] && echo "view" || echo "edit")
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubernetes-mcp-server
+  template:
+    metadata:
+      labels:
+        app: kubernetes-mcp-server
+    spec:
+      serviceAccountName: kubernetes-mcp-server
+      containers:
+      - name: server
+        image: image-registry.openshift-image-registry.svc:5000/${target_ns}/kubernetes-mcp-server:latest
+        args: [$(echo "$args" | sed 's/ /", "/g' | sed 's/^/"/;s/$/"/')]
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubernetes-mcp-server
+  labels:
+    app: kubernetes-mcp-server
+spec:
+  selector:
+    app: kubernetes-mcp-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+EOF
+    
+    cd - &>/dev/null
+    return $?
+}
+
+# Method 4: Static manifest fallback (offline/air-gapped)
+_mcp_deploy_manifest() {
+    local target_ns="$1"
     
     local manifest_file="$SCRIPT_DIR/lib/manifests/demo/mcp-kubernetes.yaml"
     
     if [ -f "$manifest_file" ]; then
+        print_step "Applying bundled manifest (legacy image)..."
         oc apply -f "$manifest_file" -n "$target_ns"
+        return $?
     else
-        print_error "Kubernetes MCP manifest not found: $manifest_file"
+        print_error "Manifest not found: $manifest_file"
         return 1
     fi
-    
-    print_step "Waiting for Kubernetes MCP Server to be ready..."
-    if oc rollout status deployment/kubernetes-mcp-server -n "$target_ns" --timeout=120s; then
-        print_success "Kubernetes MCP Server deployed"
-    else
-        print_warning "MCP server may still be starting"
-    fi
-    
-    local mcp_url="http://kubernetes-mcp-server.${target_ns}.svc.cluster.local/mcp"
-    
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║  ✅ Kubernetes MCP Server Deployed Successfully!               ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${CYAN}📋 MCP Endpoint:${NC}"
-    echo "   $mcp_url"
-    echo ""
-    echo -e "${CYAN}🔧 Available Tools:${NC}"
-    echo "   • list_pods - List pods in namespace"
-    echo "   • describe_pod - Get pod details"
-    echo "   • get_pod_logs - Get container logs"
-    echo "   • list_deployments - List deployments"
-    echo "   • list_services - List services"
-    echo "   • list_inferenceservices - List RHOAI models"
-    echo ""
-    echo -e "${YELLOW}📝 To use with LlamaStack, add to config:${NC}"
-    echo "   tool_groups:"
-    echo "   - toolgroup_id: mcp::kubernetes"
-    echo "     provider_id: model-context-protocol"
-    echo "     mcp_endpoint:"
-    echo "       uri: $mcp_url"
-    echo ""
-    
-    return 0
 }
 
 ################################################################################
@@ -3102,13 +3718,13 @@ deploy_mcp_mongodb_only() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -3127,7 +3743,7 @@ deploy_mcp_mongodb_only() {
     echo "  • Weather MCP Server with 5 tools"
     echo ""
     
-    read -ep "Proceed? (Y/n): " confirm
+    read -p "Proceed? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Cancelled"
         return 0
@@ -3177,13 +3793,13 @@ deploy_complete_llamastack_demo() {
     local current_project=$(oc project -q 2>/dev/null)
     echo "Current project: $current_project"
     echo ""
-    read -ep "Enter target namespace [default: $current_project]: " target_ns
+    read -p "Enter target namespace [default: $current_project]: " target_ns
     target_ns="${target_ns:-$current_project}"
     
     # Check/create namespace
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_warning "Namespace '$target_ns' does not exist"
-        read -ep "Create it? (y/N): " create_ns
+        read -p "Create it? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -3211,12 +3827,11 @@ deploy_complete_llamastack_demo() {
         echo "No LlamaStack service auto-detected"
     fi
     
-    read -ep "LlamaStack URL [$default_llamastack_url]: " llamastack_url
+    read -p "LlamaStack URL [$default_llamastack_url]: " llamastack_url
     llamastack_url="${llamastack_url:-$default_llamastack_url}"
     
-    # Model ID (LlamaStack 0.4.0+ uses provider_id/model_id format)
-    echo -e "${YELLOW}Note: LlamaStack 0.4.0+ uses provider_id/model_id format (e.g., vllm-inference/qwen3-8b)${NC}"
-    read -ep "Model ID [qwen3-8b]: " model_id
+    # Model ID
+    read -p "Model ID [qwen3-8b]: " model_id
     model_id="${model_id:-qwen3-8b}"
     
     echo ""
@@ -3229,7 +3844,7 @@ deploy_complete_llamastack_demo() {
     echo "  Model ID: $model_id"
     echo ""
     
-    read -ep "Proceed with deployment? (Y/n): " confirm
+    read -p "Proceed with deployment? (Y/n): " confirm
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         print_info "Deployment cancelled"
         return 0
@@ -3360,7 +3975,7 @@ setup_model_storage_interactive() {
             echo -e "${CYAN}MinIO Console:${NC} https://$minio_route"
         fi
         echo ""
-        read -ep "Deploy MinIO in a different namespace? (y/N): " deploy_new
+        read -p "Deploy MinIO in a different namespace? (y/N): " deploy_new
         if [[ ! "$deploy_new" =~ ^[Yy]$ ]]; then
             return 0
         fi
@@ -3368,21 +3983,21 @@ setup_model_storage_interactive() {
     
     # Get namespace
     echo ""
-    read -ep "Namespace for MinIO [model-storage]: " namespace
+    read -p "Namespace for MinIO [model-storage]: " namespace
     namespace=${namespace:-model-storage}
     
     # Get storage size
-    read -ep "Storage size [200Gi]: " storage_size
+    read -p "Storage size [200Gi]: " storage_size
     storage_size=${storage_size:-200Gi}
     
     # Get bucket name
-    read -ep "Bucket name [models]: " bucket_name
+    read -p "Bucket name [models]: " bucket_name
     bucket_name=${bucket_name:-models}
     
     # Data connection namespace
     echo ""
     echo -e "${CYAN}Data connections allow RHOAI workbenches and model servers to access MinIO.${NC}"
-    read -ep "Create data connection in namespace [$namespace]: " dc_ns
+    read -p "Create data connection in namespace [$namespace]: " dc_ns
     dc_ns=${dc_ns:-$namespace}
     
     echo ""
@@ -3439,7 +4054,7 @@ download_hf_model_interactive() {
     echo "  - meta-llama/Llama-3.1-8B-Instruct (requires HF token)"
     echo "  - mistralai/Mistral-7B-Instruct-v0.3"
     echo ""
-    read -ep "Model name (e.g., Qwen/Qwen3-8B): " model_name
+    read -p "Model name (e.g., Qwen/Qwen3-8B): " model_name
     
     if [ -z "$model_name" ]; then
         print_error "Model name is required"
@@ -3458,15 +4073,15 @@ download_hf_model_interactive() {
         echo ""
         print_warning "This model may require a HuggingFace token."
         echo "Get your token from: https://huggingface.co/settings/tokens"
-        read -ep "HuggingFace token (leave empty to skip): " hf_token
+        read -p "HuggingFace token (leave empty to skip): " hf_token
     else
         echo ""
-        read -ep "HuggingFace token (optional, for gated models): " hf_token
+        read -p "HuggingFace token (optional, for gated models): " hf_token
     fi
     
     # Get namespace for download job
     echo ""
-    read -ep "Namespace for download job [$minio_ns]: " job_ns
+    read -p "Namespace for download job [$minio_ns]: " job_ns
     job_ns=${job_ns:-$minio_ns}
     
     # Check for data connection
@@ -3556,6 +4171,118 @@ deploy_model_interactive() {
 }
 
 ################################################################################
+# Predictive Model Deployment (interactive wrapper)
+################################################################################
+
+deploy_predictive_model_interactive() {
+    print_header "Deploy Predictive Model (CPU)"
+
+    if ! oc whoami &>/dev/null; then
+        print_error "Not logged in to OpenShift cluster"
+        echo "  oc login <cluster-url>"
+        return 1
+    fi
+
+    source "$SCRIPT_DIR/lib/utils/colors.sh"
+    source "$SCRIPT_DIR/lib/functions/model-deployment.sh"
+
+    # Select namespace
+    echo -e "${YELLOW}Available data science projects:${NC}"
+    oc get projects -l opendatahub.io/dashboard=true --no-headers 2>/dev/null | awk '{print "  " $1}'
+    echo ""
+    read -rp "Namespace to deploy in: " target_ns
+    if [ -z "$target_ns" ]; then
+        print_error "Namespace is required"
+        return 1
+    fi
+    if ! oc get project "$target_ns" &>/dev/null; then
+        print_error "Project '$target_ns' does not exist"
+        return 1
+    fi
+
+    # Select model format
+    echo ""
+    echo -e "${YELLOW}Model format:${NC}"
+    echo "  1) sklearn"
+    echo "  2) xgboost"
+    echo "  3) lightgbm"
+    echo "  4) onnx"
+    echo "  5) mlflow"
+    read -rp "Select format [1]: " fmt_choice
+    local model_format
+    case "${fmt_choice:-1}" in
+        1) model_format="sklearn" ;;
+        2) model_format="xgboost" ;;
+        3) model_format="lightgbm" ;;
+        4) model_format="onnx" ;;
+        5) model_format="mlflow" ;;
+        *) model_format="sklearn" ;;
+    esac
+
+    # Model name
+    echo ""
+    read -rp "Model name (InferenceService name) [my-model]: " model_name
+    model_name="${model_name:-my-model}"
+
+    # S3 storage path
+    echo ""
+    echo -e "${YELLOW}S3 path to model artifacts (e.g. s3://models/my-model/):${NC}"
+
+    # List available buckets from MinIO if possible
+    local minio_pod
+    minio_pod=$(oc get pod -n "$target_ns" -l app=minio --no-headers 2>/dev/null | awk 'NR==1{print $1}')
+    if [ -n "$minio_pod" ]; then
+        echo -e "${CYAN}Available paths in MinIO:${NC}"
+        oc exec -n "$target_ns" "$minio_pod" -- sh -c 'ls /data/ 2>/dev/null' | while read -r bucket; do
+            echo "  s3://$bucket/"
+            oc exec -n "$target_ns" "$minio_pod" -- sh -c "ls /data/$bucket/ 2>/dev/null" | while read -r prefix; do
+                echo "    s3://$bucket/$prefix/"
+            done
+        done
+        echo ""
+    fi
+
+    read -rp "Storage URI: " storage_uri
+    if [ -z "$storage_uri" ]; then
+        print_error "Storage URI is required (e.g. s3://models/my-model/)"
+        return 1
+    fi
+
+    # Data connection
+    echo ""
+    echo -e "${YELLOW}Available data connections in $target_ns:${NC}"
+    oc get secret -n "$target_ns" -l opendatahub.io/dashboard=true --no-headers 2>/dev/null | awk '{print "  " $1}' || true
+    local default_dc="aws-connection-minio"
+    if oc get secret aws-connection-minio -n "$target_ns" &>/dev/null; then
+        echo ""
+        echo -e "${CYAN}Default: $default_dc${NC}"
+    fi
+    read -rp "Data connection secret [$default_dc]: " data_conn
+    data_conn="${data_conn:-$default_dc}"
+
+    # Confirm and deploy
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║                  Deployment Summary                            ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  ${BLUE}Name:${NC}            $model_name"
+    echo -e "  ${BLUE}Namespace:${NC}       $target_ns"
+    echo -e "  ${BLUE}Format:${NC}          $model_format"
+    echo -e "  ${BLUE}Storage URI:${NC}     $storage_uri"
+    echo -e "  ${BLUE}Data Connection:${NC} $data_conn"
+    echo ""
+    read -rp "Deploy? (Y/n): " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "Cancelled"
+        return 0
+    fi
+
+    deploy_predictive_model "$model_name" "$target_ns" "$storage_uri" \
+        --format "$model_format" \
+        --data-connection "$data_conn"
+}
+
+################################################################################
 # RHOAI Management Functions
 ################################################################################
 
@@ -3624,7 +4351,7 @@ quick_start_wizard() {
     echo -e "${YELLOW}This is recommended after a fresh RHOAI installation.${NC}"
     echo ""
     
-    read -ep "Continue with Quick Start? (y/N): " confirm
+    read -p "Continue with Quick Start? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Quick Start cancelled"
         return 0
@@ -3642,7 +4369,7 @@ quick_start_wizard() {
         print_error "✗ Failed to enable dashboard features"
         overall_success=false
         echo ""
-        read -ep "Continue anyway? (y/N): " continue_prompt
+        read -p "Continue anyway? (y/N): " continue_prompt
         if [[ ! "$continue_prompt" =~ ^[Yy]$ ]]; then
             return 1
         fi
@@ -3654,7 +4381,7 @@ quick_start_wizard() {
     # Step 2: Deploy Model
     print_header "Step 2/4: Deploy Model"
     echo -e "${YELLOW}Would you like to deploy a model now?${NC}"
-    read -ep "Deploy model? (Y/n): " deploy_prompt
+    read -p "Deploy model? (Y/n): " deploy_prompt
     
     if [[ ! "$deploy_prompt" =~ ^[Nn]$ ]]; then
         if deploy_model_interactive; then
@@ -3676,7 +4403,7 @@ quick_start_wizard() {
     if [ "$model_deployed" = true ]; then
         print_header "Step 3/4: Add Model to Playground"
         echo -e "${YELLOW}Would you like to add the deployed model to the playground?${NC}"
-        read -ep "Add to playground? (Y/n): " playground_prompt
+        read -p "Add to playground? (Y/n): " playground_prompt
         
         if [[ ! "$playground_prompt" =~ ^[Nn]$ ]]; then
             if add_model_to_playground_interactive; then
@@ -3698,7 +4425,7 @@ quick_start_wizard() {
     # Step 4: Setup MCP Servers
     print_header "Step 4/4: Setup MCP Servers"
     echo -e "${YELLOW}Would you like to setup MCP servers for tool calling?${NC}"
-    read -ep "Setup MCP servers? (Y/n): " mcp_prompt
+    read -p "Setup MCP servers? (Y/n): " mcp_prompt
     
     if [[ ! "$mcp_prompt" =~ ^[Nn]$ ]]; then
         if setup_mcp_servers_interactive; then
@@ -3841,49 +4568,59 @@ show_help() {
 model_management_submenu() {
     while true; do
         show_model_management_submenu
-        read -ep "Select an option (1-7, 0): " model_choice
+        read -p "Select an option (1-9, 0): " model_choice
         
         case $model_choice in
             1)
                 deploy_model_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
-                add_model_to_playground_interactive
+                deploy_predictive_model_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
-                setup_model_storage_interactive
+                add_model_to_playground_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
-                download_hf_model_interactive
+                setup_model_storage_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
-                "$SCRIPT_DIR/scripts/add-serving-runtime.sh"
+                download_hf_model_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
-                create_hardware_profile_interactive
+                "$SCRIPT_DIR/scripts/add-serving-runtime.sh"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             7)
+                create_hardware_profile_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
                 create_hardware_profile_quick
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
+                ;;
+            9)
+                "$SCRIPT_DIR/scripts/manage-model-catalog.sh"
+                echo ""
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-7 or 0."
+                print_error "Invalid option. Please select 1-9 or 0."
                 sleep 1
                 ;;
         esac
@@ -3893,19 +4630,19 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -ep "Select an option (1-5, 0): " ai_choice
+        read -p "Select an option (1-7, 0): " ai_choice
         
         case $ai_choice in
             1)
                 # Setup MaaS (Version-Aware)
                 "$SCRIPT_DIR/scripts/setup-maas.sh"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 setup_llamastack_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 # Enable LlamaStack Operator
@@ -3915,7 +4652,7 @@ ai_services_submenu() {
                 if [[ "$llamastack_state" == "Managed" ]]; then
                     print_success "LlamaStack operator already enabled"
                 else
-                    read -ep "Enable LlamaStack operator? (Y/n): " enable_ls
+                    read -p "Enable LlamaStack operator? (Y/n): " enable_ls
                     enable_ls=${enable_ls:-Y}
                     if [[ "$enable_ls" =~ ^[Yy]$ ]]; then
                         oc patch datasciencecluster default-dsc --type='merge' \
@@ -3924,12 +4661,22 @@ ai_services_submenu() {
                     fi
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 feast_submenu
                 ;;
             5)
+                setup_model_registry
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                setup_pipeline_server
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
                 setup_mcp_servers_interactive
                 ;;
             0)
@@ -3943,134 +4690,118 @@ ai_services_submenu() {
     done
 }
 
-run_maas_demo() {
-    print_header "MaaS Demo"
-    
-    local maas_demo_dir="$SCRIPT_DIR/demo/maas-demo"
-    
-    if [ ! -d "$maas_demo_dir" ]; then
-        print_error "MaaS demo directory not found at: $maas_demo_dir"
-        return 1
-    fi
-    
-    echo -e "${CYAN}Choose a demo mode:${NC}"
-    echo ""
-    echo -e "${YELLOW}1)${NC} CLI Demo (Terminal)"
-    echo "    Interactive chat, model comparison, metrics in terminal"
-    echo ""
-    echo -e "${YELLOW}2)${NC} Deploy Web Demo (Streamlit)"
-    echo "    Deploy Streamlit app to OpenShift for browser-based demo"
-    echo ""
-    echo -e "${YELLOW}3)${NC} Full Setup (Model + App)"
-    echo "    Deploy model, infrastructure, and Streamlit app together"
-    echo ""
-    echo -e "${YELLOW}4)${NC} Quick API Test"
-    echo "    Test MaaS endpoint with a simple chat request"
-    echo ""
-    echo -e "${YELLOW}0)${NC} Back"
-    echo ""
-    
-    read -ep "Select an option (1-4, 0): " maas_choice
-    
-    case $maas_choice in
-        1)
-            "$maas_demo_dir/demo-maas.sh"
-            ;;
-        2)
-            "$maas_demo_dir/deploy-app.sh"
-            ;;
-        3)
-            "$maas_demo_dir/demo.sh"
-            ;;
-        4)
-            local maas_toolkit="$maas_demo_dir/maas-toolkit.sh"
-            if [ -f "$maas_toolkit" ]; then
-                "$maas_toolkit" --test
-            else
-                print_info "Quick test: checking MaaS endpoint..."
-                echo ""
-                local cluster_domain
-                cluster_domain=$(oc get ingress.config cluster -o jsonpath='{.spec.domain}' 2>/dev/null | sed 's/^apps\.//')
-                
-                if [ -z "$cluster_domain" ]; then
-                    print_error "Cannot detect cluster domain. Are you logged in?"
-                    return 1
-                fi
-                
-                local endpoint="https://inference-gateway.apps.${cluster_domain}"
-                local token
-                token=$(oc create token default --duration=5m 2>/dev/null || echo "")
-                
-                if [ -z "$token" ]; then
-                    print_error "Failed to generate token"
-                    return 1
-                fi
-                
-                echo -e "${CYAN}Endpoint:${NC} $endpoint"
-                echo -e "${CYAN}Listing models...${NC}"
-                echo ""
-                curl -sk "$endpoint/v1/models" \
-                    -H "Authorization: Bearer $token" | python3 -m json.tool 2>/dev/null || \
-                    print_error "Failed to reach MaaS endpoint"
-            fi
-            ;;
-        0)
-            return 0
-            ;;
-        *)
-            print_error "Invalid option"
-            ;;
-    esac
-}
-
 # Demos submenu
 demos_submenu() {
     while true; do
         show_demos_submenu
-        read -ep "Select an option (1-6, 0): " demo_choice
+        read -p "Select an option (1-16, 0): " demo_choice
         
         case $demo_choice in
             1)
-                # Deploy Banking Demo (Feast)
                 deploy_banking_demo
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
-                # Deploy Open WebUI
                 deploy_open_webui
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
-                # Deploy LlamaStack Demo
                 deploy_llamastack_demo_menu
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
-                # Deploy GuideLLM
                 deploy_guidellm
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
-                # Deploy Guardrails Demo
                 deploy_guardrails_demo
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
-                # MaaS Demo
                 run_maas_demo
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/financial-loan-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/marketing-assistant-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/pipeline-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            10)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/nemo-guardrails-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            11)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/lmeval-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            12)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/n8n-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            13)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/maas-ratelimit-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            14)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/automl-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            15)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/demo/autorag-demo/deploy.sh"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            16)
+                local _base_dir
+                _base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                bash "$_base_dir/scripts/deploy-demo-environment.sh" --skip-core
+                echo ""
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-6 or 0."
+                print_error "Invalid option. Please select 1-16 or 0."
                 sleep 1
                 ;;
         esac
@@ -4080,7 +4811,7 @@ demos_submenu() {
 rhoai_management_menu() {
     while true; do
         show_rhoai_management_menu
-        read -ep "Select an option (1-8, 0): " rhoai_choice
+        read -p "Select an option (1-8, 0): " rhoai_choice
         
         case $rhoai_choice in
             1)
@@ -4098,17 +4829,15 @@ rhoai_management_menu() {
             5)
                 enable_dashboard_features_interactive
                 echo ""
-                read -ep "Press Enter to return to RHOAI Management menu..."
+                read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             6)
                 quick_start_wizard
                 echo ""
-                read -ep "Press Enter to return to RHOAI Management menu..."
+                read -p "Press Enter to return to RHOAI Management menu..."
                 ;;
             7)
-                approve_pending_csrs
-                echo ""
-                read -ep "Press Enter to return to RHOAI Management menu..."
+                day2_operations_submenu
                 ;;
             8)
                 troubleshooting_submenu
@@ -4129,23 +4858,23 @@ rhoai_management_menu() {
 rhoai32_features_submenu() {
     while true; do
         show_rhoai32_features_submenu
-        read -ep "Select an option (1-7, 0): " rhoai32_choice
+        read -p "Select an option (1-7, 0): " rhoai32_choice
         
         case $rhoai32_choice in
             1)
                 setup_llmd_infrastructure
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 deploy_llminferenceservice
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 enable_mlflow_operator
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 # Enable LlamaStack operator
@@ -4155,7 +4884,7 @@ rhoai32_features_submenu() {
                 if [[ "$llamastack_state" == "Managed" ]]; then
                     print_success "LlamaStack operator already enabled"
                 else
-                    read -ep "Enable LlamaStack operator? (Y/n): " enable_ls
+                    read -p "Enable LlamaStack operator? (Y/n): " enable_ls
                     enable_ls=${enable_ls:-Y}
                     if [[ "$enable_ls" =~ ^[Yy]$ ]]; then
                         oc patch datasciencecluster default-dsc --type='merge' \
@@ -4164,22 +4893,22 @@ rhoai32_features_submenu() {
                     fi
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
                 enable_cluster_monitoring_for_kserve
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
                 configure_dsci_observability
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             7)
                 setup_mcp_servers_configmap
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
@@ -4196,41 +4925,41 @@ rhoai32_features_submenu() {
 feast_submenu() {
     while true; do
         show_feast_submenu
-        read -ep "Select an option (1-7, 0): " feast_choice
+        read -p "Select an option (1-7, 0): " feast_choice
         
         case $feast_choice in
             1)
                 enable_feast_operator
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 # Setup Custom Feature Store
                 setup_feature_store
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 show_feast_status
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 # Diagnose Feature Store (version-aware)
                 diagnose_feature_store_interactive
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
                 delete_feature_store
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
                 # Run feast apply
                 print_header "Run feast apply"
                 echo ""
-                read -ep "Enter namespace: " ns
+                read -p "Enter namespace: " ns
                 local pod=$(oc get pods -n "$ns" -o name 2>/dev/null | grep feast | head -1 | sed 's|pod/||')
                 if [ -n "$pod" ]; then
                     print_step "Running feast apply in $pod..."
@@ -4239,13 +4968,13 @@ feast_submenu() {
                     print_error "No Feast pod found in namespace $ns"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             7)
                 # Run feast materialize
                 print_header "Run feast materialize"
                 echo ""
-                read -ep "Enter namespace: " ns
+                read -p "Enter namespace: " ns
                 local pod=$(oc get pods -n "$ns" -o name 2>/dev/null | grep feast | head -1 | sed 's|pod/||')
                 if [ -n "$pod" ]; then
                     print_step "Running feast materialize in $pod..."
@@ -4254,7 +4983,7 @@ feast_submenu() {
                     print_error "No Feast pod found in namespace $ns"
                 fi
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 break
@@ -4358,13 +5087,13 @@ create_hardware_profile_interactive() {
     echo -e "${YELLOW}Default: ${GREEN}redhat-ods-applications${YELLOW} (global scope - visible in all projects)${NC}"
     echo -e "${YELLOW}Or specify a project namespace for project-scoped profiles${NC}"
     echo ""
-    read -ep "Namespace [default: redhat-ods-applications]: " input_ns
+    read -p "Namespace [default: redhat-ods-applications]: " input_ns
     local target_ns="${input_ns:-$default_ns}"
     
     # Validate namespace exists
     if ! oc get namespace "$target_ns" &>/dev/null; then
         print_error "Namespace '$target_ns' does not exist"
-        read -ep "Do you want to create it? (y/n): " create_ns
+        read -p "Do you want to create it? (y/n): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc create namespace "$target_ns"
             print_success "Namespace created"
@@ -4379,41 +5108,41 @@ create_hardware_profile_interactive() {
     
     # Prompt for CPU
     echo -e "${CYAN}CPU Configuration:${NC}"
-    read -ep "Default CPU count [2]: " cpu_default
+    read -p "Default CPU count [2]: " cpu_default
     cpu_default="${cpu_default:-2}"
-    read -ep "Minimum CPU count [1]: " cpu_min
+    read -p "Minimum CPU count [1]: " cpu_min
     cpu_min="${cpu_min:-1}"
-    read -ep "Maximum CPU count [16]: " cpu_max
+    read -p "Maximum CPU count [16]: " cpu_max
     cpu_max="${cpu_max:-16}"
     
     echo ""
     
     # Prompt for Memory
     echo -e "${CYAN}Memory Configuration:${NC}"
-    read -ep "Default Memory (e.g., 16Gi) [16Gi]: " mem_default
+    read -p "Default Memory (e.g., 16Gi) [16Gi]: " mem_default
     mem_default="${mem_default:-16Gi}"
-    read -ep "Minimum Memory (e.g., 1Gi) [1Gi]: " mem_min
+    read -p "Minimum Memory (e.g., 1Gi) [1Gi]: " mem_min
     mem_min="${mem_min:-1Gi}"
-    read -ep "Maximum Memory (e.g., 64Gi) [64Gi]: " mem_max
+    read -p "Maximum Memory (e.g., 64Gi) [64Gi]: " mem_max
     mem_max="${mem_max:-64Gi}"
     
     echo ""
     
     # Prompt for GPU
     echo -e "${CYAN}GPU Configuration:${NC}"
-    read -ep "Default GPU count [1]: " gpu_default
+    read -p "Default GPU count [1]: " gpu_default
     gpu_default="${gpu_default:-1}"
-    read -ep "Minimum GPU count [1]: " gpu_min
+    read -p "Minimum GPU count [1]: " gpu_min
     gpu_min="${gpu_min:-1}"
-    read -ep "Maximum GPU count [8]: " gpu_max
+    read -p "Maximum GPU count [8]: " gpu_max
     gpu_max="${gpu_max:-8}"
     
     echo ""
     
     # Prompt for profile name and display name
-    read -ep "Hardware profile name [gpu-profile]: " profile_name
+    read -p "Hardware profile name [gpu-profile]: " profile_name
     profile_name="${profile_name:-gpu-profile}"
-    read -ep "Display name [GPU Profile]: " display_name
+    read -p "Display name [GPU Profile]: " display_name
     display_name="${display_name:-GPU Profile}"
     
     echo ""
@@ -4510,7 +5239,7 @@ create_hardware_profile_quick() {
     echo -e "${CYAN}Enter the namespace for hardware profiles${NC}"
     echo -e "${YELLOW}Default: redhat-ods-applications (global - visible in all projects)${NC}"
     echo ""
-    read -ep "Namespace [redhat-ods-applications]: " input_ns
+    read -p "Namespace [redhat-ods-applications]: " input_ns
     local target_ns="${input_ns:-redhat-ods-applications}"
     
     # Validate namespace
@@ -4537,7 +5266,7 @@ create_hardware_profile_quick() {
     echo -e "${YELLOW}4)${NC} All    - Create all three profiles ${GREEN}[Recommended]${NC}"
     echo ""
     
-    read -ep "Select option (1-4): " choice
+    read -p "Select option (1-4): " choice
     
     export NAMESPACE="$target_ns"
     
@@ -4653,7 +5382,7 @@ configure_kubeconfig_interactive() {
     echo -e "${YELLOW}7)${NC} Back to Main Menu"
     echo ""
     
-    read -ep "Select an option (1-7): " kube_choice
+    read -p "Select an option (1-7): " kube_choice
     
     case $kube_choice in
         1)
@@ -4683,7 +5412,7 @@ configure_kubeconfig_interactive() {
     esac
     
     echo ""
-    read -ep "Press Enter to continue..."
+    read -p "Press Enter to continue..."
     
     # Recursive call to show menu again
     configure_kubeconfig_interactive
@@ -4701,7 +5430,7 @@ login_with_token() {
     echo "Or enter the details separately."
     echo ""
     
-    read -ep "Paste full oc login command (or press Enter to enter details separately): " full_command
+    read -p "Paste full oc login command (or press Enter to enter details separately): " full_command
     
     if [ -n "$full_command" ]; then
         # Extract token and server from the command
@@ -4711,12 +5440,12 @@ login_with_token() {
         if [ -z "$token" ] || [ -z "$server" ]; then
             print_error "Could not parse token and server from command"
             echo "Please enter details separately:"
-            read -ep "Server URL (e.g., https://api.cluster.example.com:6443): " server
-            read -ep "Token: " token
+            read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+            read -p "Token: " token
         fi
     else
-        read -ep "Server URL (e.g., https://api.cluster.example.com:6443): " server
-        read -ep "Token: " token
+        read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+        read -p "Token: " token
     fi
     
     if [ -z "$token" ] || [ -z "$server" ]; then
@@ -4731,7 +5460,7 @@ login_with_token() {
     echo "  2) Default (~/.kube/config)"
     echo "  3) Custom path"
     echo ""
-    read -ep "Select option [1-3] (default: 1): " save_choice
+    read -p "Select option [1-3] (default: 1): " save_choice
     save_choice=${save_choice:-1}
     
     local kubeconfig_path
@@ -4743,7 +5472,7 @@ login_with_token() {
             kubeconfig_path="$HOME/.kube/config"
             ;;
         3)
-            read -ep "Enter path: " kubeconfig_path
+            read -p "Enter path: " kubeconfig_path
             ;;
         *)
             kubeconfig_path="$SCRIPT_DIR/kubeconfig"
@@ -4769,7 +5498,7 @@ login_with_token() {
         echo ""
         
         # Ask if user wants to add to shell profile
-        read -ep "Add KUBECONFIG export to your shell profile? (y/N): " add_to_profile
+        read -p "Add KUBECONFIG export to your shell profile? (y/N): " add_to_profile
         if [[ "$add_to_profile" =~ ^[Yy]$ ]]; then
             add_kubeconfig_to_profile "$kubeconfig_path"
         fi
@@ -4784,9 +5513,9 @@ login_with_credentials() {
     print_step "Login with Username/Password"
     echo ""
     
-    read -ep "Server URL (e.g., https://api.cluster.example.com:6443): " server
-    read -ep "Username: " username
-    read -s -ep "Password: " password
+    read -p "Server URL (e.g., https://api.cluster.example.com:6443): " server
+    read -p "Username: " username
+    read -s -p "Password: " password
     echo ""
     
     if [ -z "$server" ] || [ -z "$username" ] || [ -z "$password" ]; then
@@ -4800,7 +5529,7 @@ login_with_credentials() {
     echo "  1) Workspace (./kubeconfig)"
     echo "  2) Default (~/.kube/config)"
     echo ""
-    read -ep "Select option [1-2] (default: 1): " save_choice
+    read -p "Select option [1-2] (default: 1): " save_choice
     save_choice=${save_choice:-1}
     
     local kubeconfig_path
@@ -4851,7 +5580,7 @@ set_kubeconfig_from_file() {
     echo "  c) Enter custom path"
     echo ""
     
-    read -ep "Select option: " file_choice
+    read -p "Select option: " file_choice
     
     local selected_path
     case $file_choice in
@@ -4865,7 +5594,7 @@ set_kubeconfig_from_file() {
             selected_path="${found_configs[2]:-}"
             ;;
         c|C)
-            read -ep "Enter kubeconfig path: " selected_path
+            read -p "Enter kubeconfig path: " selected_path
             ;;
         *)
             print_error "Invalid option"
@@ -4895,7 +5624,7 @@ set_kubeconfig_from_file() {
     else
         print_warning "Could not connect to cluster - token may be expired"
         echo ""
-        read -ep "Would you like to login again? (y/N): " relogin
+        read -p "Would you like to login again? (y/N): " relogin
         if [[ "$relogin" =~ ^[Yy]$ ]]; then
             login_with_token
         fi
@@ -4915,7 +5644,7 @@ create_workspace_kubeconfig() {
     
     if [ -f "$kubeconfig_path" ]; then
         print_warning "Kubeconfig already exists at: $kubeconfig_path"
-        read -ep "Overwrite? (y/N): " overwrite
+        read -p "Overwrite? (y/N): " overwrite
         if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
             print_info "Cancelled"
             return 0
@@ -5014,7 +5743,7 @@ add_kubeconfig_to_profile() {
         echo "Current line:"
         grep "export KUBECONFIG=" "$shell_profile"
         echo ""
-        read -ep "Replace it? (y/N): " replace
+        read -p "Replace it? (y/N): " replace
         if [[ "$replace" =~ ^[Yy]$ ]]; then
             # Remove old line and add new
             sed -i.bak '/export KUBECONFIG=/d' "$shell_profile"
@@ -5039,6 +5768,14 @@ add_kubeconfig_to_profile() {
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --with-maas)
+                SETUP_MAAS="yes"
+                shift
+                ;;
+            --skip-maas)
+                SETUP_MAAS="no"
+                shift
+                ;;
             --maas-only)
                 MAAS_ONLY=true
                 SETUP_MAAS="yes"
@@ -5050,6 +5787,10 @@ parse_arguments() {
                 ;;
             --skip-gpu)
                 SKIP_GPU=true
+                shift
+                ;;
+            --skip-rhoai)
+                SKIP_RHOAI=true
                 shift
                 ;;
             -h|--help)
@@ -5069,29 +5810,29 @@ show_help() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Complete setup script for OpenShift + RHOAI 3.x
+Complete setup script for OpenShift + RHOAI + MaaS
 
 OPTIONS:
+    --with-maas         Automatically set up MaaS (no prompt)
+    --skip-maas         Skip MaaS setup (no prompt)
     --maas-only         Only set up MaaS (assumes RHOAI already installed)
     --skip-openshift    Skip OpenShift installation (use existing cluster)
     --skip-gpu          Skip GPU worker node creation
+    --skip-rhoai        Skip RHOAI installation
     -h, --help          Show this help message
 
 EXAMPLES:
-    $0                              # Interactive menu mode
-    $0 --skip-openshift             # Full RHOAI 3.x on existing cluster
-    $0 --skip-openshift --skip-gpu  # Full RHOAI 3.x (no GPU node creation)
+    $0                              # Interactive mode
+    $0 --with-maas                  # Full setup including MaaS
+    $0 --skip-maas                  # Setup without MaaS
+    $0 --skip-openshift             # Install RHOAI on existing cluster
+    $0 --skip-openshift --skip-gpu  # Install only RHOAI (no OpenShift, no GPU)
     $0 --maas-only                  # Only set up MaaS infrastructure
 
-WHAT THIS SCRIPT DOES (Complete Setup):
-    Phase 1: Install OpenShift cluster on AWS (or use existing)
-    Phase 2: Create GPU worker nodes (interactive)
-    Phase 3: Install RHOAI 3.x via version-specific installer:
-             - All prerequisite operators (NFD, GPU, Kueue, cert-manager, LWS)
-             - RHCL + MaaS Gateway (Authorino, Limitador)
-             - RHOAI operator + DataScienceCluster
-             - Observability (COO, OpenTelemetry, Tempo) [3.4]
-             - Dashboard features, Hardware Profiles, Kueue Queues
+WHAT THIS SCRIPT DOES:
+    1. Runs scripts/integrated-workflow-v2.sh for OpenShift + RHOAI installation
+    2. Optionally runs scripts/setup-maas.sh (MaaS API infrastructure)
+    3. Provides final summary and next steps
 
 EOF
 }
@@ -5119,14 +5860,14 @@ check_prerequisites() {
             echo "  • Existing resources"
             echo "  • SSH keys"
             echo ""
-            read -ep "Run AWS checks? [Y/n]: " run_aws_checks
+            read -p "Run AWS checks? [Y/n]: " run_aws_checks
             
             if [[ ! "$run_aws_checks" =~ ^[Nn]$ ]]; then
                 if ! check_aws_prerequisites; then
                     echo ""
                     echo -e "${RED}AWS prerequisites check failed.${NC}"
                     echo ""
-                    read -ep "Press Enter to return to menu..."
+                    read -p "Press Enter to return to menu..."
                     return 1
                 fi
             fi
@@ -5182,7 +5923,7 @@ check_prerequisites() {
                 ;;
             2)
                 print_warning "You'll need to logout and install a new cluster"
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 print_warning "Clearing kubeconfig..."
@@ -5230,7 +5971,7 @@ check_prerequisites() {
                 # Force skip of existing cluster check since we just cleared it
                 SKIP_OPENSHIFT=false
                 FORCE_NEW_CLUSTER=true  # Flag to skip cluster detection in integrated workflow
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 print_info "Cancelled"
@@ -5243,107 +5984,32 @@ check_prerequisites() {
         esac
     fi
     
-    # Check for openshift-install binary (required for new cluster installation)
-    if [ "$SKIP_OPENSHIFT" = false ] && [ "$MAAS_ONLY" = false ]; then
-        if ! command -v openshift-install &>/dev/null && [ ! -f "./openshift-install" ]; then
-            echo ""
-            print_warning "openshift-install binary not found!"
-            echo -e "${YELLOW}Complete Setup requires the openshift-install binary to create a new cluster.${NC}"
-            echo ""
-            echo -e "${CYAN}Options:${NC}"
-            echo "  1) Download automatically now (recommended)"
-            echo "  2) Cancel and install manually"
-            echo ""
-            read -ep "Select option [1-2] (default: 1): " dl_choice
-            dl_choice="${dl_choice:-1}"
-
-            if [ "$dl_choice" = "1" ]; then
-                if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
-                    source "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --source-only 2>/dev/null || true
-                    if type download_installer &>/dev/null; then
-                        download_installer
-                    else
-                        # Fallback: call the script's download function directly
-                        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --download
-                    fi
-                else
-                    _download_openshift_install
-                fi
-
-                # Verify after download
-                if ! command -v openshift-install &>/dev/null && [ ! -f "./openshift-install" ]; then
-                    print_error "Download failed or was cancelled. Cannot proceed."
-                    read -ep "Press Enter to return to menu..."
-                    return 1
-                fi
-            else
-                echo ""
-                echo -e "${CYAN}Manual install:${NC}"
-                local arch=$(uname -m)
-                if [ "$(uname)" = "Darwin" ]; then
-                    if [ "$arch" = "arm64" ]; then
-                        echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-mac-arm64.tar.gz -o openshift-install.tar.gz"
-                    else
-                        echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-mac.tar.gz -o openshift-install.tar.gz"
-                    fi
-                else
-                    echo "  curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux.tar.gz -o openshift-install.tar.gz"
-                fi
-                echo "  tar xzf openshift-install.tar.gz"
-                echo "  sudo mv openshift-install /usr/local/bin/"
-                echo "  rm openshift-install.tar.gz"
-                echo ""
-                read -ep "Press Enter to return to menu..."
-                return 1
-            fi
-        fi
-
-        # Show found version
-        if command -v openshift-install &>/dev/null; then
-            print_success "openshift-install found: $(openshift-install version 2>/dev/null | head -1)"
-        elif [ -f "./openshift-install" ]; then
-            print_success "openshift-install found (local): $(./openshift-install version 2>/dev/null | head -1)"
-        fi
-
-        # Check for SSH key (needed by openshift-install)
-        if [ ! -f "$HOME/.ssh/id_rsa.pub" ] && [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
-            echo ""
-            print_warning "No SSH public key found (~/.ssh/id_rsa.pub or ~/.ssh/id_ed25519.pub)"
-            echo -e "${CYAN}Generate one with:${NC}"
-            echo "  ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N \"\""
-            echo ""
-            read -ep "Continue anyway? [y/N]: " ssh_continue
-            if [[ ! "$ssh_continue" =~ ^[Yy]$ ]]; then
-                return 1
-            fi
-        else
-            local ssh_key=$(ls "$HOME/.ssh/id_ed25519.pub" 2>/dev/null || ls "$HOME/.ssh/id_rsa.pub" 2>/dev/null)
-            print_success "SSH public key found: $ssh_key"
-        fi
-    fi
-
-    # Check for RHOAI installer script
-    if [ ! -f "$SCRIPT_DIR/scripts/install-rhoai.sh" ]; then
-        print_error "scripts/install-rhoai.sh not found"
+    # Check for required workflow script
+    if [ ! -f "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh" ]; then
+        print_error "scripts/integrated-workflow-v2.sh not found"
         all_good=false
     else
-        print_success "scripts/install-rhoai.sh found"
-        if [ ! -x "$SCRIPT_DIR/scripts/install-rhoai.sh" ]; then
-            chmod +x "$SCRIPT_DIR/scripts/install-rhoai.sh"
-        fi
+        print_success "scripts/integrated-workflow-v2.sh found"
     fi
-
-    # Check for setup-maas.sh (used by --maas-only mode)
-    if [ "$MAAS_ONLY" = true ]; then
-        if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
-            print_error "scripts/setup-maas.sh not found"
-            all_good=false
-        else
-            print_success "scripts/setup-maas.sh found"
-            if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
-                chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
-            fi
-        fi
+    
+    # Make executable if needed
+    if [ ! -x "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh" ]; then
+        print_warning "Making scripts/integrated-workflow-v2.sh executable..."
+        chmod +x "$SCRIPT_DIR/scripts/integrated-workflow-v2.sh"
+    fi
+    
+    # Check for setup-maas.sh
+    if [ ! -f "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+        print_error "scripts/setup-maas.sh not found"
+        all_good=false
+    else
+        print_success "scripts/setup-maas.sh found"
+    fi
+    
+    # Make setup-maas.sh executable if needed
+    if [ ! -x "$SCRIPT_DIR/scripts/setup-maas.sh" ]; then
+        print_warning "Making scripts/setup-maas.sh executable..."
+        chmod +x "$SCRIPT_DIR/scripts/setup-maas.sh"
     fi
     
     if [ "$all_good" = false ]; then
@@ -5360,7 +6026,7 @@ check_prerequisites() {
 
 display_setup_plan() {
     print_header "Setup Plan"
-
+    
     if [ "$MAAS_ONLY" = true ]; then
         echo -e "${CYAN}This script will:${NC}"
         echo ""
@@ -5370,166 +6036,81 @@ display_setup_plan() {
     else
         echo -e "${CYAN}This script will:${NC}"
         echo ""
-
+        
         local step=1
-
-        # Phase 1: OpenShift
+        
+        # OpenShift installation
         if [ "$SKIP_OPENSHIFT" = true ]; then
             echo "  $step. ⏭️  Skip OpenShift installation (use existing cluster)"
         else
             echo "  $step. ✅ Install OpenShift cluster on AWS (or use existing)"
         fi
         step=$((step + 1))
-
-        # Phase 2: GPU nodes
+        
+        # GPU nodes
         if [ "$SKIP_GPU" = true ]; then
             echo "  $step. ⏭️  Skip GPU worker node creation"
         else
             echo "  $step. ✅ Create GPU worker nodes (or use existing)"
         fi
         step=$((step + 1))
-
-        # Phase 3: Full RHOAI 3.x installation
-        echo "  $step. ✅ Install RHOAI 3.x with all prerequisites and features:"
-        echo "      Operators: NFD, GPU, Kueue, cert-manager, LWS, RHCL"
-        echo "      MaaS:     Gateway + Authorino (included by default)"
-        echo "      Features: GenAI Studio, Model Catalog, Model Registry,"
-        echo "                AI Pipelines, Distributed Training, TrustyAI"
-        echo "      Observability: COO, OpenTelemetry, Tempo, Grafana (3.4)"
-    fi
-
-    echo ""
-
-    local estimated_time="5-10 minutes"
-    if [ "$MAAS_ONLY" = false ]; then
-        if [ "$SKIP_OPENSHIFT" = false ]; then
-            estimated_time="45-60 minutes"
+        
+        # RHOAI installation
+        if [ "$SKIP_RHOAI" = true ]; then
+            echo "  $step. ⏭️  Skip RHOAI installation"
         else
-            estimated_time="20-30 minutes"
+            echo "  $step. ✅ Install RHOAI with all features:"
+            echo "      - GenAI Playground"
+            echo "      - Model Catalog"
+            echo "      - Feature Store"
+            echo "      - AI Pipelines"
+            echo "      - Model Registry"
+            echo "      - Distributed Training"
+            echo "      - TrustyAI"
+            echo "      - Required operators (NFD, GPU, RHCL, LWS, Kueue)"
+        fi
+        step=$((step + 1))
+        
+        # MaaS setup
+        if [ "$SETUP_MAAS" = "yes" ]; then
+            echo "  $step. ✅ Set up MaaS API infrastructure"
+        elif [ "$SETUP_MAAS" = "no" ]; then
+            echo "  $step. ⏭️  Skip MaaS setup"
+        else
+            echo "  $step. ❓ Prompt for MaaS setup"
         fi
     fi
-
+    
+    echo ""
+    
+    # Estimate time based on what's being done
+    local estimated_time="5-10 minutes"
+    if [ "$MAAS_ONLY" = false ]; then
+        if [ "$SKIP_OPENSHIFT" = false ] && [ "$SKIP_RHOAI" = false ]; then
+            estimated_time="45-60 minutes"
+        elif [ "$SKIP_OPENSHIFT" = true ] && [ "$SKIP_RHOAI" = false ]; then
+            estimated_time="20-30 minutes"
+        elif [ "$SKIP_RHOAI" = true ]; then
+            estimated_time="30-40 minutes"
+        fi
+    fi
+    
     echo -e "${BLUE}Estimated time: $estimated_time${NC}"
     echo ""
 }
 
 ################################################################################
-# Phase 1: OpenShift Installation
-################################################################################
-
-install_openshift_cluster() {
-    print_header "Phase 1: OpenShift Installation"
-
-    if [ "$SKIP_OPENSHIFT" = true ]; then
-        print_info "Skipping OpenShift installation (using existing cluster)"
-        return 0
-    fi
-
-    # Check if user explicitly cleared kubeconfig
-    if [ "${FORCE_NEW_CLUSTER}" = "true" ]; then
-        print_info "Kubeconfig was cleared - proceeding with fresh installation"
-    elif oc whoami &>/dev/null; then
-        local cluster_url=$(oc whoami --show-server 2>/dev/null || echo "unknown")
-        local cluster_user=$(oc whoami 2>/dev/null || echo "unknown")
-
-        print_success "Already connected to an OpenShift cluster!"
-        echo "  Cluster: $cluster_url"
-        echo "  User: $cluster_user"
-        echo ""
-
-        echo -e "${YELLOW}Do you want to:${NC}"
-        echo "  1) Use this existing cluster"
-        echo "  2) Install a new OpenShift cluster (will require logout)"
-        echo ""
-        read -p "Enter choice [1-2] (default: 1): " cluster_choice
-        cluster_choice=${cluster_choice:-1}
-
-        if [ "$cluster_choice" = "1" ]; then
-            print_success "Using existing cluster"
-            return 0
-        else
-            print_warning "You'll need to logout and install a new cluster"
-            read -p "Press Enter to continue..."
-        fi
-    else
-        print_info "No existing OpenShift cluster connection detected"
-    fi
-
-    if [ -f "$SCRIPT_DIR/scripts/openshift-installer-master.sh" ]; then
-        print_step "Calling OpenShift installer script..."
-        "$SCRIPT_DIR/scripts/openshift-installer-master.sh" --full-install
-    else
-        print_warning "OpenShift installer script not found"
-        print_info "Please install OpenShift manually or run: ./scripts/openshift-installer-master.sh"
-        read -p "Press Enter when OpenShift is installed and you're logged in with oc..."
-    fi
-}
-
-################################################################################
-# Phase 2: GPU Worker Nodes
-################################################################################
-
-create_gpu_nodes_interactive() {
-    print_header "Phase 2: GPU Worker Nodes"
-
-    if [ "$SKIP_GPU" = true ]; then
-        print_info "Skipping GPU node creation (--skip-gpu flag)"
-        return 0
-    fi
-
-    local gpu_nodes=$(oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    local gpu_machinesets=$(oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | .metadata.name' 2>/dev/null | wc -l | tr -d ' ')
-
-    if [ "$gpu_nodes" -gt 0 ] || [ "$gpu_machinesets" -gt 0 ]; then
-        print_success "GPU resources already exist in the cluster!"
-        if [ "$gpu_nodes" -gt 0 ]; then
-            echo "  GPU Nodes: $gpu_nodes"
-            oc get nodes -l node-role.kubernetes.io/gpu-worker --no-headers 2>/dev/null | awk '{print "    - " $1}'
-        fi
-        if [ "$gpu_machinesets" -gt 0 ]; then
-            echo "  GPU MachineSets: $gpu_machinesets"
-            oc get machineset -n openshift-machine-api -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | contains("gpu")) | "    - " + .metadata.name' 2>/dev/null
-        fi
-        echo ""
-        read -p "Do you want to create additional GPU nodes? (y/n, default: n): " create_more
-        create_more=${create_more:-n}
-
-        if [[ ! "$create_more" =~ ^[Yy]$ ]]; then
-            print_info "Using existing GPU resources"
-            return 0
-        fi
-    fi
-
-    echo -e "${YELLOW}GPU nodes can be created now or later.${NC}"
-    echo "You can always create GPU nodes later using: ./scripts/create-gpu-machineset.sh"
-    echo ""
-    read -p "Create GPU nodes now? [Y/n]: " create_gpu
-    create_gpu="${create_gpu:-y}"
-
-    if [[ "$create_gpu" =~ ^[Yy]$ ]]; then
-        local gpu_script_path="$SCRIPT_DIR/scripts/create-gpu-machineset.sh"
-        if [ -f "$gpu_script_path" ]; then
-            "$gpu_script_path"
-        else
-            print_error "GPU MachineSet script not found at: $gpu_script_path"
-            print_info "Please ensure the script exists or skip GPU creation."
-        fi
-    else
-        print_info "Skipping GPU node creation. You can create them later."
-    fi
-}
-
-################################################################################
-# Legacy: Run Integrated Workflow (deprecated -- use install_openshift_cluster
-# + create_gpu_nodes_interactive + install-rhoai.sh instead)
+# Run Integrated Workflow
 ################################################################################
 
 run_integrated_workflow() {
     print_header "Phase 1: OpenShift + RHOAI + GenAI Playground"
     
+    # Choose which workflow to run
     local workflow_script
     local workflow_args=""
     
+    # Build arguments to pass to workflow script
     if [ "$SKIP_OPENSHIFT" = true ]; then
         workflow_args="$workflow_args --skip-openshift"
     fi
@@ -5540,14 +6121,15 @@ run_integrated_workflow() {
         workflow_args="$workflow_args --skip-rhoai"
     fi
     
-    workflow_script="$SCRIPT_DIR/integrated-workflow-v2.sh"
-    print_step "Running integrated-workflow-v2.sh..."
+    workflow_script="$SCRIPT_DIR/scripts/integrated-workflow-v2.sh"
+    print_step "Running scripts/integrated-workflow-v2.sh..."
     
     if [ -n "$workflow_args" ]; then
         print_info "Flags: $workflow_args"
     fi
     echo ""
     
+    # Export flag for integrated workflow to detect
     if [ "$FORCE_NEW_CLUSTER" = true ]; then
         export FORCE_NEW_CLUSTER=true
     fi
@@ -5586,7 +6168,7 @@ ask_about_maas() {
         echo ""
         
         while true; do
-            read -ep "Set up MaaS? (y/n): " -n 1 -r
+            read -p "Set up MaaS? (y/n): " -n 1 -r
             echo
             case $REPLY in
                 [Yy]*)
@@ -5650,12 +6232,12 @@ run_maas_setup() {
 
 display_final_summary() {
     local maas_status=$1
-
+    
     print_header "🎉 Setup Complete!"
-
+    
     echo -e "${GREEN}✓ Your OpenShift + RHOAI environment is ready!${NC}"
     echo ""
-
+    
     if [ "$MAAS_ONLY" = true ]; then
         echo -e "${CYAN}What was set up:${NC}"
         echo "  ✅ MaaS API infrastructure"
@@ -5663,10 +6245,16 @@ display_final_summary() {
         echo -e "${CYAN}What was set up:${NC}"
         echo "  ✅ OpenShift cluster"
         echo "  ✅ GPU worker nodes"
-        echo "  ✅ RHOAI 3.x with all features"
-        echo "  ✅ Prerequisite operators (NFD, GPU, Kueue, cert-manager, LWS)"
-        echo "  ✅ RHCL + MaaS Gateway (Authorino, Limitador)"
-        echo "  ✅ GenAI Studio / Playground"
+        echo "  ✅ RHOAI 3.0 with all features"
+        echo "  ✅ GenAI Playground"
+        
+        if [ "$maas_status" = "success" ]; then
+            echo "  ✅ Model as a Service (MaaS)"
+        elif [ "$maas_status" = "skipped" ]; then
+            echo "  ⏭️  Model as a Service (skipped)"
+        else
+            echo "  ❌ Model as a Service (failed)"
+        fi
     fi
     
     echo ""
@@ -5710,7 +6298,7 @@ display_final_summary() {
     echo "   • MCP Servers: docs/guides/MCP-SERVERS.md"
     echo ""
     
-    read -ep "Press Enter to return to main menu..."
+    read -p "Press Enter to return to main menu..."
     echo ""
     echo ""
     
@@ -5741,12 +6329,18 @@ display_final_summary() {
     echo "   h) Click 'Add to Playground'"
     echo ""
     
-    echo "6. Use Model as a Service (MaaS):"
-    echo "   a) Deploy model with MaaS checkbox (or via LLMInferenceService)"
-    echo "   b) Go to Models as a Service in Dashboard"
-    echo "   c) Create subscription + generate API key"
-    echo "   d) Use MaaS API endpoint"
-    echo ""
+    if [ "$maas_status" = "success" ]; then
+        echo "5. Use Model as a Service:"
+        echo "   a) Deploy model with MaaS checkbox"
+        echo "   b) Go to Models as a Service"
+        echo "   c) Generate token"
+        echo "   d) Use MaaS API endpoint"
+        echo ""
+    elif [ "$maas_status" = "skipped" ]; then
+        echo "5. To add MaaS later:"
+        echo -e "   ${YELLOW}./scripts/setup-maas.sh${NC}"
+        echo ""
+    fi
     
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Documentation:${NC}"
@@ -5785,7 +6379,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -ep "Select an option (1-9, a, h, 0): " choice
+        read -p "Select an option (1-8, h, 0): " choice
         
         case $choice in
             1)
@@ -5795,45 +6389,36 @@ main() {
                 run_minimal_setup
                 ;;
             3)
-                # RHOAI 3.x installation - delegates to router script
-                "$SCRIPT_DIR/scripts/install-rhoai.sh"
-                echo ""
-                read -ep "Press Enter to return to main menu..."
+                install_rhoai_menu
                 ;;
             4)
                 workshop_setup_menu
                 ;;
             5)
-                rhoai_2x_menu
-                ;;
-            6)
                 rhoai_management_menu
                 ;;
-            7)
+            6)
                 create_gpu_machineset_interactive
                 echo ""
-                read -ep "Press Enter to return to main menu..."
+                read -p "Press Enter to return to main menu..."
                 ;;
-            8)
+            7)
                 gpu_clusterpolicy_menu
                 ;;
-            9)
+            8)
                 configure_kubeconfig_interactive
-                ;;
-            a|A)
-                "$SCRIPT_DIR/scripts/setup-letsencrypt-tls.sh"
                 ;;
             h|H)
                 show_help
                 echo ""
-                read -ep "Press Enter to return to main menu..."
+                read -p "Press Enter to return to main menu..."
                 ;;
             0)
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-9, a, h, or 0."
+                print_error "Invalid option. Please select 1-8, h, or 0."
                 sleep 2
                 ;;
         esac
@@ -5843,66 +6428,59 @@ main() {
 run_non_interactive_mode() {
     # Check prerequisites
     check_prerequisites
-
+    
     # Display setup plan
     display_setup_plan
-
+    
     # Confirm before proceeding
-    if [ "$MAAS_ONLY" = true ]; then
-        echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
+    if [ "$MAAS_ONLY" = false ]; then
+        echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
     else
-        echo -e "${YELLOW}This will install OpenShift and RHOAI 3.x with all features. This takes 45-60 minutes.${NC}"
+        echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
     fi
     echo ""
-    read -ep "Continue? [Y/n]: " continue_confirm
-    continue_confirm="${continue_confirm:-y}"
-    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         exit 0
     fi
-
+    
     echo ""
-
+    
+    # Track overall status
     local overall_success=true
-
-    if [ "$MAAS_ONLY" = true ]; then
-        # MaaS-only mode: use legacy setup-maas.sh directly
-        if run_maas_setup; then
-            display_final_summary "success"
-        else
-            print_error "MaaS setup failed."
-            exit 1
-        fi
-    else
-        # Full setup: OpenShift + GPU + RHOAI 3.x (same flow as run_complete_setup)
-
-        # Phase 1: OpenShift
-        if ! install_openshift_cluster; then
-            print_error "OpenShift installation failed."
-            exit 1
-        fi
-
-        # Phase 2: GPU nodes
-        create_gpu_nodes_interactive || true
-
-        # Phase 3: RHOAI (delegates to version-specific installer)
-        local rhoai_script="$SCRIPT_DIR/scripts/install-rhoai.sh"
-        if [ ! -f "$rhoai_script" ]; then
-            print_error "install-rhoai.sh not found"
-            exit 1
-        fi
-        chmod +x "$rhoai_script"
-
-        if "$rhoai_script"; then
-            print_success "RHOAI installation completed successfully!"
-        else
-            print_error "RHOAI installation failed."
+    local maas_status="not_attempted"
+    
+    # Run integrated workflow (unless MaaS-only mode)
+    if [ "$MAAS_ONLY" = false ]; then
+        if ! run_integrated_workflow; then
             overall_success=false
+            print_error "Integrated workflow failed. Stopping."
+            exit 1
         fi
-
-        display_final_summary "included"
+        
+        # Ask about MaaS setup
+        ask_about_maas
     fi
-
+    
+    # Run MaaS setup if requested
+    if [ "$SETUP_MAAS" = "yes" ]; then
+        if run_maas_setup; then
+            maas_status="success"
+        else
+            maas_status="failed"
+            overall_success=false
+            print_warning "MaaS setup failed, but RHOAI is still functional"
+        fi
+    elif [ "$SETUP_MAAS" = "no" ]; then
+        maas_status="skipped"
+    fi
+    
+    # Display final summary
+    display_final_summary "$maas_status"
+    
+    # Exit with appropriate code
     if [ "$overall_success" = true ]; then
         exit 0
     else
@@ -5911,83 +6489,56 @@ run_non_interactive_mode() {
 }
 
 run_complete_setup() {
-    print_header "Complete Setup (OpenShift + RHOAI 3.x)"
-
+    print_header "Complete Setup"
+    
     # Check prerequisites
     check_prerequisites
-
+    
     # Display setup plan
     display_setup_plan
-
+    
     # Confirm before proceeding
-    echo -e "${YELLOW}This will install OpenShift and RHOAI 3.x with all features. This takes 45-60 minutes.${NC}"
+    echo -e "${YELLOW}This will install OpenShift and RHOAI. This takes 45-60 minutes.${NC}"
     echo ""
-    read -ep "Continue? [Y/n]: " continue_confirm
-    continue_confirm="${continue_confirm:-y}"
-    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         return 0
     fi
-
+    
     echo ""
-
-    # Phase 1: OpenShift cluster installation
-    if ! install_openshift_cluster; then
-        print_error "OpenShift installation failed."
+    
+    # Track overall status
+    local overall_success=true
+    local maas_status="not_attempted"
+    
+    # Run integrated workflow
+    if ! run_integrated_workflow; then
+        overall_success=false
+        print_error "Integrated workflow failed."
         return 1
     fi
-
-    # Ensure kubeconfig is set for subsequent phases
-    # openshift-installer-master.sh creates the kubeconfig but does not export it
-    if ! oc whoami &>/dev/null; then
-        local kc_path=""
-        # Try cluster-info.txt first (has the exact path from install)
-        if [ -f "$SCRIPT_DIR/cluster-info.txt" ]; then
-            kc_path=$(grep 'export KUBECONFIG=' "$SCRIPT_DIR/cluster-info.txt" | head -1 | sed 's/.*export KUBECONFIG=//')
-        fi
-        # Fallback to default location
-        if [ -z "$kc_path" ] || [ ! -f "$kc_path" ]; then
-            kc_path="$SCRIPT_DIR/openshift-cluster-install/auth/kubeconfig"
-        fi
-        if [ -f "$kc_path" ]; then
-            export KUBECONFIG="$kc_path"
-            print_info "KUBECONFIG set to: $kc_path"
+    
+    # Ask about MaaS setup
+    ask_about_maas
+    
+    # Run MaaS setup if requested
+    if [ "$SETUP_MAAS" = "yes" ]; then
+        if run_maas_setup; then
+            maas_status="success"
         else
-            print_error "Cluster installed but kubeconfig not found. Please run: oc login"
-            return 1
+            maas_status="failed"
+            overall_success=false
+            print_warning "MaaS setup failed, but RHOAI is still functional"
         fi
+    elif [ "$SETUP_MAAS" = "no" ]; then
+        maas_status="skipped"
     fi
-
-    # Phase 2: GPU worker nodes (interactive)
-    create_gpu_nodes_interactive || true
-
-    # Phase 3: Full RHOAI 3.x installation (same as menu option 3)
-    # Delegates to install-rhoai.sh which routes to install-rhoai-34.sh or 33.sh.
-    # These scripts handle all prerequisites (NFD, GPU Op, Kueue, cert-manager,
-    # LWS, RHCL, Gateway, Observability, MaaS) and are idempotent.
-    print_header "Phase 3: RHOAI Installation"
-    print_step "Launching RHOAI version-specific installer..."
-    print_info "This installs RHOAI with all prerequisites, MaaS, and Observability."
-    echo ""
-
-    local rhoai_script="$SCRIPT_DIR/scripts/install-rhoai.sh"
-    if [ ! -f "$rhoai_script" ]; then
-        print_error "install-rhoai.sh not found at: $rhoai_script"
-        return 1
-    fi
-    chmod +x "$rhoai_script"
-
-    # Pass --skip-node-scaling since Phase 2 already handled GPU nodes
-    if "$rhoai_script"; then
-        print_success "RHOAI installation completed successfully!"
-    else
-        print_error "RHOAI installation failed."
-        return 1
-    fi
-
+    
     # Display final summary
-    display_final_summary "included"
-
+    display_final_summary "$maas_status"
+    
     return 0
 }
 
@@ -6023,7 +6574,7 @@ run_minimal_setup() {
     echo "  2) Minimal - only required operators"
     echo "  3) Full - all operators"
     echo ""
-    read -ep "Enter choice [1-3] (default: 1): " mode_choice
+    read -p "Enter choice [1-3] (default: 1): " mode_choice
     mode_choice=${mode_choice:-1}
     
     local mode_flag=""
@@ -6046,8 +6597,126 @@ run_minimal_setup() {
     fi
     
     echo ""
-    read -ep "Press Enter to return to main menu..."
+    read -p "Press Enter to return to main menu..."
     return 0
+}
+
+################################################################################
+# Unified RHOAI Installation (dynamic channel selection)
+################################################################################
+
+install_rhoai_menu() {
+    print_header "Install Red Hat OpenShift AI"
+
+    print_step "Fetching available RHOAI channels from cluster..."
+
+    local channel_data
+    channel_data=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{range .status.channels[*]}{.name}|{.currentCSV}{"\n"}{end}' 2>/dev/null)
+
+    if [ -z "$channel_data" ]; then
+        print_error "Unable to fetch RHOAI channels from cluster"
+        print_info "Make sure you are connected to an OpenShift cluster with access to redhat-operators"
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return 1
+    fi
+
+    local default_channel
+    default_channel=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.defaultChannel}' 2>/dev/null)
+
+    # Parse channel names and extract version from currentCSV (e.g. rhods-operator.3.4.1 -> 3.4.1)
+    local -a channel_list
+    local -a channel_versions
+    while IFS='|' read -r ch_name ch_csv; do
+        [ -z "$ch_name" ] && continue
+        local ver="${ch_csv##*.}"
+        # CSV format: rhods-operator.X.Y.Z — grab last 3 dot-segments
+        if [[ "$ch_csv" =~ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            ver="${BASH_REMATCH[1]}"
+        fi
+        channel_list+=("$ch_name")
+        channel_versions+=("$ver")
+    done < <(echo "$channel_data" | sort -t'|' -k2 -rV)
+
+    echo ""
+    echo -e "${CYAN}Available RHOAI channels on this cluster:${NC}"
+    echo ""
+    local i=1
+    for idx in "${!channel_list[@]}"; do
+        local ch="${channel_list[$idx]}"
+        local ver="${channel_versions[$idx]}"
+        local label=""
+        if [ "$ch" = "$default_channel" ]; then
+            label=" ${GREEN}[default]${NC}"
+        fi
+        printf "  ${YELLOW}%d)${NC} %-16s — v%s%b\n" "$i" "$ch" "$ver" "$label"
+        i=$((i + 1))
+    done
+    echo ""
+    echo -e "  ${YELLOW}0)${NC} Back to main menu"
+    echo ""
+
+    read -p "Select channel (1-${#channel_list[@]}, 0): " ch_choice
+
+    if [ "$ch_choice" = "0" ] || [ -z "$ch_choice" ]; then
+        return 0
+    fi
+
+    if ! [[ "$ch_choice" =~ ^[0-9]+$ ]] || [ "$ch_choice" -lt 1 ] || [ "$ch_choice" -gt "${#channel_list[@]}" ]; then
+        print_warning "Invalid selection"
+        echo ""
+        read -p "Press Enter to return to main menu..."
+        return 0
+    fi
+
+    local selected_channel="${channel_list[$((ch_choice - 1))]}"
+    echo ""
+    print_info "Selected channel: $selected_channel"
+    echo ""
+
+    case "$selected_channel" in
+        *3.4*|fast-3.x)
+            echo -e "${CYAN}Launching RHOAI 3.4 installer (channel: $selected_channel)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                "$SCRIPT_DIR/scripts/install-rhoai-34.sh" --channel "$selected_channel"
+            fi
+            ;;
+        *3.3*)
+            echo -e "${CYAN}Launching RHOAI 3.3 installer (channel: $selected_channel)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                "$SCRIPT_DIR/scripts/install-rhoai-33.sh" --channel "$selected_channel"
+            fi
+            ;;
+        stable-2.*|stable)
+            local version="${selected_channel#stable-}"
+            [ "$version" = "stable" ] && version="2.25"
+            echo -e "${CYAN}Launching RHOAI 2.x installer (version $version)...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                install_rhoai_2x "$version" "$selected_channel"
+            fi
+            ;;
+        *)
+            print_info "No dedicated installer for channel '$selected_channel'"
+            print_info "Using interactive operator installer..."
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                SELECTED_RHOAI_CHANNEL="$selected_channel"
+                install_rhoai_operator_interactive
+            fi
+            ;;
+    esac
+
+    echo ""
+    read -p "Press Enter to return to main menu..."
 }
 
 ################################################################################
@@ -6326,28 +6995,28 @@ check_rhoai_version() {
 rhoai_2x_menu() {
     while true; do
         show_rhoai_2x_menu
-        read -ep "Select an option (0-4): " choice
+        read -p "Select an option (0-4): " choice
         
         case $choice in
             1)
                 install_rhoai_2x "2.25" "stable-2.25"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 install_rhoai_2x "2.22" "stable-2.22"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 install_rhoai_2x "2.19" "stable-2.19"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 check_rhoai_version
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 return 0
@@ -6805,7 +7474,7 @@ EOF
     local gpu_nodes=$(oc get nodes -l nvidia.com/gpu.present=true --no-headers 2>/dev/null | wc -l)
     if [ "$gpu_nodes" -eq 0 ]; then
         print_warning "No GPU nodes detected. Model deployment may fail."
-        read -ep "Continue anyway? (y/n): " -n 1 -r
+        read -p "Continue anyway? (y/n): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             return 1
@@ -7035,9 +7704,9 @@ run_complete_workshop_setup() {
     echo "  • Grafana with dashboards"
     echo "  • Admin model (qwen3-4b) + MCP Server"
     echo ""
-    read -ep "Continue? [Y/n]: " continue_confirm
-    continue_confirm="${continue_confirm:-y}"
-    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled"
         return 0
     fi
@@ -7214,33 +7883,33 @@ scale_worker_nodes() {
 workshop_setup_menu() {
     while true; do
         show_workshop_setup_menu
-        read -ep "Select an option (0-6): " choice
+        read -p "Select an option (0-6): " choice
         
         case $choice in
             1)
                 echo ""
-                read -ep "Number of users [150]: " user_count
+                read -p "Number of users [150]: " user_count
                 user_count=${user_count:-150}
-                read -ep "GPU instance type (g6e.xlarge/g6e.2xlarge) [g6e.xlarge]: " gpu_instance
+                read -p "GPU instance type (g6e.xlarge/g6e.2xlarge) [g6e.xlarge]: " gpu_instance
                 gpu_instance=${gpu_instance:-g6e.xlarge}
                 
                 local max_gpu=64
                 if [ "$gpu_instance" == "g6e.2xlarge" ]; then
                     max_gpu=32
                 fi
-                read -ep "Number of GPU nodes (max $max_gpu) [$max_gpu]: " gpu_count
+                read -p "Number of GPU nodes (max $max_gpu) [$max_gpu]: " gpu_count
                 gpu_count=${gpu_count:-$max_gpu}
                 
-                read -ep "Number of worker nodes [12]: " worker_count
+                read -p "Number of worker nodes [12]: " worker_count
                 worker_count=${worker_count:-12}
                 
                 run_complete_workshop_setup "$user_count" "$gpu_instance" "$gpu_count" "$worker_count"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             2)
                 echo ""
-                read -ep "Number of users [150]: " user_count
+                read -p "Number of users [150]: " user_count
                 user_count=${user_count:-150}
                 
                 setup_user_workload_monitoring
@@ -7249,30 +7918,30 @@ workshop_setup_menu() {
                 setup_workshop_model_and_mcp
                 
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             3)
                 echo ""
-                read -ep "Number of users [150]: " user_count
+                read -p "Number of users [150]: " user_count
                 user_count=${user_count:-150}
                 setup_workshop_users "$user_count"
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             4)
                 setup_workshop_model_and_mcp
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             5)
                 setup_workshop_grafana
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             6)
                 setup_user_workload_monitoring
                 echo ""
-                read -ep "Press Enter to continue..."
+                read -p "Press Enter to continue..."
                 ;;
             0)
                 return 0
@@ -7291,9 +7960,9 @@ run_maas_only_setup() {
     echo -e "${YELLOW}This will set up MaaS API infrastructure.${NC}"
     echo -e "${YELLOW}Assumes RHOAI is already installed.${NC}"
     echo ""
-    read -ep "Continue? [Y/n]: " continue_confirm
-    continue_confirm="${continue_confirm:-y}"
-    if [[ ! "$continue_confirm" =~ ^[Yy]$ ]]; then
+    read -p "Continue? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_warning "Setup cancelled by user"
         return 0
     fi

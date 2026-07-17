@@ -4,16 +4,24 @@
 # Installs Red Hat OpenShift AI 3.4 with all prerequisites
 #
 # Key changes from 3.3:
-#   - MaaS (modelsAsService) is now GA
-#   - MLflow Operator is now a managed DSC component (GA)
-#   - Ray-based multi-node vLLM removed; native vLLM multiprocessing used
-#   - Embedded Kueue component removed from operator; use standalone RHBOK
-#   - llm-d distributed inference requires OCP 4.20+
-#   - DataSciencePipelinesApplication v1alpha1 removed; only v1 supported
-#   - Channel: stable-3.x (GA), startingCSV: rhods-operator.3.4.0
+#   - MaaS core GA (subscriptions replace tiers, API keys, llm-d)
+#     Sub-features still TP: vLLM runtime, external OIDC, observability, external egress
+#   - NeMo Guardrails now GA
+#   - MLflow Operator officially a managed DSC component
+#   - New Tech Preview: AutoML, AutoRAG, vLLM on MaaS, EvalHub
+#   - llm-d enhancements: Prometheus metrics, simplified scheduler config
+#   - MLServer ServingRuntime now GA
+#   - OCI-compliant storage for model registry
+#   - Workbench images default to Red Hat Python index
 #
-# Reference:
-#   https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/
+# MaaS TLS changes (3.4):
+#   - Uses OpenShift service-ca for Authorino TLS (NOT cert-manager Certificate)
+#   - Gateway requires annotations: opendatahub.io/managed, authorino-tls-bootstrap
+#   - Dashboard flags: maasAuthPolicies, observabilityDashboard (new)
+#   - Tenant CR auto-created in models-as-a-service namespace
+#   - MaaS CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+#
+# Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4
 ################################################################################
 
 set -e
@@ -38,15 +46,21 @@ SKIP_PREREQUISITES=false
 SKIP_RHCL=false
 SKIP_MAAS=false
 SKIP_NODE_SCALING=false
+SKIP_MAAS_DB=false
 ENABLE_LLMD=true
+ENABLE_VLLM_MAAS=false
+ENABLE_OBSERVABILITY=false
+POSTGRES_CONNECTION=""
 CLUSTER_DOMAIN=""
 WAIT_TIMEOUT=600
-RHOAI_CHANNEL=""  # Will be selected interactively or via --channel
-SKIP_OBSERVABILITY=false
-SKIP_MCP=false
-SKIP_MAAS_DB=false
-MAAS_DB_URL=""
-SKIP_EVALHUB=false
+RHOAI_CHANNEL=""
+SETUP_PIPELINES=false
+PIPELINE_NAMESPACE=""
+SETUP_USERS=false
+NUM_USERS=5
+ADMIN_GROUP="rhods-admins"
+USER_GROUP="rhods-users"
+USER_PASSWORD="openshift"
 
 ################################################################################
 # Helper Functions
@@ -87,21 +101,37 @@ usage() {
     echo "  --skip-prerequisites    Skip installing NFD, GPU, Kueue, cert-manager operators"
     echo "  --skip-rhcl            Skip RHCL/Kuadrant installation (no MaaS/llm-d auth)"
     echo "  --skip-maas            Skip MaaS configuration"
-    echo "  --skip-maas-db         Skip MaaS PostgreSQL database setup"
-    echo "  --maas-db-url <url>    External PostgreSQL URL for MaaS (skip interactive prompt)"
-    echo "  --skip-evalhub         Skip EvalHub (TrustyAI) deployment"
     echo "  --skip-node-scaling    Skip automatic worker/GPU node scaling"
     echo "  --no-llmd              Don't configure llm-d Gateway"
-    echo "  --skip-observability   Skip COO, OpenTelemetry, Tempo, and observability config"
-    echo "  --skip-mcp             Skip MCP server deployment"
-    echo "  --channel <channel>    RHOAI channel (e.g., stable-3.x, fast-3.x, stable-3.4). If not specified, will prompt."
+    echo "  --enable-vllm-maas     Enable vLLM runtime for MaaS (Technology Preview)"
+    echo "  --enable-observability Enable MaaS observability dashboard (Technology Preview)"
+    echo "  --postgres-connection <url>  External PostgreSQL for MaaS (skips POC DB deployment)"
+    echo "                         Format: postgresql://user:pass@host:5432/db?sslmode=require"
+    echo "  --skip-maas-db         Skip MaaS PostgreSQL setup entirely"
+    echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
     echo "  --timeout <seconds>    Wait timeout for operators (default: 600)"
+    echo ""
+    echo "AI Pipelines:"
+    echo "  --setup-pipelines      Deploy a pipeline server (DSPA) with built-in MinIO + MariaDB"
+    echo "  --pipeline-namespace <ns>  Namespace for pipeline server (default: prompts interactively)"
+    echo ""
+    echo "User Management:"
+    echo "  --setup-users          Create demo users (user1..userN) with htpasswd + groups"
+    echo "  --num-users <N>        Number of demo users to create (default: 5, implies --setup-users)"
+    echo "  --admin-group <name>   Admin group name (default: rhods-admins). user1 goes here."
+    echo "  --user-group <name>    Regular user group name (default: rhods-users). user2+ go here."
+    echo "  --user-password <pw>   Password for all demo users (default: openshift)"
+    echo ""
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Example:"
     echo "  $0 --domain cluster.example.com"
-    echo "  $0 --channel stable-3.x"
+    echo "  $0 --channel stable-3.4"
+    echo "  $0 --channel stable-3.4 --enable-vllm-maas"
+    echo "  $0 --channel stable-3.4 --enable-observability"
+    echo "  $0 --postgres-connection 'postgresql://maas:secret@rds.example.com:5432/maas?sslmode=require'"
+    echo "  $0 --setup-users --num-users 10 --user-password 'demo123'"
 }
 
 wait_for_operator() {
@@ -109,46 +139,36 @@ wait_for_operator() {
     local namespace="$2"
     local timeout="${3:-$WAIT_TIMEOUT}"
 
-    print_step "Waiting for $operator_name operator to be ready..."
+    print_step "Waiting for $operator_name operator to be ready in $namespace..."
 
     local elapsed=0
     local interval=10
-    local approved_plans=""
+    local last_status=""
 
     while [ $elapsed -lt $timeout ]; do
-        # Auto-approve any pending InstallPlans for this operator
-        local pending_plans=$(oc get installplan -n "$namespace" -o json 2>/dev/null | \
-            python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    csvs = item.get('spec', {}).get('clusterServiceVersionNames', [])
-    approved = item.get('spec', {}).get('approved', False)
-    name = item.get('metadata', {}).get('name', '')
-    if not approved and any('$operator_name' in c for c in csvs):
-        print(name)
-" 2>/dev/null)
+        local csv_line=$(oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | head -1)
+        local status=$(echo "$csv_line" | awk '{print $NF}')
+        local csv_name=$(echo "$csv_line" | awk '{print $1}')
 
-        for plan in $pending_plans; do
-            if [[ ! " $approved_plans " =~ " $plan " ]]; then
-                oc patch installplan "$plan" -n "$namespace" --type merge --patch '{"spec":{"approved":true}}' &>/dev/null
-                print_info "Auto-approved InstallPlan $plan for $operator_name"
-                approved_plans="$approved_plans $plan"
-            fi
-        done
-
-        local status=$(oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name" | awk '{print $NF}')
         if [ "$status" = "Succeeded" ]; then
-            print_success "$operator_name operator is ready"
+            print_success "$operator_name operator is ready ($csv_name)"
             return 0
         fi
+
+        if [ -n "$status" ] && [ "$status" != "$last_status" ]; then
+            echo "  $operator_name: $status ($csv_name) — ${elapsed}s elapsed"
+            last_status="$status"
+        elif [ -z "$csv_line" ] && [ $((elapsed % 30)) -eq 0 ] && [ $elapsed -gt 0 ]; then
+            echo "  $operator_name: CSV not yet created in $namespace — ${elapsed}s elapsed"
+        fi
+
         sleep $interval
         elapsed=$((elapsed + interval))
-        echo -n "."
     done
 
-    echo ""
     print_error "$operator_name operator did not become ready within ${timeout}s"
+    local final_csv=$(oc get csv -n "$namespace" 2>/dev/null | grep "$operator_name")
+    [ -n "$final_csv" ] && print_info "  Last seen: $final_csv"
     return 1
 }
 
@@ -156,16 +176,16 @@ wait_for_pod() {
     local label="$1"
     local namespace="$2"
     local timeout="${3:-300}"
-    
+
     print_step "Waiting for pods with label $label..."
-    
+
     local elapsed=0
     local interval=5
-    
+
     while [ $elapsed -lt $timeout ]; do
         local ready=$(oc get pods -n "$namespace" -l "$label" -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null | grep -c "true" || echo "0")
         local total=$(oc get pods -n "$namespace" -l "$label" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        
+
         if [ "$total" -gt 0 ] && [ "$ready" -eq "$total" ]; then
             print_success "Pods are ready"
             return 0
@@ -173,7 +193,7 @@ wait_for_pod() {
         sleep $interval
         elapsed=$((elapsed + interval))
     done
-    
+
     print_warning "Pods may not be fully ready"
     return 0
 }
@@ -186,6 +206,7 @@ get_cluster_domain() {
             exit 1
         fi
     fi
+    export CLUSTER_DOMAIN
     print_info "Cluster domain: $CLUSTER_DOMAIN"
 }
 
@@ -195,41 +216,39 @@ get_cluster_domain() {
 
 select_rhoai_channel() {
     print_step "Fetching available RHOAI channels from cluster..."
-    
+
     local channels_raw=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
         -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
-    
+
     if [ -z "$channels_raw" ]; then
         print_warning "Unable to fetch RHOAI channels from cluster"
         print_info "Using default channel: fast-3.x"
         RHOAI_CHANNEL="fast-3.x"
         return 0
     fi
-    
+
     local default_channel=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
         -o jsonpath='{.status.defaultChannel}' 2>/dev/null)
-    
-    # Convert to array and sort
+
     local channels=()
     while IFS= read -r channel; do
         [ -n "$channel" ] && channels+=("$channel")
     done < <(echo "$channels_raw" | tr ' ' '\n' | sort -V)
-    
+
     if [ ${#channels[@]} -eq 0 ]; then
         print_warning "No channels found, using default: fast-3.x"
         RHOAI_CHANNEL="fast-3.x"
         return 0
     fi
-    
+
     echo ""
     echo -e "${CYAN}Available RHOAI Channels:${NC}"
     echo ""
-    
-    # Categorize channels for better display
+
     local stable_channels=()
     local fast_channels=()
     local other_channels=()
-    
+
     for channel in "${channels[@]}"; do
         if [[ "$channel" == stable* ]]; then
             stable_channels+=("$channel")
@@ -239,11 +258,10 @@ select_rhoai_channel() {
             other_channels+=("$channel")
         fi
     done
-    
+
     local idx=1
     local channel_map=()
-    
-    # Display fast channels first (latest/preview)
+
     if [ ${#fast_channels[@]} -gt 0 ]; then
         echo -e "${MAGENTA}Fast Channels (Latest/Preview):${NC}"
         for channel in "${fast_channels[@]}"; do
@@ -255,8 +273,7 @@ select_rhoai_channel() {
         done
         echo ""
     fi
-    
-    # Display stable channels
+
     if [ ${#stable_channels[@]} -gt 0 ]; then
         echo -e "${MAGENTA}Stable Channels:${NC}"
         for channel in "${stable_channels[@]}"; do
@@ -268,8 +285,7 @@ select_rhoai_channel() {
         done
         echo ""
     fi
-    
-    # Display other channels
+
     if [ ${#other_channels[@]} -gt 0 ]; then
         echo -e "${MAGENTA}Other Channels:${NC}"
         for channel in "${other_channels[@]}"; do
@@ -281,48 +297,42 @@ select_rhoai_channel() {
         done
         echo ""
     fi
-    
+
     echo -e "${CYAN}Channel Types:${NC}"
-    echo "  • stable-3.x : RHOAI 3.x GA releases (recommended for 3.4)"
-    echo "  • fast-3.x   : RHOAI 3.x (latest features, may include pre-release)"
+    echo "  • fast-3.x   : RHOAI 3.x (latest features, GenAI, MaaS)"
     echo "  • stable-X.Y : Specific version streams (e.g., stable-3.4)"
     echo "  • stable     : Production-ready releases"
     echo ""
-    
-    # Find default channel index (prefer stable-3.x for 3.4 GA)
+
     local default_idx=1
     for i in "${!channel_map[@]}"; do
-        if [ "${channel_map[$i]}" = "stable-3.x" ]; then
+        if [ "${channel_map[$i]}" = "fast-3.x" ]; then
             default_idx=$((i + 1))
             break
-        elif [ "${channel_map[$i]}" = "fast-3.x" ]; then
-            default_idx=$((i + 1))
         elif [ "${channel_map[$i]}" = "$default_channel" ]; then
             default_idx=$((i + 1))
         fi
     done
-    
+
     local max_idx=${#channel_map[@]}
     local choice=""
-    
+
     while true; do
         read -p "Select channel (1-$max_idx) [default: $default_idx - ${channel_map[$((default_idx - 1))]}]: " choice
         choice=$(echo "$choice" | tr -d '[:space:]')
-        
-        # Use default if empty
+
         if [ -z "$choice" ]; then
             choice=$default_idx
             break
         fi
-        
-        # Validate input
+
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$max_idx" ]; then
             break
         else
             print_error "Invalid selection. Please enter a number between 1 and $max_idx"
         fi
     done
-    
+
     RHOAI_CHANNEL="${channel_map[$((choice - 1))]}"
     print_success "Selected channel: $RHOAI_CHANNEL"
 }
@@ -333,65 +343,225 @@ select_rhoai_channel() {
 
 check_prerequisites() {
     print_step "Checking prerequisites..."
-    
-    # Check oc CLI
+
     if ! command -v oc &> /dev/null; then
         print_error "oc CLI not found. Please install OpenShift CLI."
         exit 1
     fi
-    
-    # Check cluster connection
+
     if ! oc whoami &> /dev/null; then
         print_error "Not logged in to OpenShift cluster. Please run 'oc login' first."
         exit 1
     fi
-    
-    # Check cluster-admin
+
     if ! oc auth can-i create clusterrole &> /dev/null; then
         print_error "You need cluster-admin privileges to install RHOAI."
         exit 1
     fi
-    
-    # Check OpenShift version
+
     local ocp_version=$(oc version -o json 2>/dev/null | jq -r '.openshiftVersion' | cut -d. -f1,2)
     print_info "OpenShift version: $ocp_version"
-    
+
     if [[ "$ocp_version" < "4.19" ]]; then
         print_error "RHOAI 3.4 requires OpenShift 4.19 or later. Current: $ocp_version"
         exit 1
     fi
-    
-    # llm-d distributed inference requires OCP 4.20+ in RHOAI 3.4
+
     if [ "$ENABLE_LLMD" = true ] && [[ "$ocp_version" < "4.20" ]]; then
-        print_warning "llm-d distributed inference requires OCP 4.20+ (current: $ocp_version)"
-        print_warning "llm-d gateway will be configured but distributed inference may not work."
-        print_info "Consider upgrading to OCP 4.20 or use --no-llmd to skip."
+        print_warning "Distributed inference with llm-d requires OCP 4.20+. Current: $ocp_version"
+        print_warning "llm-d will be installed but multi-node inference may not work correctly."
     fi
-    
+
     print_success "Prerequisites check passed"
+}
+
+################################################################################
+# Admin User Creation
+################################################################################
+
+wait_for_api_server() {
+    local max_wait=${1:-120}
+    local elapsed=0
+    local interval=5
+    while [ $elapsed -lt $max_wait ]; do
+        if oc get nodes &>/dev/null; then
+            return 0
+        fi
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        echo "  Waiting for API server... (${elapsed}s/${max_wait}s)"
+    done
+    print_warning "API server did not respond within ${max_wait}s"
+    return 1
+}
+
+# Retry a command up to N times with API server recovery between attempts
+retry_with_api_wait() {
+    local max_retries=${1:-3}
+    shift
+    local attempt=1
+    while [ $attempt -le $max_retries ]; do
+        if "$@" 2>/dev/null; then
+            return 0
+        fi
+        print_warning "Command failed (attempt $attempt/$max_retries), waiting for API server..."
+        wait_for_api_server 60
+        attempt=$((attempt + 1))
+    done
+    print_error "Command failed after $max_retries attempts: $*"
+    return 1
+}
+
+recover_router_if_crashlooping() {
+    local router_status
+    router_status=$(oc get pods -n openshift-ingress -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+        -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+
+    if [ "$router_status" = "CrashLoopBackOff" ]; then
+        print_warning "Router pod is in CrashLoopBackOff (caused by API server restart)"
+        print_step "Deleting stuck router pod to reset backoff..."
+        oc delete pod -n openshift-ingress \
+            -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+            --wait=false 2>/dev/null || true
+        sleep 10
+        local new_status
+        new_status=$(oc get pods -n openshift-ingress \
+            -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+        if [ "$new_status" = "Running" ]; then
+            print_success "Router pod recovered"
+        else
+            print_info "Router pod restarting (status: $new_status) — it should recover shortly"
+        fi
+    fi
+}
+
+create_admin_user() {
+    local admin_user="admin"
+    local admin_pass='R3dh4t1!'
+
+    # Check if admin user already exists in htpasswd
+    local admin_exists=false
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
+        if oc get secret htpasswd-secret -n openshift-config \
+            -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null | grep -q "^${admin_user}:"; then
+            admin_exists=true
+        fi
+    fi
+
+    if [ "$admin_exists" = true ]; then
+        print_info "Admin user '$admin_user' already exists — skipping creation"
+        # Ensure group membership is correct even if user already exists
+        if ! oc get group "$ADMIN_GROUP" &>/dev/null 2>&1; then
+            oc adm groups new "$ADMIN_GROUP" 2>/dev/null || true
+        fi
+        oc adm groups add-users "$ADMIN_GROUP" "$admin_user" 2>/dev/null || true
+        return 0
+    fi
+
+    print_step "Creating OAuth admin user '$admin_user'..."
+
+    if ! command -v htpasswd &>/dev/null; then
+        print_error "htpasswd CLI not found. Install httpd-tools (RHEL) or apache2-utils (Debian)."
+        return 1
+    fi
+
+    # Pull existing htpasswd data (preserve other users)
+    local htpasswd_tmp
+    htpasswd_tmp=$(mktemp)
+
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null; then
+        oc get secret htpasswd-secret -n openshift-config \
+            -o jsonpath='{.data.htpasswd}' | base64 -d > "$htpasswd_tmp" 2>/dev/null || true
+    fi
+
+    htpasswd -bB "$htpasswd_tmp" "$admin_user" "$admin_pass"
+    print_success "User '$admin_user' added to htpasswd"
+
+    # Update secret
+    oc create secret generic htpasswd-secret \
+        --from-file=htpasswd="$htpasswd_tmp" \
+        -n openshift-config --dry-run=client -o yaml | oc apply -f -
+    rm -f "$htpasswd_tmp"
+
+    # Ensure htpasswd identity provider is configured
+    local has_htpasswd
+    has_htpasswd=$(oc get oauth cluster -o jsonpath='{.spec.identityProviders[?(@.name=="htpasswd")].name}' 2>/dev/null || true)
+    if [ -z "$has_htpasswd" ]; then
+        print_step "Adding htpasswd identity provider to OAuth..."
+        oc patch oauth cluster --type=json -p '[{
+            "op": "add",
+            "path": "/spec/identityProviders/-",
+            "value": {
+                "name": "htpasswd",
+                "type": "HTPasswd",
+                "mappingMethod": "claim",
+                "htpasswd": {
+                    "fileData": {
+                        "name": "htpasswd-secret"
+                    }
+                }
+            }
+        }]' 2>/dev/null || {
+            oc patch oauth cluster --type=merge -p '{
+                "spec": {
+                    "identityProviders": [{
+                        "name": "htpasswd",
+                        "type": "HTPasswd",
+                        "mappingMethod": "claim",
+                        "htpasswd": {
+                            "fileData": {
+                                "name": "htpasswd-secret"
+                            }
+                        }
+                    }]
+                }
+            }' 2>/dev/null
+        }
+        print_success "htpasswd identity provider configured"
+    else
+        print_info "htpasswd identity provider already configured"
+    fi
+
+    # Grant cluster-admin
+    oc adm policy add-cluster-role-to-user cluster-admin "$admin_user" 2>/dev/null || true
+    print_success "cluster-admin granted to '$admin_user'"
+
+    # Create rhods-admins group and add admin
+    if ! oc get group "$ADMIN_GROUP" &>/dev/null 2>&1; then
+        oc adm groups new "$ADMIN_GROUP" 2>/dev/null || true
+    fi
+    oc adm groups add-users "$ADMIN_GROUP" "$admin_user" 2>/dev/null || true
+    print_info "User '$admin_user' added to group '$ADMIN_GROUP'"
+
+    # Don't switch sessions — continue using kube:admin for stability
+    # The OAuth config change triggers an API server rollout; avoid disruption
+    # by staying on the current session. User can log in as 'admin' later.
+    print_success "Admin user created. Continuing installation as $(oc whoami)"
+    print_info "Log in as '$admin_user' after installation: oc login -u $admin_user -p '$admin_pass'"
+    echo ""
+
+    # Wait briefly for the OAuth rollout to settle, then recover router if needed
+    print_step "Waiting for API server to stabilize after OAuth change..."
+    sleep 10
+    wait_for_api_server 90
+    recover_router_if_crashlooping
+    print_success "Cluster stable — continuing installation"
 }
 
 scale_cluster_nodes() {
     print_step "Checking and scaling cluster nodes..."
-    
-    # Get worker machineset
+
     local worker_ms=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[?(@.spec.template.metadata.labels.machine\.openshift\.io/cluster-api-machine-role=="worker")].metadata.name}' 2>/dev/null | awk '{print $1}')
-    
+
     if [ -z "$worker_ms" ]; then
-        local schedulable=$(oc get scheduler cluster -o jsonpath='{.spec.mastersSchedulable}' 2>/dev/null)
-        if [ "$schedulable" = "true" ]; then
-            print_info "Compact Cluster detected (masters schedulable, no dedicated workers)"
-        else
-            print_warning "No worker machineset found, skipping node scaling"
-        fi
+        print_warning "No worker machineset found, skipping node scaling"
         return 0
     fi
-    
-    # Check current worker replicas
+
     local current_replicas=$(oc get machineset "$worker_ms" -n openshift-machine-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
     print_info "Worker machineset: $worker_ms (current replicas: $current_replicas)"
-    
-    # Scale workers to at least 2 if less
+
     if [ "$current_replicas" -lt 2 ]; then
         print_step "Scaling worker nodes to 2..."
         oc scale machineset "$worker_ms" -n openshift-machine-api --replicas=2
@@ -399,13 +569,11 @@ scale_cluster_nodes() {
     else
         print_info "Worker nodes already at $current_replicas replicas"
     fi
-    
-    # Check for existing GPU machineset
+
     local gpu_ms=$(oc get machineset -n openshift-machine-api -o name 2>/dev/null | grep -i gpu | head -1)
-    
+
     if [ -n "$gpu_ms" ]; then
         print_info "GPU machineset already exists: $gpu_ms"
-        # Scale to at least 1 if currently 0
         local gpu_replicas=$(oc get "$gpu_ms" -n openshift-machine-api -o jsonpath='{.spec.replicas}' 2>/dev/null)
         if [ "$gpu_replicas" -eq 0 ]; then
             print_step "Scaling GPU machineset to 1..."
@@ -413,257 +581,234 @@ scale_cluster_nodes() {
             print_success "GPU machineset scaled to 1 replica"
         fi
     else
-        # Create GPU machineset using the script
         print_step "Creating GPU machineset..."
         if [ -f "$ROOT_DIR/scripts/create-gpu-machineset.sh" ]; then
-            # Get first available AZ from existing worker machineset
             local az=$(oc get machineset "$worker_ms" -n openshift-machine-api -o jsonpath='{.spec.template.spec.providerSpec.value.placement.availabilityZone}' 2>/dev/null)
-            
-            # Create GPU machineset with g6e.xlarge, 1 replica, and apply
             "$ROOT_DIR/scripts/create-gpu-machineset.sh" --instance-type g6e.xlarge --az "$az" --replicas 1 --apply
             print_success "GPU machineset created and scaled to 1 replica"
         else
             print_warning "GPU machineset script not found, skipping GPU node creation"
         fi
     fi
-    
-    # Wait for nodes to be ready (non-blocking, just inform)
+
     print_info "Nodes are scaling in the background. Installation will continue."
     print_info "Check node status with: oc get nodes"
 }
 
 install_nfd_operator() {
     print_step "Installing Node Feature Discovery (NFD) Operator..."
-    
+
     if oc get csv -n openshift-nfd 2>/dev/null | grep -q nfd; then
         print_info "NFD Operator already installed"
         return 0
     fi
-    
-    # Create namespace first
+
     oc create namespace openshift-nfd 2>/dev/null || true
-    
-    # Check for existing OperatorGroups and clean up duplicates
+
     local og_count=$(oc get operatorgroup -n openshift-nfd -o name 2>/dev/null | wc -l | tr -d ' ')
     if [ "$og_count" -gt 0 ]; then
         print_info "Found $og_count existing OperatorGroup(s) in openshift-nfd namespace"
         oc delete operatorgroup --all -n openshift-nfd 2>/dev/null || true
         sleep 2
     fi
-    
+
     oc apply -f "$ROOT_DIR/lib/manifests/operators/nfd-operator.yaml"
     wait_for_operator "nfd" "openshift-nfd"
-    
+
     print_step "Creating NFD instance..."
     oc apply -f "$ROOT_DIR/lib/manifests/operators/nfd-instance.yaml"
-    
+
     print_success "NFD Operator installed"
 }
 
 install_gpu_operator() {
     print_step "Installing NVIDIA GPU Operator..."
-    
+
     if oc get csv -n nvidia-gpu-operator 2>/dev/null | grep -q gpu-operator; then
         print_info "GPU Operator already installed"
         return 0
     fi
-    
-    # Create namespace first
+
     oc create namespace nvidia-gpu-operator 2>/dev/null || true
-    
-    # Check for existing OperatorGroups and clean up duplicates
+
     local og_count=$(oc get operatorgroup -n nvidia-gpu-operator -o name 2>/dev/null | wc -l | tr -d ' ')
     if [ "$og_count" -gt 0 ]; then
         print_info "Found $og_count existing OperatorGroup(s) in nvidia-gpu-operator namespace"
         oc delete operatorgroup --all -n nvidia-gpu-operator 2>/dev/null || true
         sleep 2
     fi
-    
+
     oc apply -f "$ROOT_DIR/lib/manifests/operators/gpu-operator.yaml"
     wait_for_operator "gpu-operator" "nvidia-gpu-operator"
-    
+
     print_step "Creating ClusterPolicy..."
     oc apply -f "$ROOT_DIR/lib/manifests/operators/gpu-clusterpolicy.yaml"
-    
+
     print_success "GPU Operator installed"
 }
 
 install_kueue_operator() {
     print_step "Installing Red Hat Build of Kueue Operator..."
-    
-    # Kueue subscription is in openshift-operators, so CSV is there too
+
     if oc get csv -n openshift-operators 2>/dev/null | grep -q kueue; then
         print_info "Kueue Operator already installed"
         return 0
     fi
-    
+
     oc apply -f "$ROOT_DIR/lib/manifests/operators/kueue-subscription.yaml"
     wait_for_operator "kueue" "openshift-operators"
-    
+
     print_success "Kueue Operator installed"
 }
 
 install_certmanager_operator() {
     print_step "Installing cert-manager Operator..."
-    
+
     if oc get csv -n cert-manager-operator 2>/dev/null | grep -q cert-manager; then
         print_info "cert-manager Operator already installed"
         return 0
     fi
-    
-    # Create namespace if it doesn't exist
+
     oc create namespace cert-manager-operator 2>/dev/null || true
-    
-    # Check for existing OperatorGroups and clean up duplicates
+
     local og_count=$(oc get operatorgroup -n cert-manager-operator -o name 2>/dev/null | wc -l | tr -d ' ')
     if [ "$og_count" -gt 0 ]; then
         print_info "Found $og_count existing OperatorGroup(s) in cert-manager-operator namespace"
-        # Delete all existing OperatorGroups to avoid conflicts
         oc delete operatorgroup --all -n cert-manager-operator 2>/dev/null || true
         sleep 2
     fi
-    
-    # Apply our OperatorGroup
+
     oc apply -f "$ROOT_DIR/lib/manifests/operators/certmanager-operatorgroup.yaml"
     oc apply -f "$ROOT_DIR/lib/manifests/operators/certmanager-subscription.yaml"
     wait_for_operator "cert-manager" "cert-manager-operator"
-    
+
     print_success "cert-manager Operator installed"
 }
 
 install_lws_operator() {
     print_step "Installing Leader Worker Set (LWS) Operator..."
-    
-    # CSV is named "leader-worker-set", not "lws"
+
     if oc get csv -n openshift-lws-operator 2>/dev/null | grep -q "leader-worker-set"; then
         print_info "LWS Operator already installed"
         return 0
     fi
-    
-    # Create namespace
+
     oc create namespace openshift-lws-operator 2>/dev/null || true
-    
-    # Check for existing OperatorGroups and clean up duplicates
+
     local og_count=$(oc get operatorgroup -n openshift-lws-operator -o name 2>/dev/null | wc -l | tr -d ' ')
     if [ "$og_count" -gt 0 ]; then
         print_info "Found $og_count existing OperatorGroup(s) in openshift-lws-operator namespace"
         oc delete operatorgroup --all -n openshift-lws-operator 2>/dev/null || true
         sleep 2
     fi
-    
+
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-operatorgroup.yaml"
     oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-subscription.yaml"
     wait_for_operator "leader-worker-set" "openshift-lws-operator"
-    
-    # Create LWS instance
-    oc apply -f - <<EOF
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-  logLevel: Normal
-  operatorLogLevel: Normal
-EOF
-    
+
+    oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-operator-cr.yaml"
+
     print_success "LWS Operator installed"
 }
 
 install_servicemesh_operator() {
     print_step "Installing OpenShift Service Mesh 3 Operator..."
-    
-    # Check if already installed
-    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3"; then
-        print_info "Service Mesh 3 Operator already installed"
+
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; then
+        print_info "Service Mesh 3 Operator already installed and ready"
     else
-        # Create subscription for Service Mesh 3
-        oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: servicemeshoperator3
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Manual
-  name: servicemeshoperator3
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-        
-        print_step "Waiting for Service Mesh InstallPlan..."
-        sleep 10
+        if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
+            oc apply -f "$ROOT_DIR/lib/manifests/operators/servicemesh3-subscription.yaml"
+        fi
+
+        print_step "Waiting for Service Mesh InstallPlan to be created..."
+        local ip_wait=0
+        local ip_timeout=60
+        while [ $ip_wait -lt $ip_timeout ]; do
+            local has_plan=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
+                jq -r '[.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | test("servicemesh|kiali"))] | length' 2>/dev/null)
+            if [ -n "$has_plan" ] && [ "$has_plan" -gt 0 ]; then
+                print_info "Found pending InstallPlan(s)"
+                break
+            fi
+            sleep 5
+            ip_wait=$((ip_wait + 5))
+        done
+
+        approve_servicemesh_installplans
+
+        print_step "Waiting for Service Mesh operator to be ready..."
+        local timeout=300
+        local elapsed=0
+        until oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; do
+            if [ $elapsed -ge $timeout ]; then
+                print_warning "Service Mesh operator not ready after ${timeout}s (continuing anyway)"
+                break
+            fi
+            approve_servicemesh_installplans 2>/dev/null || true
+            sleep 10
+            elapsed=$((elapsed + 10))
+        done
     fi
-    
-    # Check for pending InstallPlans and approve them
-    approve_servicemesh_installplans
-    
-    # Wait for operator to be ready
-    wait_for_operator "servicemeshoperator3" "openshift-operators" 300
-    
+
+    approve_servicemesh_installplans 2>/dev/null || true
+
     print_success "Service Mesh 3 Operator installed"
 }
 
 approve_servicemesh_installplans() {
-    print_step "Checking for pending Service Mesh InstallPlans..."
-    
-    # Find all pending Service Mesh InstallPlans
-    local pending_plans=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-        jq -r '.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | contains("servicemeshoperator3")) | .metadata.name' 2>/dev/null)
-    
-    if [ -n "$pending_plans" ]; then
-        for plan in $pending_plans; do
-            print_step "Approving InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
-            print_success "Approved InstallPlan: $plan"
-        done
-        
-        # Wait for approval to take effect
-        sleep 15
-    else
-        print_info "No pending Service Mesh InstallPlans found"
-    fi
-    
-    # Also check for any other pending InstallPlans for Service Mesh
-    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | grep -i "false" | awk '{print $1}')
+    local approved_any=false
+
+    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
     for plan in $all_pending; do
-        local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
-        if echo "$csv_names" | grep -qi "servicemesh"; then
-            print_step "Approving additional InstallPlan: $plan"
-            oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
+        if [ "$is_approved" = "false" ]; then
+            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
+            if echo "$csv_names" | grep -qiE "servicemesh|kiali|sail"; then
+                print_step "Approving InstallPlan: $plan (CSVs: $csv_names)"
+                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+                print_success "Approved InstallPlan: $plan"
+                approved_any=true
+            fi
+        fi
+    done
+
+    if [ "$approved_any" = true ]; then
+        sleep 10
+    fi
+}
+
+approve_rhcl_installplans() {
+    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
+    for plan in $all_pending; do
+        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
+        if [ "$is_approved" = "false" ]; then
+            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
+            if echo "$csv_names" | grep -qiE "rhcl|authorino|limitador|dns-operator"; then
+                print_step "Approving RHCL InstallPlan: $plan"
+                print_info "  CSVs: $csv_names"
+                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
+                print_success "Approved InstallPlan: $plan"
+            fi
         fi
     done
 }
 
 setup_istio_for_kuadrant() {
     print_step "Setting up Istio for Kuadrant..."
-    
-    # Create required namespaces
+
     oc create namespace istio-system 2>/dev/null || true
     oc create namespace istio-cni 2>/dev/null || true
-    
-    # Check if Istio already exists in istio-system
+
     if oc get istio default -n istio-system &>/dev/null; then
         print_info "Istio instance already exists in istio-system"
     else
-        # Get the Istio version from existing installation or use default
         local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.26.2")
-        
+
         print_step "Creating IstioCNI..."
-        oc apply -f - <<EOF
-apiVersion: sailoperator.io/v1
-kind: IstioCNI
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-cni
-  version: $istio_version
-EOF
-        
-        # Wait for IstioCNI to be ready
+        export ISTIO_VERSION="$istio_version"
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istiocni.yaml" | oc apply -f -
+
         print_step "Waiting for IstioCNI to be ready..."
         local elapsed=0
         local timeout=120
@@ -677,20 +822,10 @@ EOF
             elapsed=$((elapsed + 10))
             echo "  Waiting for IstioCNI... (${elapsed}s elapsed)"
         done
-        
+
         print_step "Creating Istio instance in istio-system..."
-        oc apply -f - <<EOF
-apiVersion: sailoperator.io/v1
-kind: Istio
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-system
-  version: $istio_version
-EOF
-        
-        # Wait for Istio to be healthy
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istio.yaml" | oc apply -f -
+
         print_step "Waiting for Istio to be healthy..."
         elapsed=0
         timeout=180
@@ -705,270 +840,661 @@ EOF
             echo "  Waiting for Istio... Status: $istio_status (${elapsed}s elapsed)"
         done
     fi
-    
-    # Create openshift-default GatewayClass (required by RHCL docs)
+
+    # API server may bounce during Istio/Sail webhook registration
+    wait_for_api_server 90
+
     if ! oc get gatewayclass openshift-default &>/dev/null; then
         print_step "Creating openshift-default GatewayClass..."
-        oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-default
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        local attempt=1
+        while [ $attempt -le 3 ]; do
+            if oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-default.yaml"; then
+                break
+            fi
+            print_warning "GatewayClass creation failed (attempt $attempt/3), waiting for API server..."
+            wait_for_api_server 60
+            attempt=$((attempt + 1))
+        done
     fi
-    
+
     print_success "Istio setup complete for Kuadrant"
 }
 
 restart_kuadrant_operator() {
     print_step "Restarting Kuadrant operator to detect Istio..."
-    
-    # Delete the pod to force restart
+
     local pod_name=$(oc get pods -n kuadrant-system -o name 2>/dev/null | grep kuadrant-operator-controller)
     if [ -n "$pod_name" ]; then
         oc delete $pod_name -n kuadrant-system 2>/dev/null || true
         sleep 20
     fi
-    
-    # Wait for Kuadrant to be ready
+
     print_step "Waiting for Kuadrant to be ready..."
     local elapsed=0
     local timeout=120
     while [ $elapsed -lt $timeout ]; do
         local kuadrant_ready=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
         local kuadrant_reason=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
-        
+
         if [ "$kuadrant_ready" = "True" ]; then
             print_success "Kuadrant is ready"
             return 0
         fi
-        
+
         sleep 10
         elapsed=$((elapsed + 10))
         echo "  Waiting for Kuadrant... Reason: $kuadrant_reason (${elapsed}s elapsed)"
     done
-    
+
     print_warning "Kuadrant may not be fully ready. Check: oc get kuadrant -n kuadrant-system"
 }
 
 install_rhcl_operator() {
-    print_step "Installing Red Hat Connectivity Link (RHCL) Operator..."
-    
-    # First, ensure Service Mesh is installed and approved
+    # RHOAI 3.4 MaaS prerequisite (Govern LLM access with Models-as-a-Service, §1.2):
+    #   "installed the Red Hat Connectivity Link Operator version 1.2 or later
+    #    to the openshift-operators namespace and created a Kuadrant custom resource
+    #    in the kuadrant-system namespace with ready status."
+    #
+    # Note: RHCL 1.3's own docs put everything in kuadrant-system. Both patterns work
+    # (AllNamespaces mode). We follow RHOAI's documented prerequisite since this is an RHOAI toolkit.
+    #
+    # Service Mesh 3 (Sail) is auto-installed as an OLM dependency. It uses Manual InstallPlan
+    # approval, so we must ensure plans are approved.
+    print_step "Installing Red Hat Connectivity Link (RHCL) v1.2+ Operator..."
+
+    # Service Mesh 3 comes in as an OLM dependency — ensure it's installed and plans approved
     install_servicemesh_operator
-    
-    # Create namespace
-    oc create namespace kuadrant-system 2>/dev/null || true
-    
-    # CSV is named "rhcl-operator", not "kuadrant"
-    if oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
-        print_info "RHCL Operator already installed"
+
+    # Check if RHCL already installed
+    if oc get csv -n openshift-operators 2>/dev/null | grep -q "rhcl-operator"; then
+        print_info "RHCL Operator already installed in openshift-operators"
+    elif oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
+        print_info "RHCL Operator already installed in kuadrant-system"
     else
-        # Check for existing OperatorGroups and clean up duplicates
-        local og_count=$(oc get operatorgroup -n kuadrant-system -o name 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$og_count" -gt 0 ]; then
-            print_info "Found $og_count existing OperatorGroup(s) in kuadrant-system namespace"
-            oc delete operatorgroup --all -n kuadrant-system 2>/dev/null || true
-            sleep 2
-        fi
+        # Subscription goes to openshift-operators (per RHOAI 3.4 MaaS docs)
+        # openshift-operators already has a default OperatorGroup — no need to create one
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator-34.yaml"
+
+        # Wait for Subscription to create an InstallPlan
+        print_step "Waiting for RHCL InstallPlan..."
+        local ip_wait=0
+        while [ $ip_wait -lt 60 ]; do
+            if oc get subscription rhcl-operator -n openshift-operators \
+                -o jsonpath='{.status.installPlanRef.name}' &>/dev/null; then
+                break
+            fi
+            sleep 5
+            ip_wait=$((ip_wait + 5))
+        done
+
+        # Auto-approve RHCL InstallPlan (OLM may set Manual even with Automatic
+        # when dependency operators like Authorino/DNS/Limitador are being upgraded)
+        approve_rhcl_installplans
+
+        # Wait for operator with periodic re-approval (InstallPlan may appear late)
+        print_step "Waiting for rhcl-operator to be ready..."
+        local rhcl_elapsed=0
+        local rhcl_timeout=300
+        while [ $rhcl_elapsed -lt $rhcl_timeout ]; do
+            local rhcl_csv=$(oc get csv -n openshift-operators 2>/dev/null | grep "rhcl-operator" | head -1)
+            local rhcl_status=$(echo "$rhcl_csv" | awk '{print $NF}')
+            
+            if [ "$rhcl_status" = "Succeeded" ]; then
+                print_success "rhcl-operator is ready"
+                break
+            fi
+            
+            # Re-approve any pending InstallPlans on each iteration
+            approve_rhcl_installplans 2>/dev/null || true
+            
+            if [ -z "$rhcl_csv" ] && [ $((rhcl_elapsed % 30)) -eq 0 ] && [ $rhcl_elapsed -gt 0 ]; then
+                echo "  rhcl-operator: CSV not yet created — ${rhcl_elapsed}s elapsed"
+            elif [ -n "$rhcl_status" ] && [ "$rhcl_status" != "Succeeded" ]; then
+                echo "  rhcl-operator: $rhcl_status — ${rhcl_elapsed}s elapsed"
+            fi
+            
+            sleep 10
+            rhcl_elapsed=$((rhcl_elapsed + 10))
+        done
         
-        # Install RHCL operator via subscription
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator.yaml"
-        wait_for_operator "rhcl-operator" "kuadrant-system"
-    fi
-    
-    # Check if Kuadrant is already fully ready (skip post-install steps on re-run)
-    local kuadrant_status=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-    if [ "$kuadrant_status" = "True" ]; then
-        print_info "Kuadrant is already Ready, skipping post-install configuration"
-        # Ensure Authorino TLS annotation is present (idempotent)
-        oc annotate svc/authorino-authorino-authorization \
-            service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-            -n kuadrant-system --overwrite 2>/dev/null || true
-        print_success "RHCL Operator already installed and configured"
-        return 0
+        if [ $rhcl_elapsed -ge $rhcl_timeout ]; then
+            print_warning "rhcl-operator may not be fully ready (continuing)"
+        fi
     fi
 
-    # Create Kuadrant instance
-    print_step "Creating Kuadrant instance..."
+    # Verify RHCL component operators (Authorino, DNS, Limitador)
+    # These are installed by the RHCL operator as dependencies
+    print_step "Verifying RHCL component operators..."
+    local comp_timeout=120
+    local comp_elapsed=0
+    local all_found=false
+    while [ $comp_elapsed -lt $comp_timeout ]; do
+        all_found=true
+        for component in "authorino" "dns" "limitador"; do
+            if ! oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded"; then
+                all_found=false
+                break
+            fi
+        done
+        if [ "$all_found" = true ]; then
+            break
+        fi
+        sleep 10
+        comp_elapsed=$((comp_elapsed + 10))
+    done
+
+    for component in "authorino" "dns" "limitador"; do
+        if oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded"; then
+            print_success "  $component operator ready"
+        else
+            print_info "  $component operator not yet ready (may take a moment)"
+        fi
+    done
+
+    # Kuadrant CR goes in kuadrant-system (per RHOAI 3.4 MaaS docs)
+    oc create namespace kuadrant-system 2>/dev/null || true
+
+    print_step "Creating Kuadrant instance in kuadrant-system..."
     oc apply -f "$ROOT_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
-    
-    sleep 10
-    
-    # Configure Authorino TLS
-    print_step "Configuring Authorino TLS..."
-    oc annotate svc/authorino-authorino-authorization \
-        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-        -n kuadrant-system --overwrite 2>/dev/null || true
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-tls.yaml"
-    
-    # Setup Istio for Kuadrant (required for AuthPolicy/RateLimitPolicy enforcement)
+
     setup_istio_for_kuadrant
-    
-    # Restart Kuadrant operator to detect Istio
+
     restart_kuadrant_operator
-    
+
     print_success "RHCL Operator installed and configured"
 }
 
-install_coo_operator() {
-    print_step "Installing Cluster Observability Operator (COO)..."
-    
-    if oc get csv -n openshift-operators 2>/dev/null | grep -q "cluster-observability-operator"; then
-        print_info "COO Operator already installed"
+setup_maas_database() {
+    # PostgreSQL 14+ is required for MaaS API key validation
+    # Secret format: DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require'
+    # Reference: https://opendatahub-io.github.io/models-as-a-service/latest/install/maas-setup/#database-setup
+    print_step "Setting up MaaS PostgreSQL database..."
+
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        print_success "maas-db-config secret already exists in redhat-ods-applications"
         return 0
     fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/operators/coo-subscription.yaml"
-    wait_for_operator "cluster-observability-operator" "openshift-operators"
-    
-    print_success "COO Operator installed"
+
+    # If user provided a connection string via --postgres-connection, use it
+    if [ -n "$POSTGRES_CONNECTION" ]; then
+        print_step "Creating maas-db-config secret from provided connection string..."
+        printf '%s' "$POSTGRES_CONNECTION" | \
+            oc create secret generic maas-db-config \
+                --from-file=DB_CONNECTION_URL=/dev/stdin \
+                --dry-run=client -o yaml | \
+            oc label --local -f - app=maas-api --dry-run=client -o yaml | \
+            oc apply -n redhat-ods-applications -f -
+        print_success "maas-db-config secret created from provided connection string"
+        return 0
+    fi
+
+    # Deploy a POC-grade PostgreSQL instance (NOT for production)
+    print_warning "No --postgres-connection provided. Deploying POC PostgreSQL (NOT for production)."
+    print_info "For production, use AWS RDS, Crunchy Operator, or Azure Database for PostgreSQL."
+    print_info "Then pass: --postgres-connection 'postgresql://user:pass@host:5432/db?sslmode=require'"
+    echo ""
+
+    local pg_user="maas"
+    local pg_db="maas"
+    local pg_password
+    pg_password="$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)"
+
+    # Resolve PostgreSQL image from RHOAI operator CSV (fallback to default)
+    local pg_image
+    pg_image=$(oc get csv -l 'olm.copiedFrom=redhat-ods-operator' \
+        -o jsonpath='{.items[0].spec.relatedImages[?(@.name=="postgresql_16_image")].image}' 2>/dev/null) || true
+    if [ -z "$pg_image" ]; then
+        pg_image="registry.redhat.io/rhel9/postgresql-16:latest"
+        print_info "Using default PostgreSQL image (operator CSV not available)"
+    else
+        print_info "Resolved PostgreSQL image from operator CSV"
+    fi
+
+    print_step "Deploying POC PostgreSQL in redhat-ods-applications..."
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-pvc.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-service.yaml"
+
+    export PG_IMAGE="$pg_image"
+    export PG_USER="$pg_user"
+    export PG_PASSWORD="$pg_password"
+    export PG_DB="$pg_db"
+    envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
+        < "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
+    unset PG_PASSWORD
+
+    print_step "Waiting for PostgreSQL to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        if oc rollout status deployment/postgres -n redhat-ods-applications --timeout=5s &>/dev/null; then
+            print_success "PostgreSQL is ready"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    # URL-encode the password (encode all chars to be safe with special chars)
+    local encoded_password
+    encoded_password=$(printf '%s' "$pg_password" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')
+    local db_url="postgresql://${pg_user}:${encoded_password}@postgres:5432/${pg_db}?sslmode=disable"
+
+    print_step "Creating maas-db-config secret..."
+    printf '%s' "$db_url" | \
+        oc create secret generic maas-db-config \
+            --from-file=DB_CONNECTION_URL=/dev/stdin \
+            --dry-run=client -o yaml | \
+        oc label --local -f - app=maas-api --dry-run=client -o yaml | \
+        oc apply -n redhat-ods-applications -f -
+
+    # Store credentials for reference
+    oc create secret generic postgres-creds \
+        --from-literal=user="$pg_user" \
+        --from-literal=password="$pg_password" \
+        --from-literal=database="$pg_db" \
+        -n redhat-ods-applications --dry-run=client -o yaml | \
+        oc apply -n redhat-ods-applications -f -
+
+    print_success "POC PostgreSQL deployed and maas-db-config secret created"
+    print_warning "This is NOT production-grade. For production use:"
+    print_info "  - AWS RDS for PostgreSQL"
+    print_info "  - Crunchy Postgres Operator"
+    print_info "  - Azure Database for PostgreSQL"
+    print_info "  Then: oc create secret generic maas-db-config \\"
+    print_info "    --from-literal=DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require' \\"
+    print_info "    -n redhat-ods-applications"
 }
 
-install_opentelemetry_operator() {
-    print_step "Installing Red Hat build of OpenTelemetry Operator..."
-    
-    if oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -q "opentelemetry"; then
-        print_info "OpenTelemetry Operator already installed"
-        return 0
+configure_maas_tls() {
+    # RHOAI 3.4 MaaS TLS uses OpenShift service-ca (NOT cert-manager)
+    # Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service/deploy-and-manage-models-as-a-service_maas#configure-tls-for-maas_maas-deploy
+    print_step "Configuring TLS for Models-as-a-Service (3.4 service-ca method)..."
+
+    # Step 1: Annotate Authorino service for OpenShift service-ca cert generation
+    print_step "Annotating Authorino service for service-ca TLS cert..."
+    oc annotate service authorino-authorino-authorization \
+        -n kuadrant-system \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        --overwrite 2>/dev/null || {
+        print_warning "Could not annotate Authorino service - it may not exist yet"
+        return 1
+    }
+
+    # Wait for the service-ca operator to generate the TLS secret
+    print_step "Waiting for service-ca to generate authorino-server-cert secret..."
+    local cert_wait=0
+    while [ $cert_wait -lt 60 ]; do
+        if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+            print_success "Authorino TLS certificate generated by service-ca"
+            break
+        fi
+        sleep 5
+        cert_wait=$((cert_wait + 5))
+    done
+
+    if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+        print_warning "authorino-server-cert secret not yet available - service-ca may need more time"
     fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/operators/opentelemetry-subscription.yaml"
-    wait_for_operator "opentelemetry" "openshift-opentelemetry-operator"
-    
-    print_success "OpenTelemetry Operator installed"
+
+    # Step 2: Patch Authorino CR to enable TLS listener
+    print_step "Patching Authorino CR for TLS listener..."
+    oc patch authorino authorino -n kuadrant-system --type=merge --patch '{
+      "spec": {
+        "listener": {
+          "tls": {
+            "enabled": true,
+            "certSecretRef": {
+              "name": "authorino-server-cert"
+            }
+          }
+        }
+      }
+    }' 2>/dev/null || print_warning "Could not patch Authorino CR"
+
+    # Step 3: Set TLS cert env vars on Authorino deployment for CA validation
+    print_step "Configuring Authorino TLS certificate validation env vars..."
+    oc -n kuadrant-system set env deployment/authorino \
+        SSL_CERT_FILE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
+        REQUESTS_CA_BUNDLE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
+        2>/dev/null || print_warning "Could not set Authorino TLS env vars"
+
+    # Step 4: Annotate the MaaS gateway for automatic TLS configuration
+    print_step "Annotating maas-default-gateway for Authorino TLS bootstrap..."
+    oc annotate gateway maas-default-gateway \
+        -n openshift-ingress \
+        security.opendatahub.io/authorino-tls-bootstrap="true" \
+        --overwrite 2>/dev/null || print_warning "Could not annotate maas-default-gateway (it may not exist yet)"
+
+    # Verification
+    print_step "Verifying MaaS TLS configuration..."
+    local tls_ok=true
+
+    local cert_annotation=$(oc get service authorino-authorino-authorization -n kuadrant-system \
+        -o jsonpath='{.metadata.annotations.service\.beta\.openshift\.io/serving-cert-secret-name}' 2>/dev/null)
+    if [ "$cert_annotation" = "authorino-server-cert" ]; then
+        print_success "Authorino service has serving-cert annotation"
+    else
+        print_warning "Authorino service missing serving-cert annotation"
+        tls_ok=false
+    fi
+
+    local tls_enabled=$(oc get authorino authorino -n kuadrant-system \
+        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
+    if [ "$tls_enabled" = "true" ]; then
+        print_success "Authorino TLS listener enabled"
+    else
+        print_warning "Authorino TLS listener not enabled"
+        tls_ok=false
+    fi
+
+    if [ "$tls_ok" = true ]; then
+        print_success "MaaS TLS configuration complete"
+    else
+        print_warning "MaaS TLS configuration may be incomplete - check manually"
+    fi
 }
 
-install_tempo_operator() {
-    print_step "Installing Tempo Operator..."
-    
-    if oc get csv -n openshift-tempo-operator 2>/dev/null | grep -q "tempo"; then
-        print_info "Tempo Operator already installed"
-        return 0
-    fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/operators/tempo-subscription.yaml"
-    wait_for_operator "tempo" "openshift-tempo-operator"
-    
-    print_success "Tempo Operator installed"
-}
+################################################################################
+# MaaS Rate Limiting Fixes
+# Fixes WasmPlugin span buffer overflow that prevents token rate limiting
+# from working under load. See docs/maas-token-ratelimit-span-buffer-bug.md
+################################################################################
 
-install_jobset_operator() {
-    print_step "Installing JobSet Operator (Trainer v2 prerequisite)..."
-    
-    if oc get csv -n jobset-system 2>/dev/null | grep -q "jobset"; then
-        print_info "JobSet Operator already installed"
-        return 0
+configure_maas_rate_limiting() {
+    print_step "Configuring MaaS token rate limiting (Redis + EnvoyFilters)..."
+
+    # Fix 1: Deploy Redis for Limitador persistent storage
+    if oc get deployment limitador-redis -n kuadrant-system &>/dev/null; then
+        print_info "Limitador Redis already deployed"
+    else
+        print_step "Deploying Redis for Limitador..."
+        oc apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+  labels:
+    app: limitador-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: limitador-redis
+  template:
+    metadata:
+      labels:
+        app: limitador-redis
+    spec:
+      containers:
+      - name: redis
+        image: registry.redhat.io/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+spec:
+  selector:
+    app: limitador-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+EOF
+        oc rollout status deployment/limitador-redis -n kuadrant-system --timeout=60s 2>/dev/null
+        print_success "Redis deployed"
     fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/operators/jobset-subscription.yaml"
-    wait_for_operator "jobset" "jobset-system"
-    
-    print_success "JobSet Operator installed"
+
+    # Create Redis connection secret
+    if ! oc get secret limitador-redis-config -n kuadrant-system &>/dev/null; then
+        oc create secret generic limitador-redis-config \
+            --from-literal=URL="redis://limitador-redis.kuadrant-system.svc.cluster.local:6379" \
+            -n kuadrant-system
+    fi
+
+    # Patch Limitador to use redis-cached storage
+    local current_storage
+    current_storage=$(oc get limitador limitador -n kuadrant-system \
+        -o jsonpath='{.spec.storage.redis-cached}' 2>/dev/null || true)
+    if [ -z "$current_storage" ]; then
+        print_step "Configuring Limitador with redis-cached storage..."
+        oc patch limitador limitador -n kuadrant-system --type=merge -p '{
+            "spec": {
+                "storage": {
+                    "redis-cached": {
+                        "configSecretRef": {
+                            "name": "limitador-redis-config"
+                        },
+                        "options": {
+                            "flush-period": 500,
+                            "max-cached": 10000,
+                            "batch-size": 100,
+                            "response-timeout": 500
+                        }
+                    }
+                }
+            }
+        }'
+        print_success "Limitador configured with Redis-cached storage"
+    else
+        print_info "Limitador already using redis-cached storage"
+    fi
+
+    # Fix 2: Health check interceptor — prevents health probes from saturating
+    # the WasmPlugin's 100-span buffer (causing token reports to be dropped)
+    if ! oc get envoyfilter healthcheck-filter -n openshift-ingress &>/dev/null; then
+        print_step "Applying health check interceptor EnvoyFilter..."
+        oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: healthcheck-filter
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.health_check
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+            pass_through_mode: false
+            headers:
+              - name: ":path"
+                string_match:
+                  exact: "/healthz"
+              - name: ":path"
+                string_match:
+                  exact: "/ready"
+EOF
+        print_success "Health check interceptor applied"
+    else
+        print_info "Health check interceptor already exists"
+    fi
+
+    # Fix 3: Increase ratelimit cluster timeout (default ~100ms is too low)
+    if ! oc get envoyfilter increase-ratelimit-cluster-timeout -n openshift-ingress &>/dev/null; then
+        print_step "Applying ratelimit cluster timeout EnvoyFilter..."
+        oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: increase-ratelimit-cluster-timeout
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+        cluster:
+          name: kuadrant-ratelimit-service
+      patch:
+        operation: MERGE
+        value:
+          connect_timeout: 2s
+EOF
+        print_success "Ratelimit cluster timeout increased to 2s"
+    else
+        print_info "Ratelimit cluster timeout already configured"
+    fi
+
+    # Restart gateway to pick up new filters and clear span buffer
+    print_step "Restarting MaaS gateway to apply filters..."
+    oc rollout restart deployment/maas-default-gateway-openshift-gateway-controller \
+        -n openshift-ingress 2>/dev/null || true
+    sleep 10
+
+    print_success "MaaS rate limiting configured (Redis + health check filter + timeout fix)"
 }
 
 enable_user_workload_monitoring() {
     print_step "Enabling User Workload Monitoring..."
-    
-    oc apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
-    
+
+    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
+
     print_success "User Workload Monitoring enabled"
+}
+
+install_coo_operator() {
+    print_step "Installing Cluster Observability Operator (COO)..."
+
+    if oc get csv -n openshift-cluster-observability-operator 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; then
+        print_info "COO already installed"
+        return 0
+    fi
+
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-namespace.yaml"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-operatorgroup.yaml"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/coo-subscription.yaml"
+
+    print_step "Waiting for COO operator to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 180 ]; do
+        if oc get csv -n openshift-cluster-observability-operator 2>/dev/null | grep -q "cluster-observability-operator.*Succeeded"; then
+            print_success "COO operator installed (Perses CRDs available)"
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+
+    print_warning "COO operator not ready after 180s (may still be installing)"
+}
+
+configure_gateway_telemetry() {
+    print_step "Configuring gateway telemetry for MaaS usage metrics..."
+
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/gateway-telemetry-policy.yaml" 2>/dev/null || \
+        print_warning "TelemetryPolicy CRD not available (RHCL may need upgrade)"
+    oc apply -f "$ROOT_DIR/lib/manifests/observability/istio-gateway-telemetry.yaml" 2>/dev/null || \
+        print_warning "Istio Telemetry CRD not available"
+
+    print_success "Gateway telemetry configured"
 }
 
 install_rhoai_operator() {
     print_step "Installing Red Hat OpenShift AI Operator..."
-    
-    # Create namespace
+
     oc create namespace redhat-ods-operator 2>/dev/null || true
-    
+
     if oc get csv -n redhat-ods-operator 2>/dev/null | grep -q rhods; then
         print_info "RHOAI Operator already installed"
         return 0
     fi
-    
-    # Select channel if not already specified
+
     if [ -z "$RHOAI_CHANNEL" ]; then
         select_rhoai_channel
     else
         print_info "Using specified channel: $RHOAI_CHANNEL"
     fi
-    
-    # Create OperatorGroup
-    oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-EOF
-    
-    # Create Subscription with selected channel
+
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
+
     print_step "Creating RHOAI subscription with channel: $RHOAI_CHANNEL"
-    oc apply -f - <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  name: rhods-operator
-  channel: $RHOAI_CHANNEL
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-    
+    export RHOAI_CHANNEL
+    envsubst '${RHOAI_CHANNEL}' < "$ROOT_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+
     wait_for_operator "rhods" "redhat-ods-operator"
-    
+
     print_success "RHOAI Operator installed (channel: $RHOAI_CHANNEL)"
 }
 
 create_datasciencecluster() {
     print_step "Creating DataScienceCluster..."
-    
+
+    # Apply DSCInitialization first (controls monitoring, trustedCABundle, applications namespace)
+    if ! oc get dscinitialization default-dsci &>/dev/null; then
+        print_step "Applying DSCInitialization..."
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/dscinitialization.yaml"
+        oc wait --for=jsonpath='{.status.phase}'=Ready dscinitialization/default-dsci --timeout=120s 2>/dev/null || true
+    fi
+
     if oc get datasciencecluster default-dsc &>/dev/null; then
         print_info "DataScienceCluster already exists"
         return 0
     fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/datasciencecluster-v34.yaml"
-    
-    print_step "Waiting for DataScienceCluster to be ready..."
+
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/datasciencecluster-v3-34.yaml"
+
+    print_step "Waiting for DataScienceCluster core components..."
     local elapsed=0
-    local timeout=600
-    
+    local timeout=300
+
     while [ $elapsed -lt $timeout ]; do
         local phase=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.phase}' 2>/dev/null)
         if [ "$phase" = "Ready" ]; then
-            print_success "DataScienceCluster is ready"
+            print_success "DataScienceCluster is fully ready"
             return 0
         fi
+        
+        # Check if core components are ready (MaaS/Kueue may need later config steps)
+        local dashboard_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="DashboardReady")].status}' 2>/dev/null)
+        local kserve_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="KserveReady")].status}' 2>/dev/null)
+        
+        if [ "$dashboard_ready" = "True" ] && [ "$kserve_ready" = "True" ]; then
+            echo ""
+            print_success "Core components ready (Dashboard, KServe)"
+            local not_ready=$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+            if [ -n "$not_ready" ]; then
+                print_info "Pending (will be configured in later steps): $not_ready"
+            fi
+            return 0
+        fi
+        
         sleep 10
         elapsed=$((elapsed + 10))
         echo -n "."
     done
-    
+
     echo ""
-    print_warning "DataScienceCluster may not be fully ready yet"
+    print_warning "DataScienceCluster may not be fully ready yet (MaaS/Kueue configured in later steps)"
 }
 
 enable_dashboard_features() {
     print_step "Enabling dashboard features..."
-    
-    # Wait for OdhDashboardConfig to exist
+
     local elapsed=0
     while [ $elapsed -lt 120 ]; do
         if oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications &>/dev/null; then
@@ -977,679 +1503,586 @@ enable_dashboard_features() {
         sleep 5
         elapsed=$((elapsed + 5))
     done
-    
-    # Core feature flags (always enabled)
-    oc patch odhdashboardconfig odh-dashboard-config \
-        -n redhat-ods-applications \
-        --type=merge \
-        -p '{
+
+    # Build dashboard config with all 3.4 MaaS flags
+    # Required flags per https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service:
+    #   modelAsService: true          - core MaaS functionality
+    #   genAiStudio: true             - MaaS user-facing features in dashboard
+    #   maasAuthPolicies: true        - MaaS admin features (subscriptions, auth policies)
+    #   vLLMDeploymentOnMaaS: true    - Required for "Publish as MaaS" to appear in deploy wizard
+    #                                   (without it, dashboard hides the non-legacy deployment path)
+    # Developer Preview flags:
+    #   mcpCatalog: true              - MCP Catalog under AI Hub (requires MCP Lifecycle Operator)
+    # Optional TP flags:
+    #   observabilityDashboard: true  - MaaS usage monitoring dashboard (TP)
+    local patch_json='{
+        "spec": {
+            "dashboardConfig": {
+                "disableModelRegistry": false,
+                "disableModelCatalog": false,
+                "disableKServeMetrics": false,
+                "genAiStudio": true,
+                "modelAsService": true,
+                "maasAuthPolicies": true,
+                "vLLMDeploymentOnMaaS": true,
+                "disableLMEval": false,
+                "mcpCatalog": true
+            }
+        }
+    }'
+
+    if [ "$ENABLE_VLLM_MAAS" = true ]; then
+        patch_json='{
             "spec": {
                 "dashboardConfig": {
                     "disableModelRegistry": false,
                     "disableModelCatalog": false,
                     "disableKServeMetrics": false,
-                    "disableKueue": false,
-                    "disableLLMd": false,
-                    "disableLMEval": false,
                     "genAiStudio": true,
                     "modelAsService": true,
                     "maasAuthPolicies": true,
-                    "llmGatewayField": true,
-                    "vLLMDeploymentOnMaas": true,
-                    "deploymentWizardYAMLViewer": true,
-                    "aiAssetCustomEndpoints": true,
-                    "promptManagement": true
+                    "disableLMEval": false,
+                    "vLLMDeploymentOnMaaS": true,
+                    "mcpCatalog": true
                 }
             }
-        }' 2>/dev/null || print_warning "Could not patch dashboard config (core flags)"
-
-    # Conditional: Observability dashboard
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        oc patch odhdashboardconfig odh-dashboard-config \
-            -n redhat-ods-applications \
-            --type=merge \
-            -p '{"spec":{"dashboardConfig":{"observabilityDashboard": true}}}' \
-            2>/dev/null || true
-        print_info "  Observability dashboard enabled"
+        }'
+        print_info "Enabling vLLM runtime for MaaS (Technology Preview)"
     fi
 
-    # Conditional: MCP Catalog
-    if [ "$SKIP_MCP" = false ]; then
-        oc patch odhdashboardconfig odh-dashboard-config \
-            -n redhat-ods-applications \
-            --type=merge \
-            -p '{"spec":{"dashboardConfig":{"mcpCatalog": true}}}' \
-            2>/dev/null || true
-        print_info "  MCP Catalog enabled"
+    if [ "$ENABLE_OBSERVABILITY" = true ]; then
+        patch_json='{
+            "spec": {
+                "dashboardConfig": {
+                    "disableModelRegistry": false,
+                    "disableModelCatalog": false,
+                    "disableKServeMetrics": false,
+                    "genAiStudio": true,
+                    "modelAsService": true,
+                    "maasAuthPolicies": true,
+                    "observabilityDashboard": true,
+                    "disableLMEval": false,
+                    "mcpCatalog": true
+                }
+            }
+        }'
+        print_info "Enabling MaaS observability dashboard (Technology Preview)"
     fi
 
-    print_success "Dashboard features enabled (RHOAI 3.4 full)"
+    oc patch odhdashboardconfig odh-dashboard-config \
+        -n redhat-ods-applications \
+        --type=merge \
+        -p "$patch_json" 2>/dev/null || print_warning "Could not patch dashboard config yet"
+
+    print_success "Dashboard features enabled (including maasAuthPolicies)"
+}
+
+install_mcp_lifecycle_operator() {
+    print_step "Installing MCP Lifecycle Operator (Developer Preview)..."
+
+    if oc get crd mcpservers.mcp.x-k8s.io &>/dev/null; then
+        print_success "MCP Lifecycle Operator already installed [SKIP]"
+        return 0
+    fi
+
+    local MCP_OPERATOR_URL="https://github.com/kubernetes-sigs/mcp-lifecycle-operator/releases/latest/download/install.yaml"
+
+    print_step "Deploying MCP Lifecycle Operator from kubernetes-sigs..."
+    if kubectl apply -f "$MCP_OPERATOR_URL" &>/dev/null; then
+        print_success "MCP Lifecycle Operator deployed"
+    else
+        print_warning "Could not install MCP Lifecycle Operator — MCP Catalog will not appear in AI Hub"
+        return 1
+    fi
+
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        if oc get pods -n mcp-lifecycle-operator-system 2>/dev/null | grep -q "1/1.*Running"; then
+            print_success "MCP Lifecycle Operator is running"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_warning "MCP Lifecycle Operator not ready yet — check: oc get pods -n mcp-lifecycle-operator-system"
+}
+
+# MCP Catalog prerequisites — the catalog creates MCPServer CRs but does NOT
+# auto-create the ServiceAccount, RBAC, or config ConfigMap the server pod needs.
+# Call this before deploying from the catalog in any namespace.
+setup_mcp_catalog_prerequisites() {
+    local namespace="${1:?Namespace required}"
+
+    print_step "Setting up MCP Catalog prerequisites in $namespace..."
+
+    if ! oc get sa mcp-viewer -n "$namespace" &>/dev/null; then
+        print_step "Creating mcp-viewer ServiceAccount..."
+        oc create serviceaccount mcp-viewer -n "$namespace"
+        oc create clusterrolebinding "mcp-viewer-${namespace}" \
+            --clusterrole=view \
+            --serviceaccount="${namespace}:mcp-viewer" 2>/dev/null || true
+        print_success "mcp-viewer ServiceAccount + view ClusterRoleBinding created"
+    else
+        print_success "mcp-viewer ServiceAccount already exists [SKIP]"
+    fi
+
+    if ! oc get configmap openshift-mcp-server-config -n "$namespace" &>/dev/null; then
+        print_step "Creating openshift-mcp-server-config ConfigMap..."
+        cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-mcp-server-config
+  namespace: $namespace
+data:
+  config.toml: |
+    port = "8080"
+    read_only = true
+    stateless = true
+    toolsets = ["core", "config", "openshift"]
+EOF
+        print_success "openshift-mcp-server-config ConfigMap created"
+    else
+        print_success "openshift-mcp-server-config ConfigMap already exists [SKIP]"
+    fi
 }
 
 create_inference_gateway() {
-    print_step "Creating inference Gateway for llm-d/MaaS..."
-    
+    print_step "Creating inference Gateways for llm-d/MaaS..."
+
     get_cluster_domain
-    
-    # Create GatewayClass for OpenShift Gateway Controller
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-gateway-controller
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
-    
-    # Create maas-default-gateway (required for MaaS component)
-    print_step "Creating maas-default-gateway..."
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: maas-default-gateway
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-gateway-controller
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: maas-api.apps.${CLUSTER_DOMAIN}
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: apps-wildcard-tls
-        mode: Terminate
-EOF
-    
-    # Also create openshift-ai-inference gateway for llm-d
+
+    # GatewayClass for OpenShift Gateway Controller
+    if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then
+        print_step "Creating openshift-gateway-controller GatewayClass..."
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
+    fi
+
+    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins)
+    print_step "Applying gateway resource overrides (2Gi memory limit)..."
+    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+
+    # MaaS Gateway - MUST have both annotations for MaaS controller to work in 3.4:
+    #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
+    #   security.opendatahub.io/authorino-tls-bootstrap: "true" - enables TLS to Authorino
+    print_step "Creating maas-default-gateway with MaaS annotations..."
+    export CERT_NAME="default-gateway-tls"
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc apply -f -
+
+    # llm-d inference gateway (for direct model access outside MaaS)
     print_step "Creating openshift-ai-inference gateway..."
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
-    
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: inference-gateway.apps.${CLUSTER_DOMAIN}
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: apps-wildcard-tls
-        mode: Terminate
-EOF
-    
+    if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
+    fi
+
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
+
+    # Create default-gateway-tls secret for the HTTPS listeners
+    # Without this, Envoy never creates the port 443 listener and the gateway returns 503
+    create_gateway_tls_secret
+
+    # Create passthrough Route so *.apps.<cluster> wildcard DNS reaches the gateway
+    # The gateway gets its own LoadBalancer ELB, but *.apps.<cluster> DNS points to the
+    # default OpenShift Router. A passthrough Route bridges the two.
+    create_gateway_passthrough_routes
+
     print_success "Gateways created"
-    print_info "MaaS endpoint: https://maas-api.apps.${CLUSTER_DOMAIN}"
+    print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
     print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"
+}
+
+create_gateway_tls_secret() {
+    if oc get secret default-gateway-tls -n openshift-ingress &>/dev/null; then
+        print_success "default-gateway-tls secret already exists"
+        return 0
+    fi
+
+    print_step "Creating default-gateway-tls secret for gateway HTTPS listeners..."
+
+    # Strategy 1: Use cert-manager Certificate CR if a ClusterIssuer exists
+    local issuer
+    issuer=$(oc get clusterissuers -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "$issuer" ]; then
+        print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
+        export ISSUER_NAME="$issuer"
+        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc apply -f -
+        print_step "Waiting for cert-manager to generate TLS secret..."
+        local wait=0
+        while [ $wait -lt 120 ]; do
+            if oc get secret default-gateway-tls -n openshift-ingress &>/dev/null; then
+                print_success "default-gateway-tls created by cert-manager"
+                return 0
+            fi
+            sleep 5
+            wait=$((wait + 5))
+        done
+        print_warning "cert-manager did not create secret within 120s"
+    fi
+
+    # Strategy 2: Copy from existing wildcard cert (e.g. cert-manager-ingress-cert)
+    local wildcard_secrets=("cert-manager-ingress-cert" "router-certs-default")
+    for src in "${wildcard_secrets[@]}"; do
+        if oc get secret "$src" -n openshift-ingress &>/dev/null 2>&1; then
+            local cert_cn
+            cert_cn=$(oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.crt}' 2>/dev/null \
+                | base64 -d 2>/dev/null | openssl x509 -noout -subject 2>/dev/null || true)
+            if echo "$cert_cn" | grep -q "${CLUSTER_DOMAIN}"; then
+                print_info "Copying wildcard cert from '$src'..."
+                local tmpdir_cert
+                tmpdir_cert=$(mktemp -d)
+                oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.crt}' | base64 -d > "$tmpdir_cert/tls.crt"
+                oc get secret "$src" -n openshift-ingress -o jsonpath='{.data.tls\.key}' | base64 -d > "$tmpdir_cert/tls.key"
+                oc create secret tls default-gateway-tls \
+                    --cert="$tmpdir_cert/tls.crt" --key="$tmpdir_cert/tls.key" \
+                    -n openshift-ingress --dry-run=client -o yaml | \
+                    oc label --local -f - app.kubernetes.io/managed-by=rhoai-toolkit --dry-run=client -o yaml | \
+                    oc apply -f -
+                rm -rf "$tmpdir_cert"
+                print_success "default-gateway-tls created from '$src'"
+                return 0
+            fi
+        fi
+    done
+
+    # Strategy 3: Check openshift-ingress-operator for router-ca
+    if oc get secret router-ca -n openshift-ingress-operator &>/dev/null 2>&1; then
+        print_info "Using OpenShift router-ca to generate self-signed gateway cert..."
+        local ca_crt ca_key
+        ca_crt=$(oc get secret router-ca -n openshift-ingress-operator -o jsonpath='{.data.tls\.crt}' | base64 -d)
+        ca_key=$(oc get secret router-ca -n openshift-ingress-operator -o jsonpath='{.data.tls\.key}' | base64 -d)
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        echo "$ca_crt" > "$tmpdir/ca.crt"
+        echo "$ca_key" > "$tmpdir/ca.key"
+        openssl req -new -newkey rsa:2048 -nodes \
+            -keyout "$tmpdir/tls.key" -out "$tmpdir/tls.csr" \
+            -subj "/CN=*.apps.${CLUSTER_DOMAIN}" \
+            -addext "subjectAltName=DNS:*.apps.${CLUSTER_DOMAIN},DNS:apps.${CLUSTER_DOMAIN}" 2>/dev/null
+        openssl x509 -req -in "$tmpdir/tls.csr" -CA "$tmpdir/ca.crt" -CAkey "$tmpdir/ca.key" \
+            -CAcreateserial -out "$tmpdir/tls.crt" -days 365 \
+            -extfile <(printf "subjectAltName=DNS:*.apps.${CLUSTER_DOMAIN},DNS:apps.${CLUSTER_DOMAIN}") 2>/dev/null
+        oc create secret tls default-gateway-tls \
+            --cert="$tmpdir/tls.crt" --key="$tmpdir/tls.key" \
+            -n openshift-ingress 2>/dev/null
+        rm -rf "$tmpdir"
+        print_success "default-gateway-tls created (signed by router-ca)"
+        return 0
+    fi
+
+    print_error "Could not create default-gateway-tls — no cert-manager, wildcard cert, or router-ca found"
+    print_info "Create it manually: oc create secret tls default-gateway-tls --cert=tls.crt --key=tls.key -n openshift-ingress"
+    return 1
+}
+
+create_gateway_passthrough_routes() {
+    # The *.apps.<cluster> wildcard DNS points to the default OpenShift Router,
+    # but gateway pods get their own LoadBalancer. A passthrough Route bridges them.
+    local gateways=("maas-default-gateway:maas" "openshift-ai-inference:inference-gateway")
+
+    for entry in "${gateways[@]}"; do
+        local gw_name="${entry%%:*}"
+        local hostname_prefix="${entry##*:}"
+        local route_name="${gw_name}-passthrough"
+        local hostname="${hostname_prefix}.apps.${CLUSTER_DOMAIN}"
+
+        if oc get route "$route_name" -n openshift-ingress &>/dev/null; then
+            print_info "Passthrough route '$route_name' already exists"
+            continue
+        fi
+
+        local svc_name
+        svc_name=$(oc get svc -n openshift-ingress -l "gateway.networking.k8s.io/gateway-name=${gw_name}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+        if [ -z "$svc_name" ]; then
+            print_warning "No service found for gateway '$gw_name' — skipping passthrough route"
+            continue
+        fi
+
+        print_step "Creating passthrough route: ${hostname} → ${svc_name}..."
+        export ROUTE_NAME="$route_name"
+        export HOSTNAME="$hostname"
+        export SERVICE_NAME="$svc_name"
+        envsubst '${ROUTE_NAME} ${HOSTNAME} ${SERVICE_NAME}' \
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc apply -f -
+    done
+    print_success "Gateway passthrough routes configured"
 }
 
 create_hardware_profile() {
     print_step "Creating default GPU hardware profile..."
-    
-    oc apply -f - <<EOF
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: gpu-profile
-  name: gpu-profile
-  namespace: redhat-ods-applications
-spec:
-  identifiers:
-    - defaultCount: '1'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '8'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 12Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 24Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 4
-      minCount: 1
-      resourceType: Accelerator
-EOF
-    
+
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml"
+
     print_success "Hardware profile created"
 }
 
-configure_dsci_observability() {
-    print_step "Configuring DSCI observability (metrics and traces)..."
-    
-    # Wait for DSCI to exist
-    local elapsed=0
-    while [ $elapsed -lt 120 ]; do
-        if oc get dsci default-dsci &>/dev/null; then
-            break
+create_mlflow_server() {
+    print_step "Creating MLflow server instance..."
+
+    if oc get mlflow mlflow &>/dev/null 2>&1; then
+        local mlflow_ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mlflow_ready" = "True" ]; then
+            print_success "MLflow server already exists and is ready"
+            return 0
         fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-    
-    if ! oc get dsci default-dsci &>/dev/null; then
-        print_warning "DSCInitialization not found, skipping observability config"
+        print_info "MLflow server exists but not yet ready"
         return 0
     fi
-    
-    oc patch dsci default-dsci --type=merge -p '{
-        "spec": {
-            "monitoring": {
-                "managementState": "Managed",
-                "namespace": "redhat-ods-monitoring"
-            },
-            "collectorReplicas": 2,
-            "metrics": {
-                "replicas": 1,
-                "storage": {
-                    "retention": "30d",
-                    "size": "5Gi"
-                }
-            },
-            "traces": {
-                "sampleRatio": "0.1",
-                "storage": {
-                    "backend": "pv",
-                    "retention": "168h0m0s"
+
+    if ! oc get crd mlflows.mlflow.opendatahub.io &>/dev/null 2>&1; then
+        print_warning "MLflow CRD not found — MLflow operator may not be ready yet"
+        print_info "You can create it later: oc apply -f <mlflow-cr.yaml>"
+        return 0
+    fi
+
+    oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+
+    print_step "Waiting for MLflow server to be ready..."
+    local wait=0
+    while [ $wait -lt 120 ]; do
+        local ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            local url=$(oc get mlflow mlflow -o jsonpath='{.status.url}' 2>/dev/null)
+            print_success "MLflow server is ready: ${url}"
+            return 0
+        fi
+        sleep 10
+        wait=$((wait + 10))
+    done
+
+    print_warning "MLflow server not ready yet (may still be starting) — check: oc get mlflow mlflow"
+}
+
+verify_maas_deployment() {
+    print_step "Verifying MaaS deployment..."
+
+    # Check MaaS CRDs
+    local maas_crds=$(oc get crd 2>/dev/null | grep -c "maas.opendatahub.io" || echo "0")
+    if [ "$maas_crds" -ge 3 ]; then
+        print_success "MaaS CRDs installed ($maas_crds found)"
+    else
+        print_warning "MaaS CRDs not fully installed yet ($maas_crds found, expected 5)"
+        print_info "Expected CRDs: maassubscriptions, maasauthpolicies, maasmodelrefs, tenants, externalmodels"
+    fi
+
+    # Check Tenant CR
+    local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$tenant_ready" = "True" ]; then
+        print_success "MaaS Tenant 'default-tenant' is Ready"
+    elif [ -n "$tenant_ready" ]; then
+        local tenant_msg=$(oc get tenant default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+        print_warning "MaaS Tenant not ready yet: $tenant_msg"
+    else
+        print_info "MaaS Tenant not found yet (it will be auto-created by the MaaS controller)"
+    fi
+
+    # Check maas-db-config secret
+    print_step "Checking maas-db-config secret..."
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        local has_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null)
+        if [ -n "$has_url" ]; then
+            print_success "maas-db-config secret exists with DB_CONNECTION_URL"
+        else
+            print_warning "maas-db-config secret exists but may be missing DB_CONNECTION_URL key"
+        fi
+    else
+        print_warning "maas-db-config secret NOT found — MaaS Tenant will show Degraded"
+    fi
+
+    # Check User Workload Monitoring
+    local uwm=$(oc get configmap cluster-monitoring-config -n openshift-monitoring \
+        -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep -c "enableUserWorkload: true" || echo "0")
+    if [ "$uwm" -gt 0 ]; then
+        print_success "User Workload Monitoring is enabled"
+    else
+        print_warning "User Workload Monitoring may not be enabled - MaaS requires it"
+    fi
+
+    # Check Gateway
+    local gw_exists=$(oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null && echo "yes" || echo "no")
+    if [ "$gw_exists" = "yes" ]; then
+        local gw_managed=$(oc get gateway maas-default-gateway -n openshift-ingress \
+            -o jsonpath='{.metadata.annotations.opendatahub\.io/managed}' 2>/dev/null)
+        local gw_tls=$(oc get gateway maas-default-gateway -n openshift-ingress \
+            -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/authorino-tls-bootstrap}' 2>/dev/null)
+        if [ "$gw_managed" = "false" ] && [ "$gw_tls" = "true" ]; then
+            print_success "maas-default-gateway has correct annotations"
+        else
+            print_warning "maas-default-gateway missing required annotations"
+            [ "$gw_managed" != "false" ] && print_info "  Missing: opendatahub.io/managed: \"false\""
+            [ "$gw_tls" != "true" ] && print_info "  Missing: security.opendatahub.io/authorino-tls-bootstrap: \"true\""
+        fi
+    else
+        print_warning "maas-default-gateway not found"
+    fi
+
+    # Check Authorino TLS
+    local auth_tls=$(oc get authorino authorino -n kuadrant-system \
+        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
+    if [ "$auth_tls" = "true" ]; then
+        print_success "Authorino TLS listener is enabled"
+    else
+        print_warning "Authorino TLS listener not enabled"
+    fi
+
+    # Check MaaS API health endpoint
+    print_step "Checking MaaS API health endpoint..."
+    local maas_health
+    maas_health=$(curl -sk "https://maas.apps.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null || true)
+    if echo "$maas_health" | grep -q "healthy"; then
+        print_success "MaaS API health endpoint responding: $maas_health"
+    elif [ -n "$maas_health" ]; then
+        print_warning "MaaS API health endpoint returned: $maas_health"
+    else
+        print_info "MaaS API health endpoint not reachable yet (maas-api may still be starting)"
+    fi
+}
+
+################################################################################
+# User Management
+################################################################################
+
+setup_demo_users() {
+    local num_users="${1:-5}"
+    local admin_group="${2:-rhods-admins}"
+    local user_group="${3:-rhods-users}"
+    local password="${4:-openshift}"
+
+    print_step "Setting up ${num_users} demo users with groups '${admin_group}' and '${user_group}'..."
+
+    # Ensure htpasswd is available
+    if ! command -v htpasswd &>/dev/null; then
+        if command -v python3 &>/dev/null; then
+            _htpasswd_add() {
+                local file="$1" user="$2" pass="$3"
+                local hash
+                hash=$(python3 -c "import bcrypt; print(bcrypt.hashpw('${pass}'.encode(), bcrypt.gensalt()).decode())" 2>/dev/null) || \
+                hash=$(python3 -c "import passlib.hash; print(passlib.hash.bcrypt.hash('${pass}'))" 2>/dev/null) || \
+                hash=$(openssl passwd -apr1 "${pass}" 2>/dev/null)
+                echo "${user}:${hash}" >> "$file"
+            }
+        else
+            print_error "htpasswd or python3 required for user creation"
+            return 1
+        fi
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local htpasswd_file="${tmpdir}/htpasswd"
+    touch "$htpasswd_file"
+
+    # Collect existing htpasswd data if it exists
+    if oc get secret htpasswd-secret -n openshift-config &>/dev/null 2>&1; then
+        oc get secret htpasswd-secret -n openshift-config -o jsonpath='{.data.htpasswd}' 2>/dev/null \
+            | base64 -d > "$htpasswd_file" 2>/dev/null || true
+    fi
+
+    local admin_users=""
+    local regular_users=""
+
+    for i in $(seq 1 "$num_users"); do
+        local username="user${i}"
+        if grep -q "^${username}:" "$htpasswd_file" 2>/dev/null; then
+            print_info "User '${username}' already exists in htpasswd — skipping"
+        else
+            if command -v htpasswd &>/dev/null; then
+                htpasswd -bB "$htpasswd_file" "$username" "$password" 2>/dev/null
+            else
+                _htpasswd_add "$htpasswd_file" "$username" "$password"
+            fi
+            print_info "Created user '${username}'"
+        fi
+
+        if [ "$i" -eq 1 ]; then
+            admin_users="${username}"
+        else
+            regular_users="${regular_users:+${regular_users},}${username}"
+        fi
+    done
+
+    # Create/update htpasswd secret
+    oc create secret generic htpasswd-secret \
+        --from-file=htpasswd="$htpasswd_file" \
+        -n openshift-config --dry-run=client -o yaml | oc apply -f -
+
+    # Ensure htpasswd identity provider is configured
+    local has_htpasswd
+    has_htpasswd=$(oc get oauth cluster -o jsonpath='{.spec.identityProviders[?(@.name=="htpasswd")].name}' 2>/dev/null || true)
+    if [ -z "$has_htpasswd" ]; then
+        print_step "Adding htpasswd identity provider to OAuth..."
+        oc patch oauth cluster --type=json -p '[{
+            "op": "add",
+            "path": "/spec/identityProviders/-",
+            "value": {
+                "name": "htpasswd",
+                "type": "HTPasswd",
+                "mappingMethod": "claim",
+                "htpasswd": {
+                    "fileData": {
+                        "name": "htpasswd-secret"
+                    }
                 }
             }
+        }]' 2>/dev/null || {
+            oc patch oauth cluster --type=merge -p '{
+                "spec": {
+                    "identityProviders": [{
+                        "name": "htpasswd",
+                        "type": "HTPasswd",
+                        "mappingMethod": "claim",
+                        "htpasswd": {
+                            "fileData": {
+                                "name": "htpasswd-secret"
+                            }
+                        }
+                    }]
+                }
+            }' 2>/dev/null
         }
-    }'
-    
-    print_success "DSCI observability configured"
-}
-
-setup_kueue_queues() {
-    print_step "Setting up Kueue ClusterQueue and LocalQueue..."
-    
-    # Apply ClusterQueue (includes ResourceFlavors)
-    if [ -f "$ROOT_DIR/lib/manifests/rhoai/kueue-clusterqueue.yaml" ]; then
-        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/kueue-clusterqueue.yaml"
-        print_success "ClusterQueue and ResourceFlavors created"
-    else
-        print_warning "ClusterQueue manifest not found, skipping"
-        return 0
+        print_info "OAuth will restart — users may take 1-2 minutes to become available"
     fi
-    
-    # Create LocalQueue in redhat-ods-applications
-    oc apply -f - <<EOF
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: LocalQueue
-metadata:
-  name: default
-  namespace: redhat-ods-applications
-  annotations:
-    kueue.x-k8s.io/default-queue: "true"
-spec:
-  clusterQueue: default
-EOF
-    
-    print_success "Kueue queues configured"
-}
 
-setup_grafana_dashboard() {
-    print_step "Setting up Grafana OdhApplication and ConsoleLinks..."
-    
-    get_cluster_domain
-    local apps_domain="apps.${CLUSTER_DOMAIN}"
-    
-    # Apply Grafana OdhApplication (template uses CLUSTER_DOMAIN as apps domain)
-    if [ -f "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" ]; then
-        CLUSTER_DOMAIN="$apps_domain" envsubst '$CLUSTER_DOMAIN' \
-            < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f -
-        print_success "Grafana OdhApplication created"
-    else
-        print_warning "Grafana OdhApplication manifest not found"
-    fi
-    
-    # Apply Grafana ConsoleLinks
-    if [ -f "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" ]; then
-        CLUSTER_DOMAIN="$apps_domain" envsubst '$CLUSTER_DOMAIN' \
-            < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f -
-        print_success "Grafana ConsoleLinks created"
-    else
-        print_warning "Grafana ConsoleLinks manifest not found"
-    fi
-}
-
-setup_persesdatasource() {
-    print_step "Setting up PersesDatasource for Thanos metrics..."
-    
-    # Ensure the monitoring namespace exists
-    oc create namespace redhat-ods-monitoring 2>/dev/null || true
-    
-    # Wait for COO/Perses CRD to be available
-    local elapsed=0
-    while [ $elapsed -lt 60 ]; do
-        if oc get crd persesdatasources.perses.dev &>/dev/null; then
-            break
+    # Create groups
+    for grp in "$admin_group" "$user_group"; do
+        if ! oc get group "$grp" &>/dev/null 2>&1; then
+            print_step "Creating group '${grp}'..."
+            oc adm groups new "$grp" 2>/dev/null || true
         fi
-        sleep 5
-        elapsed=$((elapsed + 5))
     done
-    
-    if ! oc get crd persesdatasources.perses.dev &>/dev/null; then
-        print_warning "PersesDatasource CRD not found (COO may not be ready), skipping"
-        return 0
-    fi
-    
-    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
-    
-    print_success "PersesDatasource configured"
-}
 
-deploy_mcp_servers() {
-    print_step "Deploying MCP servers..."
-    
-    if [ -f "$ROOT_DIR/scripts/deploy-mcp-servers.sh" ]; then
-        bash "$ROOT_DIR/scripts/deploy-mcp-servers.sh"
-        print_success "MCP servers deployed"
-    else
-        print_warning "MCP server deployment script not found at scripts/deploy-mcp-servers.sh, skipping"
-    fi
-}
-
-################################################################################
-# MaaS PostgreSQL + TLS Setup
-################################################################################
-
-deploy_postgres_in_cluster() {
-    print_step "Deploying PostgreSQL for MaaS (in-cluster)..."
-
-    local pg_password
-    pg_password=$(openssl rand -base64 16 | tr -d '=+/')
-
-    oc create secret generic postgres-creds \
-        -n redhat-ods-applications \
-        --from-literal=POSTGRES_USER=maas \
-        --from-literal=POSTGRES_PASSWORD="$pg_password" \
-        --from-literal=POSTGRES_DB=maas \
-        --dry-run=client -o yaml | oc apply -f -
-
-    oc apply -f "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml"
-
-    print_step "Waiting for PostgreSQL to be ready..."
-    oc rollout status deployment/postgres -n redhat-ods-applications --timeout=120s 2>/dev/null \
-        || print_warning "PostgreSQL rollout timed out"
-
-    export MAAS_DB_CONNECTION_URL="postgresql://maas:${pg_password}@postgres:5432/maas?sslmode=disable"
-    envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
-
-    oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
-
-    print_success "PostgreSQL deployed and maas-db-config secret created"
-}
-
-setup_maas_database() {
-    print_header "MaaS Database Configuration"
-
-    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
-        print_success "maas-db-config secret already exists"
-        return 0
+    # Add user1 to admin group, rest to user group
+    if [ -n "$admin_users" ]; then
+        print_step "Adding ${admin_users} to '${admin_group}' (admin)..."
+        oc adm groups add-users "$admin_group" "$admin_users" 2>/dev/null || true
+        # Give cluster-admin to admin users for RHOAI dashboard access
+        oc adm policy add-cluster-role-to-user cluster-admin "$admin_users" 2>/dev/null || true
     fi
 
-    if [ -n "${MAAS_DB_URL:-}" ]; then
-        print_step "Using provided PostgreSQL URL..."
-        export MAAS_DB_CONNECTION_URL="$MAAS_DB_URL"
-        envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
-        oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
-        print_success "maas-db-config secret created from provided URL"
-        return 0
+    if [ -n "$regular_users" ]; then
+        local IFS=','
+        for u in $regular_users; do
+            oc adm groups add-users "$user_group" "$u" 2>/dev/null || true
+        done
+        unset IFS
+        print_step "Added ${num_users-1} users to '${user_group}' (regular)"
     fi
 
+    rm -rf "$tmpdir"
+
+    print_success "Demo users created:"
+    echo -e "  ${CYAN}Admin group (${admin_group}):${NC} ${admin_users}"
+    echo -e "  ${CYAN}User group (${user_group}):${NC} ${regular_users}"
+    echo -e "  ${CYAN}Password:${NC} ${password}"
+    echo -e "  ${CYAN}Login:${NC} oc login -u user1 -p ${password}"
     echo ""
-    echo -e "${CYAN}MaaS Subscription Management requires a PostgreSQL database.${NC}"
-    echo -e "${CYAN}This is needed for API key lifecycle and subscription tracking.${NC}"
-    echo ""
-    echo -e "${YELLOW}1)${NC} Deploy PostgreSQL in cluster ${GREEN}[Recommended for sandbox/dev]${NC}"
-    echo -e "${YELLOW}2)${NC} Use external PostgreSQL (enter connection URL)"
-    echo -e "${YELLOW}3)${NC} Skip (Subscriptions/AuthPolicies will not be available)"
-    echo ""
-    echo -n -e "${YELLOW}Select [1]: ${NC}"
-    read -r db_choice
-
-    case "${db_choice:-1}" in
-        1)
-            deploy_postgres_in_cluster
-            ;;
-        2)
-            echo ""
-            echo "  Format: postgresql://user:password@host:5432/dbname?sslmode=require"
-            echo -n -e "${BLUE}PostgreSQL connection URL: ${NC}"
-            read -r pg_url
-            if [ -z "$pg_url" ]; then
-                print_error "No URL provided, skipping MaaS DB setup"
-                return 1
-            fi
-            export MAAS_DB_CONNECTION_URL="$pg_url"
-            envsubst < "$ROOT_DIR/lib/manifests/maas/maas-db-config.yaml.tmpl" | oc apply -f -
-            oc rollout restart deployment/maas-api -n redhat-ods-applications 2>/dev/null || true
-            print_success "maas-db-config secret created"
-            ;;
-        3)
-            print_warning "Skipping MaaS DB setup. Subscriptions and AuthPolicies will not be available."
-            print_info "You can set this up later: oc create secret generic maas-db-config -n redhat-ods-applications --from-literal=DB_CONNECTION_URL='postgresql://...'"
-            return 1
-            ;;
-        *)
-            print_error "Invalid option, skipping"
-            return 1
-            ;;
-    esac
-}
-
-configure_maas_tls() {
-    print_step "Configuring MaaS TLS (Authorino + Gateway)..."
-
-    if ! oc get service authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
-        print_info "Authorino service not found, skipping TLS configuration"
-        return 0
-    fi
-
-    oc annotate service authorino-authorino-authorization \
-        -n kuadrant-system \
-        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-        --overwrite 2>/dev/null || true
-
-    oc patch authorino authorino -n kuadrant-system --type=merge \
-        -p '{"spec":{"listener":{"tls":{"enabled":true,"certSecretRef":{"name":"authorino-server-cert"}}}}}' \
-        2>/dev/null || true
-
-    if oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null; then
-        oc annotate gateway maas-default-gateway -n openshift-ingress \
-            security.opendatahub.io/authorino-tls-bootstrap="true" \
-            --overwrite 2>/dev/null || true
-    fi
-
-    print_success "MaaS TLS configured"
-}
-
-wait_for_maas_tenant() {
-    print_step "Waiting for MaaS Tenant to become Ready..."
-    local timeout=180
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
-        local ready=$(oc get tenants.maas.opendatahub.io default-tenant \
-            -n models-as-a-service \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        if [ "$ready" = "True" ]; then
-            print_success "MaaS Tenant is Ready - Subscriptions and AuthPolicies are now available"
-            return 0
-        fi
-        sleep 10
-        elapsed=$((elapsed + 10))
-        echo -n "."
-    done
-    echo ""
-    print_warning "MaaS Tenant not ready within ${timeout}s"
-    local msg=$(oc get tenants.maas.opendatahub.io default-tenant \
-        -n models-as-a-service \
-        -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
-    if [ -n "$msg" ]; then
-        print_info "Reason: $msg"
-    fi
-    print_info "Check status: oc get tenants.maas.opendatahub.io -n models-as-a-service"
-}
-
-################################################################################
-# EvalHub (TrustyAI) Deployment
-################################################################################
-
-deploy_evalhub() {
-    print_header "EvalHub Deployment (TrustyAI)"
-
-    # Idempotency: skip if already deployed and ready
-    if oc get evalhub evalhub -n redhat-ods-applications &>/dev/null; then
-        local eh_ready=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        if [ "$eh_ready" = "True" ]; then
-            print_info "EvalHub is already deployed and Ready"
-            return 0
-        fi
-        print_info "EvalHub CR exists but not yet Available, checking prerequisites..."
-    fi
-
-    # Verify TrustyAI CRD is available
-    if ! oc get crd evalhubs.trustyai.opendatahub.io &>/dev/null; then
-        print_warning "EvalHub CRD not found. Ensure TrustyAI is Managed in DataScienceCluster."
-        return 1
-    fi
-
-    # Step 1: Create 'evalhub' database in existing PostgreSQL
-    if oc get secret evalhub-db-credentials -n redhat-ods-applications &>/dev/null; then
-        print_info "evalhub-db-credentials secret already exists"
-    else
-        print_step "Creating EvalHub database in existing PostgreSQL..."
-
-        if ! oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
-            print_warning "PostgreSQL not deployed. Run MaaS DB setup first (Option 3 includes it)."
-            print_info "Falling back to SQLite mode..."
-
-            oc apply -f - <<'EOF'
-apiVersion: trustyai.opendatahub.io/v1alpha1
-kind: EvalHub
-metadata:
-  name: evalhub
-  namespace: redhat-ods-applications
-spec:
-  replicas: 1
-  database:
-    type: sqlite
-  providers:
-    - lm-evaluation-harness
-    - garak
-    - guidellm
-    - lighteval
-EOF
-            print_info "EvalHub deployed with SQLite (non-persistent). Upgrade to PostgreSQL by re-running after MaaS DB is set up."
-            # Still wait for it
-            _wait_for_evalhub
-            _setup_evalhub_rbac
-            return 0
-        fi
-
-        local pg_password=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
-        local pg_user=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)
-        local pg_db=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRES_DB}' | base64 -d)
-
-        # Reuse the MaaS PostgreSQL instance (EvalHub tables have their own schema prefix)
-        export EVALHUB_DB_URL="postgres://${pg_user}:${pg_password}@postgres:5432/${pg_db}?sslmode=disable"
-        envsubst < "$ROOT_DIR/lib/manifests/evalhub/evalhub-db-secret.yaml.tmpl" | oc apply -f -
-        print_success "evalhub-db-credentials secret created (sharing MaaS PostgreSQL)"
-    fi
-
-    # Step 2: Deploy EvalHub CR
-    print_step "Deploying EvalHub CR..."
-    oc apply -f "$ROOT_DIR/lib/manifests/evalhub/evalhub-cr.yaml"
-
-    # Step 3: Wait for EvalHub to be ready
-    _wait_for_evalhub
-
-    # Step 4: RBAC for EvalHub service account
-    _setup_evalhub_rbac
-}
-
-_wait_for_evalhub() {
-    print_step "Waiting for EvalHub to become Ready..."
-    local timeout=180
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
-        local ready=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        local phase=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.phase}' 2>/dev/null)
-        if [ "$ready" = "True" ] || [ "$phase" = "Ready" ]; then
-            print_success "EvalHub is Ready"
-            return 0
-        fi
-        sleep 10
-        elapsed=$((elapsed + 10))
-        echo -n "."
-    done
-    echo ""
-    local msg=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
-    print_warning "EvalHub not Ready within ${timeout}s"
-    [ -n "$msg" ] && print_info "Reason: $msg"
-    print_info "Check: oc get evalhub -n redhat-ods-applications -o yaml"
-}
-
-_setup_evalhub_rbac() {
-    print_step "Configuring EvalHub RBAC..."
-
-    # Allow EvalHub SA to access InferenceServices for evaluation
-    oc adm policy add-cluster-role-to-user view \
-        system:serviceaccount:redhat-ods-applications:evalhub \
-        2>/dev/null || true
-
-    oc adm policy add-role-to-user edit \
-        system:serviceaccount:redhat-ods-applications:evalhub \
-        -n redhat-ods-applications \
-        2>/dev/null || true
-
-    print_success "EvalHub RBAC configured"
-}
-
-################################################################################
-
-generate_rhoai_info() {
-    local info_file="$ROOT_DIR/rhoai-info.txt"
-
-    local dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="data-science-gateway")].spec.host}' 2>/dev/null)
-    if [ -z "$dashboard_url" ]; then
-        dashboard_url="data-science-gateway.apps.${CLUSTER_DOMAIN}"
-    fi
-
-    local console_url="console-openshift-console.apps.${CLUSTER_DOMAIN}"
-    local kubeadmin_pw=""
-    local pw_file="$ROOT_DIR/openshift-cluster-install/auth/kubeadmin-password"
-    [ -f "$pw_file" ] && kubeadmin_pw=$(cat "$pw_file")
-
-    local inference_gw=""
-    if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
-        inference_gw="https://inference-gateway.apps.${CLUSTER_DOMAIN}"
-    fi
-
-    local grafana_url=""
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        grafana_url="https://grafana-monitoring.apps.${CLUSTER_DOMAIN}"
-    fi
-
-    local mcp_url=""
-    if [ "$SKIP_MCP" = false ]; then
-        mcp_url="https://mcp.apps.${CLUSTER_DOMAIN}/mcp"
-    fi
-
-    cat > "$info_file" << INFOEOF
-╔════════════════════════════════════════════════════════════════════════════╗
-║                    Red Hat OpenShift AI Information                        ║
-╚════════════════════════════════════════════════════════════════════════════╝
-
-Installation completed: $(date)
-RHOAI Version: 3.4
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-RHOAI DASHBOARD:
-────────────────
-
-URL:      https://${dashboard_url}
-Username: kubeadmin
-Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-GENAI PLAYGROUND:
-─────────────────
-
-Playground: https://${dashboard_url}/gen-ai-studio/playground
-AI Hub:     https://${dashboard_url}/ai-hub
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-API ENDPOINTS:
-──────────────
-
-${inference_gw:+Inference Gateway: ${inference_gw}}
-${grafana_url:+Grafana Dashboards: ${grafana_url}}
-${mcp_url:+MCP Gateway:         ${mcp_url}}
-
-# --- DEPLOYED MODELS (auto-updated) ---
-# Last updated: $(date '+%Y-%m-%d %H:%M')
-
-  (no models deployed yet)
-
-# --- END DEPLOYED MODELS ---
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-OPENSHIFT CONSOLE:
-──────────────────
-
-URL:      https://${console_url}
-Username: kubeadmin
-Password: ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-QUICK STATUS COMMANDS:
-──────────────────────
-
-export KUBECONFIG=${ROOT_DIR}/openshift-cluster-install/auth/kubeconfig
-
-# Or login directly:
-oc login https://api.${CLUSTER_DOMAIN}:6443 -u kubeadmin -p ${kubeadmin_pw:-<see openshift-cluster-install/auth/kubeadmin-password>} --insecure-skip-tls-verify=true
-
-oc get datasciencecluster            # RHOAI status
-oc get inferenceservice -A           # Deployed models
-oc get llminferenceservice -A        # llm-d models
-oc get nodes -l nvidia.com/gpu.present=true   # GPU nodes
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-NOTES:
-──────
-
-- This file contains sensitive information. Keep it secure!
-- RHOAI Dashboard URL changed in 3.3+: uses data-science-gateway instead of rhods-dashboard
-- Deployed models are accessible after cluster restart (pods auto-recover)
-- GPU node may take extra 2-3 min to become Ready after cluster start
-- Model API endpoints are appended below as models are deployed
-- Run ./rhoai-toolkit.sh → A) to setup Let's Encrypt TLS certificates
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INFOEOF
-
-    print_success "Saved RHOAI info to: $info_file"
+    echo -e "  ${YELLOW}Note:${NC} When creating MaaS Subscriptions, set owner group to '${admin_group}' or '${user_group}'"
+    echo -e "  ${YELLOW}Note:${NC} Users may take 1-2 minutes to be available after OAuth restart"
 }
 
 print_summary() {
@@ -1658,43 +2091,78 @@ print_summary() {
     echo -e "${GREEN}║          RHOAI 3.4 Installation Complete!                      ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    
-    local dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="data-science-gateway")].spec.host}' 2>/dev/null)
+
+    # RHOAI 3.4 dashboard URL changed to rh-ai (data-science-gateway auto-redirects)
+    local dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="rh-ai")].spec.host}' 2>/dev/null)
     if [ -z "$dashboard_url" ]; then
-        dashboard_url="data-science-gateway.apps.${CLUSTER_DOMAIN}"
+        dashboard_url=$(oc get route -n redhat-ods-applications -o jsonpath='{.items[?(@.metadata.name=="data-science-gateway")].spec.host}' 2>/dev/null)
     fi
-    
+    if [ -z "$dashboard_url" ]; then
+        dashboard_url="rh-ai.apps.${CLUSTER_DOMAIN}"
+    fi
+
     echo -e "${CYAN}Dashboard URL:${NC} https://${dashboard_url}"
-    
+    echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
+    echo -e "${CYAN}Current User:${NC} $(oc whoami 2>/dev/null)"
+    echo ""
+    echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
+    echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+    echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
+
     if [ "$ENABLE_LLMD" = true ] && [ "$SKIP_RHCL" = false ]; then
+        echo -e "${CYAN}MaaS Gateway:${NC} https://maas.apps.${CLUSTER_DOMAIN}"
         echo -e "${CYAN}Inference Gateway:${NC} https://inference-gateway.apps.${CLUSTER_DOMAIN}"
     fi
-    
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        echo -e "${CYAN}Grafana Dashboards:${NC} https://grafana-monitoring.apps.${CLUSTER_DOMAIN}"
+
+    echo ""
+    echo -e "${GREEN}What's New in 3.4:${NC}"
+    echo "  • MaaS core platform now GA (subscriptions replace tiers, API keys, llm-d)"
+    echo "    Sub-features still TP: vLLM runtime, external OIDC, observability, external model egress"
+    echo "  • MaaS uses OpenShift service-ca for TLS (NOT cert-manager)"
+    echo "  • NeMo Guardrails now Generally Available"
+    echo "  • MLflow Operator is officially a managed DSC component"
+    echo "  • AutoML and AutoRAG available as Technology Preview"
+    echo "  • llm-d: Prometheus metrics, simplified scheduler config"
+    echo "  • MLServer ServingRuntime now GA (scikit-learn, XGBoost, LightGBM, ONNX)"
+    echo "  • OCI-compliant storage for Model Registry"
+    echo ""
+
+    # Show PostgreSQL info
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        if oc get deployment postgres -n redhat-ods-applications &>/dev/null; then
+            echo -e "${YELLOW}PostgreSQL:${NC} POC instance in redhat-ods-applications (NOT for production)"
+            echo "  For production: AWS RDS, Crunchy Operator, or Azure Database for PostgreSQL"
+        else
+            echo -e "${CYAN}PostgreSQL:${NC} External (maas-db-config secret exists)"
+        fi
+        echo ""
     fi
-    
+
+    echo -e "${YELLOW}MaaS Next Steps (new subscription model in 3.4):${NC}"
+    echo "  1. Access dashboard > Settings > verify MaaS is active"
+    echo "  2. Deploy a model and publish to MaaS (creates MaaSModelRef)"
+    echo "  3. Create a MaaS Subscription (dashboard Settings > Subscriptions)"
+    echo "  4. Create a MaaS Authorization Policy (dashboard Settings > Authorization Policies)"
+    echo "  5. Generate API keys for users (dashboard or self-service)"
+    echo "  6. Verify: oc get tenant default-tenant -n models-as-a-service"
+    echo "  7. Verify: oc get maassubscriptions -n models-as-a-service"
+    if [ "$ENABLE_VLLM_MAAS" = true ]; then
+        echo "  • vLLM on MaaS is enabled (TP) - deploy models via MaaS with vLLM runtime"
+    fi
+    if [ "$ENABLE_OBSERVABILITY" = true ]; then
+        echo "  • MaaS observability dashboard is enabled (TP)"
+    fi
     echo ""
-    echo -e "${YELLOW}Next Steps:${NC}"
-    echo "  1. Access the dashboard and verify all components are ready"
-    echo "  2. Create GPU MachineSets if needed: ./scripts/create-gpu-machineset.sh"
-    echo "  3. Deploy a model using the dashboard or CLI"
-    echo "  4. MLflow is GA - use MLflow for experiment tracking"
-    echo "  5. MaaS is GA - deploy models via Models as a Service"
-    echo "  6. Setup TLS certificates: ./rhoai-toolkit.sh → A) TLS Certificate Setup"
-    echo ""
+
     echo -e "${BLUE}Verification commands:${NC}"
     echo "  oc get datasciencecluster"
     echo "  oc get csv -n redhat-ods-operator"
     echo "  oc get hardwareprofiles -n redhat-ods-applications"
-    echo "  oc get clusterqueue,localqueue -A"
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        echo "  oc get csv -n openshift-operators | grep cluster-observability"
-        echo "  oc get persesdatasource -n redhat-ods-monitoring"
-    fi
+    echo "  oc get crd | grep maas.opendatahub.io"
+    echo "  oc get tenant -n models-as-a-service"
+    echo "  oc get gateway maas-default-gateway -n openshift-ingress"
+    echo "  oc get authorino authorino -n kuadrant-system -o jsonpath='{.spec.listener.tls}'"
     echo ""
-
-    generate_rhoai_info
 }
 
 ################################################################################
@@ -1702,7 +2170,6 @@ print_summary() {
 ################################################################################
 
 main() {
-    # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
             --skip-prerequisites)
@@ -1721,28 +2188,24 @@ main() {
                 SKIP_MAAS=true
                 shift
                 ;;
-            --skip-maas-db)
-                SKIP_MAAS_DB=true
-                shift
-                ;;
-            --skip-evalhub)
-                SKIP_EVALHUB=true
-                shift
-                ;;
-            --maas-db-url)
-                MAAS_DB_URL="$2"
-                shift 2
-                ;;
-            --skip-observability)
-                SKIP_OBSERVABILITY=true
-                shift
-                ;;
-            --skip-mcp)
-                SKIP_MCP=true
-                shift
-                ;;
             --no-llmd)
                 ENABLE_LLMD=false
+                shift
+                ;;
+            --enable-vllm-maas)
+                ENABLE_VLLM_MAAS=true
+                shift
+                ;;
+            --enable-observability)
+                ENABLE_OBSERVABILITY=true
+                shift
+                ;;
+            --postgres-connection)
+                POSTGRES_CONNECTION="$2"
+                shift 2
+                ;;
+            --skip-maas-db)
+                SKIP_MAAS_DB=true
                 shift
                 ;;
             --channel)
@@ -1757,6 +2220,36 @@ main() {
                 WAIT_TIMEOUT="$2"
                 shift 2
                 ;;
+            --setup-pipelines)
+                SETUP_PIPELINES=true
+                shift
+                ;;
+            --pipeline-namespace)
+                SETUP_PIPELINES=true
+                PIPELINE_NAMESPACE="$2"
+                shift 2
+                ;;
+            --setup-users)
+                SETUP_USERS=true
+                shift
+                ;;
+            --num-users)
+                SETUP_USERS=true
+                NUM_USERS="$2"
+                shift 2
+                ;;
+            --admin-group)
+                ADMIN_GROUP="$2"
+                shift 2
+                ;;
+            --user-group)
+                USER_GROUP="$2"
+                shift 2
+                ;;
+            --user-password)
+                USER_PASSWORD="$2"
+                shift 2
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -1768,102 +2261,83 @@ main() {
                 ;;
         esac
     done
-    
+
     print_banner
     check_prerequisites
     get_cluster_domain
-    
-    # Scale up cluster nodes first (workers + GPU)
+    create_admin_user
+
     if [ "$SKIP_NODE_SCALING" = false ]; then
         scale_cluster_nodes
     else
         print_info "Skipping node scaling (--skip-node-scaling)"
     fi
-    
-    # Install prerequisite operators
+
     if [ "$SKIP_PREREQUISITES" = false ]; then
         install_nfd_operator
         install_gpu_operator
         install_kueue_operator
         install_certmanager_operator
-        
+
         if [ "$ENABLE_LLMD" = true ]; then
             install_lws_operator
         fi
     fi
-    
-    # Install RHCL for MaaS/llm-d auth
-    if [ "$SKIP_RHCL" = false ]; then
+
+    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
         install_rhcl_operator
-        
-        # Create gateways BEFORE DSC (MaaS requires maas-default-gateway to exist)
         create_inference_gateway
-    fi
-    
-    # Install observability operators (COO, OpenTelemetry, Tempo)
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        install_coo_operator
-        install_opentelemetry_operator
-        install_tempo_operator
+    elif [ "$SKIP_RHCL" = false ]; then
+        install_rhcl_operator
     else
-        print_info "Skipping observability operators (--skip-observability)"
+        print_info "Skipping RHCL/MaaS (--skip-rhcl or --skip-maas)"
     fi
-    
-    # Install JobSet (required for Trainer v2)
-    if [ "$SKIP_PREREQUISITES" = false ]; then
-        install_jobset_operator
-    fi
-    
-    # Enable monitoring
+
     enable_user_workload_monitoring
-    
-    # Install RHOAI
+
     install_rhoai_operator
     create_datasciencecluster
-    
-    # Configure DSCI observability (metrics and traces)
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        configure_dsci_observability
-    fi
-    
-    # Post-installation configuration
+
     enable_dashboard_features
-    
-    # MaaS database setup (PostgreSQL + Authorino TLS → Tenant Ready)
-    if [ "$SKIP_MAAS" = false ] && [ "$SKIP_MAAS_DB" = false ]; then
-        setup_maas_database
-        configure_maas_tls
-        wait_for_maas_tenant
-    elif [ "$SKIP_MAAS_DB" = true ]; then
-        print_info "Skipping MaaS DB setup (--skip-maas-db)"
-    fi
-    
-    # Deploy EvalHub (TrustyAI)
-    if [ "$SKIP_EVALHUB" = false ]; then
-        deploy_evalhub
-    else
-        print_info "Skipping EvalHub deployment (--skip-evalhub)"
-    fi
-    
+    install_mcp_lifecycle_operator
     create_hardware_profile
-    
-    # Setup Kueue ClusterQueue and LocalQueue for GPU scheduling
-    setup_kueue_queues
-    
-    # Setup observability dashboards
-    if [ "$SKIP_OBSERVABILITY" = false ]; then
-        setup_grafana_dashboard
-        setup_persesdatasource
+    create_mlflow_server
+
+    # MaaS DB + TLS setup (3.4) - must run after RHCL and gateway are created
+    # DB secret must exist BEFORE modelsAsService becomes Managed (or restart maas-api after)
+    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
+        if [ "$SKIP_MAAS_DB" = false ]; then
+            setup_maas_database
+        else
+            print_info "Skipping MaaS DB setup (--skip-maas-db)"
+            if ! oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+                print_warning "maas-db-config secret not found — MaaS Tenant will show Degraded"
+                print_info "Create it with: oc create secret generic maas-db-config \\"
+                print_info "  --from-literal=DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require' \\"
+                print_info "  -n redhat-ods-applications"
+            fi
+        fi
+        configure_maas_tls
+        configure_maas_rate_limiting
+        verify_maas_deployment
     fi
-    
-    # Deploy MCP servers
-    if [ "$SKIP_MCP" = false ]; then
-        deploy_mcp_servers
-    else
-        print_info "Skipping MCP server deployment (--skip-mcp)"
+
+    # Observability stack (COO + gateway telemetry)
+    if [ "$ENABLE_OBSERVABILITY" = true ]; then
+        install_coo_operator
+        configure_gateway_telemetry
     fi
-    
+
+    if [ "$SETUP_PIPELINES" = true ]; then
+        setup_pipeline_server "$PIPELINE_NAMESPACE"
+    fi
+
+    if [ "$SETUP_USERS" = true ]; then
+        setup_demo_users "$NUM_USERS" "$ADMIN_GROUP" "$USER_GROUP" "$USER_PASSWORD"
+    fi
+
     print_summary
 }
 
 main "$@"
+exit 0

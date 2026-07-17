@@ -1,0 +1,14 @@
+# ResourceFlavor for GPU nodes — basic variant (no ODH labels)
+# Used when Kueue managementState is Unmanaged.
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: nvidia-gpu-flavor
+spec:
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule

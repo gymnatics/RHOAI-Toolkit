@@ -1,0 +1,128 @@
+# n8n Workflow Automation Deployment
+#
+# Usage:
+#   export NAMESPACE=n8n N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
+#   envsubst < n8n.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: n8n-data
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-config
+  namespace: ${NAMESPACE}
+data:
+  N8N_PORT: "5678"
+  N8N_PROTOCOL: "https"
+  N8N_SECURE_COOKIE: "false"
+  GENERIC_TIMEZONE: "UTC"
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  N8N_PERSONALIZATION_ENABLED: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: n8n-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  N8N_ENCRYPTION_KEY: "${N8N_ENCRYPTION_KEY}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n
+  namespace: ${NAMESPACE}
+  labels:
+    app: n8n
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: n8n
+  template:
+    metadata:
+      labels:
+        app: n8n
+    spec:
+      containers:
+        - name: n8n
+          image: docker.io/n8nio/n8n:latest
+          ports:
+            - containerPort: 5678
+              name: http
+          envFrom:
+            - configMapRef:
+                name: n8n-config
+            - secretRef:
+                name: n8n-secret
+          volumeMounts:
+            - name: data
+              mountPath: /home/node/.n8n
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: n8n-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: n8n
+  namespace: ${NAMESPACE}
+  labels:
+    app: n8n
+spec:
+  selector:
+    app: n8n
+  ports:
+    - name: http
+      port: 5678
+      targetPort: 5678
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: n8n
+  namespace: ${NAMESPACE}
+  labels:
+    app: n8n
+spec:
+  to:
+    kind: Service
+    name: n8n
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

@@ -1,0 +1,13 @@
+services:
+  microloan-app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/app.py:/app/backend/app.py
+      - ./index.html:/app/index.html
+      - ./styles.css:/app/styles.css
+      - ./app.js:/app/app.js
+    restart: unless-stopped

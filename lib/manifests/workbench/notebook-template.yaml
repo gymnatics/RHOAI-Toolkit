@@ -1,0 +1,124 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${WORKBENCH_NAME}-storage
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: ${PVC_SIZE}
+---
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  annotations:
+    notebooks.opendatahub.io/inject-auth: "true"
+    notebooks.opendatahub.io/last-image-selection: "${WORKBENCH_IMAGE}"
+    opendatahub.io/hardware-profile-name: ${HARDWARE_PROFILE_NAME}
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-resource-version: "${HARDWARE_PROFILE_RV}"
+    opendatahub.io/image-display-name: "${IMAGE_DISPLAY_NAME}"
+    opendatahub.io/user: admin
+    opendatahub.io/username: admin
+    openshift.io/display-name: "${DISPLAY_NAME}"
+  labels:
+    app: ${WORKBENCH_NAME}
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/odh-managed: "true"
+  name: ${WORKBENCH_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  template:
+    spec:
+      containers:
+      - env:
+        - name: NOTEBOOK_ARGS
+          value: |-
+            --ServerApp.port=8888
+                              --ServerApp.token=''
+                              --ServerApp.password=''
+                              --ServerApp.base_url=/notebook/${NAMESPACE}/${WORKBENCH_NAME}
+                              --ServerApp.quit_button=False
+        - name: JUPYTER_IMAGE
+          value: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/${WORKBENCH_IMAGE}
+        - name: GIT_SSL_CAINFO
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: PIP_CERT
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: REQUESTS_CA_BUNDLE
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: SSL_CERT_FILE
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: PIPELINES_SSL_SA_CERTS
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: KF_PIPELINES_SSL_SA_CERTS
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        envFrom:
+        - configMapRef:
+            name: notebook-env
+        image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/${WORKBENCH_IMAGE}
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /notebook/${NAMESPACE}/${WORKBENCH_NAME}/api
+            port: notebook-port
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: ${WORKBENCH_NAME}
+        ports:
+        - containerPort: 8888
+          name: notebook-port
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /notebook/${NAMESPACE}/${WORKBENCH_NAME}/api
+            port: notebook-port
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "${CPU_LIMIT}"
+            memory: ${MEMORY_LIMIT}
+          requests:
+            cpu: "${CPU_REQUEST}"
+            memory: ${MEMORY_REQUEST}
+        volumeMounts:
+        - mountPath: /opt/app-root/src/
+          name: ${WORKBENCH_NAME}-storage
+        - mountPath: /dev/shm
+          name: shm
+        - mountPath: /etc/pki/tls/custom-certs
+          name: trusted-ca
+          readOnly: true
+        - mountPath: /opt/app-root/pipeline-runtimes/
+          name: runtime-images
+        workingDir: /opt/app-root/src
+      enableServiceLinks: false
+      volumes:
+      - name: ${WORKBENCH_NAME}-storage
+        persistentVolumeClaim:
+          claimName: ${WORKBENCH_NAME}-storage
+      - emptyDir:
+          medium: Memory
+        name: shm
+      - configMap:
+          name: workbench-trusted-ca-bundle
+          optional: true
+        name: trusted-ca
+      - configMap:
+          name: pipeline-runtime-images
+          optional: true
+        name: runtime-images

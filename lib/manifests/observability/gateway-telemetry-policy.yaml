@@ -1,0 +1,13 @@
+# Kuadrant TelemetryPolicy for MaaS gateway
+# Adds per-model, per-user, per-subscription labels to gateway metrics
+---
+apiVersion: extensions.kuadrant.io/v1alpha1
+kind: TelemetryPolicy
+metadata:
+  name: maas-telemetry
+  namespace: openshift-ingress
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway

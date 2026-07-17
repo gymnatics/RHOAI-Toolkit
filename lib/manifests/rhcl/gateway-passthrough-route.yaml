@@ -1,0 +1,21 @@
+# Passthrough Route: bridges *.apps.<cluster> DNS (OpenShift Router) to gateway LoadBalancer
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ${ROUTE_NAME}
+  namespace: openshift-ingress
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+  annotations:
+    haproxy.router.openshift.io/timeout: 300s
+spec:
+  host: ${HOSTNAME}
+  to:
+    kind: Service
+    name: ${SERVICE_NAME}
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect

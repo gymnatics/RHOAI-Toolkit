@@ -10,20 +10,36 @@ source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
-# Get RHOAI channel based on version (fallback/default mapping)
+# Resolve RHOAI OLM channel for a given version by querying the cluster catalog.
+# Priority: stable-<version> > fast-<major>.x > cluster default > hardcoded fallback
 get_rhoai_channel() {
     local version="$1"
-    
-    case "$version" in
-        2.17|2.18) echo "stable-2.18" ;;
-        2.19|2.20) echo "stable-2.20" ;;
-        2.21) echo "stable-2.21" ;;
-        2.22) echo "stable-2.22" ;;
-        2.23) echo "stable-2.23" ;;
-        2.24|2.25) echo "stable" ;;
-        3.0|3.1|3.2|3.3|3.4) echo "stable-3.x" ;;
-        *) echo "stable" ;;
-    esac
+
+    local channels
+    channels=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+        -o jsonpath='{.status.channels[*].name}' 2>/dev/null)
+
+    if [ -n "$channels" ]; then
+        if echo "$channels" | tr ' ' '\n' | grep -qx "stable-${version}"; then
+            echo "stable-${version}"
+            return 0
+        fi
+        local major="${version%%.*}"
+        if echo "$channels" | tr ' ' '\n' | grep -qx "fast-${major}.x"; then
+            echo "fast-${major}.x"
+            return 0
+        fi
+        local default_ch
+        default_ch=$(oc get packagemanifest rhods-operator -n openshift-marketplace \
+            -o jsonpath='{.status.defaultChannel}' 2>/dev/null)
+        if [ -n "$default_ch" ]; then
+            echo "$default_ch"
+            return 0
+        fi
+    fi
+
+    # Cluster unreachable — last-resort fallback
+    echo "fast-3.x"
 }
 
 # Fetch available RHOAI channels from the cluster
@@ -156,7 +172,7 @@ select_rhoai_channel() {
     local choice=""
     
     while true; do
-        read -ep "Select channel (1-$max_idx) [default: $default_idx]: " choice
+        read -p "Select channel (1-$max_idx) [default: $default_idx]: " choice
         choice=$(echo "$choice" | tr -d '[:space:]')
         
         # Use default if empty
@@ -210,7 +226,7 @@ select_install_plan_approval() {
     
     local choice=""
     while true; do
-        read -ep "Select approval mode (1-2) [default: 1]: " choice
+        read -p "Select approval mode (1-2) [default: 1]: " choice
         choice=$(echo "$choice" | tr -d '[:space:]')
         
         # Use default if empty
@@ -271,7 +287,7 @@ install_rhoai_operator_interactive() {
         [ -n "$current_approval" ] && echo "  Upgrade Approval: $current_approval"
         echo ""
         
-        read -ep "Do you want to modify these settings? (y/N): " modify_settings
+        read -p "Do you want to modify these settings? (y/N): " modify_settings
         if [[ ! "$modify_settings" =~ ^[Yy]$ ]]; then
             return 0
         fi
@@ -285,7 +301,7 @@ install_rhoai_operator_interactive() {
         echo ""
         
         local modify_choice=""
-        read -ep "Select option (0-3): " modify_choice
+        read -p "Select option (0-3): " modify_choice
         
         case "$modify_choice" in
             1)
@@ -326,7 +342,7 @@ install_rhoai_operator_interactive() {
             local pending_ip=$(oc get installplan -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.approved==false)].metadata.name}' 2>/dev/null)
             if [ -n "$pending_ip" ]; then
                 print_warning "Pending InstallPlan detected: $pending_ip"
-                read -ep "Approve this InstallPlan now? (y/N): " approve_ip
+                read -p "Approve this InstallPlan now? (y/N): " approve_ip
                 if [[ "$approve_ip" =~ ^[Yy]$ ]]; then
                     oc patch installplan "$pending_ip" -n redhat-ods-operator \
                         --type merge -p '{"spec":{"approved":true}}'
@@ -356,31 +372,12 @@ install_rhoai_operator_interactive() {
     echo "  Approval: $SELECTED_INSTALL_PLAN_APPROVAL"
     echo ""
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: redhat-ods-operator
-  namespace: redhat-ods-operator
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: $SELECTED_RHOAI_CHANNEL
-  installPlanApproval: $SELECTED_INSTALL_PLAN_APPROVAL
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-namespace.yaml"
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
+    export RHOAI_CHANNEL="$SELECTED_RHOAI_CHANNEL"
+    export INSTALL_PLAN_APPROVAL="$SELECTED_INSTALL_PLAN_APPROVAL"
+    envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    unset RHOAI_CHANNEL INSTALL_PLAN_APPROVAL
     
     # If Manual approval, need to approve the initial InstallPlan
     if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
@@ -457,31 +454,12 @@ install_rhoai_operator() {
     
     print_step "Installing RHOAI Operator (channel: $channel)..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redhat-ods-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: redhat-ods-operator
-  namespace: redhat-ods-operator
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: redhat-ods-operator
-spec:
-  channel: $channel
-  installPlanApproval: Automatic
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-namespace.yaml"
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-operatorgroup.yaml"
+    export RHOAI_CHANNEL="$channel"
+    export INSTALL_PLAN_APPROVAL="Automatic"
+    envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    unset RHOAI_CHANNEL INSTALL_PLAN_APPROVAL
     
     # Wait for operator to be ready
     print_step "Waiting for RHOAI operator to be ready (this may take 2-3 minutes)..."
@@ -550,53 +528,9 @@ initialize_rhoai() {
     # Use replace if exists, apply if not (handles conversion webhook issues better)
     if oc get dscinitialization default-dsci &>/dev/null 2>&1; then
         print_step "DSCInitialization exists but may be in wrong version, replacing..."
-        cat <<EOF | oc replace -f -
-apiVersion: dscinitialization.opendatahub.io/v1
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    managementState: Managed
-    namespace: redhat-ods-monitoring
-  serviceMesh:
-    auth:
-      audiences:
-        - 'https://kubernetes.default.svc'
-    controlPlane:
-      metricsCollection: Istio
-      name: data-science-smcp
-      namespace: istio-system
-    managementState: Managed
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+        oc replace -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-v1-servicemesh.yaml"
     else
-        cat <<EOF | oc apply -f -
-apiVersion: dscinitialization.opendatahub.io/v1
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    managementState: Managed
-    namespace: redhat-ods-monitoring
-  serviceMesh:
-    auth:
-      audiences:
-        - 'https://kubernetes.default.svc'
-    controlPlane:
-      metricsCollection: Istio
-      name: data-science-smcp
-      namespace: istio-system
-    managementState: Managed
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-v1-servicemesh.yaml"
     fi
     
     if [ $? -eq 0 ]; then
@@ -640,21 +574,6 @@ create_datasciencecluster_v2() {
     print_success "DataScienceCluster created with GenAI and MaaS support"
 }
 
-# Create DataScienceCluster (RHOAI 3.4 with GenAI/MaaS/Trainer)
-create_datasciencecluster_v34() {
-    print_header "Creating DataScienceCluster (v34 - RHOAI 3.4)"
-    
-    if oc get datascienceclusters.datasciencecluster.opendatahub.io default-dsc &>/dev/null; then
-        print_success "DataScienceCluster already exists"
-        return 0
-    fi
-    
-    print_step "Creating DataScienceCluster with RHOAI 3.4 components..."
-    apply_manifest "$_RHOAI_LIB_DIR/lib/manifests/rhoai/datasciencecluster-v34.yaml" "DataScienceCluster v34"
-    
-    print_success "DataScienceCluster created with RHOAI 3.4 support"
-}
-
 # Configure RHOAI Dashboard
 configure_rhoai_dashboard() {
     print_header "Configuring RHOAI Dashboard"
@@ -671,6 +590,7 @@ spec:
     disableKServeMetrics: false
     disableLMEval: false
     disableKueue: false
+    mcpCatalog: true
 EOF
     
     print_success "Dashboard configured"
@@ -716,50 +636,9 @@ create_gpu_hardware_profile() {
             # Unset variables
             unset NAMESPACE PROFILE_NAME DISPLAY_NAME DEFAULT_CPU MAX_CPU DEFAULT_MEM MAX_MEM DEFAULT_GPU MAX_GPU
         else
-            print_warning "Template not found at $template_file, using inline YAML"
-            # Fallback to inline YAML if template not found
-            # IMPORTANT: nodeSelector and tolerations must be inside scheduling.node
-            cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: gpu-profile
-  namespace: $namespace
-  annotations:
-    opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '16'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 16Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 64Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-  scheduling:
-    type: Node
-    node:
-      nodeSelector:
-        nvidia.com/gpu.present: 'true'
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-EOF
+            print_warning "Template not found at $template_file, using static manifest"
+            sed "s/namespace: redhat-ods-applications/namespace: $namespace/" \
+                "$_RHOAI_LIB_DIR/lib/manifests/rhoai/hardware-profile-gpu.yaml" | oc apply -f -
         fi
         print_success "GPU hardware profile created in $namespace"
     }
@@ -794,19 +673,7 @@ configure_gpu_resourceflavor() {
         if [[ "$kueue_state" == "Unmanaged" ]]; then
             print_info "Kueue is 'Unmanaged' - creating ResourceFlavor manually..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-basic.yaml"
             
             if oc get resourceflavor nvidia-gpu-flavor &>/dev/null; then
                 print_success "ResourceFlavor created"
@@ -837,17 +704,7 @@ EOF
         
         # Configure with node selector only for now
         print_step "Configuring ResourceFlavor with node selector..."
-        cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
         
         if [ $? -eq 0 ]; then
             print_success "ResourceFlavor configured (will auto-detect GPU nodes when added)"
@@ -872,27 +729,13 @@ EOF
         echo -e "${CYAN}ResourceFlavor needs toleration to schedule GPU workloads.${NC}"
         echo ""
         
-        read -ep "Configure ResourceFlavor with GPU toleration? (Y/n): " add_toleration
+        read -p "Configure ResourceFlavor with GPU toleration? (Y/n): " add_toleration
         add_toleration=${add_toleration:-Y}
         
         if [[ "$add_toleration" =~ ^[Yy]$ ]]; then
             print_step "Updating nvidia-gpu-flavor ResourceFlavor with toleration..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
             
             if [ $? -eq 0 ]; then
                 print_success "ResourceFlavor configured with GPU toleration"
@@ -917,7 +760,7 @@ EOF
         echo -e "${CYAN}Command: oc adm taint nodes -l nvidia.com/gpu.present=true nvidia.com/gpu=:NoSchedule${NC}"
         echo ""
         
-        read -ep "Do you want to taint GPU nodes now? (y/N): " taint_nodes
+        read -p "Do you want to taint GPU nodes now? (y/N): " taint_nodes
         taint_nodes=${taint_nodes:-N}
         
         if [[ "$taint_nodes" =~ ^[Yy]$ ]]; then
@@ -929,21 +772,7 @@ EOF
                 echo ""
                 print_step "Updating ResourceFlavor with toleration..."
                 
-                cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
+                oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
                 
                 if [ $? -eq 0 ]; then
                     print_success "ResourceFlavor configured with GPU toleration"
@@ -958,17 +787,7 @@ EOF
         else
             print_step "Configuring ResourceFlavor without toleration..."
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
             
             if [ $? -eq 0 ]; then
                 print_success "ResourceFlavor configured with node selector only"
@@ -994,21 +813,7 @@ enable_user_workload_monitoring() {
     
     print_step "Creating user workload monitoring ConfigMap..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: user-workload-monitoring-config
-  namespace: openshift-user-workload-monitoring
-data:
-  config.yaml: |
-    prometheus:
-      retention: 24h
-      resources:
-        requests:
-          cpu: 200m
-          memory: 2Gi
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/monitoring/user-workload-monitoring-config.yaml"
     
     print_success "User workload monitoring enabled"
 }
@@ -1034,18 +839,7 @@ enable_cluster_monitoring_for_kserve() {
     
     print_step "Creating/updating cluster-monitoring-config ConfigMap..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
     
     if [ $? -eq 0 ]; then
         print_success "Cluster monitoring configured for KServe metrics"
@@ -1070,7 +864,7 @@ configure_dsci_observability() {
     echo "  • Tempo Operator"
     echo ""
     
-    read -ep "Continue with observability configuration? (Y/n): " continue_obs
+    read -p "Continue with observability configuration? (Y/n): " continue_obs
     continue_obs=${continue_obs:-Y}
     
     if [[ ! "$continue_obs" =~ ^[Yy]$ ]]; then
@@ -1079,45 +873,27 @@ configure_dsci_observability() {
     fi
     
     # Get configuration options
-    read -ep "Metrics retention period [90d]: " metrics_retention
+    read -p "Metrics retention period [90d]: " metrics_retention
     metrics_retention=${metrics_retention:-90d}
     
-    read -ep "Metrics storage size [5Gi]: " metrics_size
+    read -p "Metrics storage size [5Gi]: " metrics_size
     metrics_size=${metrics_size:-5Gi}
     
-    read -ep "Traces sample ratio (0.0-1.0) [0.1]: " trace_ratio
+    read -p "Traces sample ratio (0.0-1.0) [0.1]: " trace_ratio
     trace_ratio=${trace_ratio:-0.1}
     
-    read -ep "Traces retention period [2160h0m0s]: " trace_retention
+    read -p "Traces retention period [2160h0m0s]: " trace_retention
     trace_retention=${trace_retention:-2160h0m0s}
     
     print_step "Updating DSCInitialization with observability settings..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: dscinitialization.opendatahub.io/v2
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    alerting: {}
-    managementState: Managed
-    metrics:
-      replicas: 1
-      storage:
-        retention: $metrics_retention
-        size: $metrics_size
-    namespace: redhat-ods-monitoring
-    traces:
-      sampleRatio: '$trace_ratio'
-      storage:
-        backend: pv
-        retention: $trace_retention
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+    export METRICS_RETENTION="$metrics_retention"
+    export METRICS_SIZE="$metrics_size"
+    export TRACE_RATIO="$trace_ratio"
+    export TRACE_RETENTION="$trace_retention"
+    envsubst '${METRICS_RETENTION} ${METRICS_SIZE} ${TRACE_RATIO} ${TRACE_RETENTION}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/dscinitialization-observability.yaml" | oc apply -f -
+    unset METRICS_RETENTION METRICS_SIZE TRACE_RATIO TRACE_RETENTION
     
     if [ $? -eq 0 ]; then
         print_success "DSCInitialization updated with observability"
@@ -1130,22 +906,21 @@ EOF
     fi
 }
 
-# Setup MCP Servers ConfigMap (per CAI Guide 3.2 Section 2)
-# New JSON format for gen-ai-aa-mcp-servers
+# Setup MCP Servers ConfigMap (per RHOAI 3.4 Gen AI Studio docs)
+# Creates the gen-ai-aa-mcp-servers ConfigMap for Playground MCP tool access
 setup_mcp_servers_configmap() {
     local namespace="${1:-redhat-ods-applications}"
     
     print_header "Setup MCP Servers ConfigMap (RHOAI 3.2+)"
     
     echo ""
-    echo -e "${CYAN}This creates the MCP servers ConfigMap in the new 3.2 format${NC}"
-    echo -e "${CYAN}(per CAI Guide Section 2, Step 5)${NC}"
+    echo -e "${CYAN}This creates the MCP servers ConfigMap for the Gen AI Studio Playground${NC}"
     echo ""
     
     # Check if ConfigMap exists
     if oc get configmap gen-ai-aa-mcp-servers -n "$namespace" &>/dev/null; then
         print_info "MCP servers ConfigMap already exists"
-        read -ep "Replace with default configuration? (y/N): " replace_cm
+        read -p "Replace with default configuration? (y/N): " replace_cm
         if [[ ! "$replace_cm" =~ ^[Yy]$ ]]; then
             print_info "Keeping existing configuration"
             return 0
@@ -1154,19 +929,7 @@ setup_mcp_servers_configmap() {
     
     print_step "Creating MCP servers ConfigMap..."
     
-    cat <<'EOF' | oc apply -f -
-kind: ConfigMap
-apiVersion: v1
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-data:
-  GitHub-MCP-Server: |
-    {
-      "url": "https://api.githubcopilot.com/mcp",
-      "description": "The GitHub MCP server enables exploration and interaction with repositories, code, and developer resources on GitHub. It provides programmatic access to repositories, issues, pull requests, and related project data, allowing automation and integration within development workflows. With this service, developers can query repositories, discover project metadata, and streamline code-related tasks through MCP-compatible tools."
-    }
-EOF
+    oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/mcp/mcp-servers-configmap.yaml"
     
     if [ $? -eq 0 ]; then
         print_success "MCP servers ConfigMap created"
@@ -1179,6 +942,38 @@ EOF
         echo "  oc edit configmap gen-ai-aa-mcp-servers -n $namespace"
     else
         print_error "Failed to create MCP servers ConfigMap"
+    fi
+}
+
+# Create prerequisites for MCP Catalog deployments (MCPServer CRs)
+# The MCP Catalog UI creates MCPServer CRs but does NOT auto-create the
+# ServiceAccount, RBAC, or config ConfigMap that the server image requires.
+setup_mcp_catalog_prerequisites() {
+    local namespace="${1:?Namespace required}"
+
+    print_step "Setting up MCP Catalog prerequisites in $namespace..."
+
+    # ServiceAccount for MCP server read-only cluster access
+    if ! oc get sa mcp-viewer -n "$namespace" &>/dev/null; then
+        print_step "Creating mcp-viewer ServiceAccount..."
+        oc create serviceaccount mcp-viewer -n "$namespace"
+        oc create clusterrolebinding "mcp-viewer-${namespace}" \
+            --clusterrole=view \
+            --serviceaccount="${namespace}:mcp-viewer" 2>/dev/null || true
+        print_success "mcp-viewer ServiceAccount created with view ClusterRole"
+    else
+        print_success "mcp-viewer ServiceAccount already exists [SKIP]"
+    fi
+
+    # Config ConfigMap for OpenShift MCP Server (from MCP Catalog)
+    if ! oc get configmap openshift-mcp-server-config -n "$namespace" &>/dev/null; then
+        print_step "Creating openshift-mcp-server-config ConfigMap..."
+        export NAMESPACE="$namespace"
+        envsubst '${NAMESPACE}' < "$_RHOAI_LIB_DIR/lib/manifests/mcp/mcp-catalog-configmap.yaml" | oc apply -f -
+        unset NAMESPACE
+        print_success "openshift-mcp-server-config ConfigMap created"
+    else
+        print_success "openshift-mcp-server-config ConfigMap already exists [SKIP]"
     fi
 }
 
@@ -1200,14 +995,7 @@ setup_llmd_infrastructure() {
     if oc get gatewayclass openshift-ai-inference &>/dev/null; then
         print_success "GatewayClass already exists"
     else
-        cat <<'EOF' | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
         print_success "GatewayClass created"
     fi
     
@@ -1219,31 +1007,10 @@ EOF
         local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
         print_info "Cluster domain: $cluster_domain"
         
-        cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: inference-gateway.apps.$cluster_domain
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
+        export CLUSTER_DOMAIN="$cluster_domain"
+        export CERT_NAME="default-gateway-tls"
+        envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$_RHOAI_LIB_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
+        unset CLUSTER_DOMAIN CERT_NAME
         print_success "Gateway created"
         print_info "Gateway hostname: inference-gateway.apps.$cluster_domain"
     fi
@@ -1255,17 +1022,7 @@ EOF
     else
         if oc get crd leaderworkersetoperators.operator.openshift.io &>/dev/null; then
             print_step "Creating LeaderWorkerSetOperator instance..."
-            cat <<'EOF' | oc apply -f -
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-  logLevel: Normal
-  operatorLogLevel: Normal
-EOF
+            oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/operators/lws-operator-cr.yaml"
             print_success "LeaderWorkerSetOperator instance created"
         else
             print_warning "LWS Operator not installed (only needed for multi-GPU/MoE deployments)"
@@ -1274,7 +1031,7 @@ EOF
     
     # Step 4: Setup RHCL (Kuadrant) for authentication
     echo ""
-    read -ep "Setup RHCL (Kuadrant) for llm-d authentication? (y/N): " setup_rhcl
+    read -p "Setup RHCL (Kuadrant) for llm-d authentication? (y/N): " setup_rhcl
     if [[ "$setup_rhcl" =~ ^[Yy]$ ]]; then
         setup_rhcl_for_llmd
     else
@@ -1302,7 +1059,7 @@ setup_rhcl_for_llmd() {
         echo "  2. Install 'Red Hat Connectivity Link' operator in kuadrant-system namespace"
         echo "  3. Re-run this setup"
         echo ""
-        read -ep "Create kuadrant-system namespace and continue? (y/N): " create_ns
+        read -p "Create kuadrant-system namespace and continue? (y/N): " create_ns
         if [[ "$create_ns" =~ ^[Yy]$ ]]; then
             oc create namespace kuadrant-system 2>/dev/null || true
             print_info "Namespace created. Please install RHCL operator from OperatorHub"
@@ -1316,13 +1073,7 @@ setup_rhcl_for_llmd() {
     if oc get kuadrant kuadrant -n kuadrant-system &>/dev/null; then
         print_success "Kuadrant instance already exists"
     else
-        cat <<'EOF' | oc apply -f -
-apiVersion: kuadrant.io/v1beta1
-kind: Kuadrant
-metadata:
-  name: kuadrant
-  namespace: kuadrant-system
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
         print_success "Kuadrant instance created"
         sleep 5
     fi
@@ -1341,24 +1092,7 @@ EOF
     # Step 3: Update Authorino for TLS
     print_step "Enabling TLS on Authorino..."
     if oc get authorino authorino -n kuadrant-system &>/dev/null; then
-        cat <<'EOF' | oc apply -f -
-apiVersion: operator.authorino.kuadrant.io/v1beta1
-kind: Authorino
-metadata:
-  name: authorino
-  namespace: kuadrant-system
-spec:
-  replicas: 1
-  clusterWide: true
-  listener:
-    tls:
-      enabled: true
-      certSecretRef:
-        name: authorino-server-cert
-  oidcServer:
-    tls:
-      enabled: false
-EOF
+        oc apply -f "$_RHOAI_LIB_DIR/lib/manifests/rhcl/authorino-tls.yaml"
         print_success "Authorino TLS enabled"
     else
         print_warning "Authorino not found yet (RHCL may still be initializing)"
@@ -1366,7 +1100,7 @@ EOF
     
     # Step 4: Restart controllers to pick up Authorino
     echo ""
-    read -ep "Restart odh-model-controller and kserve-controller? (recommended) (Y/n): " restart_controllers
+    read -p "Restart odh-model-controller and kserve-controller? (recommended) (Y/n): " restart_controllers
     restart_controllers=${restart_controllers:-Y}
     if [[ "$restart_controllers" =~ ^[Yy]$ ]]; then
         print_step "Restarting controllers..."
@@ -1414,7 +1148,7 @@ pin_nvidia_driver_version() {
     echo -e "Current driver version: ${CYAN}${current_driver:-default}${NC}"
     echo ""
     
-    read -ep "Pin driver to version 570.195.03 (CUDA 12.8)? (Y/n): " pin_driver
+    read -p "Pin driver to version 570.195.03 (CUDA 12.8)? (Y/n): " pin_driver
     pin_driver=${pin_driver:-Y}
     
     if [[ "$pin_driver" =~ ^[Yy]$ ]]; then
@@ -1464,7 +1198,7 @@ enable_mlflow_operator() {
         return 0
     fi
     
-    read -ep "Enable MLflow operator? (Y/n): " enable_mlflow
+    read -p "Enable MLflow operator? (Y/n): " enable_mlflow
     enable_mlflow=${enable_mlflow:-Y}
     
     if [[ "$enable_mlflow" =~ ^[Yy]$ ]]; then
@@ -1524,13 +1258,13 @@ deploy_llminferenceservice() {
     # Get namespace
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "default")
-        read -ep "Enter namespace [$current_ns]: " namespace
+        read -p "Enter namespace [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
     # Get model name
     if [ -z "$model_name" ]; then
-        read -ep "Enter model name (e.g., qwen3-sample): " model_name
+        read -p "Enter model name (e.g., qwen3-sample): " model_name
     fi
     
     # Get model URI
@@ -1541,12 +1275,12 @@ deploy_llminferenceservice() {
         echo "  • hf://RedHatAI/Qwen3-8B-FP8-dynamic"
         echo "  • oci://quay.io/redhat-ai-services/modelcar-catalog:llama-3.2-3b-instruct"
         echo ""
-        read -ep "Enter model URI: " model_uri
+        read -p "Enter model URI: " model_uri
     fi
     
     # Authentication option
     echo ""
-    read -ep "Enable authentication? (Y/n): " enable_auth
+    read -p "Enable authentication? (Y/n): " enable_auth
     enable_auth=${enable_auth:-Y}
     local auth_annotation="true"
     if [[ ! "$enable_auth" =~ ^[Yy]$ ]]; then
@@ -1554,55 +1288,23 @@ deploy_llminferenceservice() {
     fi
     
     # GPU resources
-    read -ep "Number of GPUs [1]: " gpu_count
+    read -p "Number of GPUs [1]: " gpu_count
     gpu_count=${gpu_count:-1}
     
-    read -ep "Memory limit [16Gi]: " memory_limit
+    read -p "Memory limit [16Gi]: " memory_limit
     memory_limit=${memory_limit:-16Gi}
     
     print_step "Creating LLMInferenceService '$model_name' in namespace '$namespace'..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: LLMInferenceService
-metadata:
-  name: $model_name
-  namespace: $namespace
-  labels:
-    kueue.x-k8s.io/queue-name: default
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/genai-asset: "true"
-  annotations:
-    security.opendatahub.io/enable-auth: "$auth_annotation"
-spec:
-  replicas: 1
-  model:
-    uri: $model_uri
-    name: $model_name
-  router:
-    route: {}
-    gateway: {}
-    scheduler: {}
-  template:
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    containers:
-    - name: main
-      env:
-        - name: VLLM_ADDITIONAL_ARGS
-          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
-      resources:
-        limits:
-          cpu: '4'
-          memory: $memory_limit
-          nvidia.com/gpu: "$gpu_count"
-        requests:
-          cpu: '1'
-          memory: 8Gi
-          nvidia.com/gpu: "$gpu_count"
-EOF
+    export MODEL_NAME="$model_name"
+    export NAMESPACE="$namespace"
+    export AUTH_ANNOTATION="$auth_annotation"
+    export MODEL_URI="$model_uri"
+    export GPU_COUNT="$gpu_count"
+    export MEMORY_LIMIT="$memory_limit"
+    envsubst '${MODEL_NAME} ${NAMESPACE} ${AUTH_ANNOTATION} ${MODEL_URI} ${GPU_COUNT} ${MEMORY_LIMIT}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/templates/llminferenceservice.yaml.tmpl" | oc apply -f -
+    unset MODEL_NAME NAMESPACE AUTH_ANNOTATION MODEL_URI GPU_COUNT MEMORY_LIMIT
     
     if [ $? -eq 0 ]; then
         print_success "LLMInferenceService created"
@@ -1710,7 +1412,7 @@ deploy_banking_demo() {
     # Check if Feast operator is enabled
     if ! check_feast_operator; then
         print_warning "Feast operator is not enabled"
-        read -ep "Enable Feast operator now? (Y/n): " enable_feast
+        read -p "Enable Feast operator now? (Y/n): " enable_feast
         enable_feast=${enable_feast:-Y}
         
         if [[ "$enable_feast" =~ ^[Yy]$ ]]; then
@@ -1726,7 +1428,7 @@ deploy_banking_demo() {
     # Get namespace
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "banking")
-        read -ep "Enter namespace for banking demo [$current_ns]: " namespace
+        read -p "Enter namespace for banking demo [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
@@ -1755,7 +1457,7 @@ deploy_banking_demo() {
     echo -e "  In feature_repo/permissions.py, change line 47 to:"
     echo -e "  ${CYAN}prod_namespaces = [\"$namespace\"]${NC}"
     echo ""
-    read -ep "Enter your forked repo URL (or press Enter to use original): " custom_url
+    read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
     if [ -n "$custom_url" ]; then
         git_url="$custom_url"
     fi
@@ -1763,7 +1465,7 @@ deploy_banking_demo() {
     # Check if FeatureStore already exists
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
         print_warning "FeatureStore 'banking' already exists in $namespace"
-        read -ep "Delete and recreate? (y/N): " recreate
+        read -p "Delete and recreate? (y/N): " recreate
         if [[ "$recreate" =~ ^[Yy]$ ]]; then
             print_step "Deleting existing FeatureStore..."
             oc delete featurestore "$feast_project" -n "$namespace"
@@ -1777,62 +1479,19 @@ deploy_banking_demo() {
     # Create FeatureStore with version-appropriate configuration
     print_step "Creating FeatureStore 'banking' in namespace '$namespace'..."
     
+    # Two-step approach (from CAI guide): create with restAPI: false first,
+    # wait for pod, then flip to true. Avoids race condition during startup.
+    export FEAST_LABELS="    feature-store-ui: enabled"
     if [ "$rhoai_33_plus" = true ]; then
-        # RHOAI 3.3+ configuration with additional labels
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-    opendatahub.io/dashboard: "true"
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
-    else
-        # RHOAI 3.2 and earlier configuration
-        cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
+        export FEAST_LABELS="    feature-store-ui: enabled
+    opendatahub.io/dashboard: \"true\""
     fi
+    export FEAST_PROJECT="$feast_project"
+    export GIT_REF="$git_ref"
+    export GIT_URL="$git_url"
+    envsubst '${FEAST_LABELS} ${FEAST_PROJECT} ${GIT_REF} ${GIT_URL}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/feast/featurestore-restapi-false.yaml" | oc apply -n "$namespace" -f -
+    unset FEAST_LABELS FEAST_PROJECT GIT_REF GIT_URL
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -1873,10 +1532,17 @@ EOF
     fi
     
     print_success "Feast pod is running: $feast_pod"
+
+    # Step 2: Now enable restAPI (two-step pattern from CAI guide)
+    print_step "Enabling registry REST API (step 2 of 2)..."
+    oc patch featurestore "$feast_project" -n "$namespace" --type=merge \
+        -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
+    print_success "Registry REST API enabled"
+    sleep 10
     
     # Run feast apply
     echo ""
-    read -ep "Run 'feast apply' to register features? (Y/n): " run_apply
+    read -p "Run 'feast apply' to register features? (Y/n): " run_apply
     run_apply=${run_apply:-Y}
     
     if [[ "$run_apply" =~ ^[Yy]$ ]]; then
@@ -1886,7 +1552,7 @@ EOF
             
             # Run feast materialize
             echo ""
-            read -ep "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
+            read -p "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
             run_materialize=${run_materialize:-Y}
             
             if [[ "$run_materialize" =~ ^[Yy]$ ]]; then
@@ -1948,13 +1614,31 @@ EOF
     fi
     echo ""
     
+    # Create workbench + clone repo
+    local _wb_lib="$_RHOAI_LIB_DIR/lib/functions/workbench.sh"
+    if [ -f "$_wb_lib" ]; then
+        source "$_wb_lib"
+        ensure_workbench "$namespace" "feature-store"
+    fi
+
+    # Inject notebook environment
+    local _nb_env_lib="$_RHOAI_LIB_DIR/lib/functions/notebook-env.sh"
+    if [ -f "$_nb_env_lib" ]; then
+        source "$_nb_env_lib"
+        inject_notebook_env "$namespace" \
+            "FEAST_PROJECT=$feast_project" \
+            "FEAST_NAME=$feast_project"
+    fi
+
     # Demo usage instructions
-    echo -e "${CYAN}Demo Usage (from CAI Guide):${NC}"
-    echo "  1. Create a Workbench in the '$namespace' project"
-    echo "     Image: Jupyter | Data Science | CPU | Python 3.12"
-    echo "  2. Clone: $git_url"
-    echo "  3. Copy Feature Store client config from dashboard"
-    echo "  4. Run online_retrieval.ipynb notebook"
+    echo -e "${CYAN}Demo Usage:${NC}"
+    echo "  1. Open the 'feature-store' workbench in the RHOAI dashboard"
+    echo "  2. Copy Feature Store client config from dashboard"
+    echo "  3. Open RHOAI-Toolkit/demo/feast-demo/notebooks/"
+    echo "     feast-online-retrieval.ipynb  -- query features in real time"
+    echo "     feast-banking-complex.ipynb   -- advanced feature engineering"
+    echo ""
+    echo "  Original repo: $git_url"
     echo ""
 }
 
@@ -1981,7 +1665,7 @@ setup_feature_store() {
     # Check if Feast operator is enabled
     if ! check_feast_operator; then
         print_warning "Feast operator is not enabled"
-        read -ep "Enable Feast operator now? (Y/n): " enable_feast
+        read -p "Enable Feast operator now? (Y/n): " enable_feast
         enable_feast=${enable_feast:-Y}
         
         if [[ "$enable_feast" =~ ^[Yy]$ ]]; then
@@ -1995,7 +1679,7 @@ setup_feature_store() {
     # Get namespace if not provided
     if [ -z "$namespace" ]; then
         local current_ns=$(oc project -q 2>/dev/null || echo "default")
-        read -ep "Enter namespace for Feature Store [$current_ns]: " namespace
+        read -p "Enter namespace for Feature Store [$current_ns]: " namespace
         namespace=${namespace:-$current_ns}
     fi
     
@@ -2018,7 +1702,7 @@ setup_feature_store() {
         echo "  1) Use banking demo (https://github.com/RHRolun/banking-feature-store)"
         echo "  2) Enter custom Git URL"
         echo ""
-        read -ep "Choose option [1]: " git_option
+        read -p "Choose option [1]: " git_option
         git_option=${git_option:-1}
         
         if [[ "$git_option" == "1" ]]; then
@@ -2029,25 +1713,25 @@ setup_feature_store() {
             print_warning "For RBAC to work correctly, you should fork this repo and update permissions.py"
             echo -e "${CYAN}In feature_repo/permissions.py, change line 47 to: prod_namespaces = [\"$namespace\"]${NC}"
             echo ""
-            read -ep "Enter your forked repo URL (or press Enter to use original): " custom_url
+            read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
             if [ -n "$custom_url" ]; then
                 git_url="$custom_url"
             fi
         else
-            read -ep "Enter Git repository URL: " git_url
-            read -ep "Enter Feast project name [banking]: " feast_project
+            read -p "Enter Git repository URL: " git_url
+            read -p "Enter Feast project name [banking]: " feast_project
             feast_project=${feast_project:-banking}
         fi
     fi
     
     # Get git ref
-    read -ep "Enter Git branch/ref [$git_ref]: " input_ref
+    read -p "Enter Git branch/ref [$git_ref]: " input_ref
     git_ref=${input_ref:-$git_ref}
     
     # Check if FeatureStore already exists
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
         print_warning "FeatureStore '$feast_project' already exists in $namespace"
-        read -ep "Delete and recreate? (y/N): " recreate
+        read -p "Delete and recreate? (y/N): " recreate
         if [[ "$recreate" =~ ^[Yy]$ ]]; then
             oc delete featurestore "$feast_project" -n "$namespace"
             sleep 5
@@ -2061,39 +1745,18 @@ setup_feature_store() {
     print_step "Creating FeatureStore '$feast_project' in namespace '$namespace'..."
     
     # Determine labels based on RHOAI version
-    local extra_labels=""
+    export EXTRA_LABELS=""
     if type is_rhoai_33_or_higher &>/dev/null && is_rhoai_33_or_higher; then
         # RHOAI 3.3+ requires additional labels for dashboard visibility
-        extra_labels='    opendatahub.io/dashboard: "true"'
+        export EXTRA_LABELS='    opendatahub.io/dashboard: "true"'
         print_info "Adding RHOAI 3.3+ specific labels for dashboard visibility"
     fi
-    
-    cat <<EOF | oc apply -n "$namespace" -f -
-apiVersion: feast.dev/v1alpha1
-kind: FeatureStore
-metadata:
-  labels:
-    feature-store-ui: enabled
-${extra_labels}
-  name: $feast_project
-spec:
-  feastProject: $feast_project
-  feastProjectDir:
-    git:
-      ref: $git_ref
-      url: '$git_url'
-  services:
-    offlineStore:
-      server:
-        logLevel: debug
-    onlineStore:
-      server:
-        logLevel: debug
-    registry:
-      local:
-        server:
-          restAPI: true
-EOF
+    export FEAST_PROJECT="$feast_project"
+    export GIT_REF="$git_ref"
+    export GIT_URL="$git_url"
+    envsubst '${EXTRA_LABELS} ${FEAST_PROJECT} ${GIT_REF} ${GIT_URL}' \
+        < "$_RHOAI_LIB_DIR/lib/manifests/feast/featurestore-restapi-true.yaml" | oc apply -n "$namespace" -f -
+    unset EXTRA_LABELS FEAST_PROJECT GIT_REF GIT_URL
     
     if [ $? -ne 0 ]; then
         print_error "Failed to create FeatureStore"
@@ -2128,7 +1791,7 @@ EOF
         
         # Run feast apply
         echo ""
-        read -ep "Run 'feast apply' to register features? (Y/n): " run_apply
+        read -p "Run 'feast apply' to register features? (Y/n): " run_apply
         run_apply=${run_apply:-Y}
         
         if [[ "$run_apply" =~ ^[Yy]$ ]]; then
@@ -2139,7 +1802,7 @@ EOF
                 print_success "Features registered successfully"
                 
                 # Run feast materialize
-                read -ep "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
+                read -p "Run 'feast materialize' to populate online store? (Y/n): " run_materialize
                 run_materialize=${run_materialize:-Y}
                 
                 if [[ "$run_materialize" =~ ^[Yy]$ ]]; then
@@ -2274,8 +1937,8 @@ diagnose_feature_store_interactive() {
     oc get featurestore -A 2>/dev/null || echo "No FeatureStores found"
     echo ""
     
-    read -ep "Enter namespace: " namespace
-    read -ep "Enter FeatureStore name: " name
+    read -p "Enter namespace: " namespace
+    read -p "Enter FeatureStore name: " name
     
     if [ -z "$namespace" ] || [ -z "$name" ]; then
         print_error "Namespace and name are required"
@@ -2344,15 +2007,15 @@ delete_feature_store() {
     echo ""
     
     if [ -z "$namespace" ]; then
-        read -ep "Enter namespace: " namespace
+        read -p "Enter namespace: " namespace
     fi
     
     if [ -z "$feast_project" ]; then
-        read -ep "Enter FeatureStore name: " feast_project
+        read -p "Enter FeatureStore name: " feast_project
     fi
     
     if oc get featurestore "$feast_project" -n "$namespace" &>/dev/null; then
-        read -ep "Delete FeatureStore '$feast_project' in namespace '$namespace'? (y/N): " confirm
+        read -p "Delete FeatureStore '$feast_project' in namespace '$namespace'? (y/N): " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             oc delete featurestore "$feast_project" -n "$namespace"
             print_success "FeatureStore deleted"
@@ -2403,6 +2066,204 @@ deploy_guardrails_demo() {
 }
 
 ################################################################################
+# MaaS 3.4 Management Functions
+# RHOAI 3.4 uses subscription-based MaaS (replaces 3.3 tier-based model)
+# New CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+################################################################################
+
+# Configure MaaS TLS using OpenShift service-ca (RHOAI 3.4 method)
+# This replaces the cert-manager Certificate approach used in 3.3
+configure_maas_tls_34() {
+    print_header "Configuring MaaS TLS (RHOAI 3.4 service-ca method)"
+
+    print_step "Step 1: Annotating Authorino service for service-ca cert generation..."
+    oc annotate service authorino-authorino-authorization \
+        -n kuadrant-system \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        --overwrite
+
+    print_step "Step 2: Waiting for authorino-server-cert secret..."
+    local elapsed=0
+    while [ $elapsed -lt 60 ]; do
+        if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+            print_success "authorino-server-cert secret generated"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    print_step "Step 3: Patching Authorino CR for TLS listener..."
+    oc patch authorino authorino -n kuadrant-system --type=merge --patch '{
+      "spec": {
+        "listener": {
+          "tls": {
+            "enabled": true,
+            "certSecretRef": {
+              "name": "authorino-server-cert"
+            }
+          }
+        }
+      }
+    }'
+
+    print_step "Step 4: Setting TLS cert validation env vars on Authorino deployment..."
+    oc -n kuadrant-system set env deployment/authorino \
+        SSL_CERT_FILE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
+        REQUESTS_CA_BUNDLE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt
+
+    print_step "Step 5: Annotating maas-default-gateway for TLS bootstrap..."
+    oc annotate gateway maas-default-gateway \
+        -n openshift-ingress \
+        security.opendatahub.io/authorino-tls-bootstrap="true" \
+        --overwrite
+
+    print_success "MaaS TLS configuration complete (service-ca method)"
+}
+
+# Verify the full MaaS 3.4 deployment
+verify_maas_34() {
+    print_header "Verifying MaaS 3.4 Deployment"
+
+    local all_ok=true
+
+    # PostgreSQL DB secret
+    print_step "Checking maas-db-config secret..."
+    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+        local has_url=$(oc get secret maas-db-config -n redhat-ods-applications \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null)
+        if [ -n "$has_url" ]; then
+            print_success "  maas-db-config secret with DB_CONNECTION_URL"
+        else
+            print_warning "  maas-db-config exists but missing DB_CONNECTION_URL key"
+            all_ok=false
+        fi
+    else
+        print_warning "  maas-db-config secret not found (MaaS Tenant will be Degraded)"
+        all_ok=false
+    fi
+
+    # CRDs
+    print_step "Checking MaaS CRDs..."
+    local expected_crds=("maassubscriptions.maas.opendatahub.io" "maasauthpolicies.maas.opendatahub.io" "maasmodelrefs.maas.opendatahub.io" "externalmodels.maas.opendatahub.io" "tenants.maas.opendatahub.io")
+    for crd in "${expected_crds[@]}"; do
+        if oc get crd "$crd" &>/dev/null; then
+            print_success "  CRD: $crd"
+        else
+            print_warning "  CRD missing: $crd"
+            all_ok=false
+        fi
+    done
+
+    # User Workload Monitoring
+    print_step "Checking User Workload Monitoring..."
+    local uwm=$(oc get configmap cluster-monitoring-config -n openshift-monitoring \
+        -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep -c "enableUserWorkload: true" || echo "0")
+    if [ "$uwm" -gt 0 ]; then
+        print_success "  User Workload Monitoring enabled"
+    else
+        print_warning "  User Workload Monitoring not enabled (MaaS Tenant may show Degraded)"
+        all_ok=false
+    fi
+
+    # Tenant
+    print_step "Checking Tenant CR..."
+    local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$tenant_ready" = "True" ]; then
+        print_success "  Tenant default-tenant is Ready"
+    else
+        local tenant_msg=$(oc get tenant default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+        print_warning "  Tenant status: ${tenant_ready:-not found} - ${tenant_msg:-no message}"
+        all_ok=false
+    fi
+
+    # Gateway annotations
+    print_step "Checking maas-default-gateway annotations..."
+    local gw_managed=$(oc get gateway maas-default-gateway -n openshift-ingress \
+        -o jsonpath='{.metadata.annotations.opendatahub\.io/managed}' 2>/dev/null)
+    local gw_tls=$(oc get gateway maas-default-gateway -n openshift-ingress \
+        -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/authorino-tls-bootstrap}' 2>/dev/null)
+    if [ "$gw_managed" = "false" ] && [ "$gw_tls" = "true" ]; then
+        print_success "  Gateway annotations correct"
+    else
+        print_warning "  Gateway annotations incorrect or missing"
+        all_ok=false
+    fi
+
+    # Authorino TLS
+    print_step "Checking Authorino TLS..."
+    local auth_tls=$(oc get authorino authorino -n kuadrant-system \
+        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
+    if [ "$auth_tls" = "true" ]; then
+        print_success "  Authorino TLS listener enabled"
+    else
+        print_warning "  Authorino TLS listener not enabled"
+        all_ok=false
+    fi
+
+    local auth_cert=$(oc get secret authorino-server-cert -n kuadrant-system &>/dev/null && echo "yes" || echo "no")
+    if [ "$auth_cert" = "yes" ]; then
+        print_success "  authorino-server-cert secret exists"
+    else
+        print_warning "  authorino-server-cert secret not found"
+        all_ok=false
+    fi
+
+    # Dashboard flags
+    print_step "Checking dashboard MaaS flags..."
+    local maas_flag=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.modelAsService}' 2>/dev/null)
+    local auth_policies_flag=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.maasAuthPolicies}' 2>/dev/null)
+    if [ "$maas_flag" = "true" ] && [ "$auth_policies_flag" = "true" ]; then
+        print_success "  Dashboard: modelAsService=true, maasAuthPolicies=true"
+    else
+        print_warning "  Dashboard MaaS flags: modelAsService=$maas_flag, maasAuthPolicies=$auth_policies_flag"
+        all_ok=false
+    fi
+
+    echo ""
+    if [ "$all_ok" = true ]; then
+        print_success "MaaS 3.4 deployment fully verified"
+    else
+        print_warning "MaaS 3.4 deployment has issues - check warnings above"
+    fi
+}
+
+# List MaaS subscriptions
+list_maas_subscriptions() {
+    print_header "MaaS Subscriptions"
+    oc get maassubscriptions -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No subscriptions found or MaaS namespace not created yet"
+}
+
+# List MaaS authorization policies
+list_maas_auth_policies() {
+    print_header "MaaS Authorization Policies"
+    oc get maasauthpolicies -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No authorization policies found"
+}
+
+# List MaaS model references
+list_maas_models() {
+    print_header "MaaS Model References"
+    oc get maasmodelrefs -A -o wide 2>/dev/null || \
+        print_info "No model references found"
+}
+
+# Show MaaS Tenant status
+show_maas_tenant() {
+    print_header "MaaS Tenant Status"
+    oc get tenant -n models-as-a-service -o wide 2>/dev/null || \
+        print_info "No tenant found"
+    echo ""
+    oc get tenant default-tenant -n models-as-a-service -o yaml 2>/dev/null | \
+        grep -A 20 "status:" || true
+}
+
+################################################################################
 # MaaS Demo
 ################################################################################
 
@@ -2423,7 +2284,7 @@ run_maas_demo() {
     echo "   Test MaaS API with existing token"
     echo ""
     
-    read -ep "Select option (1-3): " demo_option
+    read -p "Select option (1-3): " demo_option
     
     case $demo_option in
         1)
@@ -2453,7 +2314,7 @@ run_maas_demo() {
                 echo ""
                 echo "Requirements: pip install streamlit requests"
                 echo ""
-                read -ep "Start web demo? (y/n): " start_web
+                read -p "Start web demo? (y/n): " start_web
                 if [[ "$start_web" =~ ^[Yy]$ ]]; then
                     cd "$(dirname "$app_path")"
                     streamlit run app.py
@@ -2481,5 +2342,706 @@ run_maas_demo() {
             print_error "Invalid option"
             ;;
     esac
+}
+
+################################################################################
+# Model Registry Setup
+################################################################################
+
+# Full idempotent Model Registry setup workflow.
+# Per RHAIE 3.3 Guide: enables the component, creates namespace, deploys MySQL,
+# creates ModelRegistry CR, enables dashboard visibility, verifies.
+# Skips any step that is already completed.
+# Usage: setup_model_registry [registry-name]
+setup_model_registry() {
+    local registry_name="${1:-}"
+    local registry_ns="rhoai-model-registries"
+    
+    print_header "Setup Model Registry"
+    echo "  Full workflow per RHAIE 3.3 Guide Chapter 2-3"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Enable modelregistry component in DSC
+    ############################################################################
+    print_step "Step 1: Checking modelregistry component in DataScienceCluster..."
+    
+    local mr_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.modelregistry.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$mr_state" = "Managed" ]; then
+        print_success "modelregistry already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling modelregistry in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "modelregistry": {
+                        "managementState": "Managed",
+                        "registriesNamespace": "rhoai-model-registries"
+                    }
+                }
+            }
+        }'
+        print_success "modelregistry enabled in DSC"
+        
+        # Wait for operator to reconcile
+        print_step "Waiting for Model Registry operator to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get modelregistry default-modelregistry -o jsonpath='{.status.phase}' 2>/dev/null | grep -q "Ready"; then
+                print_success "Model Registry operator is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+    fi
+    
+    ############################################################################
+    # Step 2: Enable Model Registry in dashboard
+    ############################################################################
+    print_step "Step 2: Checking dashboard configuration..."
+    
+    local mr_disabled=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications -o jsonpath='{.spec.dashboardConfig.disableModelRegistry}' 2>/dev/null || echo "true")
+    
+    if [ "$mr_disabled" = "false" ]; then
+        print_success "Model Registry enabled in dashboard [SKIP]"
+    else
+        print_step "Enabling Model Registry in dashboard..."
+        oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+            --type=merge -p '{"spec":{"dashboardConfig":{"disableModelRegistry":false}}}'
+        print_success "Model Registry enabled in dashboard"
+    fi
+    
+    ############################################################################
+    # Step 3: Ensure registries namespace exists
+    ############################################################################
+    print_step "Step 3: Checking namespace '$registry_ns'..."
+    
+    if oc get namespace "$registry_ns" &>/dev/null; then
+        print_success "Namespace '$registry_ns' exists [SKIP]"
+    else
+        oc create namespace "$registry_ns"
+        print_success "Namespace '$registry_ns' created"
+    fi
+    
+    ############################################################################
+    # Step 4: Get registry name (interactive or argument)
+    ############################################################################
+    if [ -z "$registry_name" ]; then
+        echo ""
+        # Show existing registries if any
+        local existing=$(oc get modelregistry.modelregistry.opendatahub.io -n "$registry_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+        if [ -n "$existing" ]; then
+            print_info "Existing registries: $existing"
+        fi
+        
+        echo -e "${BLUE}Enter a name for the Model Registry:${NC}"
+        echo "  Examples: team-models, production-registry, shared-registry"
+        echo ""
+        read -p "Registry name [model-registry]: " registry_name
+        registry_name="${registry_name:-model-registry}"
+    fi
+    
+    # Sanitize name (lowercase, alphanumeric + hyphens only)
+    registry_name=$(echo "$registry_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/^-//;s/-$//')
+    
+    ############################################################################
+    # Step 5: Check if this registry already exists and is ready
+    ############################################################################
+    print_step "Step 5: Checking if registry '$registry_name' exists..."
+    
+    local mr_exists=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+    
+    if [ "$mr_exists" = "True" ]; then
+        print_success "Model Registry '$registry_name' already exists and is ready [SKIP]"
+        _show_model_registry_summary "$registry_name" "$registry_ns"
+        return 0
+    fi
+    
+    ############################################################################
+    # Step 6: Deploy MySQL database (if not already running for this registry)
+    ############################################################################
+    local mysql_deploy_name="${registry_name}-mysql"
+    local mysql_svc_name="${registry_name}-mysql"
+    local mysql_db="mlmddb"
+    local mysql_user="mlmd"
+    local mysql_password=""
+    local mysql_root_password=""
+    local password_source="generated"
+    
+    print_step "Step 6: Deploying MySQL 8.0 database..."
+    
+    # Check if MySQL is already running for this registry
+    if oc get deployment "$mysql_deploy_name" -n "$registry_ns" &>/dev/null; then
+        local mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$mysql_ready" = "True" ]; then
+            print_success "MySQL '$mysql_deploy_name' already running [SKIP]"
+        else
+            print_info "MySQL deployment exists but not ready, waiting..."
+            local elapsed=0
+            while [ $elapsed -lt 90 ]; do
+                mysql_ready=$(oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$mysql_ready" = "True" ]; then
+                    print_success "MySQL is ready"
+                    break
+                fi
+                sleep 5
+                elapsed=$((elapsed + 5))
+            done
+        fi
+    else
+        # Check if credentials secret already exists (re-use if so)
+        if oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
+            print_info "Re-using existing MySQL credentials secret"
+            password_source="existing-secret"
+        else
+            # Prompt for password or generate random
+            echo ""
+            local default_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "mlmd$(date +%s | tail -c 8)")
+            echo -e "${BLUE}MySQL password configuration:${NC}"
+            echo "  User: $mysql_user | Database: $mysql_db"
+            echo ""
+            read -p "MySQL password (leave empty for auto-generated): " user_password
+            
+            if [ -n "$user_password" ]; then
+                mysql_password="$user_password"
+                password_source="user-provided"
+            else
+                mysql_password="$default_pw"
+                password_source="generated"
+            fi
+            
+            local default_root_pw=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "root$(date +%s | tail -c 8)")
+            read -p "MySQL root password (leave empty for auto-generated): " user_root_password
+            
+            if [ -n "$user_root_password" ]; then
+                mysql_root_password="$user_root_password"
+            else
+                mysql_root_password="$default_root_pw"
+            fi
+            
+            export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+            export REGISTRY_NS="$registry_ns"
+            export MYSQL_DB="$mysql_db"
+            export MYSQL_USER="$mysql_user"
+            export MYSQL_PASSWORD="$mysql_password"
+            export MYSQL_ROOT_PASSWORD="$mysql_root_password"
+            envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_PASSWORD} ${MYSQL_ROOT_PASSWORD}' \
+                < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-secret.yaml" | oc apply -f -
+            unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
+            print_success "MySQL credentials secret created"
+        fi
+        
+        export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+        export REGISTRY_NS="$registry_ns"
+        export MYSQL_SVC_NAME="$mysql_svc_name"
+        envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-deploy.yaml" | oc apply -f -
+        unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_SVC_NAME
+        
+        print_step "Waiting for MySQL to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 120 ]; do
+            if oc get pods -n "$registry_ns" -l app="$mysql_deploy_name" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MySQL is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+            echo "  Waiting for MySQL... (${elapsed}s elapsed)"
+        done
+        
+        if [ $elapsed -ge 120 ]; then
+            print_warning "MySQL may not be fully ready yet (continuing)"
+        fi
+    fi
+    
+    ############################################################################
+    # Step 7: Create ModelRegistry CR
+    ############################################################################
+    print_step "Step 7: Creating ModelRegistry '$registry_name'..."
+    
+    if oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" &>/dev/null; then
+        print_info "ModelRegistry CR already exists, checking status..."
+    else
+        export REGISTRY_NAME="$registry_name"
+        export REGISTRY_NS="$registry_ns"
+        export MYSQL_SVC_NAME="$mysql_svc_name"
+        export MYSQL_DB="$mysql_db"
+        export MYSQL_USER="$mysql_user"
+        export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
+        envsubst '${REGISTRY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_DEPLOY_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/modelregistry-cr.yaml" | oc apply -f -
+        unset REGISTRY_NAME REGISTRY_NS MYSQL_SVC_NAME MYSQL_DB MYSQL_USER MYSQL_DEPLOY_NAME
+    fi
+    
+    # Wait for ModelRegistry to be ready
+    print_step "Waiting for Model Registry to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        local mr_ready=$(oc get modelregistry.modelregistry.opendatahub.io "$registry_name" -n "$registry_ns" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mr_ready" = "True" ]; then
+            print_success "Model Registry '$registry_name' is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        echo "  Waiting for Model Registry... (${elapsed}s elapsed)"
+    done
+    
+    ############################################################################
+    # Step 8: Verify and show summary
+    ############################################################################
+    _show_model_registry_summary "$registry_name" "$registry_ns" "$mysql_svc_name" "$mysql_db" "$mysql_user" "$mysql_password" "$mysql_root_password" "$password_source"
+}
+
+# Internal helper: display model registry summary
+_show_model_registry_summary() {
+    local registry_name="$1"
+    local registry_ns="$2"
+    local mysql_svc="${3:-}"
+    local mysql_db="${4:-}"
+    local mysql_user="${5:-}"
+    local mysql_password="${6:-}"
+    local mysql_root_password="${7:-}"
+    local password_source="${8:-}"
+    
+    echo ""
+    print_header "Model Registry Setup Complete"
+    echo ""
+    echo -e "${BLUE}Registry Name:${NC}  $registry_name"
+    echo -e "${BLUE}Namespace:${NC}      $registry_ns"
+    echo ""
+    
+    # Show pods
+    echo -e "${BLUE}Pods:${NC}"
+    oc get pods -n "$registry_ns" -l "app.kubernetes.io/instance=$registry_name" --no-headers 2>/dev/null | sed 's/^/  /'
+    oc get pods -n "$registry_ns" -l "app=${registry_name}-mysql" --no-headers 2>/dev/null | sed 's/^/  /'
+    echo ""
+    
+    # Show REST route
+    local rest_route=$(oc get route -n "$registry_ns" --no-headers 2>/dev/null | grep "$registry_name" | awk '{print $2}' | head -1)
+    if [ -n "$rest_route" ]; then
+        echo -e "${BLUE}REST API:${NC}       https://$rest_route"
+        echo ""
+    fi
+    
+    # MySQL connection details
+    if [ -n "$mysql_svc" ]; then
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${MAGENTA}MySQL Connection Details${NC}"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${BLUE}Host:${NC}          ${mysql_svc}.${registry_ns}.svc.cluster.local"
+        echo -e "  ${BLUE}Port:${NC}          3306"
+        echo -e "  ${BLUE}Database:${NC}      $mysql_db"
+        echo -e "  ${BLUE}User:${NC}          $mysql_user"
+        if [ -n "$mysql_password" ] && [ "$password_source" != "existing-secret" ]; then
+            echo -e "  ${BLUE}Password:${NC}      $mysql_password"
+            echo -e "  ${BLUE}Root Password:${NC} $mysql_root_password"
+            echo ""
+            echo -e "  ${YELLOW}⚠ Save these credentials! They are stored in:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o yaml"
+        else
+            echo -e "  ${BLUE}Password:${NC}      (stored in secret ${registry_name}-mysql-credentials)"
+            echo ""
+            echo -e "  ${CYAN}Retrieve credentials:${NC}"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_PASSWORD}' | base64 -d"
+            echo "    oc get secret ${registry_name}-mysql-credentials -n $registry_ns -o jsonpath='{.data.MYSQL_ROOT_PASSWORD}' | base64 -d"
+        fi
+        echo ""
+        echo -e "  ${CYAN}Connect from a pod:${NC}"
+        echo "    mysql -h ${mysql_svc}.${registry_ns}.svc.cluster.local -u $mysql_user -p $mysql_db"
+        echo ""
+        echo -e "  ${CYAN}Port-forward for local access:${NC}"
+        echo "    oc port-forward svc/${mysql_svc} 3306:3306 -n $registry_ns"
+        echo "    mysql -h 127.0.0.1 -u $mysql_user -p $mysql_db"
+        echo ""
+    fi
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Dashboard Access:${NC}"
+    echo "  Settings → Model resources and operations → AI registry settings"
+    echo ""
+    echo -e "${YELLOW}CLI:${NC}"
+    echo "  oc get modelregistry.modelregistry.opendatahub.io -n $registry_ns"
+    echo ""
+    echo -e "${YELLOW}Python SDK:${NC}"
+    if [ -n "$rest_route" ]; then
+        echo "  from model_registry import ModelRegistry"
+        echo "  registry = ModelRegistry(server_address=\"https://$rest_route\", author=\"user@example.com\")"
+    else
+        echo "  # Get route: oc get route -n $registry_ns | grep $registry_name"
+    fi
+    echo ""
+    echo -e "${YELLOW}Permissions:${NC}"
+    echo "  # Add users to auto-created group:"
+    echo "  oc adm groups add-users ${registry_name}-users <username>"
+    echo ""
+}
+
+################################################################################
+# Pipeline Server Setup
+################################################################################
+
+# Setup Data Science Pipelines Application (DSPA) with S3 storage.
+# Per RHAIE 3.3 Guide Chapter 1: configuring a pipeline server requires S3 storage.
+# Offers: reuse existing MinIO or deploy new one.
+# Usage: setup_pipeline_server [namespace]
+setup_pipeline_server() {
+    local target_ns="${1:-}"
+    
+    print_header "Setup Pipeline Server"
+    echo "  Per RHAIE 3.3 Guide: Data Science Pipelines with S3 storage"
+    echo "  (Steps already completed will be skipped)"
+    echo ""
+    
+    ############################################################################
+    # Step 1: Check aipipelines is enabled in DSC
+    ############################################################################
+    print_step "Step 1: Checking aipipelines component in DSC..."
+    
+    local pipelines_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aipipelines.managementState}' 2>/dev/null || echo "")
+    
+    if [ "$pipelines_state" = "Managed" ]; then
+        print_success "aipipelines already Managed in DSC [SKIP]"
+    else
+        print_step "Enabling aipipelines in DataScienceCluster..."
+        oc patch datasciencecluster default-dsc --type=merge -p '{
+            "spec": {
+                "components": {
+                    "aipipelines": {
+                        "managementState": "Managed"
+                    }
+                }
+            }
+        }'
+        print_success "aipipelines enabled in DSC"
+        sleep 10
+    fi
+    
+    ############################################################################
+    # Step 2: Select target namespace
+    ############################################################################
+    if [ -z "$target_ns" ]; then
+        echo ""
+        print_step "Step 2: Select project namespace for pipeline server"
+        
+        local current_project=$(oc project -q 2>/dev/null)
+        echo "  Current project: $current_project"
+        echo ""
+        read -p "Deploy pipeline server in namespace [$current_project]: " target_ns
+        target_ns="${target_ns:-$current_project}"
+    fi
+    
+    if ! oc get namespace "$target_ns" &>/dev/null; then
+        print_warning "Namespace '$target_ns' does not exist"
+        read -p "Create it? (Y/n): " create_ns
+        if [[ ! "$create_ns" =~ ^[Nn]$ ]]; then
+            oc new-project "$target_ns" 2>/dev/null || oc create namespace "$target_ns"
+            oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+            print_success "Namespace '$target_ns' created"
+        else
+            return 1
+        fi
+    fi
+    
+    # Ensure dashboard label
+    oc label namespace "$target_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+    
+    ############################################################################
+    # Step 3: Check if DSPA already exists
+    ############################################################################
+    print_step "Step 3: Checking for existing pipeline server..."
+    
+    if oc get dspa -n "$target_ns" -o name &>/dev/null 2>&1; then
+        local existing_dspa=$(oc get dspa -n "$target_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$existing_dspa" ]; then
+            local dspa_ready=$(oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+            if [ "$dspa_ready" = "True" ]; then
+                print_success "Pipeline server '$existing_dspa' already running [SKIP]"
+                _show_pipeline_server_summary "$target_ns" "$existing_dspa"
+                return 0
+            else
+                print_warning "DSPA '$existing_dspa' exists but not ready"
+                print_info "Checking status..."
+                oc get dspa "$existing_dspa" -n "$target_ns" -o jsonpath='{.status.conditions}' 2>/dev/null | python3 -m json.tool 2>/dev/null | head -20
+                echo ""
+                read -p "Delete and recreate? (y/N): " recreate
+                if [[ "$recreate" =~ ^[Yy]$ ]]; then
+                    oc delete dspa "$existing_dspa" -n "$target_ns"
+                    sleep 5
+                else
+                    return 0
+                fi
+            fi
+        fi
+    fi
+    
+    ############################################################################
+    # Step 4: S3 Storage Configuration
+    ############################################################################
+    echo ""
+    print_step "Step 4: S3 Storage for Pipeline Artifacts"
+    echo ""
+    echo -e "${BLUE}Pipeline server requires S3-compatible storage for artifacts.${NC}"
+    echo ""
+    
+    # Detect existing MinIO deployments
+    local existing_minio_ns=""
+    local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | grep -i minio | awk '{print $1 "\t" $2}')
+    
+    if [ -n "$minio_deployments" ]; then
+        echo -e "${CYAN}Existing MinIO deployments found:${NC}"
+        echo "$minio_deployments" | while IFS=$'\t' read -r ns name; do
+            local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            echo "  - $ns / $name (service: $minio_svc)"
+        done
+        echo ""
+    fi
+    
+    echo -e "${YELLOW}Storage options:${NC}"
+    echo "  1) Built-in MinIO + MariaDB (simplest, for dev/testing)"
+    echo "  2) Use existing external S3 storage"
+    echo "  3) Deploy standalone MinIO in this namespace"
+    echo ""
+    read -p "Select option [1]: " storage_choice
+    storage_choice="${storage_choice:-1}"
+    
+    local s3_endpoint=""
+    local s3_bucket="pipelines"
+    local s3_access_key=""
+    local s3_secret_key=""
+    local s3_scheme="http"
+    local s3_host=""
+    local s3_port="9000"
+    local credentials_secret_name="pipelines-s3-credentials"
+    local use_builtin_storage=false
+    local dspa_name="pipelines-definition"
+    
+    if [ "$storage_choice" = "1" ]; then
+        # Built-in MinIO + MariaDB managed by the DSPA operator
+        use_builtin_storage=true
+        echo ""
+        print_info "DSPA operator will deploy MinIO and MariaDB automatically"
+        print_info "This is recommended for development and testing"
+        echo ""
+        
+        read -p "  MinIO PVC size [10Gi]: " minio_pvc_size
+        minio_pvc_size="${minio_pvc_size:-10Gi}"
+        
+        read -p "  MariaDB PVC size [10Gi]: " mariadb_pvc_size
+        mariadb_pvc_size="${mariadb_pvc_size:-10Gi}"
+        
+    elif [ "$storage_choice" = "2" ]; then
+        # Reuse existing external S3
+        echo ""
+        echo -e "${CYAN}Enter existing S3-compatible storage details:${NC}"
+        
+        # Try to auto-detect from model-storage namespace
+        local default_ns=$(echo "$minio_deployments" | head -1 | awk '{print $1}')
+        default_ns="${default_ns:-model-storage}"
+        
+        read -p "  S3 host (e.g. minio.model-storage.svc.cluster.local): " s3_host
+        if [ -z "$s3_host" ]; then
+            read -p "  MinIO namespace [$default_ns]: " minio_ns
+            minio_ns="${minio_ns:-$default_ns}"
+            local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            detected_svc="${detected_svc:-minio}"
+            read -p "  MinIO service name [$detected_svc]: " minio_svc
+            minio_svc="${minio_svc:-$detected_svc}"
+            s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+        fi
+        
+        read -p "  S3 port [$s3_port]: " input_port
+        s3_port="${input_port:-$s3_port}"
+        
+        read -p "  Pipeline bucket name [$s3_bucket]: " input_bucket
+        s3_bucket="${input_bucket:-$s3_bucket}"
+        
+        read -p "  S3 scheme (http/https) [$s3_scheme]: " input_scheme
+        s3_scheme="${input_scheme:-$s3_scheme}"
+        
+        # Get credentials
+        if [ -n "${minio_ns:-}" ]; then
+            local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
+            if [ -n "$detected_secret" ]; then
+                print_info "Found credentials secret: $detected_secret in $minio_ns"
+                read -p "  Use these credentials? (Y/n): " use_existing
+                if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
+                    s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
+                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
+                    s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
+                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+                fi
+            fi
+        fi
+        
+        if [ -z "$s3_access_key" ]; then
+            read -p "  S3 access key: " s3_access_key
+            read -p "  S3 secret key: " s3_secret_key
+        fi
+        
+        print_success "Using external S3: $s3_host:$s3_port"
+        
+    else
+        # Deploy standalone MinIO
+        echo ""
+        print_step "Deploying standalone MinIO in '$target_ns'..."
+        
+        s3_host="minio.${target_ns}.svc.cluster.local"
+        s3_access_key="minio"
+        s3_secret_key=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9' | head -c 16 || echo "minio$(date +%s | tail -c 8)")
+        
+        read -p "  MinIO password (leave empty for auto-generated): " user_secret
+        if [ -n "$user_secret" ]; then
+            s3_secret_key="$user_secret"
+        fi
+        
+        read -p "  Storage size [50Gi]: " storage_size
+        storage_size="${storage_size:-50Gi}"
+        
+        export STORAGE_SIZE="$storage_size"
+        export S3_ACCESS_KEY="$s3_access_key"
+        export S3_SECRET_KEY="$s3_secret_key"
+        envsubst '${STORAGE_SIZE} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/minio-pipelines.yaml" | oc apply -f - -n "$target_ns"
+        unset STORAGE_SIZE S3_ACCESS_KEY S3_SECRET_KEY
+        
+        # Wait for MinIO
+        print_step "Waiting for MinIO to be ready..."
+        local elapsed=0
+        while [ $elapsed -lt 90 ]; do
+            if oc get pods -n "$target_ns" -l app=minio -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q "True"; then
+                print_success "MinIO is ready"
+                break
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        
+        print_info "MinIO credentials: $s3_access_key / $s3_secret_key"
+    fi
+    
+    ############################################################################
+    # Step 5: Create DSPA
+    ############################################################################
+    if [ "$use_builtin_storage" = true ]; then
+        # Built-in approach: DSPA operator manages MinIO + MariaDB
+        print_step "Step 5: Creating DataSciencePipelinesApplication (built-in storage)..."
+        
+        export DSPA_NAME="$dspa_name"
+        export MARIADB_PVC_SIZE="$mariadb_pvc_size"
+        export MINIO_PVC_SIZE="$minio_pvc_size"
+        envsubst '${DSPA_NAME} ${MARIADB_PVC_SIZE} ${MINIO_PVC_SIZE}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-builtin.yaml" | oc apply -f - -n "$target_ns"
+        unset DSPA_NAME MARIADB_PVC_SIZE MINIO_PVC_SIZE
+    else
+        # External storage approach: create credentials secret first
+        print_step "Step 5: Creating S3 credentials secret..."
+        
+        if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
+            print_success "Credentials secret already exists [SKIP]"
+        else
+            export CREDENTIALS_SECRET_NAME="$credentials_secret_name"
+            export S3_ACCESS_KEY="$s3_access_key"
+            export S3_SECRET_KEY="$s3_secret_key"
+            envsubst '${CREDENTIALS_SECRET_NAME} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}' \
+                < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-credentials-secret.yaml" | oc apply -f - -n "$target_ns"
+            unset CREDENTIALS_SECRET_NAME S3_ACCESS_KEY S3_SECRET_KEY
+            print_success "Credentials secret created"
+        fi
+        
+        print_step "Step 6: Creating DataSciencePipelinesApplication..."
+        
+        export DSPA_NAME="$dspa_name"
+        export S3_HOST="$s3_host"
+        export S3_PORT="$s3_port"
+        export S3_BUCKET="$s3_bucket"
+        export S3_SCHEME="$s3_scheme"
+        export CREDENTIALS_SECRET_NAME="$credentials_secret_name"
+        envsubst '${DSPA_NAME} ${S3_HOST} ${S3_PORT} ${S3_BUCKET} ${S3_SCHEME} ${CREDENTIALS_SECRET_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/pipeline/dspa-external.yaml" | oc apply -f - -n "$target_ns"
+        unset DSPA_NAME S3_HOST S3_PORT S3_BUCKET S3_SCHEME CREDENTIALS_SECRET_NAME
+    fi
+    
+    ############################################################################
+    # Wait for pipeline server to be ready
+    ############################################################################
+    print_step "Waiting for pipeline server to be ready..."
+    local elapsed=0
+    while [ $elapsed -lt 180 ]; do
+        local ready=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            print_success "Pipeline server is ready!"
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [ $((elapsed % 15)) -eq 0 ]; then
+            local reason=$(oc get dspa "$dspa_name" -n "$target_ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+            echo "  Waiting... status: ${reason:-pending} (${elapsed}s elapsed)"
+        fi
+    done
+    
+    if [ $elapsed -ge 180 ]; then
+        print_warning "Pipeline server may not be fully ready yet"
+        print_info "Check: oc get dspa $dspa_name -n $target_ns -o yaml"
+    fi
+    
+    _show_pipeline_server_summary "$target_ns" "$dspa_name"
+}
+
+# Internal helper: display pipeline server summary
+_show_pipeline_server_summary() {
+    local target_ns="$1"
+    local dspa_name="${2:-pipelines-definition}"
+    
+    echo ""
+    print_header "Pipeline Server Summary"
+    echo ""
+    echo -e "${BLUE}Namespace:${NC}     $target_ns"
+    echo -e "${BLUE}DSPA Name:${NC}     $dspa_name"
+    echo ""
+    
+    # Get route
+    local pipeline_route=$(oc get route "ds-pipeline-${dspa_name}" -n "$target_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$pipeline_route" ]; then
+        echo -e "${BLUE}Pipeline API:${NC}  https://$pipeline_route"
+    else
+        echo -e "${BLUE}Pipeline API:${NC}  (route not yet available, check: oc get route -n $target_ns)"
+    fi
+    echo ""
+    
+    # Pods
+    echo -e "${CYAN}Pods:${NC}"
+    oc get pods -n "$target_ns" --no-headers 2>/dev/null | grep -E "ds-pipeline|mariadb|minio" | sed 's/^/  /'
+    echo ""
+    
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo ""
+    echo "  1. Import a pipeline via Dashboard:"
+    echo "     Projects → $target_ns → Pipelines → Import pipeline"
+    echo ""
+    echo "  2. Import via Python SDK:"
+    echo "     from kfp import Client"
+    echo "     token = !oc whoami -t"
+    if [ -n "$pipeline_route" ]; then
+        echo "     client = Client(host='https://$pipeline_route', existing_token=token[0], ssl_ca_cert=False)"
+    else
+        echo "     client = Client(host='https://ds-pipeline-${dspa_name}-${target_ns}.apps.<cluster>', existing_token=token[0])"
+    fi
+    echo "     client.list_pipelines()"
+    echo ""
+    echo "  3. Compile + upload a pipeline:"
+    echo "     from kfp import compiler, dsl"
+    echo "     compiler.Compiler().compile(my_pipeline, 'pipeline.yaml')"
+    echo "     client.upload_pipeline('pipeline.yaml', pipeline_name='my-pipeline')"
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 }
 

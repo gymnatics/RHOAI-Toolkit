@@ -1,0 +1,17 @@
+# Gateway proxy resource overrides for MaaS
+# Increases memory limit from default 1Gi to 2Gi to prevent OOMKill
+# when Kuadrant WASM extensions (Authorino auth, Limitador rate limiting) compile at startup.
+# Referenced by Gateway spec.infrastructure.parametersRef.
+# Tracked in RHOAIENG-68589.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maas-gateway-options
+  namespace: openshift-ingress
+data:
+  resources: |
+    limits:
+      memory: 2Gi
+    requests:
+      memory: 512Mi

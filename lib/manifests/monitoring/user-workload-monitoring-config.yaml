@@ -1,0 +1,17 @@
+# User Workload Monitoring ConfigMap
+# Enables Prometheus in the user-workload-monitoring namespace
+# for capturing custom metrics from user workloads.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      retention: 24h
+      resources:
+        requests:
+          cpu: 200m
+          memory: 2Gi

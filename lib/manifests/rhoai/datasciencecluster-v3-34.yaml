@@ -1,0 +1,101 @@
+# DataScienceCluster for RHOAI 3.4
+# This configuration enables all major components for a full RHOAI 3.4 installation
+# Requires: NFD, GPU Operator, Kueue, cert-manager, RHCL v1.2+ (for MaaS), LWS (for llm-d)
+# Optional: JobSet operator (required if trainer.managementState: Managed)
+#
+# Changes from 3.3:
+#   - MaaS core platform now GA (subscriptions replace tiers, API keys, llm-d)
+#     Sub-features still TP: vLLM runtime, external OIDC, observability, external egress
+#   - MaaS TLS: uses OpenShift service-ca (NOT cert-manager Certificate)
+#   - MaaS new CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+#   - NeMo Guardrails now GA
+#   - MLflow Operator is officially a managed DSC component
+#   - API version: datasciencecluster.opendatahub.io/v2
+#
+# Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    # Dashboard - OpenShift AI web interface
+    dashboard:
+      managementState: Managed
+
+    # Workbenches - Jupyter notebooks and IDEs
+    # Images now default to Red Hat Python index (not PyPI)
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+
+    # AI Pipelines - ML workflow automation (required for AutoML/AutoRAG)
+    aipipelines:
+      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
+
+    # KServe - Model serving platform (required for vLLM, llm-d)
+    kserve:
+      managementState: Managed
+      # RawDeployment with Headed config (required for Guardrails + TrustyAI)
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
+      # NVIDIA NIM support
+      nim:
+        managementState: Managed
+      # MaaS - Models as a Service (core GA in RHOAI 3.4, some sub-features still TP)
+      # GA: subscriptions, API keys, llm-d serving
+      # TP: vLLM runtime, external OIDC auth, observability dashboard, external model egress
+      # Requires: RHCL operator, Gateway API
+      modelsAsService:
+        managementState: Managed
+
+    # Kueue - Workload scheduling
+    # Set to Unmanaged when using Red Hat Build of Kueue Operator (standalone)
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+
+    # Ray - Distributed computing framework
+    ray:
+      managementState: Managed
+
+    # Trainer - Kubeflow Trainer v2 (GA)
+    # New in 3.4: JIT checkpointing, S3 storage for checkpoints
+    # IMPORTANT: Requires JobSet operator to be installed first!
+    # Set to Removed if JobSet is not installed
+    trainer:
+      managementState: Removed
+
+    # Training Operator - Legacy distributed training (deprecated)
+    trainingoperator:
+      managementState: Removed
+
+    # Model Registry - Model versioning and tracking
+    # New in 3.4: OCI-compliant storage layer, PostgreSQL backend, artifact signing (TP)
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+
+    # TrustyAI - Model explainability, fairness, and NeMo Guardrails (GA in 3.4)
+    trustyai:
+      managementState: Managed
+
+    # Feast Operator - Feature Store (Technology Preview)
+    # New in 3.4: workbench integration, RBAC, UI
+    feastoperator:
+      managementState: Managed
+
+    # Llama Stack Operator - GenAI orchestration, RAG, agentic workflows
+    # New in 3.4: Responses API (TP), Connectors, Conversations API, Garak eval
+    llamastackoperator:
+      managementState: Managed
+
+    # MLflow Operator - Experiment tracking, model versioning (Technology Preview)
+    # New in 3.4: officially a managed DSC component (dashboard flag deprecated)
+    mlflowoperator:
+      managementState: Managed

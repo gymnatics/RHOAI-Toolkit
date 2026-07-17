@@ -27,8 +27,9 @@ help:
 	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
 	@echo -e "$(YELLOW)Installation:$(NC)"
-	@echo "  make install-rhoai         Install RHOAI (auto-detect latest version)"
-	@echo "  make install-rhoai-34      Install RHOAI 3.4"
+	@echo "  make setup-rhoai-34        Install RHOAI 3.4 with all prerequisites"
+	@echo "  make setup-users           Create demo users with htpasswd + groups"
+	@echo "  make setup-rhoai-33        Install RHOAI 3.3 with all prerequisites"
 	@echo "  make setup-rhoai           Install RHOAI 3.0 with all operators"
 	@echo "  make setup-operators       Install only operators (NFD, GPU, Kueue, LWS)"
 	@echo "  make setup-llmd            Setup llm-d infrastructure (Gateway, LWS, Kuadrant)"
@@ -45,13 +46,21 @@ help:
 	@echo ""
 	@echo -e "$(YELLOW)Demo & Tools:$(NC)"
 	@echo "  make setup-demo            Setup demo environment (MinIO, Open WebUI)"
-	@echo "  make deploy-mcp-servers    Deploy MCP servers"
+	@echo "  make setup-demo-environment Deploy full demo environment (all components)"
 	@echo "  make setup-mcp-kubernetes  Deploy Kubernetes MCP server"
 	@echo "  make setup-benchmarks      Deploy GuideLLM and Benchmark Arena"
 	@echo "  make setup-model-catalog   Configure custom model catalog"
-	@echo ""
-	@echo -e "$(YELLOW)Monitoring:$(NC)"
-	@echo "  make setup-grafana         Setup Grafana console link and ODH application"
+	@echo "  make manage-model-catalog  Interactive model catalog management"
+	@echo "  make deploy-n8n            Deploy n8n workflow automation"
+	@echo "  make deploy-financial-loan Deploy financial loan demo"
+	@echo "  make deploy-pipeline-demo  Deploy AI pipeline demo (KFP + Elyra)"
+	@echo "  make deploy-nemo-guardrails Deploy NeMo Guardrails (RHOAI 3.4)"
+	@echo "  make deploy-lemonade-stand Deploy Lemonade Stand Chat (NeMo Edition)"
+	@echo "  make deploy-lmeval-lab     Deploy LMEval Builder Lab"
+	@echo "  make deploy-maas-ratelimit Deploy MaaS Rate Limiting Demo"
+	@echo "  make deploy-automl         Deploy AutoML Demo (Tech Preview)"
+	@echo "  make deploy-autorag        Deploy AutoRAG Demo (Tech Preview)"
+	@echo "  make deploy-open-webui     Deploy Open WebUI in own namespace"
 	@echo ""
 	@echo -e "$(YELLOW)Utilities:$(NC)"
 	@echo "  make check-operators       Check operator installation status"
@@ -79,6 +88,24 @@ interactive:
 # Installation Targets
 # =============================================================================
 
+.PHONY: setup-rhoai-34
+setup-rhoai-34:
+	@echo -e "$(GREEN)▶ Installing RHOAI 3.4...$(NC)"
+	@$(BASE)/scripts/install-rhoai-34.sh
+	@echo -e "$(GREEN)✓ RHOAI 3.4 installation complete$(NC)"
+
+.PHONY: setup-users
+setup-users:
+	@echo -e "$(GREEN)▶ Setting up demo users...$(NC)"
+	@$(BASE)/scripts/setup-users.sh $(ARGS)
+	@echo -e "$(GREEN)✓ User setup complete$(NC)"
+
+.PHONY: setup-rhoai-33
+setup-rhoai-33:
+	@echo -e "$(GREEN)▶ Installing RHOAI 3.3...$(NC)"
+	@$(BASE)/scripts/install-rhoai-33.sh
+	@echo -e "$(GREEN)✓ RHOAI 3.3 installation complete$(NC)"
+
 .PHONY: setup-rhoai
 setup-rhoai: setup-operators
 	@echo -e "$(GREEN)▶ Installing RHOAI Operator...$(NC)"
@@ -95,18 +122,6 @@ setup-operators:
 		(oc apply -f $(BASE)/lib/manifests/operators/gpu-operator.yaml && \
 		 $(BASE)/scripts/check-operator-install-status.sh gpu-operator-certified nvidia-gpu-operator 300)
 	@echo -e "$(GREEN)✓ Operators installed$(NC)"
-
-.PHONY: install-rhoai
-install-rhoai:
-	@echo -e "$(GREEN)▶ Installing RHOAI (auto-detect version)...$(NC)"
-	@$(BASE)/scripts/install-rhoai.sh
-	@echo -e "$(GREEN)✓ RHOAI installation complete$(NC)"
-
-.PHONY: install-rhoai-34
-install-rhoai-34:
-	@echo -e "$(GREEN)▶ Installing RHOAI 3.4...$(NC)"
-	@$(BASE)/scripts/install-rhoai-34.sh
-	@echo -e "$(GREEN)✓ RHOAI 3.4 installation complete$(NC)"
 
 .PHONY: setup-llmd
 setup-llmd:
@@ -176,12 +191,6 @@ setup-minio:
 	done
 	@echo -e "$(GREEN)✓ MinIO ready$(NC)"
 
-.PHONY: deploy-mcp-servers
-deploy-mcp-servers:
-	@echo -e "$(GREEN)▶ Deploying MCP servers...$(NC)"
-	@$(BASE)/scripts/deploy-mcp-servers.sh
-	@echo -e "$(GREEN)✓ MCP servers deployed$(NC)"
-
 .PHONY: setup-mcp-kubernetes
 setup-mcp-kubernetes:
 	@echo -e "$(GREEN)▶ Deploying Kubernetes MCP Server...$(NC)"
@@ -206,17 +215,58 @@ setup-model-catalog:
 	@echo -e "$(GREEN)✓ Model catalog configured$(NC)"
 
 # =============================================================================
-# Monitoring
+# Full Demo Environment
 # =============================================================================
 
-.PHONY: setup-grafana
-setup-grafana:
-	@echo -e "$(GREEN)▶ Setting up Grafana console link and ODH application...$(NC)"
-	$(eval CLUSTER_DOMAIN := $(shell oc get ingress.config cluster -o jsonpath='{.spec.domain}'))
-	@export CLUSTER_DOMAIN=$(CLUSTER_DOMAIN) && \
-		envsubst < $(BASE)/lib/manifests/monitoring/odhapplication-grafana.yaml | oc apply -f - && \
-		envsubst < $(BASE)/lib/manifests/monitoring/consolelinks-grafana.yaml | oc apply -f -
-	@echo -e "$(GREEN)✓ Grafana setup complete$(NC)"
+.PHONY: setup-demo-environment
+setup-demo-environment:
+	@echo -e "$(GREEN)▶ Deploying full demo environment...$(NC)"
+	@$(BASE)/scripts/deploy-demo-environment.sh --skip-core
+	@echo -e "$(GREEN)✓ Demo environment deployed$(NC)"
+
+.PHONY: deploy-n8n
+deploy-n8n:
+	@$(BASE)/demo/n8n-demo/deploy.sh
+
+.PHONY: deploy-financial-loan
+deploy-financial-loan:
+	@$(BASE)/demo/financial-loan-demo/deploy.sh
+
+.PHONY: deploy-pipeline-demo
+deploy-pipeline-demo:
+	@$(BASE)/demo/pipeline-demo/deploy.sh
+
+.PHONY: deploy-nemo-guardrails
+deploy-nemo-guardrails:
+	@$(BASE)/demo/nemo-guardrails-demo/deploy.sh
+
+.PHONY: deploy-lemonade-stand
+deploy-lemonade-stand:
+	@$(BASE)/demo/lemonade-stand-demo/deploy.sh
+
+.PHONY: deploy-lmeval-lab
+deploy-lmeval-lab:
+	@$(BASE)/demo/lmeval-demo/deploy.sh
+
+.PHONY: deploy-maas-ratelimit
+deploy-maas-ratelimit:
+	@$(BASE)/demo/maas-ratelimit-demo/deploy.sh
+
+.PHONY: deploy-automl
+deploy-automl:
+	@$(BASE)/demo/automl-demo/deploy.sh
+
+.PHONY: deploy-autorag
+deploy-autorag:
+	@$(BASE)/demo/autorag-demo/deploy.sh
+
+.PHONY: deploy-open-webui
+deploy-open-webui:
+	@$(BASE)/demo/open-webui-demo/deploy.sh
+
+.PHONY: manage-model-catalog
+manage-model-catalog:
+	@$(BASE)/scripts/manage-model-catalog.sh
 
 # =============================================================================
 # Utilities
@@ -258,9 +308,7 @@ show-urls:
 	@echo -e "$(CYAN)Service URLs:$(NC)"
 	@echo ""
 	@echo "RHOAI Dashboard:"
-	@echo "  https://$$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || \
-		oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || \
-		echo 'Not available')"
+	@echo "  https://$$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || echo 'Not available')"
 	@echo ""
 	@echo "OpenShift Console:"
 	@echo "  $$(oc whoami --show-console 2>/dev/null || echo 'Not connected')"
@@ -273,5 +321,20 @@ show-urls:
 	@if oc get route open-webui -n $(NAMESPACE) >/dev/null 2>&1; then \
 		echo "Open WebUI:"; \
 		echo "  https://$$(oc get route open-webui -n $(NAMESPACE) -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route open-webui -n open-webui >/dev/null 2>&1; then \
+		echo "Open WebUI (standalone):"; \
+		echo "  https://$$(oc get route open-webui -n open-webui -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route n8n -n n8n >/dev/null 2>&1; then \
+		echo "n8n:"; \
+		echo "  https://$$(oc get route n8n -n n8n -o jsonpath='{.spec.host}')"; \
+		echo ""; \
+	fi
+	@if oc get route evalhub -n lmeval-demo >/dev/null 2>&1; then \
+		echo "EvalHub:"; \
+		echo "  https://$$(oc get route evalhub -n lmeval-demo -o jsonpath='{.spec.host}')"; \
 		echo ""; \
 	fi

@@ -1,0 +1,65 @@
+# NeMo Guardrails Self-Check Configuration
+# Includes LLM self-check rails for advanced content filtering.
+# Requires a deployed model endpoint.
+#
+# Usage:
+#   export NAMESPACE=my-project GUARDRAILS_NAME=nemo-selfcheck
+#   export MODEL_PREDICTOR_URL=https://model-predictor.ns.svc:8080/v1
+#   export MODEL_NAME=my-model
+#   envsubst < nemo-guardrails-selfcheck-config.yaml | oc apply -f -
+#
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GUARDRAILS_NAME}-config
+  namespace: ${NAMESPACE}
+data:
+  config.yaml: |
+    models:
+      - type: main
+        engine: openai
+        parameters:
+          openai_api_base: "${MODEL_PREDICTOR_URL}"
+          model_name: "${MODEL_NAME}"
+    rails:
+      config:
+        sensitive_data_detection:
+          input:
+            entities:
+              - EMAIL_ADDRESS
+              - PERSON
+              - PHONE_NUMBER
+              - CREDIT_CARD
+          output:
+            entities:
+              - EMAIL_ADDRESS
+              - PERSON
+              - CREDIT_CARD
+        regex_detection:
+          input:
+            patterns:
+              - "\\b(password|secret|api[_-]?key|token)\\b"
+              - "\\d{3}-\\d{2}-\\d{4}"
+            case_insensitive: true
+      input:
+        flows:
+          - detect sensitive data on input
+          - regex check input
+          - self check input
+      output:
+        flows:
+          - detect sensitive data on output
+          - self check output
+  rails.co: |
+    define flow self check input
+      $allowed = execute self_check_input
+      if not $allowed
+        bot refuse to respond
+        stop
+
+    define flow self check output
+      $allowed = execute self_check_output
+      if not $allowed
+        bot refuse to respond
+        stop

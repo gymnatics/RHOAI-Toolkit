@@ -1,0 +1,17 @@
+# OpenShift MCP Server Config for MCP Catalog deployments
+# Created as a prerequisite for MCPServer CRs deployed via the MCP Catalog UI.
+#
+# Variables:
+#   ${NAMESPACE} - Target namespace
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-mcp-server-config
+  namespace: ${NAMESPACE}
+data:
+  config.toml: |
+    port = "8080"
+    read_only = true
+    stateless = true
+    toolsets = ["core", "config", "openshift"]

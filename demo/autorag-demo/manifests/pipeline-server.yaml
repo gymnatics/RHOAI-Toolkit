@@ -1,0 +1,25 @@
+# DataSciencePipelineApplication for AutoRAG
+# AutoRAG uses Kubeflow Pipelines to orchestrate RAG optimization runs.
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: pipelines-definition
+  namespace: ${NAMESPACE}
+spec:
+  apiServer:
+    deploy: true
+  persistenceAgent:
+    deploy: true
+  scheduledWorkflow:
+    deploy: true
+  objectStorage:
+    externalStorage:
+      bucket: pipeline-artifacts
+      host: minio.${NAMESPACE}.svc.cluster.local
+      port: "9000"
+      region: us-east-1
+      s3CredentialsSecret:
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+        secretName: minio-secret
+      scheme: http

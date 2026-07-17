@@ -1,0 +1,24 @@
+# DSCInitialization for RHOAI 2.x / early 3.x with Service Mesh
+# Includes serviceMesh configuration for Istio-based data science mesh.
+---
+apiVersion: dscinitialization.opendatahub.io/v1
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+  serviceMesh:
+    auth:
+      audiences:
+        - 'https://kubernetes.default.svc'
+    controlPlane:
+      metricsCollection: Istio
+      name: data-science-smcp
+      namespace: istio-system
+    managementState: Managed
+  trustedCABundle:
+    customCABundle: ''
+    managementState: Managed

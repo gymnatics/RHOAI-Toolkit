@@ -1,175 +1,216 @@
-# RHOAI Toolkit
+# OpenShift AI Installation Toolkit
 
-End-to-end automation for installing and configuring **Red Hat OpenShift AI (RHOAI)** on AWS, including GPU support, Models as a Service (MaaS), MCP servers, and TLS certificate management.
+A comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI) 3.x** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
 
-> **[한국어 설치 가이드](setup-guide_KO.md)** | **[English Setup Guide](setup-guide_EN.md)**
-
----
+> **Latest:** RHOAI 3.4 is now supported. See [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md) for details.
+> MaaS core platform and NeMo Guardrails are now GA. AutoML, AutoRAG, and several MaaS sub-features (vLLM runtime, OIDC, observability, external egress) remain Technology Preview.
 
 ## Quick Start
 
 ```bash
-# 1. Clone and enter
-git clone <repo-url> && cd RHOAI-Toolkit
-
-# 2. Configure AWS credentials
-aws configure
-
-# 3. Launch the toolkit
 ./rhoai-toolkit.sh
 ```
 
----
-
-## What Gets Installed
-
-Option **3) Install RHOAI 3.x** installs the full stack automatically:
-
-| Component | Description |
-|-----------|-------------|
-| NFD Operator | Node Feature Discovery (GPU detection) |
-| NVIDIA GPU Operator | GPU drivers and runtime |
-| Kueue (RHBOK) | Workload scheduling with quota management |
-| cert-manager | Certificate management |
-| LWS Operator | LeaderWorkerSet for llm-d distributed inference |
-| JobSet Operator | Required for Kubeflow Trainer v2 |
-| RHCL (Kuadrant) | API gateway, auth, rate limiting for MaaS |
-| RHOAI 3.4 Operator | Red Hat OpenShift AI platform |
-| DataScienceCluster | All AI/ML components configured |
-| Observability Stack | COO, OpenTelemetry, Tempo, Grafana dashboards |
-| MCP Gateway + Servers | Model Context Protocol server catalog |
-| Dashboard Features | All RHOAI 3.4 feature flags enabled |
+This single command provides an interactive menu to:
+- Install OpenShift cluster on AWS
+- Set up RHOAI with all components
+- Create GPU nodes
+- Deploy AI models
+- Configure MaaS API
 
 ---
 
-## Main Menu
+## Features
 
-```
-RHOAI 3.x (Current):
-  1) Complete Setup (OpenShift + RHOAI 3.x + GPU + MaaS) [From Scratch]
-  2) Minimal RHOAI 3.x Setup (choose operators) [Flexible]
-  3) Install RHOAI 3.x (all prerequisites + MaaS included) [Recommended]
-
-RHOAI 2.x / Workshop:
-  4) Workshop Demo Setup (RHOAI 2.25 + GenAI Workshop)
-  5) Install RHOAI 2.x Only
-
-Management & Tools:
-  6) RHOAI Management (configure features, deploy models, etc.)
-  7) Create GPU MachineSet
-  8) GPU & ClusterPolicy Management
-  9) Configure Kubeconfig
-  a) TLS Certificate Setup (Let's Encrypt / Self-signed)
-  h) Help
-  0) Exit
-```
-
----
-
-## Key Workflows
-
-### New Cluster (from scratch)
-```bash
-./rhoai-toolkit.sh   # Select 1) Complete Setup
-```
-Installs OpenShift on AWS, creates GPU nodes, then runs full RHOAI 3.x installation.
-
-### Existing Cluster
-```bash
-./rhoai-toolkit.sh   # Select 3) Install RHOAI 3.x
-```
-Detects cluster, installs all prerequisites and RHOAI. Idempotent - safe to re-run.
-
-### Deploy a Model
-```bash
-./scripts/serve-model.sh                    # Interactive preset menu
-./scripts/serve-model.sh oci qwen3-4b oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-4b
-./scripts/serve-model.sh hf gemma4-e2b google/gemma-4-E2B-it
-```
-
-### Setup TLS Certificates
-```bash
-./rhoai-toolkit.sh   # Select a) TLS Certificate Setup
-# Or directly:
-./scripts/setup-letsencrypt-tls.sh
-```
-Supports Let's Encrypt (Route53 DNS-01) and self-signed certificates.
-Applies to Ingress Router, Gateway API, and KServe.
-
-### Manage Cluster Instances (AWS)
-```bash
-./restart-cluster-instances.sh status    # Check instance status
-./restart-cluster-instances.sh restart   # Full restart with CSR approval
-./restart-cluster-instances.sh stop      # Stop all instances
-```
-
----
-
-## Directory Structure
-
-```
-├── rhoai-toolkit.sh              # Main interactive menu
-├── setup-guide_EN.md             # English step-by-step guide
-├── setup-guide_KO.md             # Korean step-by-step guide
-├── scripts/
-│   ├── install-rhoai-34.sh       # RHOAI 3.4 full installer
-│   ├── install-rhoai-33.sh       # RHOAI 3.3 installer
-│   ├── serve-model.sh            # Model deployment (OCI/S3/PVC/HF)
-│   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
-│   ├── setup-maas.sh             # MaaS API gateway setup
-│   ├── setup-letsencrypt-tls.sh  # TLS certificate management
-│   ├── deploy-mcp-servers.sh     # MCP server deployment
-│   └── ...                       # 30+ utility scripts
-├── lib/
-│   ├── functions/                # Reusable bash functions
-│   ├── manifests/                # Kubernetes YAML manifests
-│   │   ├── operators/            # NFD, GPU, Kueue, LWS, etc.
-│   │   ├── rhoai/                # DataScienceCluster configs
-│   │   ├── tls/                  # Let's Encrypt templates
-│   │   ├── mcp/                  # MCP Gateway + server manifests
-│   │   └── ...
-│   └── utils/                    # OS compat, colors, config
-├── demo/                         # Demo applications
-│   ├── maas-demo/                # MaaS interactive demo
-│   ├── llamastack-demo/          # LlamaStack chatbot
-│   └── guardrails-demo/          # TrustyAI guardrails
-├── docs/                         # Documentation
-│   ├── guides/                   # How-to guides
-│   └── TROUBLESHOOTING.md        # Common issues
-└── diagnostics/                  # Diagnostic scripts
-```
-
----
-
-## RHOAI Versions Supported
-
-| Version | Use Case |
-|---------|----------|
-| **RHOAI 3.4** | Latest GA - MaaS GA, MLflow GA, MCP Catalog, Trainer v2 |
-| RHOAI 3.3 | MaaS TP, llm-d, Llama Stack 0.4.2 |
-| RHOAI 2.25 | Workshops, demos |
-
----
-
-## Dashboard Features (RHOAI 3.4)
-
-The installer automatically enables all dashboard features:
-
-- **Gen AI Studio** - Playground, prompt management, AI asset endpoints
-- **Models as a Service** - Subscription-based model governance with API keys
-- **MCP Catalog** - Browse and deploy MCP servers from AI Hub
-- **Observability Dashboard** - Monitor model performance and cluster health
-- **Gateway Discovery** - Select gateways during model deployment
-- **Kueue Integration** - Hardware profile selection with quota management
+| Feature | Description |
+|---------|-------------|
+| **One-Click Setup** | Interactive menu-driven installation |
+| **GPU Support** | Automated GPU MachineSet creation (g6e, p5 instances) |
+| **RHOAI 3.x** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
+| **Model Serving** | vLLM, vLLM-Omni (multimodal), llm-d, and community runtimes |
+| **MaaS API** | Model as a Service with authentication via Kuadrant |
+| **HuggingFace to S3** | Download models from HuggingFace to MinIO for deployment |
+| **GenAI Playground** | Interactive model testing interface |
+| **LlamaStack Demo** | Chatbot frontend with MCP tool calling |
+| **Cross-Platform** | Works on macOS and Linux |
 
 ---
 
 ## Prerequisites
 
-- **OpenShift 4.19+** (or AWS account for new cluster)
-- **AWS credentials** (Access Key, Secret Key, Route53 domain)
-- **OpenShift Pull Secret** ([download](https://console.redhat.com/openshift/install/pull-secret))
-- **CLI tools**: `oc`, `aws`, `jq`, `yq`
+- **AWS Account** with appropriate permissions
+- **OpenShift Pull Secret** from [console.redhat.com](https://console.redhat.com/openshift/install/pull-secret)
+- **AWS CLI** configured (`aws configure`)
+- **oc CLI** (OpenShift client)
+- **Route53 Hosted Zone** for your domain
+
+---
+
+## Repository Structure
+
+```
+├── rhoai-toolkit.sh              # Main interactive setup script
+├── scripts/                      # 32+ utility scripts
+│   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
+│   ├── setup-maas.sh             # MaaS API gateway (version-aware)
+│   ├── serve-model.sh            # Model deployment
+│   ├── install-rhoai-34.sh       # RHOAI 3.4 full installation (recommended)
+│   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation
+│   ├── install-rhoai-minimal.sh  # Minimal RHOAI install
+│   ├── setup-users.sh            # User management (htpasswd + groups + MaaS subscriptions)
+│   ├── deploy-llmd-model.sh      # llm-d model deployment
+│   └── cleanup-all.sh            # Resource cleanup
+│
+├── lib/
+│   ├── functions/                # Reusable bash functions
+│   ├── manifests/                # Kubernetes YAML templates
+│   └── utils/                    # Utility libraries (os-compat, colors, etc.)
+│
+├── docs/
+│   ├── guides/                   # How-to guides
+│   ├── reference/                # Technical reference
+│   └── TROUBLESHOOTING.md        # Common issues and solutions
+│
+├── demo/
+│   ├── maas-demo/                # MaaS demo with Streamlit
+│   ├── llamastack-demo/          # Chatbot with MCP tool calling
+│   └── guardrails-demo/          # AI safety demo
+│
+└── diagnostics/                  # Diagnostic scripts
+```
+
+---
+
+## Usage
+
+### Full Installation (RHOAI 3.4 — Recommended)
+
+```bash
+# Interactive menu
+./rhoai-toolkit.sh            # Select option 3 for RHOAI 3.4
+
+# Direct script (automated)
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# Makefile one-liner
+make setup-rhoai-34
+```
+
+Select from the interactive menu:
+1. **Complete Setup** - OpenShift + RHOAI 3.x + GPU + MaaS
+2. **Minimal Setup** - Choose which operators to install
+3. **Install RHOAI 3.4** - Recommended for new installs
+3b. **Install RHOAI 3.3** - Previous stable release
+
+### Common Script Flags (3.4)
+
+```bash
+# With specific RHOAI channel
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# With external PostgreSQL for MaaS (production)
+./scripts/install-rhoai-34.sh --postgres-connection 'postgresql://user:pass@host:5432/db?sslmode=require'
+
+# Skip if prerequisites already installed
+./scripts/install-rhoai-34.sh --skip-prerequisites --skip-node-scaling
+
+# Enable TP features
+./scripts/install-rhoai-34.sh --enable-vllm-maas --enable-observability
+```
+
+### Individual Operations
+
+```bash
+# Create GPU nodes
+./scripts/create-gpu-machineset.sh
+
+# Set up MaaS API
+./scripts/setup-maas.sh
+
+# Deploy a model
+./scripts/serve-model.sh
+
+# Setup model storage (MinIO) and download from HuggingFace
+./scripts/setup-model-storage.sh
+./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct
+
+# Clean up resources
+./scripts/cleanup-all.sh
+```
+
+---
+
+## Supported Serving Runtimes
+
+| Runtime | Use Case | CR Type | MaaS |
+|---------|----------|---------|------|
+| **vLLM (Red Hat)** | Text LLMs (default) | InferenceService | No |
+| **vLLM (Community)** | Newer models (Qwen3.5, etc.) | InferenceService | No |
+| **vLLM-Omni** | Multimodal: FLUX, SD3, audio | InferenceService | No |
+| **llm-d** | MaaS, multi-replica | LLMInferenceService | Yes |
+
+---
+
+## Quick Reference
+
+### Common Commands
+
+```bash
+# Full installation (recommended)
+./scripts/install-rhoai-34.sh --channel stable-3.4
+
+# Or interactive menu
+./rhoai-toolkit.sh
+
+# Previous version
+./scripts/install-rhoai-33.sh
+
+# Add GPU nodes
+./scripts/create-gpu-machineset.sh
+
+# Create hardware profile
+./scripts/create-hardware-profile.sh <namespace>
+
+# Fix GPU tolerations
+./scripts/fix-gpu-resourceflavor.sh
+
+# Setup MaaS
+./scripts/setup-maas.sh
+
+# Clean up everything
+./scripts/cleanup-all.sh
+```
+
+### Verification
+
+```bash
+# Check all operators
+oc get csv -A | grep -E "nfd|gpu|kueue|lws|rhcl|rhods"
+
+# Check RHOAI
+oc get datasciencecluster
+
+# Check hardware profiles
+oc get hardwareprofiles -n redhat-ods-applications
+
+# Check GPU nodes
+oc get nodes -l nvidia.com/gpu.present=true
+
+# Check MaaS (3.3+)
+oc get gateway -n openshift-ingress
+
+# Restart components
+oc delete pod -n redhat-ods-applications -l app=odh-model-controller
+oc delete pod -n kuadrant-system -l control-plane=controller-manager
+```
+
+### Operator Logs
+
+```bash
+oc logs -n redhat-ods-operator -l name=rhods-operator --tail=50
+oc logs -n nvidia-gpu-operator -l app=gpu-operator --tail=50
+oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
+```
 
 ---
 
@@ -177,8 +218,54 @@ The installer automatically enables all dashboard features:
 
 | Document | Description |
 |----------|-------------|
-| [Setup Guide (EN)](setup-guide_EN.md) | Step-by-step English guide |
-| [Setup Guide (KO)](setup-guide_KO.md) | Step-by-step Korean guide |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and fixes |
-| [Quick Reference](QUICK-REFERENCE.md) | Command cheat sheet |
-| [Features](FEATURES.md) | Feature reference |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and solutions |
+| [docs/guides/](docs/guides/) | Step-by-step guides |
+| [docs/reference/](docs/reference/) | Technical reference |
+
+### Key Guides
+
+- [RHOAI 3.4 Installation](docs/guides/RHOAI-34-INSTALLATION.md) (recommended)
+- [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md)
+- [RHOAI 3.3 Installation](docs/guides/RHOAI-33-INSTALLATION.md)
+- [Manual Installation Guide](docs/guides/RHOAI-MANUAL-INSTALLATION-GUIDE.md)
+- [Hardware Profile Setup](docs/guides/HARDWARE-PROFILE-SETUP.md)
+- [GPU Taints Configuration](docs/guides/GPU-TAINTS-RHOAI3.md)
+- [MaaS Setup](docs/guides/MAAS-SETUP-STEP-BY-STEP.md)
+- [Tool Calling](docs/guides/TOOL-CALLING-GUIDE.md)
+- [llm-d Setup](docs/guides/LLMD-SETUP-GUIDE.md)
+
+---
+
+## Requirements
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| `oc` | 4.14+ | OpenShift CLI |
+| `aws` | 2.x | AWS CLI |
+| `jq` | 1.6+ | JSON processing |
+| `yq` | 4.x | YAML processing |
+
+---
+
+## Contributing
+
+1. Scripts should use the OS compatibility layer (`lib/utils/os-compat.sh`)
+2. Follow existing code style and patterns
+3. Update documentation when adding features
+4. Test on both macOS and Linux
+
+---
+
+## External Resources
+
+- [RHOAI 3.4 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4)
+- [RHOAI 3.4 MaaS Guide](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service)
+- [RHCL 1.3 Install Guide](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3/html-single/installing_on_openshift_container_platform/index)
+- [RHOAI Supported Configurations](https://access.redhat.com/articles/rhoai-supported-configs)
+- [OpenShift Documentation](https://docs.openshift.com)
+- [Kueue Documentation](https://kueue.sigs.k8s.io/)
+- [KServe Documentation](https://kserve.github.io/website/)
+
+---
+
+**License:** Apache License 2.0

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 ################################################################################
-# Enable GenAI Playground and Model as a Service (MaaS) in RHOAI 3.0
+# Enable GenAI Playground and Model as a Service (MaaS) in RHOAI 3.x
 ################################################################################
-# Based on CAI's guide to RHOAI 3.0
-# This script enables missing features in an existing RHOAI 3.0 deployment
+# Based on CAI's guide to RHOAI 3.2/3.3
+# This script enables missing features in an existing RHOAI 3.x deployment
 
 set -e
 
@@ -56,11 +56,12 @@ update_datasciencecluster() {
     print_step "Patching DataScienceCluster to enable:"
     echo "  - llamastackoperator (for GenAI Playground)"
     echo "  - feastoperator (for Feature Store)"
-    echo "  - kueue (for workload management)"
-    echo "  - trainingoperator (for distributed training)"
+    echo "  - kueue (Unmanaged, uses standalone RHBOK)"
     echo "  - trustyai (for model monitoring)"
     echo "  - modelregistry (for model catalog)"
+    echo "  - mlflowoperator (for experiment tracking)"
     echo "  - aipipelines (for AI pipelines)"
+    echo "  - kserve + MaaS + NIM"
     
     cat <<EOF | oc apply -f -
 apiVersion: datasciencecluster.opendatahub.io/v2
@@ -73,31 +74,41 @@ spec:
   components:
     dashboard:
       managementState: Managed
+    workbenches:
+      managementState: Managed
     aipipelines:
       managementState: Managed
-    feastoperator:
-      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
     kserve:
       managementState: Managed
-    llamastackoperator:
-      managementState: Managed
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
+      nim:
+        managementState: Managed
+      modelsAsService:
+        managementState: Managed
     kueue:
       defaultClusterQueueName: default
       defaultLocalQueueName: default
       managementState: Unmanaged
+    ray:
+      managementState: Managed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
     modelregistry:
       managementState: Managed
       registriesNamespace: rhoai-model-registries
-    ray:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    trainingoperator:
-      managementState: Managed
     trustyai:
       managementState: Managed
-    codeflare:
-      managementState: Removed
+    feastoperator:
+      managementState: Managed
+    llamastackoperator:
+      managementState: Managed
+    mlflowoperator:
+      managementState: Managed
 EOF
     
     print_success "DataScienceCluster updated"
@@ -158,6 +169,9 @@ metadata:
     opendatahub.io/dashboard-feature-visibility: '[]'
     opendatahub.io/disabled: 'false'
     opendatahub.io/display-name: gpu-profile
+    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
   name: gpu-profile
   namespace: redhat-ods-applications
 spec:
@@ -180,6 +194,15 @@ spec:
       maxCount: 4
       minCount: 1
       resourceType: Accelerator
+  scheduling:
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: 'true'
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
 EOF
     
     print_success "GPU Hardware Profile created"
@@ -288,19 +311,56 @@ EOF
         auth_elapsed=$((auth_elapsed + 10))
     done
     
-    # Configure Authorino with TLS if service exists
-    if oc get svc/authorino-authorino-authorization -n kuadrant-system &>/dev/null; then
-        print_step "Configuring Authorino with TLS..."
-        
-        # Annotate service for TLS certificate
-        oc annotate svc/authorino-authorino-authorization \
-            service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-            -n kuadrant-system --overwrite
-        
-        sleep 10
-        
-        # Enable TLS in Authorino
-        cat <<EOF | oc apply -f -
+    # Create TLS certificate BEFORE Authorino CR to avoid deadlock
+    print_step "Creating Authorino TLS certificate..."
+    if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+        cat <<'CERTEOF' | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: authorino-selfsigned
+  namespace: kuadrant-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-server-cert
+  namespace: kuadrant-system
+spec:
+  secretName: authorino-server-cert
+  isCA: false
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: authorino-selfsigned
+    kind: Issuer
+  commonName: authorino-authorino
+  dnsNames:
+    - authorino-authorino
+    - authorino-authorino.kuadrant-system
+    - authorino-authorino.kuadrant-system.svc
+    - authorino-authorino.kuadrant-system.svc.cluster.local
+  usages:
+    - server auth
+CERTEOF
+        local cert_wait=0
+        while [ $cert_wait -lt 30 ]; do
+            if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
+                print_success "Authorino TLS certificate created"
+                break
+            fi
+            sleep 3
+            cert_wait=$((cert_wait + 3))
+        done
+    else
+        print_info "Authorino TLS secret already exists"
+    fi
+    
+    # Configure Authorino with TLS
+    print_step "Configuring Authorino with TLS..."
+    cat <<EOF | oc apply -f -
 apiVersion: operator.authorino.kuadrant.io/v1beta1
 kind: Authorino
 metadata:
@@ -318,9 +378,13 @@ spec:
     tls:
       enabled: false
 EOF
-        
-        print_success "Authorino configured with TLS"
-    fi
+    
+    # Annotate service if it exists (for cert rotation)
+    oc annotate svc/authorino-authorino-authorization \
+        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
+        -n kuadrant-system --overwrite 2>/dev/null || true
+    
+    print_success "Authorino configured with TLS"
     
     print_success "RHCL operator installation complete (enables llm-d serving runtime)"
 }
@@ -477,7 +541,7 @@ display_next_steps() {
 ################################################################################
 
 main() {
-    print_header "Enable GenAI Playground & Model as a Service in RHOAI 3.0"
+    print_header "Enable GenAI Playground & Model as a Service in RHOAI 3.x"
     
     # Check if oc is available
     if ! command -v oc &> /dev/null; then

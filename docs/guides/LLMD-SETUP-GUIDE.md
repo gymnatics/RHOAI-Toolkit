@@ -180,7 +180,7 @@ The llm-d setup is automatically included when you run:
 Or:
 
 ```bash
-./integrated-workflow-v2.sh
+./scripts/integrated-workflow-v2.sh
 ```
 
 For RHOAI 3.0, the `setup_llmd_infrastructure` function is called automatically.
