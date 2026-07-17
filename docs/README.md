@@ -29,7 +29,7 @@ Step-by-step instructions for common tasks.
 
 | Guide | Description |
 |-------|-------------|
-| [GPU Taints](guides/GPU-TAINTS-RHOAI3.md) | GPU node configuration and tolerations |
+| [GPU ResourceFlavor Configuration](reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md) | GPU tolerations and Kueue ResourceFlavor setup |
 | [Hardware Profile Setup](guides/HARDWARE-PROFILE-SETUP.md) | Create hardware profiles for RHOAI 3.x |
 
 ### Model Deployment
@@ -71,13 +71,13 @@ Step-by-step instructions for common tasks.
 | Guide | Description |
 |-------|-------------|
 | [Model Deployment Workshop](guides/RHOAI-MODEL-DEPLOYMENT-WORKSHOP.md) | Hands-on: deploy models via the UI + test with AI Playground |
+| [LLMOps GitOps Demo](guides/LLMOPS-GITOPS-DEMO.md) | Customer demo: deploy LLMs with ArgoCD GitOps (dev/staging/prod) |
 
 ### Demo Environment
 
 | Guide | Description |
 |-------|-------------|
-| [Demo Environment](guides/DEMO-ENVIRONMENT.md) | Full demo environment — 11 components, GPU requirements |
-| [Dify Enterprise — Kaniko Fix](guides/DIFY-OPENSHIFT-KANIKO-TROUBLESHOOTING.md) | Fix Kaniko plugin builder permission errors |
+| [Demo Environment](guides/DEMO-ENVIRONMENT.md) | Full demo environment — 17 components, GPU requirements |
 
 ### End-to-End Setup Guides
 

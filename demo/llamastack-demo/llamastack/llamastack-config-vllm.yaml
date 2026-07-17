@@ -1,6 +1,6 @@
 ---
 # LlamaStack ConfigMap - vLLM Provider (OpenShift/RHOAI)
-# Compatible with LlamaStack 0.4.0+
+# Use this when you have a model served via RHOAI KServe/vLLM
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,14 +14,8 @@ data:
     version: "2"
     image_name: rh
     apis:
-    - responses
-    - datasetio
-    - files
     - inference
-    - safety
-    - scoring
     - tool_runtime
-    - vector_io
     providers:
       inference:
       - provider_id: sentence-transformers
@@ -30,60 +24,20 @@ data:
       - provider_id: vllm-inference
         provider_type: remote::vllm
         config:
-          base_url: ${env.VLLM_URL:=}
-          max_tokens: ${env.VLLM_MAX_TOKENS:=4096}
-          api_token: ${env.VLLM_API_TOKEN:=}
-          network:
-            tls:
-              verify: ${env.VLLM_TLS_VERIFY:=true}
-      vector_io:
-      - provider_id: milvus
-        provider_type: inline::milvus
-        config:
-          db_path: ${env.MILVUS_DB_PATH:=~/.llama/milvus.db}
-          persistence:
-            namespace: milvus_registry
-            backend: kv_default
-      responses:
-      - provider_id: builtin
-        provider_type: inline::builtin
-        config:
-          persistence:
-            agent_state:
-              namespace: responses
-              backend: kv_default
-            responses:
-              backend: sql_default
-      eval: []
-      files:
-      - provider_id: builtin-files
-        provider_type: inline::localfs
-        config:
-          metadata_store:
-            backend: sql_default
-            table_name: files_metadata
-          storage_dir: /opt/app-root/src/.llama/distributions/rh/files
-      datasetio:
-      - provider_id: huggingface
-        provider_type: remote::huggingface
-        config:
-          kvstore:
-            namespace: huggingface_datasetio
-            backend: kv_default
-      scoring:
-      - provider_id: basic
-        provider_type: inline::basic
-        config: {}
-      - provider_id: llm-as-judge
-        provider_type: inline::llm-as-judge
-        config: {}
+          api_token: ${env.VLLM_API_TOKEN:}
+          max_tokens: ${env.VLLM_MAX_TOKENS:4096}
+          base_url: ${env.VLLM_URL}/v1
       tool_runtime:
-      - provider_id: file-search
-        provider_type: inline::file-search
-        config: {}
       - provider_id: model-context-protocol
         provider_type: remote::model-context-protocol
         config: {}
+    connectors:
+    - connector_id: weather-data
+      connector_type: mcp
+      url: http://weather-mcp-server.NAMESPACE_PLACEHOLDER.svc.cluster.local:8000/mcp
+    metadata_store:
+      type: sqlite
+      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
     models:
     - provider_id: vllm-inference
       model_id: MODEL_ID_PLACEHOLDER
@@ -92,13 +46,5 @@ data:
       metadata:
         display_name: MODEL_ID_PLACEHOLDER
     shields: []
-    datasets: []
-    scoring_fns: []
-    benchmarks: []
-    tool_groups:
-    - toolgroup_id: mcp::weather-data
-      provider_id: model-context-protocol
-      mcp_endpoint:
-        uri: http://weather-mcp-server.NAMESPACE_PLACEHOLDER.svc.cluster.local:8000/mcp
     server:
       port: 8321

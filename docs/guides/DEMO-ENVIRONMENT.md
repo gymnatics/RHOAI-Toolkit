@@ -33,8 +33,9 @@ make setup-demo-environment
 | 12 | MaaS Rate Limiting | maas-ratelimit-demo | `demo/maas-ratelimit-demo/deploy.sh` | No (uses API key) |
 | 13 | AutoML (TP) | automl-demo | `demo/automl-demo/deploy.sh` | No (CPU training) |
 | 14 | AutoRAG (TP) | autorag-demo | `demo/autorag-demo/deploy.sh` | Yes (LLM + embeddings) |
-| 15 | Marketing Assistant | marketing-assistant | `demo/marketing-assistant-demo/deploy.sh` | Yes (3x L40S) |
-| 16 | Lightspeed + MCP Troubleshooting | lightspeed-demo | `demo/lightspeed-demo/deploy.sh` | No (uses existing model) |
+| 15 | MLflow Tracing (Banking) | mlflow-tracing-demo | `demo/mlflow-tracing-demo/deploy.sh` | Yes (uses existing model) |
+| 16 | Marketing Assistant | marketing-assistant | `demo/marketing-assistant-demo/deploy.sh` | Yes (3x L40S) |
+| 17 | Lightspeed + MCP Troubleshooting | lightspeed-demo | `demo/lightspeed-demo/deploy.sh` | No (uses existing model) |
 
 Marketing Assistant Demo is **not** included in deploy-all due to heavy GPU requirements (3x L40S).
 Lightspeed Demo is **standalone** (not part of deploy-all) — requires Lightspeed operator pre-installed.
@@ -63,6 +64,7 @@ Every component can be deployed independently:
 ./demo/automl-demo/deploy.sh
 ./demo/autorag-demo/deploy.sh
 ./demo/open-webui-demo/deploy.sh
+./demo/mlflow-tracing-demo/deploy.sh
 ./demo/marketing-assistant-demo/deploy.sh
 
 # Standalone scripts
@@ -104,6 +106,7 @@ Some demos clone external GitHub repos at deploy time. Configuration is in `lib/
 |------|-------------|---------|
 | cbtham/micro-financial-loan | main | Financial Loan Demo (notebooks vendored locally) |
 | gymnatics/Marketing-Assistant-Demo | main | Marketing Assistant |
+| gymnatics/MLFlow-Agent-Observability-Demo | main | MLflow Tracing (Banking Multi-Agent) |
 | JPishikawa/demo-guardrail | main | NeMo Guardrails reference |
 | hyogrin/rhoai-lmeval-builder-lab | main | LMEval Builder Lab (key notebooks vendored locally) |
 
@@ -124,6 +127,7 @@ scripts/deploy-demo-environment.sh    (master orchestrator)
   ├── demo/maas-ratelimit-demo/deploy.sh
   ├── demo/automl-demo/deploy.sh
   ├── demo/autorag-demo/deploy.sh
+  ├── demo/mlflow-tracing-demo/deploy.sh
   └── (existing toolkit functions for feast, mcp, maas)
 
 Each deploy.sh:
@@ -174,6 +178,7 @@ All GPU-dependent demos share a single model (e.g. Qwen3-4B) via the MaaS infere
 | AutoML training | CPU | AutoGluon runs on CPU (4 CPU, 16 GiB) |
 | AutoRAG optimization | Shared | Llama Stack calls model for generation |
 | EvalHub evaluations | Shared | Evaluates model via providers |
+| MLflow Tracing (Banking) | Shared | Multi-agent A2A calls model + MLflow tracing |
 | Feast, Pipeline, n8n, Catalog | None | No model needed |
 | Marketing Assistant | 3x L40S | Dedicated (not in deploy-all) |
 
@@ -188,6 +193,7 @@ The deploy script checks for GPU nodes and deployed models at startup. If no mod
 - For LMEval/EvalHub: TrustyAI operator installed, `disableLMEval: false` in dashboard config
 - For AutoML: AI Pipelines enabled (`aipipelines: Managed`)
 - For AutoRAG: Llama Stack Operator (`llamastackoperator: Managed`), Milvus, Gen AI Studio
+- For MLflow Tracing: MLflow operator enabled (`mlflowoperator: Managed`), vLLM model with tool-calling
 
 ## Cleanup
 
@@ -199,4 +205,5 @@ Each demo supports `--delete`:
 ./demo/nemo-guardrails-demo/deploy.sh --delete
 ./demo/automl-demo/deploy.sh --delete
 ./demo/autorag-demo/deploy.sh --delete
+./demo/mlflow-tracing-demo/deploy.sh --delete
 ```

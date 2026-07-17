@@ -38,6 +38,8 @@ COMPONENTS=(
     "maas-ratelimit|deploy_maas_ratelimit|MaaS Rate Limiting Demo (API Key + 429)|yes"
     "automl|deploy_automl|AutoML (TP) Automated Model Training|yes"
     "autorag|deploy_autorag|AutoRAG (TP) RAG Pipeline Optimization|yes"
+    "mlflow-tracing|deploy_mlflow_tracing|MLflow Tracing Demo (Banking Multi-Agent)|yes"
+    "lightspeed|deploy_lightspeed|Lightspeed + MCP Troubleshooting Demo|yes"
     "marketing|deploy_marketing|Marketing Assistant (3x L40S GPU)|no"
 )
 
@@ -319,6 +321,14 @@ deploy_autorag() {
     bash "$ROOT_DIR/demo/autorag-demo/deploy.sh"
 }
 
+deploy_mlflow_tracing() {
+    bash "$ROOT_DIR/demo/mlflow-tracing-demo/deploy.sh"
+}
+
+deploy_lightspeed() {
+    bash "$ROOT_DIR/demo/lightspeed-demo/deploy.sh" deploy
+}
+
 deploy_marketing() {
     bash "$ROOT_DIR/demo/marketing-assistant-demo/deploy.sh"
 }
@@ -551,7 +561,6 @@ echo "  Vendored notebooks (auto-configured, no hardcoded URLs):"
 echo "    financial-loan-demo: demo/financial-loan-demo/notebooks/"
 echo "    lmeval-demo:         demo/lmeval-demo/notebooks/"
 echo ""
-fi
 
 # Dashboard-only features
 DASHBOARD_FEATURES=""

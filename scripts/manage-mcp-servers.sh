@@ -169,13 +169,13 @@ EOF
 # LlamaStack Config Registration
 ################################################################################
 
-# Add MCP toolgroup to LlamaStack config
+# Add MCP connector to LlamaStack config
 register_llamastack_toolgroup() {
     local toolgroup_id="$1"
     local mcp_url="$2"
     local namespace="$3"
     
-    print_step "Adding toolgroup '$toolgroup_id' to LlamaStack config..."
+    print_step "Adding connector '$toolgroup_id' to LlamaStack config..."
     
     # Check if llama-stack-config exists
     if ! oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
@@ -187,28 +187,27 @@ register_llamastack_toolgroup() {
     # Get current config
     local current_config=$(oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}')
     
-    # Check if toolgroup already exists
-    if echo "$current_config" | grep -q "toolgroup_id: $toolgroup_id"; then
-        print_info "Toolgroup '$toolgroup_id' already registered"
+    # Check if connector already exists
+    if echo "$current_config" | grep -q "connector_id: $toolgroup_id"; then
+        print_info "Connector '$toolgroup_id' already registered"
         return 0
     fi
     
-    # Create new toolgroup entry
-    local new_toolgroup="    - toolgroup_id: $toolgroup_id
-      provider_id: model-context-protocol
-      mcp_endpoint:
-        uri: $mcp_url"
+    # Create new connector entry
+    local new_connector="    - connector_id: $toolgroup_id
+      connector_type: mcp
+      url: $mcp_url"
     
-    # Append to tool_groups section
-    local updated_config=$(echo "$current_config" | sed "/^    tool_groups:/a\\
-$new_toolgroup")
+    # Append to connectors section
+    local updated_config=$(echo "$current_config" | sed "/^    connectors:/a\\
+$new_connector")
     
     # Update ConfigMap
     oc create configmap llama-stack-config \
         --from-literal=run.yaml="$updated_config" \
         -n "$namespace" --dry-run=client -o yaml | oc apply -f -
     
-    print_success "Added toolgroup '$toolgroup_id' to LlamaStack"
+    print_success "Added connector '$toolgroup_id' to LlamaStack"
     print_warning "Restart LlamaStack pod to apply changes:"
     echo "  oc delete pod -l app=lsd-genai-playground -n $namespace"
 }
@@ -336,10 +335,10 @@ show_status() {
     fi
     echo ""
     
-    echo -e "${CYAN}LlamaStack Toolgroups:${NC}"
+    echo -e "${CYAN}LlamaStack Connectors:${NC}"
     if oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
         oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}' | \
-            grep "toolgroup_id: mcp::" | sed 's/.*toolgroup_id: /  - /' || echo "  No MCP toolgroups"
+            grep "connector_id:" | sed 's/.*connector_id: /  - /' || echo "  No MCP connectors"
     else
         echo "  LlamaStack config not found in $namespace"
     fi
@@ -361,7 +360,7 @@ try:
     tools = data if isinstance(data, list) else data.get('data', [])
     groups = {}
     for t in tools:
-        g = t.get('toolgroup_id', 'builtin')
+        g = t.get('connector_id', t.get('toolgroup_id', 'builtin'))
         if g not in groups:
             groups[g] = []
         groups[g].append(t.get('name', 'unknown'))
@@ -436,7 +435,7 @@ interactive_register_llamastack() {
     echo "Current namespace: $namespace"
     echo ""
     
-    read -p "Toolgroup ID (e.g., mcp::my-tools): " toolgroup_id
+    read -p "Connector ID (e.g., mcp::my-tools): " toolgroup_id
     read -p "MCP URL (e.g., http://my-mcp.ns.svc.cluster.local:8000/mcp): " mcp_url
     read -p "Namespace for LlamaStack config [$namespace]: " ls_namespace
     ls_namespace="${ls_namespace:-$namespace}"
