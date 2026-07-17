@@ -2073,9 +2073,7 @@ EOF
         print_info "Check controller: oc logs -n mcp-gateway-system deploy/mcp-gateway-controller --tail=10"
     fi
 
-    # --- 10. Copy mcp-gateway-config to dashboard namespace ---
-    # The RHOAI dashboard reads MCP server config from a secret in its own namespace,
-    # but the mcp-gateway-controller writes it to mcp-gateway-system.
+    # --- 10. Sync mcp-gateway-config to dashboard namespace ---
     local dashboard_ns="redhat-ods-applications"
     if oc get secret mcp-gateway-config -n mcp-gateway-system &>/dev/null 2>&1; then
         print_step "Syncing mcp-gateway-config to $dashboard_ns..."
@@ -2086,8 +2084,59 @@ s = json.load(sys.stdin)
 s['metadata'] = {'name': s['metadata']['name'], 'namespace': '$dashboard_ns'}
 json.dump(s, sys.stdout)
 " | oc apply -f - &>/dev/null \
-            && print_success "mcp-gateway-config synced to $dashboard_ns" \
-            || print_warning "Could not sync mcp-gateway-config"
+            && print_success "mcp-gateway-config secret synced to $dashboard_ns" \
+            || print_warning "Could not sync mcp-gateway-config secret"
+
+        local config_data
+        config_data=$(oc get secret mcp-gateway-config -n mcp-gateway-system \
+            -o jsonpath='{.data.config\.yaml}' 2>/dev/null | base64 -d 2>/dev/null)
+        if [ -n "$config_data" ]; then
+            oc create configmap mcp-gateway-config -n "$dashboard_ns" \
+                --from-literal=config.yaml="$config_data" \
+                --dry-run=client -o yaml | oc apply -f - &>/dev/null
+        fi
+    fi
+
+    # --- 11. Dashboard RBAC for MCP resources ---
+    if ! oc get clusterrole rhods-dashboard-mcp-reader &>/dev/null 2>&1; then
+        print_step "Creating dashboard RBAC for MCP resources..."
+        oc apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rhods-dashboard-mcp-reader
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+rules:
+- apiGroups: ["mcp.kuadrant.io"]
+  resources:
+  - mcpserverregistrations
+  - mcpserverregistrations/status
+  - mcpgatewayextensions
+  - mcpgatewayextensions/status
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources:
+  - gateways
+  - httproutes
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rhods-dashboard-mcp-reader
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rhods-dashboard-mcp-reader
+subjects:
+- kind: ServiceAccount
+  name: rhods-dashboard
+  namespace: redhat-ods-applications
+EOF
+        print_success "Dashboard MCP RBAC created"
     fi
 }
 
