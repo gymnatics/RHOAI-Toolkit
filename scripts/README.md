@@ -211,18 +211,72 @@ cat scripts/CLEANUP-USAGE.md
 
 ---
 
+---
+
+### install-rhoai-34.sh
+**Purpose**: Full RHOAI 3.4 installation — NFD, GPU, Kueue, cert-manager, RHCL, MaaS, llm-d, observability, dashboards
+
+**Usage**:
+```bash
+./scripts/install-rhoai-34.sh
+./scripts/install-rhoai-34.sh --channel stable-3.4
+./scripts/install-rhoai-34.sh --deploy-grafana --setup-users --num-users 10
+```
+
+**What it does**: Installs all prerequisites, RHOAI operator, MaaS with PostgreSQL, observability stack (COO + Perses + Observe tab dashboards), MLflow (auto-detects PostgreSQL), hardware profiles, and optional Grafana/users/pipelines.
+
+---
+
+### setup-letsencrypt-tls.sh
+**Purpose**: Automated TLS certificate setup (Let's Encrypt via Route53 DNS-01 or self-signed)
+
+**Usage**:
+```bash
+./scripts/setup-letsencrypt-tls.sh              # Interactive menu
+./scripts/setup-letsencrypt-tls.sh letsencrypt  # Direct Let's Encrypt setup
+./scripts/setup-letsencrypt-tls.sh selfsigned   # Direct self-signed setup
+./scripts/setup-letsencrypt-tls.sh status       # Show TLS status
+```
+
+---
+
+### deploy-dashboards.sh
+**Purpose**: Deploy GPU/vLLM monitoring dashboards to OpenShift Observe tab or standalone Grafana
+
+**Usage**:
+```bash
+./scripts/deploy-dashboards.sh                        # All dashboards to Observe tab
+./scripts/deploy-dashboards.sh --method grafana       # Deploy via Grafana Operator
+./scripts/deploy-dashboards.sh --dashboard vllm       # Only vLLM dashboard
+./scripts/deploy-dashboards.sh --delete               # Remove all dashboards
+```
+
+---
+
+### deploy-demo-environment.sh
+**Purpose**: Deploy all 17 demo components on an existing RHOAI 3.4 cluster
+
+**Usage**:
+```bash
+./scripts/deploy-demo-environment.sh --skip-core
+./scripts/deploy-demo-environment.sh --components feast,pipeline,open-webui
+./scripts/deploy-demo-environment.sh --list
+```
+
+---
+
 ## Typical Usage Flow
 
-### Fresh Installation
+### Fresh Installation (Recommended)
 ```bash
-# 1. Install OpenShift + RHOAI
-./scripts/integrated-workflow-v2.sh
+# 1. Install RHOAI 3.4 (includes GPU, MaaS, observability)
+./scripts/install-rhoai-34.sh
 
-# 2. Create GPU nodes
+# 2. Create GPU nodes (if not auto-scaled)
 ./scripts/create-gpu-machineset.sh
 
-# 3. Set up MaaS
-./scripts/setup-maas.sh
+# 3. Deploy a model
+./scripts/serve-model.sh s3 my-model Qwen/Qwen3-8B-Instruct
 ```
 
 ### Existing RHOAI Installation

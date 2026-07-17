@@ -2,7 +2,7 @@
 
 A comprehensive toolkit for installing and configuring **OpenShift** with **Red Hat OpenShift AI (RHOAI) 3.x** on AWS, including GPU support, Model as a Service (MaaS), and GenAI capabilities.
 
-> **Latest:** RHOAI 3.4 is now supported. See [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md) for details.
+> **Latest:** RHOAI 3.4 is now supported. See [What's New in RHOAI 3.4](docs/guides/rhoai-3.4/RHOAI-34-WHATS-NEW.md) for details.
 > MaaS core platform and NeMo Guardrails are now GA. AutoML, AutoRAG, and several MaaS sub-features (vLLM runtime, OIDC, observability, external egress) remain Technology Preview.
 
 ## Quick Start
@@ -29,9 +29,12 @@ This single command provides an interactive menu to:
 | **RHOAI 3.x** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
 | **Model Serving** | vLLM, vLLM-Omni (multimodal), llm-d, and community runtimes |
 | **MaaS API** | Model as a Service with authentication via Kuadrant |
+| **Observability** | Auto-configured COO + Perses + Observe tab dashboards (DCGM, vLLM) |
+| **Let's Encrypt TLS** | Automated wildcard certificates via Route53 DNS-01 |
+| **MCP Servers** | 8 deployable MCP servers with Gateway API routing |
 | **HuggingFace to S3** | Download models from HuggingFace to MinIO for deployment |
 | **GenAI Playground** | Interactive model testing interface |
-| **LlamaStack Demo** | Chatbot frontend with MCP tool calling |
+| **19 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, Pipelines, and more |
 | **Cross-Platform** | Works on macOS and Linux |
 
 ---
@@ -49,32 +52,36 @@ This single command provides an interactive menu to:
 ## Repository Structure
 
 ```
-├── rhoai-toolkit.sh              # Main interactive setup script
-├── scripts/                      # 32+ utility scripts
-│   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
-│   ├── setup-maas.sh             # MaaS API gateway (version-aware)
-│   ├── serve-model.sh            # Model deployment
+├── rhoai-toolkit.sh              # Main interactive menu (sources lib/)
+├── scripts/                      # 50+ utility scripts
 │   ├── install-rhoai-34.sh       # RHOAI 3.4 full installation (recommended)
 │   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation
 │   ├── install-rhoai-minimal.sh  # Minimal RHOAI install
-│   ├── setup-users.sh            # User management (htpasswd + groups + MaaS subscriptions)
-│   ├── deploy-llmd-model.sh      # llm-d model deployment
+│   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
+│   ├── setup-maas.sh             # MaaS API gateway (version-aware)
+│   ├── serve-model.sh            # Model deployment (vLLM/llm-d)
+│   ├── setup-letsencrypt-tls.sh  # Let's Encrypt / self-signed TLS automation
+│   ├── deploy-dashboards.sh      # GPU/vLLM dashboards (Observe tab + Grafana)
+│   ├── deploy-demo-environment.sh # Deploy all 17 demo components
+│   ├── setup-users.sh            # User management (htpasswd + groups)
 │   └── cleanup-all.sh            # Resource cleanup
 │
 ├── lib/
-│   ├── functions/                # Reusable bash functions
+│   ├── functions/                # Reusable bash functions (15 modules)
+│   ├── menus/                    # Interactive menu handlers (12 files)
 │   ├── manifests/                # Kubernetes YAML templates
+│   │   ├── rhoai/                # RHOAI operator, DSC, hardware profiles
+│   │   ├── monitoring/           # Observe dashboards, Grafana, Perses
+│   │   ├── mcp/                  # MCP server deployments + Gateway routing
+│   │   ├── tls/                  # Let's Encrypt + wildcard cert templates
+│   │   └── ...                   # maas, rhcl, operators, templates, etc.
 │   └── utils/                    # Utility libraries (os-compat, colors, etc.)
 │
+├── demo/                         # 19 demo apps (each with deploy.sh)
 ├── docs/
 │   ├── guides/                   # How-to guides
 │   ├── reference/                # Technical reference
 │   └── TROUBLESHOOTING.md        # Common issues and solutions
-│
-├── demo/
-│   ├── maas-demo/                # MaaS demo with Streamlit
-│   ├── llamastack-demo/          # Chatbot with MCP tool calling
-│   └── guardrails-demo/          # AI safety demo
 │
 └── diagnostics/                  # Diagnostic scripts
 ```
@@ -83,24 +90,24 @@ This single command provides an interactive menu to:
 
 ## Usage
 
-### Full Installation (RHOAI 3.4 — Recommended)
+### Install RHOAI 3.4 (Recommended)
 
 ```bash
-# Interactive menu
-./rhoai-toolkit.sh            # Select option 3 for RHOAI 3.4
+# Direct script — full automated install
+./scripts/install-rhoai-34.sh
 
-# Direct script (automated)
-./scripts/install-rhoai-34.sh --channel stable-3.4
+# Or interactive menu — select option 1
+./rhoai-toolkit.sh
 
 # Makefile one-liner
 make setup-rhoai-34
 ```
 
-Select from the interactive menu:
-1. **Complete Setup** - OpenShift + RHOAI 3.x + GPU + MaaS
-2. **Minimal Setup** - Choose which operators to install
-3. **Install RHOAI 3.4** - Recommended for new installs
-3b. **Install RHOAI 3.3** - Previous stable release
+The interactive menu puts the most common options first:
+1. **Install RHOAI 3.4** — Recommended for most users
+2. **Workshop Demo Setup** — RHOAI 3.4 + OpenWebUI for hands-on workshops
+3. **Complete Setup** — Full OpenShift + RHOAI + GPU + MaaS from scratch
+4. **Minimal Setup** — Choose which operators to install
 
 ### Common Script Flags (3.4)
 
@@ -116,6 +123,12 @@ Select from the interactive menu:
 
 # Enable TP features
 ./scripts/install-rhoai-34.sh --enable-vllm-maas --enable-observability
+
+# Deploy standalone Grafana with GPU/vLLM dashboards
+./scripts/install-rhoai-34.sh --deploy-grafana
+
+# Set up TLS certificates (standalone)
+./scripts/setup-letsencrypt-tls.sh
 ```
 
 ### Individual Operations
@@ -224,15 +237,15 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 
 ### Key Guides
 
-- [RHOAI 3.4 Installation](docs/guides/RHOAI-34-INSTALLATION.md) (recommended)
-- [What's New in RHOAI 3.4](docs/guides/RHOAI-34-WHATS-NEW.md)
-- [RHOAI 3.3 Installation](docs/guides/RHOAI-33-INSTALLATION.md)
-- [Manual Installation Guide](docs/guides/RHOAI-MANUAL-INSTALLATION-GUIDE.md)
+- [RHOAI 3.4 Installation](docs/guides/rhoai-3.4/RHOAI-34-INSTALLATION.md) (recommended)
+- [What's New in RHOAI 3.4](docs/guides/rhoai-3.4/RHOAI-34-WHATS-NEW.md)
+- [Manual Installation Guide](docs/guides/rhoai-3.4/RHOAI-34-MANUAL-INSTALLATION-GUIDE.md)
+- [OpenShift Observe Dashboards](docs/guides/OPENSHIFT-OBSERVE-DASHBOARDS.md)
 - [Hardware Profile Setup](docs/guides/HARDWARE-PROFILE-SETUP.md)
-- [GPU Taints Configuration](docs/guides/GPU-TAINTS-RHOAI3.md)
-- [MaaS Setup](docs/guides/MAAS-SETUP-STEP-BY-STEP.md)
+- [GPU ResourceFlavor Configuration](docs/reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md)
 - [Tool Calling](docs/guides/TOOL-CALLING-GUIDE.md)
 - [llm-d Setup](docs/guides/LLMD-SETUP-GUIDE.md)
+- [RHOAI 3.3 Installation](docs/guides/rhoai-3.3/RHOAI-33-INSTALLATION.md) (archived)
 
 ---
 

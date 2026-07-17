@@ -50,11 +50,17 @@ Step-by-step instructions for common tasks.
 | [MaaS Policy Enforcement](guides/MAAS-POLICY-ENFORCEMENT.md) | Configure MaaS authentication and rate limiting |
 | [MaaS Demo](guides/MAAS-DEMO-GUIDE.md) | Running the MaaS demo |
 
+### Observability & Monitoring
+
+| Guide | Description |
+|-------|-------------|
+| [OpenShift Observe Dashboards](guides/OPENSHIFT-OBSERVE-DASHBOARDS.md) | Add DCGM/vLLM dashboards to OpenShift Observe tab (ConfigMap approach) |
+
 ### Security & Governance
 
 | Guide | Description |
 |-------|-------------|
-| [RHCL + NeMo Guardrails Architecture](guides/RHCL-GUARDRAILS-ARCHITECTURE.md) | RHCL (MaaS access control) + TrustyAI NeMo Guardrails — architecture, CRDs, auth flow, deployment |
+| [RHCL + NeMo Guardrails Architecture](guides/RHCL-GUARDRAILS-ARCHITECTURE.md) | RHCL (MaaS access control) + TrustyAI NeMo Guardrails |
 | [AI Agent Security & Governance](guides/AI-AGENT-SECURITY-GOVERNANCE.md) | Guardrails, access controls, data protection |
 
 ### MCP & Tool Calling
@@ -149,6 +155,6 @@ All troubleshooting is consolidated in [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
 
 ---
 
-**Last Updated**: June 2026
+**Last Updated**: July 2026
 **RHOAI Version**: 3.4
 **OpenShift Version**: 4.19+

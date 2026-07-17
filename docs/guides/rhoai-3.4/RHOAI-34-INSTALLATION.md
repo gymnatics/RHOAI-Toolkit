@@ -37,6 +37,7 @@
 | `--no-llmd`                   | Don't install LWS or configure llm-d Gateway                                                     |
 | `--enable-vllm-maas`          | Enable vLLM runtime for MaaS (Technology Preview)                                                |
 | `--enable-observability`      | Enable MaaS observability dashboard (Technology Preview)                                         |
+| `--deploy-grafana`            | Deploy standalone Grafana instance with GPU/vLLM dashboards                                      |
 | `--postgres-connection <url>` | External PostgreSQL URL for MaaS (format: `postgresql://user:pass@host:5432/db?sslmode=require`) |
 | `--skip-maas-db`              | Skip MaaS PostgreSQL setup entirely                                                              |
 | `--skip-admin-user`           | Skip creating the htpasswd admin user (script prompts by default)                                |
@@ -49,6 +50,17 @@
 | `--user-group <name>`         | Regular user group name (default: `rhods-users`). user2+ go here.                                |
 | `--user-password <pw>`        | Password for all demo users (default: `openshift`)                                               |
 
+
+---
+
+## What's Installed Automatically
+
+The following are installed **unconditionally** by `install-rhoai-34.sh` (no flags needed):
+
+- **Observability stack**: COO (Cluster Observability Operator) + UIPlugins + Perses server + Thanos proxy secret. This fixes the "Service Unavailable" error on the RHOAI Observability dashboard.
+- **Observe tab dashboards**: NVIDIA DCGM, vLLM Performance, and vLLM Advanced dashboards deployed as ConfigMaps to the OpenShift Observe tab (zero extra pods).
+- **MLflow with PostgreSQL auto-detection**: If MaaS PostgreSQL is deployed, MLflow automatically uses it as its backend instead of SQLite.
+- **Let's Encrypt auto-provisioning**: If no ClusterIssuer exists and `setup-letsencrypt-tls.sh` is present, gateway TLS setup will attempt to auto-provision certificates.
 
 ---
 

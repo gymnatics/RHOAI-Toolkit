@@ -112,16 +112,16 @@ main() {
         
         case $choice in
             1)
-                run_complete_setup
-                ;;
-            2)
-                run_minimal_setup
-                ;;
-            3)
                 install_rhoai_menu
                 ;;
-            4)
+            2)
                 workshop_setup_menu
+                ;;
+            3)
+                run_complete_setup
+                ;;
+            4)
+                run_minimal_setup
                 ;;
             5)
                 rhoai_management_menu
