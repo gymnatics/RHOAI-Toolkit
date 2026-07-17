@@ -1818,6 +1818,97 @@ create_hardware_profile() {
     print_success "Hardware profile created"
 }
 
+################################################################################
+# Grafana Monitoring Deployment
+################################################################################
+
+deploy_grafana_monitoring() {
+    print_step "Deploying Grafana monitoring stack..."
+
+    local grafana_ns="monitoring"
+    oc create namespace "$grafana_ns" 2>/dev/null || true
+
+    if oc get deployment grafana -n "$grafana_ns" &>/dev/null; then
+        print_info "Grafana already deployed [SKIP]"
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/grafana/grafana-deployment.yaml" -n "$grafana_ns"
+        print_step "Waiting for Grafana pod..."
+        oc wait --for=condition=ready pod -l app=grafana -n "$grafana_ns" --timeout=120s 2>/dev/null || true
+        print_success "Grafana deployed"
+    fi
+
+    # Create Prometheus token for Grafana datasource
+    oc apply -f "$ROOT_DIR/lib/manifests/grafana/prometheus-token.yaml" 2>/dev/null || true
+
+    local token=""
+    local retries=0
+    while [ $retries -lt 6 ] && [ -z "$token" ]; do
+        token=$(oc get secret grafana-prometheus-token -n openshift-monitoring \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
+        [ -z "$token" ] && sleep 5 && retries=$((retries + 1))
+    done
+
+    if [ -z "$token" ]; then
+        token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null || true)
+    fi
+
+    if [ -z "$token" ]; then
+        print_warning "Could not get Prometheus token for Grafana datasource"
+        return 0
+    fi
+
+    local grafana_route
+    grafana_route=$(oc get route grafana -n "$grafana_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+
+    if [ -n "$grafana_route" ]; then
+        print_step "Configuring Prometheus datasource..."
+        curl -sk -X POST "https://${grafana_route}/api/datasources" \
+            -u admin:admin \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"Prometheus\",
+                \"type\": \"prometheus\",
+                \"url\": \"https://thanos-querier.openshift-monitoring.svc:9091\",
+                \"access\": \"proxy\",
+                \"isDefault\": true,
+                \"jsonData\": {
+                    \"httpHeaderName1\": \"Authorization\",
+                    \"tlsSkipVerify\": true
+                },
+                \"secureJsonData\": {
+                    \"httpHeaderValue1\": \"Bearer ${token}\"
+                }
+            }" &>/dev/null && print_success "Prometheus datasource configured" \
+            || print_info "Datasource may already exist"
+
+        for dashboard_file in "$ROOT_DIR"/lib/manifests/grafana/*-dashboard.json; do
+            [ -f "$dashboard_file" ] || continue
+            local dash_name
+            dash_name=$(basename "$dashboard_file" .json)
+            print_step "Importing dashboard: $dash_name..."
+            local dash_json
+            dash_json=$(cat "$dashboard_file")
+            curl -sk -X POST "https://${grafana_route}/api/dashboards/db" \
+                -u admin:admin \
+                -H "Content-Type: application/json" \
+                -d "{\"dashboard\": ${dash_json}, \"overwrite\": true}" &>/dev/null \
+                && print_success "  Imported: $dash_name" \
+                || print_warning "  Failed to import: $dash_name"
+        done
+    fi
+
+    get_cluster_domain
+    export CLUSTER_DOMAIN
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f - 2>/dev/null || true
+    envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    print_success "Grafana monitoring stack deployed"
+    if [ -n "$grafana_route" ]; then
+        print_info "Grafana URL: https://${grafana_route}"
+        print_info "Dashboards: GPU Metrics (DCGM), vLLM Inference, vLLM Advanced"
+    fi
+}
+
 create_mlflow_server() {
     print_step "Creating MLflow server instance..."
 
@@ -2321,6 +2412,9 @@ main() {
         configure_maas_rate_limiting
         verify_maas_deployment
     fi
+
+    # Grafana GPU/vLLM dashboards
+    deploy_grafana_monitoring
 
     # Observability stack (COO + gateway telemetry)
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
