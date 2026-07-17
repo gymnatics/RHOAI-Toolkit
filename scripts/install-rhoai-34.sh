@@ -2160,6 +2160,45 @@ data:
       "description": "Web search capability for real-time information retrieval via SearXNG"
     }
 EOF
+
+    # --- 13. Bypass MCP ext_proc for non-MCP traffic ---
+    # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
+    # ALL port 443 traffic, breaking maas-api calls with "invalid mcp request".
+    # This per-route override disables ext_proc for the MaaS hostname.
+    local maas_host="maas.${CLUSTER_DOMAIN}"
+    if oc get envoyfilter mcp-ext-proc-mcp-gateway-system-gateway -n "$gw_ns" &>/dev/null 2>&1; then
+        if ! oc get envoyfilter mcp-ext-proc-bypass-maas -n "$gw_ns" &>/dev/null 2>&1; then
+            print_step "Creating ext_proc bypass for MaaS traffic..."
+            oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: mcp-ext-proc-bypass-maas
+  namespace: ${gw_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        vhost:
+          name: "${maas_host}:443"
+    patch:
+      operation: MERGE
+      value:
+        typed_per_filter_config:
+          envoy.filters.http.ext_proc:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+            disabled: true
+EOF
+            print_success "ext_proc bypass created for MaaS traffic"
+        fi
+    fi
 }
 
 create_inference_gateway() {
