@@ -1843,7 +1843,11 @@ deploy_mcp_searxng() {
         oc create namespace "$mcp_ns"
         print_info "Created namespace $mcp_ns"
     fi
-    oc label namespace "$mcp_ns" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+    oc label namespace "$mcp_ns" \
+        opendatahub.io/dashboard=true \
+        app.kubernetes.io/part-of=rhoai-toolkit --overwrite 2>/dev/null || true
+    oc annotate namespace "$mcp_ns" \
+        openshift.io/display-name="MCP Servers" --overwrite 2>/dev/null || true
 
     # --- 2. SearXNG Deployment + Service ---
     if oc get deploy mcp-searxng -n "$mcp_ns" &>/dev/null; then
@@ -2139,6 +2143,23 @@ subjects:
 EOF
         print_success "Dashboard MCP RBAC created"
     fi
+
+    # --- 12. Register in AI Asset Endpoints ConfigMap ---
+    # The RHOAI dashboard reads MCP servers from gen-ai-aa-mcp-servers ConfigMap
+    print_step "Registering SearXNG in AI Asset Endpoints..."
+    oc apply -f - <<EOF
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: ${dashboard_ns}
+data:
+  searxng: |
+    {
+      "url": "https://${mcp_host}/mcp",
+      "description": "Web search capability for real-time information retrieval via SearXNG"
+    }
+EOF
 }
 
 create_inference_gateway() {
