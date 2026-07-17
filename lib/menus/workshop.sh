@@ -20,9 +20,8 @@ show_workshop_setup_menu() {
     echo "  • Grafana with pre-configured dashboards"
     echo "  • Admin model deployment (qwen3-4b with tool calling)"
     echo "  • Kubernetes MCP Server (tool calling)"
-    echo "  • LlamaStack operator (unified API layer)"
     echo ""
-    echo -e "${CYAN}Participants deploy LlamaStack + OpenWebUI in their own namespaces.${NC}"
+    echo -e "${CYAN}Participants deploy OpenWebUI in their own namespaces.${NC}"
     echo ""
     echo -e "${MAGENTA}Workshop Guide:${NC} https://github.com/gymnatics/Red-Hat-Inference-Workshop"
     echo ""
@@ -35,19 +34,22 @@ show_workshop_setup_menu() {
     echo -e "${YELLOW}3)${NC} Add Workshop Users Only"
     echo "    Create htpasswd users and RBAC"
     echo ""
-    echo -e "${YELLOW}4)${NC} Deploy Admin Model and MCP Server Only"
-    echo "    Deploy qwen3-4b (tool calling) + Kubernetes MCP server"
+    echo -e "${YELLOW}4)${NC} Deploy Admin Model + MCP Server"
+    echo "    Deploy qwen3-4b (tool calling) + Kubernetes MCP server + AI Asset registration"
     echo ""
-    echo -e "${YELLOW}5)${NC} Setup Grafana and Dashboards Only"
+    echo -e "${YELLOW}5)${NC} Deploy MCP Server Only"
+    echo "    Deploy Kubernetes MCP server + register in AI Asset endpoints (model already deployed)"
+    echo ""
+    echo -e "${YELLOW}6)${NC} Setup Grafana and Dashboards Only"
     echo "    Deploy Grafana with vLLM and DCGM dashboards"
     echo ""
-    echo -e "${YELLOW}6)${NC} Enable User Workload Monitoring Only"
+    echo -e "${YELLOW}7)${NC} Enable User Workload Monitoring Only"
     echo "    Enable Prometheus UWM and vLLM metrics"
     echo ""
-    echo -e "${YELLOW}7)${NC} Install Web Terminal Only"
+    echo -e "${YELLOW}8)${NC} Install Web Terminal Only"
     echo "    In-browser terminal for workshop participants"
     echo ""
-    echo -e "${YELLOW}8)${NC} Disable vLLM on MaaS (Tech Preview)"
+    echo -e "${YELLOW}9)${NC} Disable vLLM on MaaS (Tech Preview)"
     echo "    Turn off vLLM MaaS runtime to avoid workshop confusion"
     echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
@@ -57,7 +59,7 @@ show_workshop_setup_menu() {
 workshop_setup_menu() {
     while true; do
         show_workshop_setup_menu
-        read -p "Select an option (0-8): " choice
+        read -p "Select an option (0-9): " choice
         
         case $choice in
             1)
@@ -116,21 +118,29 @@ workshop_setup_menu() {
                 read -p "Press Enter to continue..."
                 ;;
             5)
-                setup_workshop_grafana
+                echo ""
+                read -p "Namespace [admin-workshop]: " ns
+                ns=${ns:-admin-workshop}
+                setup_workshop_mcp_only "$ns"
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             6)
-                setup_user_workload_monitoring
+                setup_workshop_grafana
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             7)
-                install_web_terminal
+                setup_user_workload_monitoring
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;
             8)
+                install_web_terminal
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
                 disable_vllm_on_maas
                 echo ""
                 read -p "Press Enter to continue..."

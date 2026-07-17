@@ -7,6 +7,7 @@
 #   add_kubeadmin_to_rhods_admins   — Add kube:admin to rhods-admins group
 #   setup_workshop_grafana          — Deploy admin Grafana with dashboards
 #   setup_workshop_model_and_mcp    — Deploy qwen3-4b (tool calling) + K8s MCP server
+#   setup_workshop_mcp_only         — Deploy MCP server + register in AI Asset endpoints
 #   setup_user_workload_monitoring  — Enable Prometheus UWM and vLLM metrics
 #   run_complete_workshop_setup     — Full workshop setup orchestrator
 #   install_web_terminal             — Install Web Terminal operator
@@ -237,12 +238,7 @@ setup_workshop_grafana() {
 setup_workshop_model_and_mcp() {
     local user_count="${1:-25}"
 
-    print_header "Deploying Admin Model, MCP Server, and Enabling LlamaStack"
-
-    print_step "Enabling LlamaStack operator..."
-    oc patch datasciencecluster default-dsc --type merge \
-        -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}' 2>/dev/null || true
-    print_success "LlamaStack operator enabled"
+    print_header "Deploying Admin Model and MCP Server"
 
     oc new-project admin-workshop 2>/dev/null || oc project admin-workshop 2>/dev/null || true
 
@@ -316,18 +312,29 @@ setup_workshop_model_and_mcp() {
         model_token=$(oc get secret "$sa_secret" -n admin-workshop -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
     fi
 
-    print_step "Creating ClusterRoleBindings for participant MCP servers..."
-    local crb_count=0
-    for i in $(seq 1 ${user_count:-25}); do
-        local ns="user-$(printf '%02d' $i)"
-        oc create clusterrolebinding "kubernetes-mcp-server-$ns" \
-            --clusterrole=view --serviceaccount="$ns:kubernetes-mcp-server" 2>/dev/null || true
-        crb_count=$((crb_count + 1))
-        if [ $((i % 25)) -eq 0 ]; then
-            echo "  Created ClusterRoleBindings for $i users..."
-        fi
-    done
-    print_success "ClusterRoleBindings created for $crb_count users (cluster-wide read access for MCP)"
+    print_step "Setting up AI Playground for MCP demo..."
+
+    if [ -f "$ROOT_DIR/scripts/add-model-to-playground.sh" ]; then
+        print_step "Adding admin model to AI Playground..."
+        bash "$ROOT_DIR/scripts/add-model-to-playground.sh" -n admin-workshop -m qwen3-4b --skip-config 2>/dev/null || \
+            print_warning "Could not add model to playground (may need manual setup)"
+    fi
+
+    local mcp_url="http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp"
+    if type register_mcp_ai_asset &>/dev/null; then
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs."
+    else
+        source "$ROOT_DIR/lib/functions/mcp.sh" 2>/dev/null || true
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs." 2>/dev/null || \
+            print_warning "Could not register MCP in AI Asset endpoints"
+    fi
+
+    print_step "Restarting playground pods to load MCP config..."
+    oc delete pod -l app=lsd-genai-playground -n admin-workshop --ignore-not-found=true 2>/dev/null || true
+    sleep 5
+    print_success "AI Playground configured with MCP tools for instructor demo"
 
     print_success "Model and MCP Server deployment complete!"
     echo ""
@@ -336,15 +343,66 @@ setup_workshop_model_and_mcp() {
         echo -e "${GREEN}Model Token:${NC} $model_token"
     fi
     echo -e "${GREEN}MCP Server (internal):${NC} http://kubernetes-mcp-server.admin-workshop.svc.cluster.local:8080/mcp"
-    echo -e "${GREEN}LlamaStack Operator:${NC} Enabled (participants deploy LlamaStackDistribution in their namespaces)"
     echo ""
     echo -e "${YELLOW}Share with participants:${NC}"
-    echo "  1. Model Token: (shown above)"
-    echo "  2. Workshop guide: https://github.com/gymnatics/Red-Hat-Inference-Workshop"
+    echo "  1. Workshop guide: https://github.com/gymnatics/Red-Hat-Inference-Workshop"
     echo ""
     echo -e "${YELLOW}Participants will deploy in their own namespaces:${NC}"
-    echo "  1. LlamaStack (unified API layer → shared model + MCP)"
-    echo "  2. OpenWebUI (chat interface → LlamaStack + MCP)"
+    echo "  1. OpenWebUI (chat interface connected directly to their vLLM model)"
+    echo ""
+    echo -e "${YELLOW}Instructor demo:${NC}"
+    echo "  Add admin model to AI Playground via dashboard, then demo MCP tool calling"
+}
+
+setup_workshop_mcp_only() {
+    print_header "Deploying MCP Server + Registering in AI Asset Endpoints"
+
+    local namespace="${1:-admin-workshop}"
+    oc project "$namespace" 2>/dev/null || true
+
+    print_step "Deploying Kubernetes MCP Server in $namespace..."
+
+    local mcp_image="quay.io/redhat-ai-services/kubernetes-mcp-server"
+    local mcp_args='["--port=8080", "--read-only"]'
+
+    export NAMESPACE="$namespace"
+    export CLUSTER_ROLE="view"
+    export MCP_SERVER_IMAGE="$mcp_image"
+    export MCP_SERVER_ARGS="$mcp_args"
+    envsubst < "$ROOT_DIR/lib/manifests/mcp/kubernetes-mcp-server.yaml" | oc apply -f - -n "$namespace"
+    unset NAMESPACE CLUSTER_ROLE MCP_SERVER_IMAGE MCP_SERVER_ARGS
+
+    print_step "Waiting for MCP Server to be ready..."
+    if oc rollout status deployment/kubernetes-mcp-server -n "$namespace" --timeout=180s 2>/dev/null; then
+        print_success "Kubernetes MCP Server is running"
+    else
+        print_warning "MCP Server may still be starting (check pods)"
+    fi
+
+    local mcp_url="http://kubernetes-mcp-server.$namespace.svc.cluster.local:8080/mcp"
+
+    print_step "Registering MCP Server in AI Asset endpoints..."
+    if type register_mcp_ai_asset &>/dev/null; then
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs."
+    else
+        source "$ROOT_DIR/lib/functions/mcp.sh" 2>/dev/null || true
+        register_mcp_ai_asset "Kubernetes-MCP-Server" "$mcp_url" \
+            "Kubernetes/OpenShift operations - pods, deployments, services, logs." 2>/dev/null || \
+            print_warning "Could not register MCP in AI Asset endpoints"
+    fi
+
+    print_step "Restarting playground pods to load MCP config..."
+    oc delete pod -l app=lsd-genai-playground -n "$namespace" --ignore-not-found=true 2>/dev/null || true
+
+    print_success "MCP Server deployed and registered!"
+    echo ""
+    echo -e "${GREEN}MCP Endpoint:${NC} $mcp_url"
+    echo -e "${GREEN}AI Asset Endpoints:${NC} Registered (visible in Dashboard → Settings → AI asset endpoints)"
+    echo ""
+    echo -e "${YELLOW}Next steps for instructor demo:${NC}"
+    echo "  1. Add model to AI Playground via dashboard (Gen AI studio → AI asset endpoints → Add to playground)"
+    echo "  2. Open Playground, enable MCP tools (click lock icon), test tool calling"
 }
 
 setup_user_workload_monitoring() {
@@ -471,9 +529,8 @@ run_complete_workshop_setup() {
     echo "  • Workshop users ($user_count users)"
     echo "  • Grafana with dashboards"
     echo "  • Admin model (qwen3-4b with tool calling) + Kubernetes MCP Server"
-    echo "  • LlamaStack operator (participants deploy in their namespaces)"
     echo ""
-    echo -e "${CYAN}Participants will deploy LlamaStack + OpenWebUI in their own namespaces.${NC}"
+    echo -e "${CYAN}Participants will deploy OpenWebUI in their own namespaces.${NC}"
     echo ""
     read -p "Continue? (y/n): " -n 1 -r
     echo
