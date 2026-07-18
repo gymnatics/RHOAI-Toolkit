@@ -80,6 +80,7 @@ rhoai-info.txt
 CLAUDE.md
 .cursor/
 .cursorignore
+.lola/
 
 # External/temp directories
 colleague-repo/
