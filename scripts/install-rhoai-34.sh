@@ -110,6 +110,7 @@ usage() {
     echo "  --postgres-connection <url>  External PostgreSQL for MaaS (skips POC DB deployment)"
     echo "                         Format: postgresql://user:pass@host:5432/db?sslmode=require"
     echo "  --skip-maas-db         Skip MaaS PostgreSQL setup entirely"
+    echo "  --create-admin-user    Create htpasswd admin user (admin/openshiftai) without prompting"
     echo "  --skip-admin-user      Skip creating the htpasswd admin user"
     echo "  --channel <channel>    RHOAI channel (e.g., fast-3.x, stable-3.4). If not specified, will prompt."
     echo "  --domain <domain>      Cluster domain (e.g., cluster.example.com)"
@@ -441,7 +442,7 @@ recover_router_if_crashlooping() {
 
 create_admin_user() {
     local admin_user="admin"
-    local admin_pass='R3dh4t1!'
+    local admin_pass='openshiftai'
 
     # Check if admin user already exists in htpasswd
     local admin_exists=false
@@ -2092,14 +2093,6 @@ json.dump(s, sys.stdout)
             && print_success "mcp-gateway-config secret synced to $dashboard_ns" \
             || print_warning "Could not sync mcp-gateway-config secret"
 
-        local config_data
-        config_data=$(oc get secret mcp-gateway-config -n mcp-gateway-system \
-            -o jsonpath='{.data.config\.yaml}' 2>/dev/null | base64 -d 2>/dev/null)
-        if [ -n "$config_data" ]; then
-            oc create configmap mcp-gateway-config -n "$dashboard_ns" \
-                --from-literal=config.yaml="$config_data" \
-                --dry-run=client -o yaml | oc apply -f - &>/dev/null
-        fi
     fi
 
     # --- 11. Dashboard RBAC for MCP resources ---
@@ -2144,15 +2137,28 @@ EOF
         print_success "Dashboard MCP RBAC created"
     fi
 
-    # --- 12. Register in AI Asset Endpoints ConfigMap ---
-    # The RHOAI dashboard reads MCP servers from gen-ai-aa-mcp-servers ConfigMap
-    print_step "Registering SearXNG in AI Asset Endpoints..."
-    oc apply -f - <<EOF
+    # --- 12. Register MCP servers in gen-ai-aa-mcp-servers ConfigMap ---
+    # The dashboard reads this ConfigMap per-namespace for AI Asset Endpoints.
+    # mcp-gateway-config Secret provides server info to the gateway controller;
+    # gen-ai-aa-mcp-servers provides it to the dashboard UI (different consumers).
+    # Create in redhat-ods-applications + all dashboard-labeled namespaces.
+    print_step "Registering MCP servers in AI Asset Endpoints..."
+    local aa_namespaces
+    aa_namespaces=$(oc get ns -l opendatahub.io/dashboard=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    aa_namespaces="${aa_namespaces} ${dashboard_ns}"
+    # deduplicate
+    aa_namespaces=$(echo "$aa_namespaces" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    for aa_ns in $aa_namespaces; do
+        [ -z "$aa_ns" ] && continue
+        oc apply -f - <<EOF &>/dev/null
 kind: ConfigMap
 apiVersion: v1
 metadata:
   name: gen-ai-aa-mcp-servers
-  namespace: ${dashboard_ns}
+  namespace: ${aa_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+    opendatahub.io/dashboard: "true"
 data:
   searxng: |
     {
@@ -2160,6 +2166,8 @@ data:
       "description": "Web search capability for real-time information retrieval via SearXNG"
     }
 EOF
+    done
+    print_success "gen-ai-aa-mcp-servers ConfigMap created in: $aa_namespaces"
 
     # --- 13. Bypass MCP ext_proc for non-MCP traffic ---
     # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
@@ -2198,6 +2206,139 @@ spec:
 EOF
             print_success "ext_proc bypass created for MaaS traffic"
         fi
+    fi
+
+    # --- 14. Create AuthPolicy for MCP route ---
+    # The gateway-default-auth has empty authentication (= deny all).
+    # MCP route needs its own AuthPolicy to accept MaaS API keys.
+    if ! oc get authpolicy mcp-gateway-auth -n mcp-gateway-system &>/dev/null 2>&1; then
+        print_step "Creating AuthPolicy for MCP route (API key auth)..."
+        oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: mcp-gateway-auth
+  namespace: mcp-gateway-system
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-gateway-route
+  rules:
+    authentication:
+      api-keys:
+        plain:
+          selector: "request.headers.authorization"
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+      openshift-identities:
+        kubernetesTokenReview:
+          audiences:
+            - "https://kubernetes.default.svc"
+            - "maas-default-gateway-sa"
+        when:
+          - predicate: '!request.headers.authorization.startsWith("Bearer sk-oai-")'
+        priority: 1
+        metrics: false
+    metadata:
+      apiKeyValidation:
+        http:
+          url: "https://maas-api.redhat-ods-applications.svc.cluster.local:8443/internal/v1/api-keys/validate"
+          method: POST
+          contentType: application/json
+          body:
+            expression: '{"key": request.headers.authorization.replace("Bearer ", "")}'
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+    authorization:
+      api-key-valid:
+        patternMatching:
+          patterns:
+            - operator: eq
+              selector: auth.metadata.apiKeyValidation.valid
+              value: "true"
+        when:
+          - operator: matches
+            selector: request.headers.authorization
+            value: "^Bearer sk-oai-.*"
+        priority: 0
+        metrics: false
+EOF
+        print_success "MCP AuthPolicy created"
+    fi
+
+    # --- 15. Update mcp-gateway-config with transport type ---
+    local config_yaml="servers:
+- category:
+  - search
+  hint: Web search capability for real-time information retrieval
+  hostname: ${mcp_host}
+  name: mcp-servers/searxng
+  state: Enabled
+  transport: streamable-http
+  url: http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
+
+    for ns in mcp-gateway-system "$dashboard_ns"; do
+        oc create secret generic mcp-gateway-config \
+            -n "$ns" \
+            --from-literal="config.yaml=${config_yaml}" \
+            --dry-run=client -o yaml | oc apply -f -
+    done
+    print_success "mcp-gateway-config updated with transport type"
+
+    # --- 16. Auto-generate MaaS API key for MCP access ---
+    if oc get maassubscription -n models-as-a-service --no-headers 2>/dev/null | grep -q "Active"; then
+        local existing_key
+        existing_key=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
+            "https://localhost:8443/v1/api-keys/search" \
+            -X POST -H "Content-Type: application/json" \
+            -H "X-MaaS-Username: admin" \
+            -H "X-MaaS-Group: [\"rhods-admins\"]" \
+            -d '{"owner":"admin"}' 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    keys = d if isinstance(d, list) else d.get('items', [])
+    for k in keys:
+        if k.get('name') == 'mcp-access-key':
+            print(k.get('keyPrefix','exists'))
+            break
+except: pass" 2>/dev/null)
+
+        if [ -z "$existing_key" ]; then
+            print_step "Generating MaaS API key for MCP access..."
+            local api_key_json
+            api_key_json=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
+                "https://localhost:8443/v1/api-keys" \
+                -X POST -H "Content-Type: application/json" \
+                -H "X-MaaS-Username: admin" \
+                -H "X-MaaS-Group: [\"rhods-admins\"]" \
+                -d '{"name":"mcp-access-key"}' 2>/dev/null)
+            local api_key
+            api_key=$(echo "$api_key_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('key',''))" 2>/dev/null)
+            if [ -n "$api_key" ]; then
+                print_success "MaaS API key created for MCP: ${api_key:0:20}..."
+                echo ""
+                echo -e "  ${YELLOW}MCP Access Token:${NC} $api_key"
+                echo -e "  ${CYAN}Use this token in the RHOAI dashboard to authorize MCP servers${NC}"
+            else
+                print_warning "Could not create API key — create one manually in the MaaS dashboard"
+            fi
+        else
+            print_info "MaaS API key 'mcp-access-key' already exists"
+        fi
+    else
+        print_info "No active MaaS subscription found — skipping API key generation"
     fi
 }
 
@@ -2879,10 +3020,10 @@ print_summary() {
     fi
 
     if [ "$admin_in_htpasswd" = true ]; then
-        echo -e "${CYAN}Admin Login:${NC}  admin / R3dh4t1!"
+        echo -e "${CYAN}Admin Login:${NC}  admin / openshiftai"
         echo ""
         echo -e "${YELLOW}Post-install:${NC} Log in as 'admin' for MaaS API key generation:"
-        echo "  oc login -u admin -p 'R3dh4t1!' $(oc whoami --show-server 2>/dev/null)"
+        echo "  oc login -u admin -p 'openshiftai' $(oc whoami --show-server 2>/dev/null)"
         echo "  To remove kubeadmin, use the toolkit: ./rhoai-toolkit.sh → RHOAI Management → Day 2 Operations"
     else
         echo ""
@@ -3011,6 +3152,10 @@ main() {
                 SKIP_ADMIN_USER=true
                 shift
                 ;;
+            --create-admin-user)
+                CREATE_ADMIN_USER="yes"
+                shift
+                ;;
             --channel)
                 RHOAI_CHANNEL="$2"
                 shift 2
@@ -3076,7 +3221,7 @@ main() {
     else
         echo ""
         echo -e "${CYAN}Would you like to create an htpasswd admin user?${NC}"
-        echo -e "  This creates user ${YELLOW}'admin'${NC} with password ${YELLOW}'R3dh4t1!'${NC} and cluster-admin role."
+        echo -e "  This creates user ${YELLOW}'admin'${NC} with password ${YELLOW}'openshiftai'${NC} and cluster-admin role."
         echo -e "  You can skip this if you already have an identity provider configured."
         echo ""
         read -p "Create admin user? (Y/n): " admin_choice

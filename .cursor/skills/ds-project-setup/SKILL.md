@@ -238,7 +238,7 @@ Create a DataSciencePipelinesApplication CR using the template from [openshift-f
 **Verify DSPA is ready:**
 
 **MCP Tool**: `resources_get` (from openshift)
-- `apiVersion`: `datasciencepipelinesapplications.opendatahub.io/v1`, `kind`: `DataSciencePipelinesApplication`, `name`: `dspa`, `namespace`: [namespace]
+- `apiVersion`: `datasciencepipelinesapplications.opendatahub.io/v1alpha1`, `kind`: `DataSciencePipelinesApplication`, `name`: `dspa`, `namespace`: [namespace]
 
 Check `.status.conditions` for `Ready=True`. Poll every 15 seconds until ready or timeout (5 minutes).
 

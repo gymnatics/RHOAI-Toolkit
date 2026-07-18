@@ -181,3 +181,32 @@ Shared troubleshooting patterns that apply to multiple rh-ai-engineer skills. In
 1. Use `resources_delete` from the OpenShift MCP server instead
 2. Always apply human-in-the-loop confirmation before deleting (display resource name, warn about data loss)
 3. For workbench deletion, warn that associated PVC data may be lost if the PVC is also deleted
+
+## Model Requires `--trust-remote-code` (vLLM Refuses to Load)
+
+**Applies to**: `/model-deploy`, `/debug-inference`
+
+**Error**: Pod crashes with `ValidationError: The repository /mnt/models contains custom code which must be executed to correctly load the model. Please pass the argument trust_remote_code=True`
+
+**Cause**: Some models (especially embedding models like nomic, gte, jina, bge) ship custom Python code in their repo. vLLM refuses to execute untrusted code without explicit opt-in.
+
+**Solution:**
+1. Add `--trust-remote-code` to the ServingRuntime args:
+   ```yaml
+   containers:
+   - args:
+     - --port=8080
+     - --model=/mnt/models
+     - --served-model-name={{.Name}}
+     - --trust-remote-code         # <-- Add this
+   ```
+2. Or patch the existing ServingRuntime:
+   ```bash
+   oc patch servingruntime <runtime-name> -n <namespace> --type=json \
+     -p '[{"op":"add","path":"/spec/containers/0/args/-","value":"--trust-remote-code"}]'
+   ```
+3. After patching, delete the stuck pod to trigger a restart with the new args.
+
+**Known affected models**: `nomic-ai/nomic-embed-*`, `Alibaba-NLP/gte-*`, `BAAI/bge-*` (some), `jinaai/jina-embeddings-*`, `mosaicml/mpt-*`. See [known-model-profiles.md](../model-deploy/docs/references/known-model-profiles.md#models-requiring---trust-remote-code) for the full list.
+
+**Note**: `VLLM_ADDITIONAL_ARGS` env var does NOT work for this flag in RHOAI CPU/GPU ServingRuntimes — it must be in the container `args` list directly.

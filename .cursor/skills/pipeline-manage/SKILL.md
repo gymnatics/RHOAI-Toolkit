@@ -95,7 +95,7 @@ Route: Setup -> Step 2, List -> Step 3, Run -> Step 4, Schedule -> Step 5, Monit
 
 Check via `get_pipeline_server` (from rhoai) with `namespace`. If healthy, proceed. If unhealthy, offer diagnostics via `diagnose_resource`. If not exists, offer setup.
 
-**If rhoai unavailable or returns error**: Use `resources_get` (from openshift) with `apiVersion: datasciencepipelinesapplications.opendatahub.io/v1`, `kind: DataSciencePipelinesApplication`, `name: dspa`, `namespace: [namespace]`. Check `.status.conditions` for `Ready=True`.
+**If rhoai unavailable or returns error**: Use `resources_get` (from openshift) with `apiVersion: datasciencepipelinesapplications.opendatahub.io/v1alpha1`, `kind: DataSciencePipelinesApplication`, `name: dspa`, `namespace: [namespace]`. Check `.status.conditions` for `Ready=True`.
 
 **For setup**: Check data connections via `list_data_connections` (from rhoai). If none exist, offer to delegate to `/ds-project-setup`.
 
@@ -120,7 +120,7 @@ Create a DataSciencePipelinesApplication CR. See [openshift-fallback-templates.m
 **Verify DSPA is ready:**
 
 **MCP Tool**: `resources_get` (from openshift)
-- `apiVersion`: `datasciencepipelinesapplications.opendatahub.io/v1`, `kind`: `DataSciencePipelinesApplication`, `name`: `dspa`, `namespace`: [namespace]
+- `apiVersion`: `datasciencepipelinesapplications.opendatahub.io/v1alpha1`, `kind`: `DataSciencePipelinesApplication`, `name`: `dspa`, `namespace`: [namespace]
 
 Check `.status.conditions` for `Ready=True`. Poll every 15 seconds until ready or timeout (5 minutes).
 

@@ -97,7 +97,43 @@ Before starting the workflow, determine which CRD to use:
 - Required annotations/labels for RHOAI Dashboard visibility
 - Fixing "Unknown Serving Runtime" errors
 - LLMInferenceService configuration patterns
+- **MaaSModelRef creation** (required for MaaS Authorization Policies to see models)
+- MaaS gateway registration (`spec.router.gateway.refs`)
 - Storage initializer known issues and workarounds
+
+## Custom vLLM Image Override in LLMInferenceService
+
+When the RHOAI-bundled vLLM image does not support a model architecture (e.g., `gemma4_unified`), override the container image:
+
+```yaml
+spec:
+  template:
+    containers:
+      - name: main
+        image: vllm/vllm-openai:gemma4-unified  # Override platform image
+        env:
+          - name: VLLM_ADDITIONAL_ARGS
+            value: "--max-model-len=8192 --gpu-memory-utilization=0.92 --enable-auto-tool-choice --tool-call-parser=hermes --enforce-eager"
+          # Required for community vLLM images on OpenShift (arbitrary UID)
+          - name: USER
+            value: "vllm"
+          - name: HOME
+            value: "/tmp"
+          - name: TORCHINDUCTOR_CACHE_DIR
+            value: "/tmp/torch_cache"
+          - name: TRITON_CACHE_DIR
+            value: "/tmp/.triton"
+          - name: NUMBA_CACHE_DIR
+            value: "/tmp/.numba"
+```
+
+**When to use custom images:**
+- Model architecture not recognized by RHOAI vLLM (e.g., very new models)
+- Need specific vLLM version features (e.g., new tool-call parsers)
+
+**OpenShift UID compatibility**: Community `vllm/vllm-openai` images require `USER` and `HOME` env vars because OpenShift runs containers with arbitrary UIDs not in `/etc/passwd`. Without these, Python's `getpass.getuser()` crashes with `KeyError: 'getpwuid(): uid not found'`.
+
+**Finding the right image tag**: See [known-vllm-image-tags.md](docs/references/known-vllm-image-tags.md) for available tags and their model support.
 
 ## Workflow
 

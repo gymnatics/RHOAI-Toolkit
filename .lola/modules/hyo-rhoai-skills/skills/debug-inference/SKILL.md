@@ -330,6 +330,76 @@ For common issues (GPU scheduling, OOMKilled, image pull errors, RBAC), see [com
 3. Check NIM supported GPU matrix via live doc lookup against [NVIDIA NIM supported models](https://docs.nvidia.com/nim/large-language-models/latest/supported-models.html)
 4. Re-run `/nim-setup` to refresh credentials if expired
 
+### Issue 3: FP8 CUTLASS Kernel Failure on Ada GPUs (L40S/L4)
+
+**Error**: `RuntimeError: cutlass_scaled_mm, .../quantization/w8a8/cutlass/scaled_mm_entry.cu:198`
+
+**Cause**: The FP8 quantization kernel (`cutlass_scaled_mm`) in community `vllm/vllm-openai` images is not compiled with Ada Lovelace (SM 8.9) support. Affects L40S and L4 GPUs when loading FP8/INT8 quantized models (e.g., `*-FP8-Dynamic`).
+
+**Solution:**
+1. Use BF16 model weights instead of FP8 (e.g., `google/gemma-4-12B-it` instead of `RedHatAI/gemma-4-12B-it-FP8-Dynamic`)
+2. Or use the RHOAI-provided vLLM image (`registry.redhat.io/rhaii/vllm-cuda-rhel9`) which has Ada-compatible kernels
+3. Or add `--enforce-eager` to `VLLM_ADDITIONAL_ARGS` (reduces performance but avoids kernel issues)
+
+### Issue 4: OpenShift Arbitrary UID Crash (Community vLLM)
+
+**Error**: `KeyError: 'getpwuid(): uid not found: 1000870000'`
+
+**Cause**: Community `vllm/vllm-openai` images use `getpass.getuser()` which calls `pwd.getpwuid()`. OpenShift assigns random UIDs that are not in `/etc/passwd`, causing a crash during PyTorch/TorchInductor cache initialization.
+
+**Solution:** Add these environment variables to the container spec:
+```yaml
+env:
+  - name: USER
+    value: "vllm"
+  - name: HOME
+    value: "/tmp"
+  - name: TORCHINDUCTOR_CACHE_DIR
+    value: "/tmp/torch_cache"
+  - name: TRITON_CACHE_DIR
+    value: "/tmp/.triton"
+  - name: NUMBA_CACHE_DIR
+    value: "/tmp/.numba"
+```
+
+Python's `getpass.getuser()` checks `LOGNAME`, `USER`, `LNAME`, `USERNAME` env vars before falling back to `pwd.getpwuid()`, so setting `USER` bypasses the crash.
+
+### Issue 5: Model Architecture Not Recognized
+
+**Error**: `model type 'gemma4_unified' but Transformers does not recognize this architecture`
+
+**Cause**: The vLLM image does not have native support for the model's architecture. Common with very new models (released within days/weeks).
+
+**Diagnosis:**
+1. Check the RHOAI vLLM image version — it lags behind community releases
+2. Community `vllm/vllm-openai:latest` may have a Transformers fallback, but fallback can produce shape mismatch errors
+3. Model-specific tags may exist on Docker Hub (e.g., `vllm/vllm-openai:gemma4-unified`)
+
+**Solution:**
+1. Search Docker Hub for model-specific tags: `curl -s "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=50&ordering=last_updated"` and filter by model name
+2. Override the image in `LLMInferenceService`: `spec.template.containers[].image`
+3. Or wait for the next RHOAI release that bundles an updated vLLM version
+4. Remember to add OpenShift UID env vars (see Issue 4) when using community images
+
+### Issue 6: CUDAGraph OOM on Large FP8 Models
+
+**Error**: `torch.OutOfMemoryError: CUDA out of memory` during `profile_cudagraph_memory()`
+
+**Cause**: CUDAGraph profiling allocates extra GPU memory beyond model weights. If the model takes >60% of VRAM, CUDAGraph profiling can exceed available memory even though model loading succeeded.
+
+**Solution:** Add `--enforce-eager` to `VLLM_ADDITIONAL_ARGS` to disable CUDAGraph entirely. This trades ~10-15% throughput for reliable startup.
+
+### Issue 7: PVC + LLMInferenceService Multi-Attach Error
+
+**Error**: Router-scheduler pod stuck in `ContainerCreating` with `Multi-Attach error for volume`
+
+**Cause**: `LLMInferenceService` creates TWO deployments (predictor + router-scheduler). The router's tokenizer sidecar also mounts the model PVC. With EBS RWO PVCs, both pods must be on the same node, but the llm-d operator schedules them independently and resets any manual patches.
+
+**Solution:** PVC (RWO) is **incompatible** with `LLMInferenceService`. Switch to:
+1. S3/MinIO storage (recommended for llm-d)
+2. `hf://` URI (each pod downloads independently)
+3. OCI ModelCar (best option if available)
+
 ## Dependencies
 
 ### MCP Tools

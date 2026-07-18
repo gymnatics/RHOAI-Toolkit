@@ -217,24 +217,73 @@ qwen3_coder, qwen3_xml, seed_oss, step3, xlam
 
 > **Note**: `qwen3` is NOT a valid tool-call-parser. Use `qwen3_coder` for Qwen3 models.
 
-### Full Example (LLMInferenceService with GPU)
+### MaaS Gateway Registration (Required for MaaS Policies)
+
+For the model to appear in MaaS Authorization Policies, the `LLMInferenceService` must reference the `maas-default-gateway` AND a `MaaSModelRef` must be created:
+
+**Step 1**: Add `maas-default-gateway` to `spec.router.gateway.refs`:
 
 ```yaml
-apiVersion: serving.kserve.io/v1alpha2
+spec:
+  router:
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+```
+
+**Step 2**: Create a `MaaSModelRef` in the same namespace:
+
+```yaml
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: qwen3-14b
+  namespace: rhoai-models
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: qwen3-14b
+```
+
+Without both of these, the MaaS Dashboard will show "No models available" even though the model is deployed and Ready via `LLMInferenceService`.
+
+### Common Issue: "No models available" in MaaS Authorization Policies
+
+**Error**: MaaS Dashboard shows "No models available" despite LLMInferenceService being Ready.
+
+**Root Causes** (check in order):
+1. **Missing `MaaSModelRef`**: Create one referencing the LLMInferenceService
+2. **Wrong gateway reference**: HTTPRoute references `openshift-ai-inference` but MaaS expects `maas-default-gateway`. Add `spec.router.gateway.refs` pointing to `maas-default-gateway`
+3. **MaaSModelRef status Failed**: Check `oc get maasmodelref -n <ns> -o yaml` for error messages
+
+### Full Example (LLMInferenceService with GPU + MaaS)
+
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
 kind: LLMInferenceService
 metadata:
   name: qwen3-14b
   namespace: rhoai-models
   labels:
     opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+    kueue.x-k8s.io/queue-name: default
     app.kubernetes.io/part-of: code-assistant-lab
   annotations:
-    openshift.io/display-name: "Qwen3-14B-FP8-dynamic (MaaS-ready)"
+    security.opendatahub.io/enable-auth: "false"
 spec:
   model:
     name: qwen3-14b
-    uri: hf://RedHatAI/Qwen3-14B-FP8-dynamic
+    uri: oci://quay.io/redhat-ai-services/modelcar-catalog:qwen3-14b
   replicas: 1
+  router:
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+    route: {}
+    scheduler: {}
   template:
     containers:
       - name: main
@@ -254,6 +303,16 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: qwen3-14b
+  namespace: rhoai-models
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: qwen3-14b
 ```
 
 ### LLMInferenceServiceConfig Selection
@@ -305,6 +364,17 @@ metadata:
 
 ---
 
+## MaaS Integration Checklist
+
+For a model to be fully visible in MaaS (Authorization Policies, API keys, rate limiting):
+
+1. Deploy via `LLMInferenceService` (not standard `InferenceService`)
+2. Add `spec.router.gateway.refs` pointing to `maas-default-gateway`
+3. Create a `MaaSModelRef` CR in the same namespace
+4. Verify `MaaSModelRef` status is `Ready` (not `Failed`)
+
+---
+
 ## Annotation Quick Reference
 
 | Resource | Annotation/Label | Purpose | Required |
@@ -318,6 +388,8 @@ metadata:
 | **InferenceService** | `serving.kserve.io/deploymentMode` | RawDeployment or Serverless | Yes |
 | **InferenceService** | `openshift.io/display-name` | Display name | Recommended |
 | **LLMInferenceService** | `opendatahub.io/dashboard: "true"` (label) | Dashboard visibility | Yes |
-| **LLMInferenceService** | `openshift.io/display-name` | Display name | Recommended |
+| **LLMInferenceService** | `opendatahub.io/genai-asset: "true"` (label) | GenAI asset marker | Recommended |
+| **LLMInferenceService** | `spec.router.gateway.refs` | MaaS gateway registration | Yes (for MaaS) |
+| **MaaSModelRef** | `spec.modelRef.kind: LLMInferenceService` | Links model to MaaS | Yes (for MaaS) |
 | **Namespace** | `opendatahub.io/dashboard: "true"` (label) | DSP recognition | Yes |
 | **Namespace** | `openshift.io/display-name` | Display name | Recommended |

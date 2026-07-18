@@ -97,6 +97,8 @@ Before starting the workflow, determine which CRD to use:
 - Required annotations/labels for RHOAI Dashboard visibility
 - Fixing "Unknown Serving Runtime" errors
 - LLMInferenceService configuration patterns
+- **MaaSModelRef creation** (required for MaaS Authorization Policies to see models)
+- MaaS gateway registration (`spec.router.gateway.refs`)
 - Storage initializer known issues and workarounds
 
 ## Custom vLLM Image Override in LLMInferenceService
