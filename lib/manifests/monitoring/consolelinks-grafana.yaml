@@ -1,5 +1,5 @@
 # OpenShift Console Links for Grafana Dashboards
-# Usage: export CLUSTER_DOMAIN=apps.<cluster>.<domain> && envsubst < consolelinks-grafana.yaml | oc apply -f -
+# CLUSTER_DOMAIN is the base domain WITHOUT apps. prefix (e.g., openshift-cluster.sandbox.opentlc.com)
 apiVersion: console.openshift.io/v1
 kind: ConsoleLink
 metadata:
@@ -11,7 +11,7 @@ spec:
   applicationMenu:
     imageURL: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDM2IDM2Ij48cmVjdCB3aWR0aD0iMzYiIGhlaWdodD0iMzYiIHJ4PSI5IiBmaWxsPSIjMDA2NkNDIi8+PHBhdGggZD0iTTggMjdWMTloM3Y4SDh6bTUuNSAwVjEzaDN2MTRoLTN6bTUuNSAwVjE2aDN2MTFoLTN6bTUuNSAwVjloM3YxOGgtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=
     section: Monitoring
-  href: https://grafana-monitoring.${CLUSTER_DOMAIN}/d/gpu-dcgm-metrics/gpu-metrics-nvidia-dcgm
+  href: https://grafana-monitoring.apps.${CLUSTER_DOMAIN}/d/gpu-dcgm-metrics/gpu-metrics-nvidia-dcgm
   location: ApplicationMenu
   text: "GPU Metrics (Grafana)"
 ---
@@ -26,21 +26,6 @@ spec:
   applicationMenu:
     imageURL: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDM2IDM2Ij48cmVjdCB3aWR0aD0iMzYiIGhlaWdodD0iMzYiIHJ4PSI5IiBmaWxsPSIjMDA2NkNDIi8+PHBhdGggZD0iTTggMjdWMTloM3Y4SDh6bTUuNSAwVjEzaDN2MTRoLTN6bTUuNSAwVjE2aDN2MTFoLTN6bTUuNSAwVjloM3YxOGgtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=
     section: Monitoring
-  href: https://grafana-monitoring.${CLUSTER_DOMAIN}/d/llm-vllm-metrics/llm-inference-vllm
+  href: https://grafana-monitoring.apps.${CLUSTER_DOMAIN}/d/llm-vllm-metrics/llm-inference-vllm
   location: ApplicationMenu
   text: "vLLM Inference (Grafana)"
----
-apiVersion: console.openshift.io/v1
-kind: ConsoleLink
-metadata:
-  name: grafana-maas-metrics
-  labels:
-    app: rhoai-toolkit
-    component: monitoring
-spec:
-  applicationMenu:
-    imageURL: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDM2IDM2Ij48cmVjdCB3aWR0aD0iMzYiIGhlaWdodD0iMzYiIHJ4PSI5IiBmaWxsPSIjMDA2NkNDIi8+PHBhdGggZD0iTTggMjdWMTloM3Y4SDh6bTUuNSAwVjEzaDN2MTRoLTN6bTUuNSAwVjE2aDN2MTFoLTN6bTUuNSAwVjloM3YxOGgtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=
-    section: Monitoring
-  href: https://grafana-monitoring.${CLUSTER_DOMAIN}/d/maas-usage-metrics/maas-usage-token-consumption
-  location: ApplicationMenu
-  text: "MaaS Usage (Grafana)"

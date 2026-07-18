@@ -2,23 +2,27 @@
 # Required annotations:
 #   opendatahub.io/managed: "false" — lets MaaS controller manage auth policies
 #   security.opendatahub.io/authorino-tls-bootstrap: "true" — enables TLS to Authorino
-# Requires: GatewayClass, default-gateway-tls Secret, gateway-resources ConfigMap
+# Requires: maas-gateway-class GatewayClass, TLS Secret
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: maas-gateway-class
+spec:
+  controllerName: openshift.io/gateway-controller/v1
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: maas-default-gateway
   namespace: openshift-ingress
+  labels:
+    istio.io/rev: openshift-gateway
   annotations:
     opendatahub.io/managed: "false"
     security.opendatahub.io/authorino-tls-bootstrap: "true"
 spec:
-  gatewayClassName: openshift-gateway-controller
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: ConfigMap
-      name: maas-gateway-options
+  gatewayClassName: maas-gateway-class
   listeners:
     - allowedRoutes:
         namespaces:

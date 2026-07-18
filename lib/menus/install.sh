@@ -80,7 +80,7 @@ install_rhoai_menu() {
     echo ""
 
     case "$selected_channel" in
-        *3.4*|fast-3.x)
+        *3.4*|fast-3.x|stable-3.x)
             echo -e "${CYAN}Launching RHOAI 3.4 installer (channel: $selected_channel)...${NC}"
             echo ""
             read -p "Proceed? (Y/n): " confirm

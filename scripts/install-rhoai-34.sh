@@ -1366,8 +1366,12 @@ EOF
 
     # Restart gateway to pick up new filters and clear span buffer
     print_step "Restarting MaaS gateway to apply filters..."
-    oc rollout restart deployment/maas-default-gateway-openshift-gateway-controller \
-        -n openshift-ingress 2>/dev/null || true
+    local maas_deploy
+    maas_deploy=$(oc get deployment -n openshift-ingress -l "gateway.networking.k8s.io/gateway-name=maas-default-gateway" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "$maas_deploy" ]; then
+        oc rollout restart deployment/"$maas_deploy" -n openshift-ingress 2>/dev/null || true
+    fi
     sleep 10
 
     print_success "MaaS rate limiting configured (Redis + health check filter + timeout fix)"
@@ -1469,17 +1473,19 @@ setup_observability_perses() {
         return 0
     fi
 
-    if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
-        print_info "Perses already running in $mon_ns [SKIP]"
-    else
-        print_step "Creating Perses server in $mon_ns..."
+    # --- 1. Service Account + RBAC ---
+    oc create sa perses-sa -n "$mon_ns" 2>/dev/null || true
+    oc create clusterrolebinding perses-sa-${mon_ns} \
+        --clusterrole=system:openshift:scc:nonroot-v2 \
+        --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
+    oc create clusterrolebinding perses-sa-monitoring-view \
+        --clusterrole=cluster-monitoring-view \
+        --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
 
-        oc create sa perses-sa -n "$mon_ns" 2>/dev/null || true
-        oc create clusterrolebinding perses-sa-${mon_ns} \
-            --clusterrole=system:openshift:scc:nonroot-v2 \
-            --serviceaccount=${mon_ns}:perses-sa 2>/dev/null || true
-
-        oc apply -f - <<EOF
+    # --- 2. Perses Server (with client TLS for Thanos proxy) ---
+    # client.tls enables the Perses proxy to verify Thanos's TLS cert via
+    # the openshift-service-ca.crt ConfigMap (auto-injected by OpenShift).
+    oc apply -f - <<EOF
 apiVersion: perses.dev/v1alpha2
 kind: Perses
 metadata:
@@ -1505,21 +1511,27 @@ spec:
   client:
     kubernetesAuth:
       enable: false
+    tls:
+      enable: true
+      caCert:
+        type: configmap
+        name: openshift-service-ca.crt
+        namespace: ${mon_ns}
+        certPath: service-ca.crt
 EOF
 
-        print_step "Waiting for Perses pod..."
-        local elapsed=0
-        while [ $elapsed -lt 90 ]; do
-            if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
-                print_success "Perses server running in $mon_ns"
-                break
-            fi
-            sleep 10
-            elapsed=$((elapsed + 10))
-        done
-    fi
+    print_step "Waiting for Perses pod..."
+    local elapsed=0
+    while [ $elapsed -lt 90 ]; do
+        if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+            print_success "Perses server running in $mon_ns"
+            break
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
 
-    # NetworkPolicy: allow perses-operator (openshift-operators) to sync dashboards
+    # --- 3. NetworkPolicy: allow perses-operator + dashboard to reach Perses ---
     oc apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -1537,6 +1549,12 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: openshift-operators
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-cluster-observability-operator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redhat-ods-applications
       ports:
         - port: 8080
           protocol: TCP
@@ -1544,22 +1562,76 @@ spec:
     - Ingress
 EOF
 
-    # Service-CA ConfigMap for PersesDatasource TLS to Thanos
-    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
-        oc apply -f - <<EOF
+    # --- 4. Service-CA ConfigMap (auto-injected) ---
+    oc apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: prometheus-web-tls-ca
+  name: openshift-service-ca.crt
   namespace: ${mon_ns}
   annotations:
     service.beta.openshift.io/inject-cabundle: "true"
 data: {}
 EOF
-        print_info "Created service-ca ConfigMap for PersesDatasource"
+
+    # --- 5. Thanos proxy auth Secret (SA bearer token, 10-year TTL) ---
+    if ! oc get secret thanos-querier-datasource-secret -n "$mon_ns" &>/dev/null; then
+        local sa_token
+        sa_token=$(oc create token perses-sa -n "$mon_ns" --duration=87600h 2>/dev/null || echo "")
+        if [ -n "$sa_token" ]; then
+            oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: thanos-querier-datasource-secret
+  namespace: ${mon_ns}
+  labels:
+    app.kubernetes.io/managed-by: rhoai-toolkit
+type: Opaque
+stringData:
+  Authorization: "Bearer ${sa_token}"
+EOF
+            print_info "Created Thanos proxy auth secret"
+        else
+            print_warning "Could not generate SA token — PersesDatasource proxy will fail"
+        fi
     fi
 
-    print_success "Observability Perses setup complete"
+    # --- 6. PersesDatasource (default, connects Perses → Thanos) ---
+    oc apply -f - <<EOF
+apiVersion: perses.dev/v1alpha2
+kind: PersesDatasource
+metadata:
+  name: thanos-querier-datasource
+  namespace: ${mon_ns}
+  labels:
+    app.kubernetes.io/name: thanos-querier-datasource
+    app.kubernetes.io/part-of: data-science-monitoring
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  client:
+    tls:
+      enable: true
+      caCert:
+        type: configmap
+        name: openshift-service-ca.crt
+        namespace: ${mon_ns}
+        certPath: service-ca.crt
+  config:
+    default: true
+    display:
+      name: "Thanos Querier Datasource"
+    plugin:
+      kind: PrometheusDatasource
+      spec:
+        proxy:
+          kind: HTTPProxy
+          spec:
+            secret: thanos-querier-datasource-secret
+            url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+EOF
+
+    print_success "Observability Perses setup complete (server + datasource + auth)"
 }
 
 configure_gateway_telemetry() {
@@ -1674,66 +1746,35 @@ enable_dashboard_features() {
     #   mcpCatalog: true              - MCP Catalog under AI Hub (requires MCP Lifecycle Operator)
     # Optional TP flags:
     #   observabilityDashboard: true  - MaaS usage monitoring dashboard (TP)
+    # Single unified patch — always enable all dashboard flags.
+    # merge-patch is additive, so every flag is always present.
     local patch_json='{
         "spec": {
             "dashboardConfig": {
                 "disableModelRegistry": false,
                 "disableModelCatalog": false,
                 "disableKServeMetrics": false,
+                "disableLMEval": false,
+                "disableKueue": false,
                 "genAiStudio": true,
                 "modelAsService": true,
                 "maasAuthPolicies": true,
                 "vLLMDeploymentOnMaaS": true,
-                "disableLMEval": false,
-                "mcpCatalog": true
+                "observabilityDashboard": true,
+                "mcpCatalog": true,
+                "llmGatewayField": true,
+                "deploymentWizardYAMLViewer": true,
+                "aiAssetCustomEndpoints": true
             }
         }
     }'
-
-    if [ "$ENABLE_VLLM_MAAS" = true ]; then
-        patch_json='{
-            "spec": {
-                "dashboardConfig": {
-                    "disableModelRegistry": false,
-                    "disableModelCatalog": false,
-                    "disableKServeMetrics": false,
-                    "genAiStudio": true,
-                    "modelAsService": true,
-                    "maasAuthPolicies": true,
-                    "disableLMEval": false,
-                    "vLLMDeploymentOnMaaS": true,
-                    "mcpCatalog": true
-                }
-            }
-        }'
-        print_info "Enabling vLLM runtime for MaaS (Technology Preview)"
-    fi
-
-    if [ "$ENABLE_OBSERVABILITY" = true ]; then
-        patch_json='{
-            "spec": {
-                "dashboardConfig": {
-                    "disableModelRegistry": false,
-                    "disableModelCatalog": false,
-                    "disableKServeMetrics": false,
-                    "genAiStudio": true,
-                    "modelAsService": true,
-                    "maasAuthPolicies": true,
-                    "observabilityDashboard": true,
-                    "disableLMEval": false,
-                    "mcpCatalog": true
-                }
-            }
-        }'
-        print_info "Enabling MaaS observability dashboard (Technology Preview)"
-    fi
 
     oc patch odhdashboardconfig odh-dashboard-config \
         -n redhat-ods-applications \
         --type=merge \
         -p "$patch_json" 2>/dev/null || print_warning "Could not patch dashboard config yet"
 
-    print_success "Dashboard features enabled (including maasAuthPolicies)"
+    print_success "Dashboard features enabled (all 3.4 flags)"
 }
 
 install_mcp_lifecycle_operator() {
@@ -1837,7 +1878,7 @@ deploy_mcp_searxng() {
     fi
 
     get_cluster_domain
-    local mcp_host="mcp.${CLUSTER_DOMAIN}"
+    local mcp_host="mcp.apps.${CLUSTER_DOMAIN}"
 
     # --- 1. Namespace ---
     if ! oc get namespace "$mcp_ns" &>/dev/null 2>&1; then
@@ -2173,7 +2214,7 @@ EOF
     # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
     # ALL port 443 traffic, breaking maas-api calls with "invalid mcp request".
     # This per-route override disables ext_proc for the MaaS hostname.
-    local maas_host="maas.${CLUSTER_DOMAIN}"
+    local maas_host="maas.apps.${CLUSTER_DOMAIN}"
     if oc get envoyfilter mcp-ext-proc-mcp-gateway-system-gateway -n "$gw_ns" &>/dev/null 2>&1; then
         if ! oc get envoyfilter mcp-ext-proc-bypass-maas -n "$gw_ns" &>/dev/null 2>&1; then
             print_step "Creating ext_proc bypass for MaaS traffic..."
@@ -2611,16 +2652,12 @@ deploy_grafana_monitoring() {
     local grafana_ns="monitoring"
     oc create namespace "$grafana_ns" 2>/dev/null || true
 
-    if oc get deployment grafana -n "$grafana_ns" &>/dev/null; then
-        print_info "Grafana already deployed [SKIP]"
-    else
-        oc apply -f "$ROOT_DIR/lib/manifests/grafana/grafana-deployment.yaml" -n "$grafana_ns"
-        print_step "Waiting for Grafana pod..."
-        oc wait --for=condition=ready pod -l app=grafana -n "$grafana_ns" --timeout=120s 2>/dev/null || true
-        print_success "Grafana deployed"
-    fi
+    # Deploy or update Grafana (idempotent — oc apply handles both create and update)
+    oc apply -f "$ROOT_DIR/lib/manifests/grafana/grafana-deployment.yaml" -n "$grafana_ns"
+    print_step "Waiting for Grafana pod..."
+    oc wait --for=condition=ready pod -l app=grafana -n "$grafana_ns" --timeout=120s 2>/dev/null || true
 
-    # Create Prometheus token for Grafana datasource
+    # Prometheus token for Grafana datasource
     oc apply -f "$ROOT_DIR/lib/manifests/grafana/prometheus-token.yaml" 2>/dev/null || true
 
     local token=""
@@ -2630,17 +2667,15 @@ deploy_grafana_monitoring() {
             -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null)
         [ -z "$token" ] && sleep 5 && retries=$((retries + 1))
     done
-
     if [ -z "$token" ]; then
         token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null || true)
     fi
-
     if [ -z "$token" ]; then
         print_warning "Could not get Prometheus token for Grafana datasource"
         return 0
     fi
 
-    # Configure Prometheus datasource via Grafana API
+    # Configure Prometheus datasource via Grafana API (always run — POST is idempotent for existing)
     local grafana_route
     grafana_route=$(oc get route grafana -n "$grafana_ns" -o jsonpath='{.spec.host}' 2>/dev/null)
 
@@ -2665,13 +2700,11 @@ deploy_grafana_monitoring() {
             }" &>/dev/null && print_success "Prometheus datasource configured" \
             || print_info "Datasource may already exist"
 
-        # Import dashboards
+        # Import dashboards (overwrite=true makes this idempotent)
         for dashboard_file in "$ROOT_DIR"/lib/manifests/grafana/*-dashboard.json; do
             [ -f "$dashboard_file" ] || continue
-            local dash_name
+            local dash_name dash_json
             dash_name=$(basename "$dashboard_file" .json)
-            print_step "Importing dashboard: $dash_name..."
-            local dash_json
             dash_json=$(cat "$dashboard_file")
             curl -sk -X POST "https://${grafana_route}/api/dashboards/db" \
                 -u admin:admin \
@@ -2682,17 +2715,18 @@ deploy_grafana_monitoring() {
         done
     fi
 
-    # Create console links for OpenShift menu
+    # Console links + RHOAI dashboard tile (GPU + vLLM only)
     get_cluster_domain
     export CLUSTER_DOMAIN
     envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/consolelinks-grafana.yaml" | oc apply -f - 2>/dev/null || true
-
-    # Create OdhApplication tile in RHOAI dashboard
     envsubst '${CLUSTER_DOMAIN}' < "$ROOT_DIR/lib/manifests/monitoring/odhapplication-grafana.yaml" | oc apply -f - 2>/dev/null || true
+
+    # Clean up stale MaaS console link if it exists from a previous run
+    oc delete consolelink grafana-maas-metrics 2>/dev/null || true
 
     print_success "Grafana monitoring stack deployed"
     print_info "Grafana URL: https://${grafana_route}"
-    print_info "Dashboards: GPU Metrics, vLLM Inference, MaaS Usage"
+    print_info "Dashboards: GPU Metrics, vLLM Inference"
 }
 
 ################################################################################
@@ -2703,13 +2737,6 @@ create_thanos_proxy_secret() {
     local dash_ns="redhat-ods-applications"
 
     if ! oc get namespace "$dash_ns" &>/dev/null; then
-        return 0
-    fi
-
-    local obs_enabled
-    obs_enabled=$(oc get odhdashboardconfig odh-dashboard-config -n "$dash_ns" \
-        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null || echo "")
-    if [ "$obs_enabled" != "true" ]; then
         return 0
     fi
 
@@ -3305,7 +3332,11 @@ main() {
     fi
 
     if [ "$SETUP_PIPELINES" = true ]; then
-        setup_pipeline_server "$PIPELINE_NAMESPACE"
+        if type setup_pipeline_server &>/dev/null; then
+            setup_pipeline_server "$PIPELINE_NAMESPACE"
+        else
+            print_warning "setup_pipeline_server not implemented — skipping pipeline setup"
+        fi
     fi
 
     if [ "$SETUP_USERS" = true ]; then
