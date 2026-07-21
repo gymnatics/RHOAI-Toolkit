@@ -85,3 +85,18 @@ spec:
   - port: 8000
     protocol: TCP
     targetPort: 8000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-searxng
+  namespace: mcp-servers
+spec:
+  to:
+    kind: Service
+    name: mcp-searxng
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
