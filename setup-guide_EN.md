@@ -544,6 +544,27 @@ In sandbox environments such as the Red Hat Demo Platform, instance states may n
 ./restart-cluster-instances.sh start
 ```
 
+### Auto-Stop Schedule
+
+To avoid unnecessary AWS costs, you can configure an automatic daily shutdown using a local cron job.
+
+```bash
+# Show current schedule status
+./restart-cluster-instances.sh schedule
+
+# Enable daily auto-stop at midnight (default)
+./restart-cluster-instances.sh schedule on
+
+# Enable daily auto-stop at a specific time (e.g. 23:30)
+./restart-cluster-instances.sh schedule on 23:30
+
+# Disable auto-stop (keeps the cron entry but comments it out)
+./restart-cluster-instances.sh schedule off
+```
+
+> **Note:** The schedule runs on your **local machine** via cron. Your machine must be on and awake at the scheduled time.
+> To restart the cluster after an auto-stop, run `./restart-cluster-instances.sh start`.
+
 > **Start/restart flow:**
 > 1. Pre-flight: verify installer kubeconfig (client certificate)
 > 2. Auto-detect cluster infra ID and region from `metadata.json`

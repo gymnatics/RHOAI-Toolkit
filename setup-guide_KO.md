@@ -544,6 +544,27 @@ Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈�
 ./restart-cluster-instances.sh start
 ```
 
+### 자동 중지 스케줄
+
+불필요한 AWS 비용을 방지하기 위해, 로컬 cron job으로 매일 자동 종료를 설정할 수 있습니다.
+
+```bash
+# 현재 스케줄 상태 확인
+./restart-cluster-instances.sh schedule
+
+# 매일 자정에 자동 중지 활성화 (기본값)
+./restart-cluster-instances.sh schedule on
+
+# 특정 시간에 자동 중지 설정 (예: 23:30)
+./restart-cluster-instances.sh schedule on 23:30
+
+# 자동 중지 비활성화 (cron 항목은 유지하되 주석 처리)
+./restart-cluster-instances.sh schedule off
+```
+
+> **참고:** 스케줄은 **로컬 머신**의 cron으로 실행됩니다. 설정한 시간에 머신이 켜져 있어야 합니다.
+> 자동 중지 후 클러스터를 다시 시작하려면 `./restart-cluster-instances.sh start`를 실행하세요.
+
 > **동작 흐름 (start/restart):**
 > 1. Pre-flight: installer kubeconfig(client certificate) 확인
 > 2. `metadata.json`에서 클러스터 infra ID/리전 자동 감지
