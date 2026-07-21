@@ -1863,8 +1863,8 @@ EOF
 register_mcp_dashboard_configmap() {
     print_step "Registering MCP servers in dashboard ConfigMap..."
 
-    get_cluster_domain
-    local mcp_host="mcp.apps.${CLUSTER_DOMAIN}"
+    local mcp_ns="mcp-servers"
+    local mcp_url="http://mcp-searxng.${mcp_ns}.svc.cluster.local:8000/mcp"
     local dashboard_ns="redhat-ods-applications"
 
     local aa_namespaces
@@ -1886,8 +1886,12 @@ metadata:
 data:
   SearXNG: |
     {
-      "url": "https://${mcp_host}/mcp",
-      "description": "Web search capability for real-time information retrieval via SearXNG"
+      "name": "searxng",
+      "displayName": "SearXNG - Web Search",
+      "description": "Web search for real-time information retrieval",
+      "url": "${mcp_url}",
+      "transport": "streamable-http",
+      "category": "search"
     }
 EOF
     done
@@ -1897,12 +1901,9 @@ EOF
 ################################################################################
 # MCP Server Deployment (SearXNG)
 #
-# Full pipeline: namespace → deployment → gateway listener → HTTPRoute →
-# RBAC fix → ReferenceGrants → MCPGatewayExtension → MCPServerRegistration
-#
-# The mcp-gateway-controller shipped with RHCL has an incomplete ClusterRole.
-# This function detects and patches the missing permissions so the controller
-# can reconcile MCPServerRegistrations and mark them Ready.
+# Simple pipeline: namespace → Deployment + Service
+# Dashboard registration is handled by register_mcp_dashboard_configmap().
+# Uses internal svc.cluster.local URL — no Gateway/Auth dependency.
 #
 # Additional MCP servers (code-sandbox, codebase-search, etc.) can be deployed
 # separately from https://github.com/hyogrin/rhoai-coding-assistant-lab
@@ -1912,17 +1913,6 @@ deploy_mcp_searxng() {
     print_step "Deploying SearXNG MCP server..."
 
     local mcp_ns="mcp-servers"
-    local gw_ns="openshift-ingress"
-
-    # Prerequisite: maas-default-gateway must exist (created by create_inference_gateway)
-    if ! oc get gateway maas-default-gateway -n "$gw_ns" &>/dev/null 2>&1; then
-        print_warning "maas-default-gateway not found — skipping MCP server deployment"
-        print_info "MCP servers require the gateway created by RHCL/MaaS setup"
-        return 0
-    fi
-
-    get_cluster_domain
-    local mcp_host="mcp.apps.${CLUSTER_DOMAIN}"
 
     # --- 1. Namespace ---
     if ! oc get namespace "$mcp_ns" &>/dev/null 2>&1; then
@@ -1935,467 +1925,13 @@ deploy_mcp_searxng() {
     oc annotate namespace "$mcp_ns" \
         openshift.io/display-name="MCP Servers" --overwrite 2>/dev/null || true
 
-    # --- 2. SearXNG Deployment + Service ---
-    if oc get deploy mcp-searxng -n "$mcp_ns" &>/dev/null; then
-        print_info "SearXNG deployment already exists [SKIP]"
-    else
-        oc apply -f "$ROOT_DIR/lib/manifests/mcp/searxng.yaml"
-        print_step "Waiting for SearXNG pod..."
-        oc wait --for=condition=ready pod -l app=mcp-searxng -n "$mcp_ns" --timeout=120s 2>/dev/null \
-            && print_success "SearXNG pod is running" \
-            || print_warning "SearXNG pod not ready yet (may still be pulling image)"
-    fi
+    # --- 2. Deployment + Service ---
+    oc apply -f "$ROOT_DIR/lib/manifests/mcp/searxng.yaml"
+    oc wait --for=condition=ready pod -l app=mcp-searxng -n "$mcp_ns" --timeout=120s 2>/dev/null \
+        && print_success "SearXNG MCP server is running" \
+        || print_warning "SearXNG pod not ready yet (may still be pulling image)"
 
-    # --- 3. Gateway MCP listener ---
-    # HTTPRoutes with sectionName:mcp need a matching listener on the gateway
-    local has_mcp_listener
-    has_mcp_listener=$(oc get gateway maas-default-gateway -n "$gw_ns" \
-        -o jsonpath='{.spec.listeners[?(@.name=="mcp")].name}' 2>/dev/null || true)
-
-    if [ -z "$has_mcp_listener" ]; then
-        print_step "Adding MCP listener to maas-default-gateway..."
-        local tls_secret="default-gateway-tls"
-        for candidate in apps-wildcard-tls cert-manager-ingress-cert; do
-            if oc get secret "$candidate" -n "$gw_ns" &>/dev/null; then
-                tls_secret="$candidate"
-                break
-            fi
-        done
-
-        oc patch gateway maas-default-gateway -n "$gw_ns" --type=json -p "[
-          {\"op\": \"add\", \"path\": \"/spec/listeners/-\", \"value\": {
-            \"name\": \"mcp\",
-            \"hostname\": \"${mcp_host}\",
-            \"port\": 443,
-            \"protocol\": \"HTTPS\",
-            \"allowedRoutes\": {\"namespaces\": {\"from\": \"All\"}},
-            \"tls\": {\"mode\": \"Terminate\", \"certificateRefs\": [{\"group\": \"\", \"kind\": \"Secret\", \"name\": \"${tls_secret}\"}]}
-          }}
-        ]" 2>/dev/null && print_success "MCP listener added (tls: $tls_secret)" \
-            || print_warning "Could not add MCP listener"
-    else
-        print_info "MCP listener already on gateway [SKIP]"
-    fi
-
-    # --- 4. ReferenceGrants (must exist before HTTPRoute/MCPGatewayExtension) ---
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  name: mcp-gateway-to-ingress
-  namespace: ${gw_ns}
-spec:
-  from:
-  - group: mcp.kuadrant.io
-    kind: MCPGatewayExtension
-    namespace: mcp-gateway-system
-  to:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
----
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  name: mcp-servers-to-ingress
-  namespace: ${gw_ns}
-spec:
-  from:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    namespace: ${mcp_ns}
-  to:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-EOF
-
-    # --- 5. HTTPRoute ---
-    oc apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: mcp-searxng
-  namespace: ${mcp_ns}
-spec:
-  hostnames:
-  - "${mcp_host}"
-  parentRefs:
-  - name: maas-default-gateway
-    namespace: ${gw_ns}
-    sectionName: mcp
-  rules:
-  - backendRefs:
-    - name: mcp-searxng
-      port: 8000
-EOF
-
-    # --- 6. Fix mcp-gateway-controller RBAC ---
-    # The ClusterRole shipped with RHCL is missing permissions for:
-    #   mcpvirtualservers, envoyfilters, referencegrants, gateways/status, namespaces
-    # Without these the controller crashes in CrashLoopBackOff.
-    if oc get clusterrole mcp-gateway-controller &>/dev/null 2>&1; then
-        local current_rules
-        current_rules=$(oc get clusterrole mcp-gateway-controller -o json 2>/dev/null)
-        local needs_patch=false
-        for resource in mcpvirtualservers envoyfilters "gateways/status" namespaces; do
-            echo "$current_rules" | grep -q "$resource" || needs_patch=true
-        done
-
-        if [ "$needs_patch" = true ]; then
-            print_step "Patching mcp-gateway-controller ClusterRole (missing permissions)..."
-            oc apply -f - <<'EOF'
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: mcp-gateway-controller
-rules:
-- apiGroups: ["mcp.kuadrant.io"]
-  resources:
-  - mcpgatewayextensions
-  - mcpgatewayextensions/status
-  - mcpgatewayextensions/finalizers
-  - mcpserverregistrations
-  - mcpserverregistrations/status
-  - mcpserverregistrations/finalizers
-  - mcpvirtualservers
-  - mcpvirtualservers/status
-  - mcpvirtualservers/finalizers
-  verbs: ["get","list","watch","create","update","patch","delete"]
-- apiGroups: ["gateway.networking.k8s.io"]
-  resources:
-  - gateways
-  - gateways/status
-  - httproutes
-  - httproutes/status
-  - referencegrants
-  verbs: ["get","list","watch","create","update","patch","delete"]
-- apiGroups: ["networking.istio.io"]
-  resources: ["envoyfilters"]
-  verbs: ["get","list","watch","create","update","patch","delete"]
-- apiGroups: ["apps"]
-  resources: ["deployments"]
-  verbs: ["get","list","watch","create","update","patch","delete"]
-- apiGroups: [""]
-  resources: ["services","secrets","configmaps","serviceaccounts","namespaces"]
-  verbs: ["get","list","watch","create","update","patch","delete"]
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["clusterroles","clusterrolebindings","roles","rolebindings"]
-  verbs: ["get","list","watch","create","update","patch","delete"]
-EOF
-            print_success "ClusterRole patched"
-            oc rollout restart deploy/mcp-gateway-controller -n mcp-gateway-system 2>/dev/null || true
-            print_step "Waiting for mcp-gateway-controller to restart..."
-            local ctr_elapsed=0
-            while [ $ctr_elapsed -lt 60 ]; do
-                if oc get pods -n mcp-gateway-system -l app.kubernetes.io/name=mcp-gateway-controller \
-                    --no-headers 2>/dev/null | grep -q "1/1.*Running"; then
-                    print_success "MCP gateway controller is running"
-                    break
-                fi
-                sleep 5
-                ctr_elapsed=$((ctr_elapsed + 5))
-            done
-        fi
-    fi
-
-    # --- 7. MCPGatewayExtension ---
-    if oc get crd mcpgatewayextensions.mcp.kuadrant.io &>/dev/null 2>&1; then
-        oc apply -f - <<'EOF'
-apiVersion: mcp.kuadrant.io/v1alpha1
-kind: MCPGatewayExtension
-metadata:
-  name: mcp-gateway-ext
-  namespace: mcp-gateway-system
-spec:
-  httpRouteManagement: Enabled
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: maas-default-gateway
-    namespace: openshift-ingress
-    sectionName: mcp
-EOF
-    else
-        print_warning "MCPGatewayExtension CRD not found — RHCL MCP Gateway not installed"
-        return 0
-    fi
-
-    # --- 8. MCPServerRegistration ---
-    if oc get crd mcpserverregistrations.mcp.kuadrant.io &>/dev/null 2>&1; then
-        oc apply -f - <<'EOF'
-apiVersion: mcp.kuadrant.io/v1alpha1
-kind: MCPServerRegistration
-metadata:
-  name: searxng
-  namespace: mcp-servers
-spec:
-  category:
-  - search
-  hint: Web search capability for real-time information retrieval
-  path: /mcp
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mcp-searxng
-EOF
-    fi
-
-    # --- 9. Wait for registration ---
-    print_step "Waiting for SearXNG MCPServerRegistration to become Ready..."
-    local elapsed=0
-    while [ $elapsed -lt 120 ]; do
-        local ready
-        ready=$(oc get mcpserverregistration searxng -n "$mcp_ns" \
-            -o jsonpath='{.status.ready}' 2>/dev/null || true)
-        if [ "$ready" = "true" ]; then
-            local tools
-            tools=$(oc get mcpserverregistration searxng -n "$mcp_ns" \
-                -o jsonpath='{.status.totalTools}' 2>/dev/null || echo "?")
-            print_success "SearXNG MCP server Ready ($tools tools)"
-            print_info "MCP endpoint: https://${mcp_host}/mcp"
-            break
-        fi
-        sleep 10
-        elapsed=$((elapsed + 10))
-    done
-
-    if [ $elapsed -ge 120 ]; then
-        print_warning "SearXNG not yet Ready — the gateway controller pings backends every 60s"
-        print_info "Check status: oc get mcpserverregistration -n $mcp_ns"
-        print_info "Check controller: oc logs -n mcp-gateway-system deploy/mcp-gateway-controller --tail=10"
-    fi
-
-    # --- 10. Sync mcp-gateway-config to dashboard namespace ---
-    local dashboard_ns="redhat-ods-applications"
-    if oc get secret mcp-gateway-config -n mcp-gateway-system &>/dev/null 2>&1; then
-        print_step "Syncing mcp-gateway-config to $dashboard_ns..."
-        oc get secret mcp-gateway-config -n mcp-gateway-system -o json | \
-            python3 -c "
-import json, sys
-s = json.load(sys.stdin)
-s['metadata'] = {'name': s['metadata']['name'], 'namespace': '$dashboard_ns'}
-json.dump(s, sys.stdout)
-" | oc apply -f - &>/dev/null \
-            && print_success "mcp-gateway-config secret synced to $dashboard_ns" \
-            || print_warning "Could not sync mcp-gateway-config secret"
-
-    fi
-
-    # --- 11. Dashboard RBAC for MCP resources ---
-    if ! oc get clusterrole rhods-dashboard-mcp-reader &>/dev/null 2>&1; then
-        print_step "Creating dashboard RBAC for MCP resources..."
-        oc apply -f - <<'EOF'
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: rhods-dashboard-mcp-reader
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-rules:
-- apiGroups: ["mcp.kuadrant.io"]
-  resources:
-  - mcpserverregistrations
-  - mcpserverregistrations/status
-  - mcpgatewayextensions
-  - mcpgatewayextensions/status
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["gateway.networking.k8s.io"]
-  resources:
-  - gateways
-  - httproutes
-  verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: rhods-dashboard-mcp-reader
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: rhods-dashboard-mcp-reader
-subjects:
-- kind: ServiceAccount
-  name: rhods-dashboard
-  namespace: redhat-ods-applications
-EOF
-        print_success "Dashboard MCP RBAC created"
-    fi
-
-    # MCP dashboard ConfigMap is now created by register_mcp_dashboard_configmap()
-    # which runs independently of the gateway in main().
-
-    # --- 13. Bypass MCP ext_proc for non-MCP traffic ---
-    # The mcp-gateway-controller installs an EnvoyFilter (ext_proc) that intercepts
-    # ALL port 443 traffic, breaking maas-api calls with "invalid mcp request".
-    # This per-route override disables ext_proc for the MaaS hostname.
-    local maas_host="maas.apps.${CLUSTER_DOMAIN}"
-    if oc get envoyfilter mcp-ext-proc-mcp-gateway-system-gateway -n "$gw_ns" &>/dev/null 2>&1; then
-        if ! oc get envoyfilter mcp-ext-proc-bypass-maas -n "$gw_ns" &>/dev/null 2>&1; then
-            print_step "Creating ext_proc bypass for MaaS traffic..."
-            oc apply -f - <<EOF
-apiVersion: networking.istio.io/v1alpha3
-kind: EnvoyFilter
-metadata:
-  name: mcp-ext-proc-bypass-maas
-  namespace: ${gw_ns}
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-spec:
-  workloadSelector:
-    labels:
-      gateway.networking.k8s.io/gateway-name: maas-default-gateway
-  configPatches:
-  - applyTo: HTTP_ROUTE
-    match:
-      context: GATEWAY
-      routeConfiguration:
-        vhost:
-          name: "${maas_host}:443"
-    patch:
-      operation: MERGE
-      value:
-        typed_per_filter_config:
-          envoy.filters.http.ext_proc:
-            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
-            disabled: true
-EOF
-            print_success "ext_proc bypass created for MaaS traffic"
-        fi
-    fi
-
-    # --- 14. Create AuthPolicy for MCP route ---
-    # The gateway-default-auth has empty authentication (= deny all).
-    # MCP route needs its own AuthPolicy to accept MaaS API keys.
-    if ! oc get authpolicy mcp-gateway-auth -n mcp-gateway-system &>/dev/null 2>&1; then
-        print_step "Creating AuthPolicy for MCP route (API key auth)..."
-        oc apply -f - <<EOF
-apiVersion: kuadrant.io/v1
-kind: AuthPolicy
-metadata:
-  name: mcp-gateway-auth
-  namespace: mcp-gateway-system
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mcp-gateway-route
-  rules:
-    authentication:
-      api-keys:
-        plain:
-          selector: "request.headers.authorization"
-        when:
-          - operator: matches
-            selector: request.headers.authorization
-            value: "^Bearer sk-oai-.*"
-        priority: 0
-        metrics: false
-      openshift-identities:
-        kubernetesTokenReview:
-          audiences:
-            - "https://kubernetes.default.svc"
-            - "maas-default-gateway-sa"
-        when:
-          - predicate: '!request.headers.authorization.startsWith("Bearer sk-oai-")'
-        priority: 1
-        metrics: false
-    metadata:
-      apiKeyValidation:
-        http:
-          url: "https://maas-api.redhat-ods-applications.svc.cluster.local:8443/internal/v1/api-keys/validate"
-          method: POST
-          contentType: application/json
-          body:
-            expression: '{"key": request.headers.authorization.replace("Bearer ", "")}'
-        when:
-          - operator: matches
-            selector: request.headers.authorization
-            value: "^Bearer sk-oai-.*"
-        priority: 0
-        metrics: false
-    authorization:
-      api-key-valid:
-        patternMatching:
-          patterns:
-            - operator: eq
-              selector: auth.metadata.apiKeyValidation.valid
-              value: "true"
-        when:
-          - operator: matches
-            selector: request.headers.authorization
-            value: "^Bearer sk-oai-.*"
-        priority: 0
-        metrics: false
-EOF
-        print_success "MCP AuthPolicy created"
-    fi
-
-    # --- 15. Update mcp-gateway-config with transport type ---
-    local config_yaml="servers:
-- category:
-  - search
-  hint: Web search capability for real-time information retrieval
-  hostname: ${mcp_host}
-  name: mcp-servers/searxng
-  state: Enabled
-  transport: streamable-http
-  url: http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
-
-    for ns in mcp-gateway-system "$dashboard_ns"; do
-        oc create secret generic mcp-gateway-config \
-            -n "$ns" \
-            --from-literal="config.yaml=${config_yaml}" \
-            --dry-run=client -o yaml | oc apply -f -
-    done
-    print_success "mcp-gateway-config updated with transport type"
-
-    # --- 16. Auto-generate MaaS API key for MCP access ---
-    if oc get maassubscription -n models-as-a-service --no-headers 2>/dev/null | grep -q "Active"; then
-        local existing_key
-        existing_key=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
-            "https://localhost:8443/v1/api-keys/search" \
-            -X POST -H "Content-Type: application/json" \
-            -H "X-MaaS-Username: admin" \
-            -H "X-MaaS-Group: [\"rhods-admins\"]" \
-            -d '{"owner":"admin"}' 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    keys = d if isinstance(d, list) else d.get('items', [])
-    for k in keys:
-        if k.get('name') == 'mcp-access-key':
-            print(k.get('keyPrefix','exists'))
-            break
-except: pass" 2>/dev/null)
-
-        if [ -z "$existing_key" ]; then
-            print_step "Generating MaaS API key for MCP access..."
-            local api_key_json
-            api_key_json=$(oc exec deploy/maas-api -n "$dashboard_ns" -- curl -sk \
-                "https://localhost:8443/v1/api-keys" \
-                -X POST -H "Content-Type: application/json" \
-                -H "X-MaaS-Username: admin" \
-                -H "X-MaaS-Group: [\"rhods-admins\"]" \
-                -d '{"name":"mcp-access-key"}' 2>/dev/null)
-            local api_key
-            api_key=$(echo "$api_key_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('key',''))" 2>/dev/null)
-            if [ -n "$api_key" ]; then
-                print_success "MaaS API key created for MCP: ${api_key:0:20}..."
-                echo ""
-                echo -e "  ${YELLOW}MCP Access Token:${NC} $api_key"
-                echo -e "  ${CYAN}Use this token in the RHOAI dashboard to authorize MCP servers${NC}"
-            else
-                print_warning "Could not create API key — create one manually in the MaaS dashboard"
-            fi
-        else
-            print_info "MaaS API key 'mcp-access-key' already exists"
-        fi
-    else
-        print_info "No active MaaS subscription found — skipping API key generation"
-    fi
+    print_info "Internal endpoint: http://mcp-searxng.${mcp_ns}.svc.cluster.local:8000/mcp"
 }
 
 create_inference_gateway() {
@@ -3120,20 +2656,12 @@ print_summary() {
     echo ""
 
     # MCP Server status
-    if oc get mcpserverregistration searxng -n mcp-servers &>/dev/null 2>&1; then
-        local mcp_ready
-        mcp_ready=$(oc get mcpserverregistration searxng -n mcp-servers \
-            -o jsonpath='{.status.ready}' 2>/dev/null || true)
-        local mcp_tools
-        mcp_tools=$(oc get mcpserverregistration searxng -n mcp-servers \
-            -o jsonpath='{.status.totalTools}' 2>/dev/null || echo "?")
-        if [ "$mcp_ready" = "true" ]; then
-            echo -e "${CYAN}MCP SearXNG:${NC} Ready ($mcp_tools tools) — https://mcp.apps.${CLUSTER_DOMAIN}/mcp"
-        else
-            echo -e "${YELLOW}MCP SearXNG:${NC} Not Ready yet — check: oc get mcpserverregistration -n mcp-servers"
-        fi
-        echo ""
+    if oc get deploy mcp-searxng -n mcp-servers --no-headers 2>/dev/null | grep -q "1/1"; then
+        echo -e "${CYAN}MCP SearXNG:${NC} Running — http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
+    elif oc get deploy mcp-searxng -n mcp-servers &>/dev/null 2>&1; then
+        echo -e "${YELLOW}MCP SearXNG:${NC} Deployed but not ready — check: oc get pods -n mcp-servers"
     fi
+    echo ""
 
     echo -e "${BLUE}Verification commands:${NC}"
     echo "  oc get datasciencecluster"
@@ -3142,7 +2670,7 @@ print_summary() {
     echo "  oc get crd | grep maas.opendatahub.io"
     echo "  oc get tenant -n models-as-a-service"
     echo "  oc get gateway maas-default-gateway -n openshift-ingress"
-    echo "  oc get mcpserverregistration -n mcp-servers"
+    echo "  oc get deploy -n mcp-servers"
     echo "  oc get authorino authorino -n kuadrant-system -o jsonpath='{.spec.listener.tls}'"
     echo ""
 }
@@ -3312,11 +2840,7 @@ main() {
     # MCP dashboard ConfigMap — always register so Gen AI Studio shows MCP servers
     register_mcp_dashboard_configmap
 
-    if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
-        deploy_mcp_searxng
-    else
-        print_info "Skipping MCP server deployment (requires RHCL/MaaS gateway)"
-    fi
+    deploy_mcp_searxng
     create_hardware_profile
     create_mlflow_server
 
