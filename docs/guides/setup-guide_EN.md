@@ -464,6 +464,12 @@ In sandbox environments such as the Red Hat Demo Platform, instance states may n
 
 # Start only
 ./restart-cluster-instances.sh start
+
+# Auto-stop schedule (uses AWS EventBridge — works even when laptop is off)
+./restart-cluster-instances.sh schedule on 00:30    # Enable daily auto-stop at 00:30 local
+./restart-cluster-instances.sh schedule off          # Disable auto-stop
+./restart-cluster-instances.sh schedule              # Show current schedule status
+./restart-cluster-instances.sh schedule delete       # Remove all EventBridge resources
 ```
 
 > **Start/restart flow:**

@@ -582,41 +582,161 @@ recover_rhoai_services() {
 }
 
 ################################################################################
-# Schedule management (crontab-based auto-stop)
+# Schedule management (AWS EventBridge + SSM auto-stop)
+#
+# Uses AWS-native scheduling so the cluster stops even when your laptop is
+# asleep.  Resources created:
+#   - IAM Role:        EventBridge-SSM-StopEC2
+#   - SSM Document:    StopOpenShiftCluster
+#   - EventBridge Rule: openshift-cluster-autostop
 ################################################################################
 
-CRON_TAG="RHOAI-AUTOSTOP"
-AUTOSTOP_LOG="/tmp/cluster-autostop.log"
+EB_RULE_NAME="openshift-cluster-autostop"
+EB_ROLE_NAME="EventBridge-SSM-StopEC2"
+EB_SSM_DOC="StopOpenShiftCluster"
 
-_get_cron_entry() {
-    local hour="${1:-0}" minute="${2:-0}"
-    local script_path
-    script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    echo "$minute $hour * * * $script_path schedule run >> $AUTOSTOP_LOG 2>&1 # $CRON_TAG"
-}
-
-_get_current_schedule_time() {
-    local line
-    line=$(crontab -l 2>/dev/null | grep "$CRON_TAG" | grep -v "^#" || true)
-    if [ -n "$line" ]; then
-        local min hr
-        min=$(echo "$line" | awk '{print $1}')
-        hr=$(echo "$line" | awk '{print $2}')
-        printf "%02d:%02d" "$hr" "$min"
+_local_to_utc() {
+    local hour="$1" minute="$2"
+    if command -v python3 &>/dev/null; then
+        python3 -c "
+from datetime import datetime, timezone
+import time
+local = datetime.now().replace(hour=$hour, minute=$minute, second=0, microsecond=0)
+utc = local.astimezone(timezone.utc)
+print(f'{utc.hour} {utc.minute}')
+"
     else
-        echo "00:00"
+        local tz_offset offset_hr offset_min sign offset_total_min
+        tz_offset=$(date +%z)
+        sign="${tz_offset:0:1}"
+        offset_hr=$((10#${tz_offset:1:2}))
+        offset_min=$((10#${tz_offset:3:2}))
+        offset_total_min=$(( offset_hr * 60 + offset_min ))
+        [ "$sign" = "-" ] && offset_total_min=$(( -offset_total_min ))
+        local total_min=$(( hour * 60 + minute - offset_total_min ))
+        [ "$total_min" -lt 0 ] && total_min=$((total_min + 1440))
+        [ "$total_min" -ge 1440 ] && total_min=$((total_min - 1440))
+        echo "$(( total_min / 60 )) $(( total_min % 60 ))"
     fi
 }
 
+_get_aws_account_id() {
+    aws sts get-caller-identity --query 'Account' --output text 2>/dev/null
+}
+
+_ensure_iam_role() {
+    if aws iam get-role --role-name "$EB_ROLE_NAME" &>/dev/null; then
+        return 0
+    fi
+
+    info "Creating IAM role $EB_ROLE_NAME..."
+    aws iam create-role --role-name "$EB_ROLE_NAME" \
+        --assume-role-policy-document '{
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": ["events.amazonaws.com","ssm.amazonaws.com"]},
+            "Action": "sts:AssumeRole"
+          }]
+        }' --no-cli-pager &>/dev/null
+
+    aws iam put-role-policy --role-name "$EB_ROLE_NAME" \
+        --policy-name StopEC2Policy \
+        --policy-document '{
+          "Version": "2012-10-17",
+          "Statement": [
+            {"Effect":"Allow","Action":["ec2:DescribeInstances","ec2:StopInstances","ec2:DescribeTags"],"Resource":"*"},
+            {"Effect":"Allow","Action":["ssm:StartAutomationExecution","ssm:GetAutomationExecution"],"Resource":"*"}
+          ]
+        }' --no-cli-pager &>/dev/null
+
+    sleep 5
+    success "IAM role created"
+}
+
+_ensure_ssm_document() {
+    if aws ssm describe-document --name "$EB_SSM_DOC" &>/dev/null 2>&1; then
+        return 0
+    fi
+
+    info "Creating SSM document $EB_SSM_DOC..."
+    aws ssm create-document --name "$EB_SSM_DOC" \
+        --document-type Automation \
+        --document-format YAML \
+        --content "$(cat <<'SSMDOC'
+description: Stop OpenShift cluster EC2 instances by InfraID tag
+schemaVersion: '0.3'
+assumeRole: '{{AutomationAssumeRole}}'
+parameters:
+  InfraID:
+    type: String
+    description: Cluster infra ID prefix (e.g. openshift-cluster-knd9q)
+  AutomationAssumeRole:
+    type: String
+    description: IAM role ARN
+mainSteps:
+  - name: getInstances
+    action: aws:executeAwsApi
+    inputs:
+      Service: ec2
+      Api: DescribeInstances
+      Filters:
+        - Name: tag:Name
+          Values: ['{{InfraID}}-*']
+        - Name: instance-state-name
+          Values: [running]
+    outputs:
+      - Name: ids
+        Selector: '$.Reservations..Instances..InstanceId'
+        Type: StringList
+  - name: stopInstances
+    action: aws:executeAwsApi
+    inputs:
+      Service: ec2
+      Api: StopInstances
+      InstanceIds: '{{getInstances.ids}}'
+    onFailure: Continue
+SSMDOC
+)" --no-cli-pager &>/dev/null
+    success "SSM document created"
+}
+
 _get_schedule_info() {
-    local line
-    line=$(crontab -l 2>/dev/null | grep "$CRON_TAG" || true)
-    if [ -z "$line" ]; then
-        echo "none"
-    elif echo "$line" | grep -q "^#"; then
-        echo "disabled"
+    local rule_state
+    rule_state=$(aws events describe-rule --name "$EB_RULE_NAME" \
+        --query 'State' --output text 2>/dev/null || true)
+    case "$rule_state" in
+        ENABLED)  echo "active" ;;
+        DISABLED) echo "disabled" ;;
+        *)        echo "none" ;;
+    esac
+}
+
+_get_current_schedule_time() {
+    local cron_expr
+    cron_expr=$(aws events describe-rule --name "$EB_RULE_NAME" \
+        --query 'ScheduleExpression' --output text 2>/dev/null || true)
+    if [ -z "$cron_expr" ] || [ "$cron_expr" = "None" ]; then
+        echo "00:00"
+        return
+    fi
+    local utc_min utc_hr
+    utc_min=$(echo "$cron_expr" | sed -n 's/cron(\([0-9]*\) .*/\1/p')
+    utc_hr=$(echo "$cron_expr" | sed -n 's/cron([0-9]* \([0-9]*\) .*/\1/p')
+    if [ -z "$utc_hr" ]; then
+        echo "00:00"
+        return
+    fi
+    if command -v python3 &>/dev/null; then
+        python3 -c "
+from datetime import datetime, timezone
+import time
+utc = datetime.now(timezone.utc).replace(hour=$utc_hr, minute=$utc_min, second=0)
+local = utc.astimezone()
+print(f'{local.hour:02d}:{local.minute:02d}')
+"
     else
-        echo "active"
+        printf "%02d:%02d" "$utc_hr" "$utc_min"
     fi
 }
 
@@ -627,26 +747,27 @@ schedule_status() {
     echo ""
     case "$state" in
         active)
-            success "Auto-stop schedule: ACTIVE (daily at $sched_time)"
-            echo "  Log: $AUTOSTOP_LOG"
+            success "Auto-stop schedule: ACTIVE (daily at ${sched_time} local time)"
+            echo "  Backend: AWS EventBridge (runs even when laptop is off)"
             echo ""
-            echo "  crontab entry:"
-            crontab -l 2>/dev/null | grep "$CRON_TAG" | sed 's/^/    /'
+            echo "  Rule: $EB_RULE_NAME"
+            aws events describe-rule --name "$EB_RULE_NAME" \
+                --query '{Schedule:ScheduleExpression,State:State}' \
+                --output table 2>/dev/null | sed 's/^/    /'
             echo ""
-            echo "  Change time: $0 schedule on HH:MM"
+            echo "  Change time:  $0 schedule on HH:MM"
+            echo "  Disable:      $0 schedule off"
             ;;
         disabled)
-            warn "Auto-stop schedule: DISABLED (registered but inactive)"
-            echo ""
-            echo "  crontab entry (commented out):"
-            crontab -l 2>/dev/null | grep "$CRON_TAG" | sed 's/^/    /'
+            warn "Auto-stop schedule: DISABLED (rule exists but inactive)"
             echo ""
             echo "  Enable with: $0 schedule on [HH:MM]"
             ;;
         none)
             info "Auto-stop schedule: NOT REGISTERED"
             echo ""
-            echo "  Register with: $0 schedule on [HH:MM]  (default: 00:00)"
+            echo "  Register with: $0 schedule on [HH:MM]  (default: 00:00 local)"
+            echo "  Uses AWS EventBridge — works even when laptop is off"
             ;;
     esac
     echo ""
@@ -654,7 +775,7 @@ schedule_status() {
 
 schedule_on() {
     local time_arg="${1:-00:00}"
-    local hour minute state entry
+    local hour minute
 
     if ! echo "$time_arg" | grep -qE '^[0-9]{1,2}:[0-9]{2}$'; then
         error "Invalid time format: $time_arg (expected HH:MM)"
@@ -668,26 +789,54 @@ schedule_on() {
         return 1
     fi
 
-    state=$(_get_schedule_info)
-    entry=$(_get_cron_entry "$hour" "$minute")
+    local utc_parts utc_hr utc_min
+    utc_parts=$(_local_to_utc "$hour" "$minute")
+    utc_hr=$(echo "$utc_parts" | awk '{print $1}')
+    utc_min=$(echo "$utc_parts" | awk '{print $2}')
 
-    case "$state" in
-        active|disabled)
-            local existing
-            existing=$(crontab -l 2>/dev/null | grep -v "$CRON_TAG" || true)
-            if [ -n "$existing" ]; then
-                printf '%s\n%s\n' "$existing" "$entry" | crontab -
-            else
-                echo "$entry" | crontab -
-            fi
-            success "Auto-stop schedule ENABLED (daily at $(printf '%02d:%02d' "$hour" "$minute"))"
-            ;;
-        none)
-            ( crontab -l 2>/dev/null || true; echo "$entry" ) | crontab -
-            success "Auto-stop schedule REGISTERED and ENABLED (daily at $(printf '%02d:%02d' "$hour" "$minute"))"
-            ;;
-    esac
-    echo "  Log: $AUTOSTOP_LOG"
+    local account_id
+    account_id=$(_get_aws_account_id)
+    if [ -z "$account_id" ]; then
+        error "Cannot determine AWS account ID — check AWS credentials"
+        return 1
+    fi
+
+    local role_arn="arn:aws:iam::${account_id}:role/${EB_ROLE_NAME}"
+
+    _ensure_iam_role
+    _ensure_ssm_document
+
+    local state
+    state=$(_get_schedule_info)
+
+    aws events put-rule \
+        --name "$EB_RULE_NAME" \
+        --schedule-expression "cron($utc_min $utc_hr * * ? *)" \
+        --state ENABLED \
+        --description "Auto-stop OpenShift cluster $INFRA_ID daily at $(printf '%02d:%02d' "$hour" "$minute") local" \
+        --no-cli-pager &>/dev/null
+
+    local input_json
+    input_json=$(printf '{"InfraID":["%s"],"AutomationAssumeRole":["%s"]}' "$INFRA_ID" "$role_arn")
+
+    aws events put-targets \
+        --rule "$EB_RULE_NAME" \
+        --targets "[{
+          \"Id\": \"stop-openshift-cluster\",
+          \"Arn\": \"arn:aws:ssm:${AWS_REGION}:${account_id}:automation-definition/${EB_SSM_DOC}\",
+          \"RoleArn\": \"${role_arn}\",
+          \"Input\": $(printf '%s' "$input_json" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo "\"$input_json\"")
+        }]" --no-cli-pager &>/dev/null
+
+    local local_time
+    local_time=$(printf '%02d:%02d' "$hour" "$minute")
+
+    if [ "$state" = "none" ]; then
+        success "Auto-stop schedule CREATED and ENABLED (daily at ${local_time} local → ${utc_hr}:$(printf '%02d' "$utc_min") UTC)"
+    else
+        success "Auto-stop schedule UPDATED and ENABLED (daily at ${local_time} local → ${utc_hr}:$(printf '%02d' "$utc_min") UTC)"
+    fi
+    echo "  Backend: AWS EventBridge (runs even when laptop is off)"
     echo ""
 }
 
@@ -697,18 +846,54 @@ schedule_off() {
 
     case "$state" in
         active)
-            crontab -l 2>/dev/null | sed "/$CRON_TAG/s/^/# /" | crontab -
+            aws events disable-rule --name "$EB_RULE_NAME" --no-cli-pager &>/dev/null
             success "Auto-stop schedule DISABLED"
+            echo "  Re-enable with: $0 schedule on [HH:MM]"
             ;;
         disabled)
             warn "Auto-stop schedule is already disabled"
             ;;
         none)
             warn "No auto-stop schedule registered"
-            echo "  Register with: $0 schedule on"
+            echo "  Register with: $0 schedule on [HH:MM]"
             ;;
     esac
     echo ""
+}
+
+schedule_delete() {
+    local state
+    state=$(_get_schedule_info)
+
+    if [ "$state" = "none" ]; then
+        warn "No EventBridge schedule exists"
+        echo ""
+        return
+    fi
+
+    aws events remove-targets --rule "$EB_RULE_NAME" \
+        --ids "stop-openshift-cluster" --no-cli-pager &>/dev/null || true
+    aws events delete-rule --name "$EB_RULE_NAME" --no-cli-pager &>/dev/null || true
+    success "EventBridge rule deleted"
+
+    read -p "Also delete SSM document and IAM role? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        aws ssm delete-document --name "$EB_SSM_DOC" --no-cli-pager &>/dev/null || true
+        aws iam delete-role-policy --role-name "$EB_ROLE_NAME" \
+            --policy-name StopEC2Policy &>/dev/null || true
+        aws iam delete-role --role-name "$EB_ROLE_NAME" &>/dev/null || true
+        success "SSM document and IAM role deleted"
+    fi
+    echo ""
+}
+
+_cleanup_legacy_crontab() {
+    local legacy_tag="RHOAI-AUTOSTOP"
+    if crontab -l 2>/dev/null | grep -q "$legacy_tag"; then
+        warn "Removing legacy crontab entry (migrated to EventBridge)..."
+        crontab -l 2>/dev/null | grep -v "$legacy_tag" | crontab - 2>/dev/null || true
+        success "Legacy crontab entry removed"
+    fi
 }
 
 schedule_run() {
@@ -785,17 +970,19 @@ main() {
             show_status
             ;;
         schedule)
+            _cleanup_legacy_crontab
             local sub="${2:-}"
             case "$sub" in
-                on)  schedule_on "${3:-00:00}" ;;
-                off) schedule_off ;;
-                run) schedule_run ;;
-                *)   schedule_status ;;
+                on)     schedule_on "${3:-00:00}" ;;
+                off)    schedule_off ;;
+                delete) schedule_delete ;;
+                run)    schedule_run ;;
+                *)      schedule_status ;;
             esac
             return 0
             ;;
         *)
-            echo "Usage: $0 [stop|start|restart|status|schedule [on [HH:MM]|off|run]]"
+            echo "Usage: $0 [stop|start|restart|status|schedule [on [HH:MM]|off|delete|run]]"
             exit 1
             ;;
     esac

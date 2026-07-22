@@ -464,6 +464,12 @@ Red Hat Demo Platform 등 sandbox 환경에서는 인스턴스 상태가 포탈�
 
 # 시작만
 ./restart-cluster-instances.sh start
+
+# 자동 정지 스케줄 (AWS EventBridge 사용 — 노트북 꺼져 있어도 동작)
+./restart-cluster-instances.sh schedule on 00:30    # 매일 00:30에 자동 정지 활성화
+./restart-cluster-instances.sh schedule off          # 자동 정지 비활성화
+./restart-cluster-instances.sh schedule              # 현재 스케줄 상태 확인
+./restart-cluster-instances.sh schedule delete       # EventBridge 리소스 전체 삭제
 ```
 
 > **동작 흐름 (start/restart):**

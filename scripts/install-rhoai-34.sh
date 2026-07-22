@@ -1851,88 +1851,11 @@ EOF
 }
 
 ################################################################################
-# Register MCP servers in the RHOAI dashboard
-#
-# The Gen AI Studio "MCP Servers" page reads from the gen-ai-aa-mcp-servers
-# ConfigMap in redhat-ods-applications (per RHOAI 3.4 docs).
-# This function creates/updates that ConfigMap so the dashboard always shows
-# configured MCP servers, regardless of gateway or RHCL state.
-# It also creates the ConfigMap in all dashboard-labeled namespaces.
-################################################################################
-
-register_mcp_dashboard_configmap() {
-    print_step "Registering MCP servers in dashboard ConfigMap..."
-
-    local mcp_ns="mcp-servers"
-    local mcp_url="http://mcp-searxng.${mcp_ns}.svc.cluster.local:8000/mcp"
-    local dashboard_ns="redhat-ods-applications"
-
-    local aa_namespaces
-    aa_namespaces=$(oc get ns -l opendatahub.io/dashboard=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-    aa_namespaces="${aa_namespaces} ${dashboard_ns}"
-    aa_namespaces=$(echo "$aa_namespaces" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-
-    for aa_ns in $aa_namespaces; do
-        [ -z "$aa_ns" ] && continue
-        oc apply -f - <<EOF &>/dev/null
-kind: ConfigMap
-apiVersion: v1
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: ${aa_ns}
-  labels:
-    app.kubernetes.io/managed-by: rhoai-toolkit
-    opendatahub.io/dashboard: "true"
-data:
-  SearXNG: |
-    {
-      "name": "searxng",
-      "displayName": "SearXNG - Web Search",
-      "description": "Web search for real-time information retrieval",
-      "url": "${mcp_url}",
-      "transport": "streamable-http",
-      "category": "search"
-    }
-EOF
-    done
-    print_success "gen-ai-aa-mcp-servers ConfigMap created/updated in: $aa_namespaces"
-}
-
-################################################################################
 # MCP Server Deployment (SearXNG)
-#
-# Simple pipeline: namespace → Deployment + Service
-# Dashboard registration is handled by register_mcp_dashboard_configmap().
-# Uses internal svc.cluster.local URL — no Gateway/Auth dependency.
-#
-# Additional MCP servers (code-sandbox, codebase-search, etc.) can be deployed
-# separately from https://github.com/hyogrin/rhoai-coding-assistant-lab
+# Sourced from scripts/deploy-mcp-searxng.sh — can also be run standalone.
 ################################################################################
 
-deploy_mcp_searxng() {
-    print_step "Deploying SearXNG MCP server..."
-
-    local mcp_ns="mcp-servers"
-
-    # --- 1. Namespace ---
-    if ! oc get namespace "$mcp_ns" &>/dev/null 2>&1; then
-        oc create namespace "$mcp_ns"
-        print_info "Created namespace $mcp_ns"
-    fi
-    oc label namespace "$mcp_ns" \
-        opendatahub.io/dashboard=true \
-        app.kubernetes.io/part-of=rhoai-toolkit --overwrite 2>/dev/null || true
-    oc annotate namespace "$mcp_ns" \
-        openshift.io/display-name="MCP Servers" --overwrite 2>/dev/null || true
-
-    # --- 2. Deployment + Service ---
-    oc apply -f "$ROOT_DIR/lib/manifests/mcp/searxng.yaml"
-    oc wait --for=condition=ready pod -l app=mcp-searxng -n "$mcp_ns" --timeout=120s 2>/dev/null \
-        && print_success "SearXNG MCP server is running" \
-        || print_warning "SearXNG pod not ready yet (may still be pulling image)"
-
-    print_info "Internal endpoint: http://mcp-searxng.${mcp_ns}.svc.cluster.local:8000/mcp"
-}
+source "$ROOT_DIR/scripts/deploy-mcp-searxng.sh"
 
 create_inference_gateway() {
     print_step "Creating inference Gateways for llm-d/MaaS..."
@@ -2657,7 +2580,18 @@ print_summary() {
 
     # MCP Server status
     if oc get deploy mcp-searxng -n mcp-servers --no-headers 2>/dev/null | grep -q "1/1"; then
-        echo -e "${CYAN}MCP SearXNG:${NC} Running — http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
+        local mcp_mode="unknown"
+        if oc get route mcp-searxng -n mcp-servers &>/dev/null 2>&1; then
+            local route_host
+            route_host=$(oc get route mcp-searxng -n mcp-servers -o jsonpath='{.spec.host}' 2>/dev/null)
+            mcp_mode="Direct (Route)"
+            echo -e "${CYAN}MCP SearXNG:${NC} Running [${mcp_mode}] — https://${route_host}/mcp"
+        elif oc get httproute mcp-searxng -n mcp-servers &>/dev/null 2>&1; then
+            mcp_mode="MaaS Gateway"
+            echo -e "${CYAN}MCP SearXNG:${NC} Running [${mcp_mode}] — https://mcp.apps.${CLUSTER_DOMAIN}/mcp"
+        else
+            echo -e "${CYAN}MCP SearXNG:${NC} Running — http://mcp-searxng.mcp-servers.svc.cluster.local:8000/mcp"
+        fi
     elif oc get deploy mcp-searxng -n mcp-servers &>/dev/null 2>&1; then
         echo -e "${YELLOW}MCP SearXNG:${NC} Deployed but not ready — check: oc get pods -n mcp-servers"
     fi
@@ -2836,10 +2770,6 @@ main() {
 
     enable_dashboard_features
     install_mcp_lifecycle_operator
-
-    # MCP dashboard ConfigMap — always register so Gen AI Studio shows MCP servers
-    register_mcp_dashboard_configmap
-
     deploy_mcp_searxng
     create_hardware_profile
     create_mlflow_server
