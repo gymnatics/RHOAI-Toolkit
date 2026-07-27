@@ -52,6 +52,9 @@ show_workshop_setup_menu() {
     echo -e "${YELLOW}9)${NC} Disable vLLM on MaaS (Tech Preview)"
     echo "    Turn off vLLM MaaS runtime to avoid workshop confusion"
     echo ""
+    echo -e "${YELLOW}10)${NC} Deploy Admin Open WebUI"
+    echo "    Deploy Open WebUI (v0.9.0) in admin-workshop for instructor testing"
+    echo ""
     echo -e "${YELLOW}0)${NC} Back to Main Menu"
     echo ""
 }
@@ -59,7 +62,7 @@ show_workshop_setup_menu() {
 workshop_setup_menu() {
     while true; do
         show_workshop_setup_menu
-        read -p "Select an option (0-9): " choice
+        read -p "Select an option (0-10): " choice
         
         case $choice in
             1)
@@ -142,6 +145,11 @@ workshop_setup_menu() {
                 ;;
             9)
                 disable_vllm_on_maas
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            10)
+                deploy_admin_openwebui
                 echo ""
                 read -p "Press Enter to continue..."
                 ;;

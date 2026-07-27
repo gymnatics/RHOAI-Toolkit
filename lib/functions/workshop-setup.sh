@@ -12,6 +12,7 @@
 #   run_complete_workshop_setup     — Full workshop setup orchestrator
 #   install_web_terminal             — Install Web Terminal operator
 #   disable_vllm_on_maas             — Disable vLLM on MaaS tech preview
+#   deploy_admin_openwebui           — Deploy Open WebUI in admin-workshop namespace
 #   create_gpu_machineset_for_workshop — Create AWS GPU MachineSet
 #   scale_worker_nodes              — Scale worker MachineSet replicas
 ################################################################################
@@ -28,17 +29,35 @@ setup_workshop_users() {
     local htpasswd_file="/tmp/workshop-users.htpasswd"
     rm -f "$htpasswd_file"
     
+    # Preserve existing htpasswd entries from all identity providers
+    local existing_secrets
+    existing_secrets=$(oc get oauth cluster -o jsonpath='{range .spec.identityProviders[?(@.type=="HTPasswd")]}{.htpasswd.fileData.name}{"\n"}{end}' 2>/dev/null)
+    if [ -n "$existing_secrets" ]; then
+        print_info "Preserving existing htpasswd entries..."
+        for secret_name in $existing_secrets; do
+            local secret_data
+            secret_data=$(oc get secret "$secret_name" -n openshift-config -o jsonpath='{.data.htpasswd}' 2>/dev/null)
+            if [ -n "$secret_data" ]; then
+                echo "$secret_data" | base64 -d >> "$htpasswd_file" 2>/dev/null
+                local preserved=$(wc -l < "$htpasswd_file" | tr -d ' ')
+                print_info "  Preserved $preserved entries from $secret_name"
+            fi
+        done
+    fi
+    
+    # Add/update workshop users (htpasswd -b updates existing or appends new)
     for i in $(seq 1 $user_count); do
-        if [ $i -eq 1 ]; then
+        if [ ! -s "$htpasswd_file" ] && [ $i -eq 1 ]; then
             htpasswd -c -B -b "$htpasswd_file" "user$i" "openshift" 2>/dev/null
         else
             htpasswd -B -b "$htpasswd_file" "user$i" "openshift" 2>/dev/null
         fi
-        if [ $((i % 25)) -eq 0 ]; then
+        if [ $((i % 10)) -eq 0 ] && [ $i -lt $user_count ]; then
             echo "  Created $i users..."
         fi
     done
-    print_success "Created $user_count users in htpasswd file"
+    local total_entries=$(wc -l < "$htpasswd_file" | tr -d ' ')
+    print_success "HTPasswd file ready ($user_count workshop users, $total_entries total entries)"
     
     print_step "Creating htpasswd secret..."
     oc create secret generic workshop-htpasswd-secret \
@@ -46,8 +65,24 @@ setup_workshop_users() {
         -n openshift-config --dry-run=client -o yaml | oc apply -f -
     print_success "HTPasswd secret created"
     
-    print_step "Configuring OAuth..."
-    oc apply -f "$ROOT_DIR/lib/manifests/workshop/oauth.yaml"
+    print_step "Configuring OAuth (preserving existing providers)..."
+    # Patch to add the workshop provider if not already present, instead of replacing
+    local has_workshop
+    has_workshop=$(oc get oauth cluster -o jsonpath='{.spec.identityProviders[?(@.name=="workshop-users")].name}' 2>/dev/null)
+    if [ "$has_workshop" = "workshop-users" ]; then
+        # Already exists — update the secret reference in case it changed
+        local idx
+        idx=$(oc get oauth cluster -o json 2>/dev/null \
+            | python3 -c "import sys,json; providers=json.load(sys.stdin)['spec'].get('identityProviders',[]); print(next(i for i,p in enumerate(providers) if p['name']=='workshop-users'))" 2>/dev/null)
+        if [ -n "$idx" ]; then
+            oc patch oauth cluster --type json -p "[{\"op\":\"replace\",\"path\":\"/spec/identityProviders/$idx/htpasswd/fileData/name\",\"value\":\"workshop-htpasswd-secret\"}]" 2>/dev/null
+        fi
+        print_info "Workshop provider already exists, updated secret reference"
+    else
+        # Add workshop provider alongside existing ones
+        oc patch oauth cluster --type json -p '[{"op":"add","path":"/spec/identityProviders/-","value":{"name":"workshop-users","mappingMethod":"claim","type":"HTPasswd","htpasswd":{"fileData":{"name":"workshop-htpasswd-secret"}}}}]' 2>/dev/null
+        print_success "Added workshop-users identity provider"
+    fi
     print_success "OAuth configured"
     
     # Group requires dynamic user list — generated inline
@@ -85,7 +120,7 @@ EOF
     for i in $(seq 1 $user_count); do
         export USER_NAME="user$i"
         envsubst '${USER_NAME}' < "$ROOT_DIR/lib/manifests/workshop/secret-reader-rolebinding.yaml" | oc apply -f - 2>/dev/null
-        if [ $((i % 25)) -eq 0 ]; then
+        if [ $((i % 10)) -eq 0 ] && [ $i -lt $user_count ]; then
             echo "  Created RBAC for $i users..."
         fi
     done
@@ -508,6 +543,147 @@ disable_vllm_on_maas() {
         print_error "Failed to patch OdhDashboardConfig"
         return 1
     fi
+}
+
+deploy_admin_openwebui() {
+    local ns="${1:-admin-workshop}"
+
+    print_header "Deploying Open WebUI in $ns"
+
+    local model_url
+    model_url=$(oc get inferenceservice -n "$ns" -o jsonpath='{.items[0].status.url}' 2>/dev/null)
+    if [ -z "$model_url" ]; then
+        print_warning "No InferenceService found in $ns"
+        read -p "Enter model URL (e.g., http://qwen3-4b-predictor.$ns.svc.cluster.local/v1): " model_url
+    else
+        model_url="${model_url}/v1"
+    fi
+
+    print_step "Deploying Open WebUI (v0.9.0)..."
+    cat <<EOF | oc apply -n "$ns" -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-config
+  namespace: $ns
+data:
+  ENABLE_OLLAMA_API: "False"
+  OPENAI_API_BASE_URLS: "$model_url"
+  OPENAI_API_KEYS: ""
+  WEBUI_AUTH: "False"
+  WEBUI_SECRET_KEY: "rhoai-workshop-admin"
+  MCP_ENABLE: "true"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+  namespace: $ns
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  namespace: $ns
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:v0.9.0
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: openwebui-config
+          env:
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "False"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: $ns
+  labels:
+    app: open-webui
+spec:
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: open-webui
+  namespace: $ns
+  labels:
+    app: open-webui
+spec:
+  to:
+    kind: Service
+    name: open-webui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+EOF
+
+    print_step "Waiting for Open WebUI..."
+    oc rollout status deployment/open-webui -n "$ns" --timeout=180s 2>/dev/null || print_warning "Still starting"
+
+    local route_url
+    route_url=$(oc get route open-webui -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+    print_success "Open WebUI deployed"
+    print_info "URL: https://$route_url"
+    print_info "Model: $model_url"
 }
 
 run_complete_workshop_setup() {
