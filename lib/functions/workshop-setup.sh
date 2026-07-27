@@ -679,11 +679,98 @@ EOF
     print_step "Waiting for Open WebUI..."
     oc rollout status deployment/open-webui -n "$ns" --timeout=180s 2>/dev/null || print_warning "Still starting"
 
+    print_step "Deploying mcpo proxy (MCP-to-OpenAPI)..."
+    local mcp_svc="kubernetes-mcp-server.$ns.svc.cluster.local:8080"
+    cat <<MCPOEOF | oc apply -n "$ns" -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcpo-config
+  namespace: $ns
+data:
+  config.json: |
+    {
+      "mcpServers": {
+        "kubernetes": {
+          "type": "streamable-http",
+          "url": "http://$mcp_svc/mcp"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcpo
+  namespace: $ns
+  labels:
+    app: mcpo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcpo
+  template:
+    metadata:
+      labels:
+        app: mcpo
+    spec:
+      containers:
+      - name: mcpo
+        image: ghcr.io/open-webui/mcpo:main
+        args: ["--config", "/app/config.json"]
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.json
+          subPath: config.json
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      volumes:
+      - name: config
+        configMap:
+          name: mcpo-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcpo
+  namespace: $ns
+  labels:
+    app: mcpo
+spec:
+  selector:
+    app: mcpo
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+MCPOEOF
+    oc rollout status deployment/mcpo -n "$ns" --timeout=60s 2>/dev/null || print_warning "mcpo still starting"
+    print_success "mcpo proxy deployed"
+
     local route_url
     route_url=$(oc get route open-webui -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null)
+
+    echo ""
     print_success "Open WebUI deployed"
-    print_info "URL: https://$route_url"
-    print_info "Model: $model_url"
+    echo ""
+    echo -e "${CYAN}URLs:${NC}"
+    echo "  OpenWebUI: https://$route_url"
+    echo "  Model:     $model_url"
+    echo ""
+    echo -e "${YELLOW}To enable tool calling, add in OpenWebUI:${NC}"
+    echo "  Admin Panel > Settings > Integrations > + (OpenAPI, Auth: None):"
+    echo "  http://mcpo.$ns.svc.cluster.local:8000/kubernetes"
+    echo ""
+    echo "  Then: Workspace > Models > edit model > Function Calling: Native > Save"
+    echo ""
 }
 
 run_complete_workshop_setup() {
