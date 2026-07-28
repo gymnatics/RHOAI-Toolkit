@@ -452,6 +452,7 @@ setup_user_workload_monitoring() {
     oc get pods -n openshift-user-workload-monitoring 2>/dev/null || print_warning "UWM pods not yet ready"
     
     print_step "Creating vLLM metrics allowlist..."
+    oc create namespace admin-workshop 2>/dev/null || true
     oc apply -f "$ROOT_DIR/lib/manifests/workshop/uwm-metrics-allowlist.yaml"
     print_success "vLLM metrics allowlist created"
 }
