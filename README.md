@@ -27,14 +27,14 @@ This single command provides an interactive menu to:
 | **One-Click Setup** | Interactive menu-driven installation |
 | **GPU Support** | Automated GPU MachineSet creation (g6e, p5 instances) |
 | **RHOAI 3.x** | Full RHOAI installation with Kueue, LWS, and Hardware Profiles |
-| **Model Serving** | vLLM, vLLM-Omni (multimodal), llm-d, and community runtimes |
+| **Model Serving** | vLLM, vLLM-Omni (multimodal), llm-d, NVIDIA NIM, and community runtimes |
 | **MaaS API** | Model as a Service with authentication via Kuadrant |
 | **Observability** | Auto-configured COO + Perses + Observe tab dashboards (DCGM, vLLM) |
 | **Let's Encrypt TLS** | Automated wildcard certificates via Route53 DNS-01 |
 | **MCP Servers** | 8 deployable MCP servers with Gateway API routing |
 | **HuggingFace to S3** | Download models from HuggingFace to MinIO for deployment |
 | **GenAI Playground** | Interactive model testing interface |
-| **19 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, Pipelines, and more |
+| **19 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, NIM, Pipelines, and more |
 | **Cross-Platform** | Works on macOS and Linux |
 
 ---
@@ -60,6 +60,7 @@ This single command provides an interactive menu to:
 │   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
 │   ├── setup-maas.sh             # MaaS API gateway (version-aware)
 │   ├── serve-model.sh            # Model deployment (vLLM/llm-d)
+│   ├── deploy-nim.sh             # NVIDIA NIM deployment (NGC/NVAIE)
 │   ├── setup-letsencrypt-tls.sh  # Let's Encrypt / self-signed TLS automation
 │   ├── deploy-dashboards.sh      # GPU/vLLM dashboards (Observe tab + Grafana)
 │   ├── deploy-demo-environment.sh # Deploy all 17 demo components

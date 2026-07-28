@@ -1,0 +1,40 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+    networking.kserve.io/visibility: exposed
+  annotations:
+    openshift.io/display-name: "${DISPLAY_NAME}"
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.kserve.io/stop: "false"
+    opendatahub.io/model-type: generative
+    opendatahub.io/hardware-profile-name: ${HARDWARE_PROFILE_NAME}
+    opendatahub.io/hardware-profile-namespace: ${HARDWARE_PROFILE_NAMESPACE}
+    opendatahub.io/hardware-profile-resource-version: "${HARDWARE_PROFILE_RV}"
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+    model:
+      runtime: ${MODEL_NAME}
+      modelFormat:
+        name: nvidia-nim
+      resources:
+        requests:
+          cpu: "2"
+          memory: "16Gi"
+          nvidia.com/gpu: "${GPU_COUNT}"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+          nvidia.com/gpu: "${GPU_COUNT}"

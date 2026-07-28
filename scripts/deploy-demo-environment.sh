@@ -40,6 +40,7 @@ COMPONENTS=(
     "autorag|deploy_autorag|AutoRAG (TP) RAG Pipeline Optimization|yes"
     "mlflow-tracing|deploy_mlflow_tracing|MLflow Tracing Demo (Banking Multi-Agent)|yes"
     "lightspeed|deploy_lightspeed|Lightspeed + MCP Troubleshooting Demo|yes"
+    "nim|deploy_nim_demo|NVIDIA NIM (Nemotron via NVAIE)|no"
     "marketing|deploy_marketing|Marketing Assistant (3x L40S GPU)|no"
 )
 
@@ -143,6 +144,8 @@ check_status() {
         "oc get namespace autorag-demo"
     check_component "marketing" "Marketing Assistant" \
         "oc get namespace marketing-assistant"
+    check_component "nim" "NVIDIA NIM" \
+        "oc get inferenceservice -n nim-demo --no-headers 2>/dev/null | grep -q nim"
     echo ""
 
     echo -e "${CYAN}  Workbenches (namespaces that need one):${NC}"
@@ -229,6 +232,7 @@ is_deployed() {
         autorag)         oc get namespace autorag-demo &>/dev/null 2>&1 && \
                          oc get deployment milvus-standalone -n autorag-demo &>/dev/null 2>&1 ;;
         marketing)       oc get namespace marketing-assistant &>/dev/null 2>&1 ;;
+        nim)             oc get inferenceservice -n nim-demo --no-headers 2>/dev/null | grep -q nim ;;
         *)               return 1 ;;
     esac
 }
@@ -331,6 +335,10 @@ deploy_lightspeed() {
 
 deploy_marketing() {
     bash "$ROOT_DIR/demo/marketing-assistant-demo/deploy.sh"
+}
+
+deploy_nim_demo() {
+    bash "$ROOT_DIR/demo/nim-demo/deploy.sh"
 }
 
 # Main execution

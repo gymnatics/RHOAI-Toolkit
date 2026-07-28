@@ -27,6 +27,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
     MAGENTA='\033[0;35m'
     NC='\033[0m'
 }
+source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
 print_banner() {
     echo ""
@@ -224,7 +225,11 @@ setup_istio_for_kuadrant() {
         istio_version=$(oc get istiorevision -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null)
     fi
     if [ -z "$istio_version" ]; then
-        istio_version="v1.26.2"
+        if type get_default_istio_version &>/dev/null; then
+            istio_version=$(get_default_istio_version)
+        else
+            istio_version="v1.30.1"
+        fi
     fi
     print_info "Using Istio version: $istio_version"
     

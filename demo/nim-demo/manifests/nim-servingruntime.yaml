@@ -1,0 +1,76 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/accelerator-name: migrated-gpu
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: NVIDIA NIM
+    opendatahub.io/template-name: nvidia-nim-runtime
+    openshift.io/display-name: "${DISPLAY_NAME}"
+spec:
+  supportedModelFormats:
+    - name: nvidia-nim
+      autoSelect: true
+      priority: 1
+  protocolVersions:
+    - v2
+  imagePullSecrets:
+    - name: nvidia-nim-image-pull
+  containers:
+    - name: kserve-container
+      image: "nvcr.io/nim/nvidia/${NIM_IMAGE}:${NIM_TAG}"
+      env:
+        - name: NIM_CACHE_PATH
+          value: /opt/nim/.cache
+        - name: NGC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: nvidia-nim-secrets
+              key: NGC_API_KEY
+        - name: NIM_SERVED_MODEL_NAME
+          value: "${MODEL_NAME}"
+      ports:
+        - containerPort: 8000
+          protocol: TCP
+      livenessProbe:
+        httpGet:
+          path: /v1/health/live
+          port: 8000
+        initialDelaySeconds: 120
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 5
+      readinessProbe:
+        httpGet:
+          path: /v1/health/ready
+          port: 8000
+        initialDelaySeconds: 120
+        periodSeconds: 15
+        timeoutSeconds: 10
+        failureThreshold: 24
+      startupProbe:
+        httpGet:
+          path: /v1/health/ready
+          port: 8000
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 40
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: nim-cache
+          mountPath: /opt/nim/.cache
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+    - name: nim-cache
+      persistentVolumeClaim:
+        claimName: nim-cache-pvc

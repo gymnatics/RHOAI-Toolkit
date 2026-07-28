@@ -3,6 +3,7 @@
 # when Kuadrant WASM extensions (Authorino auth, Limitador rate limiting) compile at startup.
 # Referenced by Gateway spec.infrastructure.parametersRef.
 # Tracked in RHOAIENG-68589.
+# Uses "deployment" overlay key (Istio v1.27+); the old "resources" key is unsupported.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -10,8 +11,14 @@ metadata:
   name: maas-gateway-options
   namespace: openshift-ingress
 data:
-  resources: |
-    limits:
-      memory: 2Gi
-    requests:
-      memory: 512Mi
+  deployment: |
+    spec:
+      template:
+        spec:
+          containers:
+          - name: istio-proxy
+            resources:
+              limits:
+                memory: 2Gi
+              requests:
+                memory: 512Mi

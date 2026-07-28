@@ -808,7 +808,7 @@ setup_istio_for_kuadrant() {
     if oc get istio default -n istio-system &>/dev/null; then
         print_info "Istio instance already exists in istio-system"
     else
-        local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.26.2")
+        local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.30.1")
 
         print_step "Creating IstioCNI..."
         export ISTIO_VERSION="$istio_version"
@@ -848,6 +848,35 @@ setup_istio_for_kuadrant() {
 
     # API server may bounce during Istio/Sail webhook registration
     wait_for_api_server 90
+
+    # Fix OCP ingress operator if its ISTIO_VERSION doesn't match a supported version.
+    # OCP 4.20 ships with ISTIO_VERSION=v1.26.2 which is EOL in Service Mesh 3.4.0+.
+    # The ingress operator creates Istio CRs for GatewayClasses, so the version must be valid.
+    local ingress_istio_ver
+    ingress_istio_ver=$(oc get deployment ingress-operator -n openshift-ingress-operator \
+        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ISTIO_VERSION")].value}' 2>/dev/null)
+    if [ -n "$ingress_istio_ver" ]; then
+        local istio_version_needed
+        istio_version_needed=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.30.1")
+        if [ "$ingress_istio_ver" != "$istio_version_needed" ]; then
+            # Check if the ingress operator's version is actually supported by the SM operator
+            local sm_pod
+            sm_pod=$(oc get pods -n openshift-operators --no-headers 2>/dev/null | grep servicemesh-operator | head -1 | awk '{print $1}')
+            if [ -n "$sm_pod" ]; then
+                local supported_versions
+                supported_versions=$(oc logs "$sm_pod" -n openshift-operators 2>/dev/null \
+                    | grep "config loaded" | grep -oE '"v[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | sort -u)
+                if [ -n "$supported_versions" ] && ! echo "$supported_versions" | grep -q "^${ingress_istio_ver}$"; then
+                    print_warning "OCP ingress operator has ISTIO_VERSION=$ingress_istio_ver (unsupported by SM operator)"
+                    print_step "Patching ingress operator to ISTIO_VERSION=$istio_version_needed..."
+                    oc set env deployment/ingress-operator -n openshift-ingress-operator \
+                        ISTIO_VERSION="$istio_version_needed" 2>/dev/null
+                    print_success "Ingress operator patched"
+                    sleep 10
+                fi
+            fi
+        fi
+    fi
 
     if ! oc get gatewayclass openshift-default &>/dev/null; then
         print_step "Creating openshift-default GatewayClass..."
@@ -1468,7 +1497,7 @@ setup_observability_perses() {
         return 0
     fi
 
-    if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+    if oc get pods -n "$mon_ns" -l app.kubernetes.io/managed-by=perses-operator --no-headers 2>/dev/null | grep -q Running; then
         print_info "Perses already running in $mon_ns [SKIP]"
     else
         print_step "Creating Perses server in $mon_ns..."
@@ -1509,7 +1538,7 @@ EOF
         print_step "Waiting for Perses pod..."
         local elapsed=0
         while [ $elapsed -lt 90 ]; do
-            if oc get pods -n "$mon_ns" -l app.kubernetes.io/name=perses --no-headers 2>/dev/null | grep -q Running; then
+            if oc get pods -n "$mon_ns" -l app.kubernetes.io/managed-by=perses-operator --no-headers 2>/dev/null | grep -q Running; then
                 print_success "Perses server running in $mon_ns"
                 break
             fi
@@ -2056,14 +2085,14 @@ deploy_observe_dashboards() {
     local dashboard_dir="$ROOT_DIR/lib/manifests/dashboards"
     local namespace="openshift-config-managed"
 
-    local -A dashboards=(
-        ["nvidia-dcgm-exporter-dashboard"]="dcgm-exporter-dashboard.json"
-        ["vllm-performance-dashboard"]="vllm-performance-ocp.json"
-        ["vllm-advanced-dashboard"]="vllm-advanced-ocp.json"
-    )
+    local cm_names="nvidia-dcgm-exporter-dashboard vllm-performance-dashboard vllm-advanced-dashboard"
+    local cm_files="dcgm-exporter-dashboard.json vllm-performance-ocp.json vllm-advanced-ocp.json"
 
-    for cm_name in "${!dashboards[@]}"; do
-        local file="${dashboards[$cm_name]}"
+    local i=1
+    for cm_name in $cm_names; do
+        local file
+        file=$(echo "$cm_files" | cut -d' ' -f"$i")
+        i=$((i + 1))
         if [ ! -f "$dashboard_dir/$file" ]; then
             print_warning "Dashboard file not found: $dashboard_dir/$file"
             continue

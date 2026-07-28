@@ -199,7 +199,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, rate(vllm:time_per_output_token_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(vllm:request_time_per_output_token_seconds_bucket[5m]))",
           "interval": "",
           "legendFormat": "P50 Inter-Token",
           "refId": "A"
@@ -209,7 +209,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(vllm:time_per_output_token_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(vllm:request_time_per_output_token_seconds_bucket[5m]))",
           "interval": "",
           "legendFormat": "P95 Inter-Token",
           "refId": "B"
@@ -345,7 +345,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(vllm:gpu_prefix_cache_hits_total) / sum(vllm:gpu_prefix_cache_queries_total)",
+          "expr": "sum(vllm:prefix_cache_hits_total) / sum(vllm:prefix_cache_queries_total)",
           "interval": "",
           "legendFormat": "Overall Cache Hit Rate",
           "refId": "A"
@@ -517,7 +517,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "vllm:gpu_prefix_cache_hits_total / vllm:gpu_prefix_cache_queries_total",
+          "expr": "vllm:prefix_cache_hits_total / vllm:prefix_cache_queries_total",
           "interval": "",
           "legendFormat": "Pod {{instance}}",
           "refId": "A"

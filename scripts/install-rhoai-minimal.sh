@@ -919,7 +919,7 @@ setup_istio_for_kuadrant() {
     fi
     
     # Get the Istio version from existing installation or use default
-    local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.26.2")
+    local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || get_default_istio_version)
     
     print_step "Creating IstioCNI..."
     cat <<EOF | oc apply -f -

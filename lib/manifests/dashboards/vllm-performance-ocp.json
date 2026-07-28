@@ -252,8 +252,8 @@
       "stack": false,
       "steppedLine": false,
       "targets": [
-        { "expr": "avg by (model_name) (vllm:gpu_cache_usage_perc{namespace=~\"$namespace\", model_name=~\"$model\"}) * 100", "legendFormat": "GPU Cache - {{model_name}}", "refId": "A" },
-        { "expr": "avg by (model_name) (vllm:cpu_cache_usage_perc{namespace=~\"$namespace\", model_name=~\"$model\"}) * 100", "legendFormat": "CPU Cache - {{model_name}}", "refId": "B" }
+        { "expr": "avg by (model_name) (vllm:kv_cache_usage_perc{namespace=~\"$namespace\", model_name=~\"$model\"}) * 100", "legendFormat": "GPU Cache - {{model_name}}", "refId": "A" },
+        { "expr": "avg by (model_name) (vllm:kv_cache_usage_perc{namespace=~\"$namespace\", model_name=~\"$model\"}) * 100", "legendFormat": "CPU Cache - {{model_name}}", "refId": "B" }
       ],
       "thresholds": [],
       "title": "KV Cache Usage",

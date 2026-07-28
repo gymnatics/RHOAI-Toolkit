@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nim-metrics
+  namespace: ${NAMESPACE}
+  labels:
+    app: nvidia-nim
+spec:
+  selector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: ${MODEL_NAME}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scheme: http

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nim-guardrails-config
+  namespace: ${NAMESPACE}
+data:
+  config.yaml: |
+    models:
+      - type: main
+        engine: nim
+        model: ${MODEL_NAME}
+        parameters:
+          base_url: http://${MODEL_NAME}-predictor.${NAMESPACE}.svc.cluster.local/v1
+          api_key: not-needed
+
+    rails:
+      config:
+        sensitive_data_detection:
+          input:
+            entities:
+              - EMAIL_ADDRESS
+              - PHONE_NUMBER
+              - CREDIT_CARD
+          output:
+            entities:
+              - EMAIL_ADDRESS
+              - PHONE_NUMBER
+              - CREDIT_CARD
+      input:
+        flows:
+          - mask sensitive data on input
+      output:
+        flows:
+          - mask sensitive data on output
+  prompts.yml: |
+    prompts: []
+  rails.co: |
+    define bot refuse to respond
+      "I cannot share that information due to data protection policy."
+
+    define bot inform answer unknown
+      "I cannot share that information."

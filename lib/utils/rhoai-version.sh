@@ -488,6 +488,30 @@ diagnose_featurestore() {
 }
 
 ################################################################################
+# Istio Version Detection (Service Mesh Operator Aware)
+################################################################################
+
+# Get the default Istio version supported by the installed Service Mesh operator.
+# SM 3.4.0+ dropped v1.26.x support; latest supported is v1.30.1.
+# SM 3.3.x supports v1.26.2.
+get_default_istio_version() {
+    local sm_csv_name
+    sm_csv_name=$(oc get csv -n openshift-operators --no-headers 2>/dev/null \
+        | grep "servicemeshoperator3" | head -1 | awk '{print $1}')
+
+    if [ -n "$sm_csv_name" ]; then
+        local sm_version="${sm_csv_name##servicemeshoperator3.v}"
+        local sm_major_minor="${sm_version%.*}"
+        case "$sm_major_minor" in
+            3.3) echo "v1.26.2" ;;
+            *)   echo "v1.30.1" ;;
+        esac
+    else
+        echo "v1.30.1"
+    fi
+}
+
+################################################################################
 # Model Serving CRD Detection
 ################################################################################
 #
