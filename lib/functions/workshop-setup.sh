@@ -393,6 +393,8 @@ setup_workshop_mcp_only() {
     print_header "Deploying MCP Server + Registering in AI Asset Endpoints"
 
     local namespace="${1:-admin-workshop}"
+    oc create namespace "$namespace" 2>/dev/null || true
+    oc label namespace "$namespace" opendatahub.io/dashboard=true 2>/dev/null || true
     oc project "$namespace" 2>/dev/null || true
 
     print_step "Deploying Kubernetes MCP Server in $namespace..."
