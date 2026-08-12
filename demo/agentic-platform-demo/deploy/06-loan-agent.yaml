@@ -1,0 +1,1575 @@
+###############################################################################
+# DBS Loan Agent - Full E2E with MCP Gateway, OIDC, OPA Policy Enforcement
+# Layers: Tool Servers → HTTPRoutes → MCPServerRegistrations → AuthPolicy →
+#         Agent (DeepSeek + MCP + OPA PEP) → OPA Sidecar → Policy Sync
+###############################################################################
+
+---
+# ============================================================================
+# LAYER 2: MCP Tool Servers (FastMCP, env-driven toolset)
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-tools-server
+  namespace: team1
+data:
+  server.py: |
+    import os
+    from mcp.server.fastmcp import FastMCP
+
+    TOOLSET = os.getenv("TOOLSET", "credit").lower()
+    MCP_NAME = os.getenv("MCP_NAME", f"loan-tools-{TOOLSET}")
+    mcp = FastMCP(MCP_NAME, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
+    # ─── Credit tools ───────────────────────────────────────────────────────
+    def _register_credit():
+        SCORES = {
+            "C1001": {"name": "Alice Tan", "score": 780, "grade": "A", "history_years": 12},
+            "C1002": {"name": "Bob Lim", "score": 650, "grade": "B", "history_years": 5},
+            "C1003": {"name": "Charlie Wong", "score": 520, "grade": "C", "history_years": 2},
+            "C1004": {"name": "Diana Chen", "score": 810, "grade": "A+", "history_years": 18},
+        }
+
+        @mcp.tool()
+        def credit_check(customer_id: str) -> dict:
+            """Run a credit bureau check for a customer. Returns credit score, grade, and history length."""
+            record = SCORES.get(customer_id.upper())
+            if not record:
+                return {"error": f"Customer {customer_id} not found in credit bureau"}
+            return {"customer_id": customer_id, **record, "bureau": "CBS Singapore", "as_of": "2026-07-19"}
+
+        @mcp.tool()
+        def credit_score(customer_id: str) -> dict:
+            """Get just the numeric credit score for quick decisioning."""
+            record = SCORES.get(customer_id.upper())
+            if not record:
+                return {"error": f"No score for {customer_id}"}
+            return {"customer_id": customer_id, "score": record["score"], "grade": record["grade"]}
+
+    # ─── KYC tools ──────────────────────────────────────────────────────────
+    def _register_kyc():
+        PEP_LIST = {"kim po", "ivan petrov", "general aung", "raja ahmad"}
+
+        @mcp.tool()
+        def kyc_verify(doc_type: str, doc_id: str) -> dict:
+            """Verify a customer identity document (passport, NRIC, driver license)."""
+            valid = len(doc_id.strip()) >= 7
+            return {
+                "doc_type": doc_type,
+                "doc_id": doc_id,
+                "status": "VERIFIED" if valid else "REJECTED",
+                "reason": "Document validated against MAS registry" if valid else "Document ID format invalid (min 7 chars)",
+                "verification_date": "2026-07-19",
+            }
+
+        @mcp.tool()
+        def pep_screen(name: str) -> dict:
+            """Screen a person against the Politically Exposed Persons (PEP) database."""
+            hit = name.strip().lower() in PEP_LIST
+            return {
+                "name": name,
+                "pep_hit": hit,
+                "risk_level": "HIGH" if hit else "STANDARD",
+                "recommendation": "Enhanced Due Diligence required — escalate to compliance" if hit else "Standard due diligence sufficient",
+                "database": "MAS PEP Registry",
+            }
+
+    # ─── Loan calculation tools ─────────────────────────────────────────────
+    def _register_calc():
+        CUSTOMERS = {
+            "C1001": {"income_monthly": 18000, "existing_obligations": 2500},
+            "C1002": {"income_monthly": 8500, "existing_obligations": 1200},
+            "C1003": {"income_monthly": 5000, "existing_obligations": 800},
+            "C1004": {"income_monthly": 25000, "existing_obligations": 3000},
+        }
+
+        @mcp.tool()
+        def loan_calculate(amount: float, tenure_months: int, rate: float = 3.5) -> dict:
+            """Calculate monthly repayment, total interest, and total cost for a loan."""
+            monthly_rate = rate / 100 / 12
+            if monthly_rate == 0:
+                monthly_payment = amount / tenure_months
+            else:
+                monthly_payment = amount * (monthly_rate * (1 + monthly_rate) ** tenure_months) / ((1 + monthly_rate) ** tenure_months - 1)
+            total_paid = monthly_payment * tenure_months
+            total_interest = total_paid - amount
+            return {
+                "principal": amount,
+                "tenure_months": tenure_months,
+                "annual_rate_pct": rate,
+                "monthly_payment": round(monthly_payment, 2),
+                "total_interest": round(total_interest, 2),
+                "total_cost": round(total_paid, 2),
+                "currency": "SGD",
+            }
+
+        @mcp.tool()
+        def affordability_check(customer_id: str, amount: float, tenure_months: int = 240) -> dict:
+            """Check if a customer can afford a loan based on MAS TDSR (Total Debt Servicing Ratio) of 55%."""
+            customer = CUSTOMERS.get(customer_id.upper())
+            if not customer:
+                return {"error": f"Customer {customer_id} not found"}
+            monthly_rate = 3.5 / 100 / 12
+            monthly_payment = amount * (monthly_rate * (1 + monthly_rate) ** tenure_months) / ((1 + monthly_rate) ** tenure_months - 1)
+            total_obligations = customer["existing_obligations"] + monthly_payment
+            tdsr = total_obligations / customer["income_monthly"]
+            affordable = tdsr <= 0.55
+            return {
+                "customer_id": customer_id,
+                "monthly_income": customer["income_monthly"],
+                "existing_obligations": customer["existing_obligations"],
+                "new_monthly_payment": round(monthly_payment, 2),
+                "tdsr_ratio": round(tdsr, 4),
+                "tdsr_limit": 0.55,
+                "affordable": affordable,
+                "verdict": "APPROVED — within TDSR limit" if affordable else "REJECTED — exceeds MAS TDSR limit of 55%",
+            }
+
+    # ─── Notification tools ─────────────────────────────────────────────────
+    def _register_notify():
+        @mcp.tool()
+        def send_notification(customer_id: str, message: str) -> dict:
+            """Send a notification (SMS/email) to a customer about their loan application."""
+            return {
+                "customer_id": customer_id,
+                "channel": "SMS + Email",
+                "status": "SENT",
+                "message_preview": message[:80],
+                "timestamp": "2026-07-19T12:00:00+08:00",
+            }
+
+        @mcp.tool()
+        def send_approval_letter(customer_id: str, loan_id: str) -> dict:
+            """Generate and send an official loan approval letter to the customer."""
+            return {
+                "customer_id": customer_id,
+                "loan_id": loan_id,
+                "letter_type": "Loan Approval",
+                "delivery": "Registered mail + Digital copy via DBS Digital Banking",
+                "status": "GENERATED_AND_QUEUED",
+                "estimated_delivery": "2026-07-22",
+            }
+
+    REGISTRY = {"credit": _register_credit, "kyc": _register_kyc, "calc": _register_calc, "notify": _register_notify}
+    REGISTRY.get(TOOLSET, _register_credit)()
+
+    if __name__ == "__main__":
+        import uvicorn
+
+        inner_app = mcp.streamable_http_app()
+
+        async def app(scope, receive, send):
+            if scope["type"] in ("http", "websocket"):
+                path = scope.get("path", "")
+                if not path.startswith("/mcp"):
+                    new_path = "/mcp" if path == "/" else "/mcp" + path
+                    scope = dict(scope, path=new_path, raw_path=new_path.encode())
+            await inner_app(scope, receive, send)
+
+        uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
+---
+# Tool Server Deployments (one per toolset)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-tools-credit
+  namespace: team1
+  labels:
+    app: loan-tools-credit
+    kagenti.io/type: tool
+    kagenti.io/protocol: streamable_http
+    kagenti.io/framework: Python
+  annotations:
+    kagenti.io/description: "Credit bureau check and scoring service"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-tools-credit
+  template:
+    metadata:
+      labels:
+        app: loan-tools-credit
+    spec:
+      containers:
+      - name: server
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        env:
+        - name: TOOLSET
+          value: credit
+        - name: MCP_NAME
+          value: loan-tools-credit
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: code
+        configMap:
+          name: loan-tools-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-credit
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-credit
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-credit-mcp
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-credit
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-tools-kyc
+  namespace: team1
+  labels:
+    app: loan-tools-kyc
+    kagenti.io/type: tool
+    kagenti.io/protocol: streamable_http
+    kagenti.io/framework: Python
+  annotations:
+    kagenti.io/description: "KYC identity verification and PEP screening"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-tools-kyc
+  template:
+    metadata:
+      labels:
+        app: loan-tools-kyc
+    spec:
+      containers:
+      - name: server
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        env:
+        - name: TOOLSET
+          value: kyc
+        - name: MCP_NAME
+          value: loan-tools-kyc
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: code
+        configMap:
+          name: loan-tools-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-kyc
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-kyc
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-kyc-mcp
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-kyc
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-tools-calc
+  namespace: team1
+  labels:
+    app: loan-tools-calc
+    kagenti.io/type: tool
+    kagenti.io/protocol: streamable_http
+    kagenti.io/framework: Python
+  annotations:
+    kagenti.io/description: "Loan affordability and repayment calculator"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-tools-calc
+  template:
+    metadata:
+      labels:
+        app: loan-tools-calc
+    spec:
+      containers:
+      - name: server
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        env:
+        - name: TOOLSET
+          value: calc
+        - name: MCP_NAME
+          value: loan-tools-calc
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: code
+        configMap:
+          name: loan-tools-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-calc
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-calc
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-calc-mcp
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-calc
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-tools-notify
+  namespace: team1
+  labels:
+    app: loan-tools-notify
+    kagenti.io/type: tool
+    kagenti.io/protocol: streamable_http
+    kagenti.io/framework: Python
+  annotations:
+    kagenti.io/description: "Customer notification and approval letter service"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-tools-notify
+  template:
+    metadata:
+      labels:
+        app: loan-tools-notify
+    spec:
+      containers:
+      - name: server
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        env:
+        - name: TOOLSET
+          value: notify
+        - name: MCP_NAME
+          value: loan-tools-notify
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: code
+        configMap:
+          name: loan-tools-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-notify
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-notify
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-tools-notify-mcp
+  namespace: team1
+spec:
+  selector:
+    app: loan-tools-notify
+  ports:
+  - port: 8000
+    targetPort: 8000
+
+---
+# ============================================================================
+# LAYER 2b: HTTPRoutes + MCPServerRegistrations (Gateway Federation)
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: loan-tools-credit-route
+  namespace: team1
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-system
+    sectionName: mcps
+  hostnames:
+  - loan-tools-credit.mcp.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: loan-tools-credit
+      port: 8000
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: loan-credit
+  namespace: team1
+spec:
+  toolPrefix: loan_credit_
+  path: /mcp
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: loan-tools-credit-route
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: loan-tools-kyc-route
+  namespace: team1
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-system
+    sectionName: mcps
+  hostnames:
+  - loan-tools-kyc.mcp.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: loan-tools-kyc
+      port: 8000
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: loan-kyc
+  namespace: team1
+spec:
+  toolPrefix: loan_kyc_
+  path: /mcp
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: loan-tools-kyc-route
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: loan-tools-calc-route
+  namespace: team1
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-system
+    sectionName: mcps
+  hostnames:
+  - loan-tools-calc.mcp.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: loan-tools-calc
+      port: 8000
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: loan-calc
+  namespace: team1
+spec:
+  toolPrefix: loan_calc_
+  path: /mcp
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: loan-tools-calc-route
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: loan-tools-notify-route
+  namespace: team1
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-system
+    sectionName: mcps
+  hostnames:
+  - loan-tools-notify.mcp.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: loan-tools-notify
+      port: 8000
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: loan-notify
+  namespace: team1
+spec:
+  toolPrefix: loan_notify_
+  path: /mcp
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: loan-tools-notify-route
+
+---
+# ============================================================================
+# LAYER 3: Gateway Auth - REMOVED
+# JWT enforcement moved to OPA sidecar layer to avoid blocking Kagenti UI
+# tool discovery (tools/list). Agent-level OPA PEP validates identity and
+# enforces fine-grained policies on every tool call.
+# ============================================================================
+
+---
+# ============================================================================
+# LAYER 5: OPA Base Policy (root decision package)
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-agent-opa-base
+  namespace: team1
+data:
+  authz.rego: |
+    package kagenti.authz
+    import rego.v1
+
+    default decision := {"allow": true, "reasons": []}
+
+    decision := {"allow": false, "reasons": deny_reasons} if {
+        count(deny_reasons) > 0
+    }
+
+    deny_reasons contains msg if {
+        some pkg_name
+        pkg := data.kagenti.client[pkg_name]
+        some msg in pkg.deny
+    }
+
+    deny_reasons contains msg if {
+        some pkg_name
+        pkg := data.kagenti.namespace[pkg_name]
+        some msg in pkg.deny
+    }
+
+    deny_reasons contains msg if {
+        some pkg_name
+        pkg := data.kagenti.global[pkg_name]
+        some msg in pkg.deny
+    }
+
+---
+# ============================================================================
+# LAYER 5: Policy Sync Script
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-agent-policy-sync
+  namespace: team1
+data:
+  sync.py: |
+    import json
+    import os
+    import time
+    import hashlib
+    import urllib.request
+    import ssl
+
+    SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "10"))
+    NAMESPACE = os.getenv("NAMESPACE", "team1")
+    AGENT_NAME = os.getenv("AGENT_NAME", "loan-agent")
+    OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
+
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    API_SERVER = "https://kubernetes.default.svc"
+
+    _policy_hashes = {}
+    _active_policies = set()
+
+    def _k8s_get(path):
+        with open(TOKEN_PATH) as f:
+            token = f.read().strip()
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        req = urllib.request.Request(
+            f"{API_SERVER}{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            return json.loads(resp.read())
+
+    def _opa_put_policy(policy_id, rego_content):
+        content_hash = hashlib.sha256(rego_content.encode()).hexdigest()
+        if _policy_hashes.get(policy_id) == content_hash:
+            return False
+        req = urllib.request.Request(
+            f"{OPA_URL}/v1/policies/{policy_id}",
+            data=rego_content.encode(),
+            headers={"Content-Type": "text/plain"},
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+            _policy_hashes[policy_id] = content_hash
+            print(f"[policy-sync] Loaded policy: {policy_id}")
+            return True
+        except Exception as e:
+            print(f"[policy-sync] OPA PUT {policy_id} failed: {e}")
+            return False
+
+    def _opa_delete_policy(policy_id):
+        req = urllib.request.Request(
+            f"{OPA_URL}/v1/policies/{policy_id}",
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+            _policy_hashes.pop(policy_id, None)
+            print(f"[policy-sync] Deleted policy: {policy_id}")
+            return True
+        except Exception as e:
+            print(f"[policy-sync] OPA DELETE {policy_id} failed: {e}")
+            return False
+
+    def sync_policies():
+        global _active_policies
+        changed = False
+        try:
+            data = _k8s_get(f"/apis/agent.kagenti.dev/v1alpha1/namespaces/{NAMESPACE}/authorizationpolicies")
+            items = data.get("items", [])
+        except Exception as e:
+            print(f"[policy-sync] Error fetching namespace policies: {e}")
+            items = []
+
+        current_policies = set()
+        for item in items:
+            spec = item.get("spec", {})
+            scope = spec.get("scope", "namespace")
+            client_id = spec.get("clientID", "")
+
+            if scope == "client" and client_id and client_id != AGENT_NAME:
+                continue
+
+            for policy in spec.get("policies", []):
+                rego_path = policy.get("path", "")
+                content = policy.get("content", "")
+                if rego_path and content:
+                    policy_id = rego_path.replace("/", "_").replace(".rego", "")
+                    current_policies.add(policy_id)
+                    if _opa_put_policy(policy_id, content):
+                        changed = True
+
+        # Delete policies that no longer exist in CRDs
+        stale = _active_policies - current_policies - {"authz"}
+        for policy_id in stale:
+            if _opa_delete_policy(policy_id):
+                changed = True
+
+        _active_policies = current_policies | {"authz"}
+
+        # Load base authz.rego
+        base_src = "/opa-base/authz.rego"
+        if os.path.exists(base_src):
+            with open(base_src) as f:
+                base_content = f.read()
+            if _opa_put_policy("authz", base_content):
+                changed = True
+
+        if changed:
+            print(f"[policy-sync] Policies refreshed")
+        return changed
+
+    if __name__ == "__main__":
+        print(f"[policy-sync] Starting: interval={SYNC_INTERVAL}s, namespace={NAMESPACE}, agent={AGENT_NAME}")
+        print(f"[policy-sync] OPA endpoint: {OPA_URL}")
+        # Wait for OPA to be ready
+        for _ in range(30):
+            try:
+                req = urllib.request.Request(f"{OPA_URL}/health")
+                with urllib.request.urlopen(req, timeout=2) as r:
+                    if r.status == 200:
+                        print("[policy-sync] OPA is ready")
+                        break
+            except Exception:
+                pass
+            time.sleep(1)
+        # Initial sync
+        sync_policies()
+        while True:
+            time.sleep(SYNC_INTERVAL)
+            try:
+                sync_policies()
+            except Exception as e:
+                print(f"[policy-sync] Error: {e}")
+
+---
+# ============================================================================
+# LAYER 4: Loan Agent Application Code
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-agent-app
+  namespace: team1
+data:
+  agent.py: |
+    import json
+    import os
+    import time
+    import uuid
+    import ssl
+    import urllib.request
+    import urllib.parse
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from threading import Lock
+
+    AGENT_NAME = os.getenv("AGENT_NAME", "loan-agent")
+    AGENT_TITLE = os.getenv("AGENT_TITLE", "DBS Loan Processing Agent")
+    PORT = int(os.getenv("PORT", "8080"))
+
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+    DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp")
+    MCP_HOST_HEADER = os.getenv("MCP_HOST_HEADER", "mcp-gateway-gateway-system.__CLUSTER_DOMAIN__")
+
+    OIDC_TOKEN_URL = os.getenv("OIDC_TOKEN_URL", "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/token")
+    OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "loan-agent")
+    OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+
+    OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
+    OPA_DECISION_PATH = os.getenv("OPA_DECISION_PATH", "/v1/data/kagenti/authz/decision")
+
+    SYSTEM_PROMPT = (
+        "You are the DBS Loan Processing Agent for DBS Bank Singapore. "
+        "CRITICAL RULES: "
+        "1) When a customer provides a loan request with a customer ID, IMMEDIATELY call tools. Do NOT ask follow-up questions. "
+        "2) Execute the FULL pipeline automatically - credit_check, kyc_verify, affordability_check, loan_calculate, send_notification. "
+        "3) If the customer says C1001 or similar, that IS the customer_id. Use it directly. "
+        "4) For KYC, use doc_type=NRIC and doc_id=S+customer_id+A (e.g. SC1001A) unless they provide a real document. "
+        "5) For affordability_check, use monthly_income=10000 as default if not specified. "
+        "6) NEVER ask clarifying questions when you have enough info to proceed. A customer ID + loan amount is enough. "
+        "PIPELINE (run all steps automatically): "
+        "Step 1: loan_credit_credit_check(customer_id) - check creditworthiness. "
+        "Step 2: loan_kyc_kyc_verify(doc_type=NRIC, doc_id=derived) - verify identity. "
+        "Step 3: loan_calc_affordability_check(monthly_income, monthly_debt=0, loan_amount, interest_rate=3.5, tenure_years) - MAS TDSR check. "
+        "Step 4: loan_calc_loan_calculate(principal, annual_rate=3.5, tenure_years) - compute repayments. "
+        "Step 5: loan_notify_send_notification(customer_id, message=summary) - notify customer. "
+        "If a tool call is DENIED by policy, explain the denial reason clearly and stop that step. "
+        "Be concise and professional. All amounts in SGD."
+    )
+
+    # ─── OIDC Token Cache ────────────────────────────────────────────────────
+    _token_cache = {"token": None, "expires_at": 0}
+    _token_lock = Lock()
+
+    def _get_oidc_token():
+        with _token_lock:
+            if _token_cache["token"] and time.time() < _token_cache["expires_at"] - 30:
+                return _token_cache["token"]
+            data = urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_id": OIDC_CLIENT_ID,
+                "client_secret": OIDC_CLIENT_SECRET,
+            }).encode()
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(OIDC_TOKEN_URL, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                result = json.loads(resp.read())
+            _token_cache["token"] = result["access_token"]
+            _token_cache["expires_at"] = time.time() + result.get("expires_in", 300)
+            print(f"[oidc] Token acquired, expires_in={result.get('expires_in')}s")
+            return _token_cache["token"]
+
+    # ─── MCP Gateway Client ─────────────────────────────────────────────────
+    _mcp_session_id = None
+
+    def _mcp_request(method, params=None):
+        global _mcp_session_id
+        token = _get_oidc_token()
+        payload = {"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method}
+        if params:
+            payload["params"] = params
+        body = json.dumps(payload).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {token}",
+            "Host": MCP_HOST_HEADER,
+        }
+        if _mcp_session_id:
+            headers["Mcp-Session-Id"] = _mcp_session_id
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(MCP_GATEWAY_URL, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            resp_headers = dict(resp.headers)
+            if "mcp-session-id" in resp_headers:
+                _mcp_session_id = resp_headers["mcp-session-id"]
+            raw = resp.read().decode()
+            # Handle SSE responses
+            if "text/event-stream" in resp_headers.get("content-type", ""):
+                for line in raw.split("\n"):
+                    if line.startswith("data: "):
+                        return json.loads(line[6:])
+                return json.loads(raw)
+            return json.loads(raw)
+
+    def _mcp_initialize():
+        result = _mcp_request("initialize", {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": AGENT_NAME, "version": "1.0.0"}
+        })
+        print(f"[mcp] Initialized: {result.get('result', {}).get('serverInfo', {})}")
+        return result
+
+    def _mcp_list_tools():
+        result = _mcp_request("tools/list")
+        tools = result.get("result", {}).get("tools", [])
+        print(f"[mcp] Discovered {len(tools)} tools")
+        return tools
+
+    def _mcp_call_tool(name, arguments):
+        result = _mcp_request("tools/call", {"name": name, "arguments": arguments})
+        content = result.get("result", {}).get("content", [])
+        if content and content[0].get("type") == "text":
+            try:
+                return json.loads(content[0]["text"])
+            except json.JSONDecodeError:
+                return {"text": content[0]["text"]}
+        return result.get("result", result)
+
+    # ─── JWT Decode (no signature verification — internal use) ─────────────
+    import base64
+
+    def _decode_jwt(token):
+        try:
+            payload = token.split(".")[1]
+            payload += "=" * (4 - len(payload) % 4)
+            return json.loads(base64.b64decode(payload))
+        except Exception:
+            return {}
+
+    # ─── OPA Policy Enforcement Point ────────────────────────────────────────
+    def _opa_check(tool_name, args, user="anonymous", groups=None):
+        if not OPA_URL:
+            return True, []
+        payload = json.dumps({"input": {
+            "agent": AGENT_NAME,
+            "tool": tool_name,
+            "args": args or {},
+            "user": user,
+            "groups": groups or [],
+        }}).encode()
+        req = urllib.request.Request(
+            f"{OPA_URL}{OPA_DECISION_PATH}",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                result = json.loads(resp.read()).get("result", {})
+            decision = result.get("decision", result)
+            if isinstance(decision, dict):
+                allow = decision.get("allow", True)
+                reasons = decision.get("reasons", [])
+            else:
+                allow = True
+                reasons = []
+            print(f"[opa] tool={tool_name} user={user} groups={groups} allow={allow} reasons={reasons}")
+            return allow, reasons
+        except Exception as e:
+            print(f"[opa] Error (allowing by default): {e}")
+            return True, []
+
+    # ─── DeepSeek LLM Client ────────────────────────────────────────────────
+    def _deepseek_chat(messages, tools=None):
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": messages,
+            "temperature": 0.3,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        body = json.dumps(payload).encode()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(
+            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            },
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+            return json.loads(resp.read())
+
+    # ─── Agent Loop ──────────────────────────────────────────────────────────
+    _tools_cache = None
+    _tools_openai_format = None
+
+    def _get_tools():
+        global _tools_cache, _tools_openai_format
+        if _tools_cache is None:
+            try:
+                _mcp_initialize()
+                _tools_cache = _mcp_list_tools()
+            except Exception as e:
+                print(f"[agent] Failed to discover tools from MCP Gateway: {e}")
+                _tools_cache = []
+            _tools_openai_format = []
+            for t in _tools_cache:
+                _tools_openai_format.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t.get("inputSchema", {"type": "object", "properties": {}}),
+                    }
+                })
+        return _tools_cache, _tools_openai_format
+
+    def run_agent(user_message, user="anonymous", groups=None):
+        _, openai_tools = _get_tools()
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+        tool_calls_log = []
+        max_iterations = 8
+        groups = groups or []
+
+        for _ in range(max_iterations):
+            response = _deepseek_chat(messages, openai_tools if openai_tools else None)
+            choice = response["choices"][0]
+            msg = choice["message"]
+
+            if msg.get("tool_calls"):
+                messages.append(msg)
+                for tc in msg["tool_calls"]:
+                    fn = tc["function"]
+                    tool_name = fn["name"]
+                    try:
+                        args = json.loads(fn["arguments"]) if fn["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    # OPA policy check with user identity
+                    allowed, reasons = _opa_check(tool_name, args, user, groups)
+                    if not allowed:
+                        result_text = f"POLICY DENIED: {' '.join(reasons)}. Do not retry this tool."
+                        tool_calls_log.append({"tool": tool_name, "args": args, "status": "DENIED", "reasons": reasons})
+                    else:
+                        # Call tool via MCP Gateway
+                        try:
+                            result = _mcp_call_tool(tool_name, args)
+                            result_text = json.dumps(result)
+                            tool_calls_log.append({"tool": tool_name, "args": args, "status": "SUCCESS", "result": result})
+                        except Exception as e:
+                            result_text = f"Tool call failed: {str(e)}"
+                            tool_calls_log.append({"tool": tool_name, "args": args, "status": "ERROR", "error": str(e)})
+
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result_text})
+            else:
+                return {"response": msg.get("content", ""), "tool_calls": tool_calls_log}
+
+        return {"response": "Maximum iterations reached.", "tool_calls": tool_calls_log}
+
+    # ─── HTTP Server ─────────────────────────────────────────────────────────
+    class AgentHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            print(f"[http] {args[0]}" if args else "")
+
+        def _send(self, code, body, content_type="application/json"):
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "*")
+            self.end_headers()
+            if isinstance(body, str):
+                body = body.encode()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self):
+            self._send(204, b"")
+
+        def do_GET(self):
+            if self.path == "/health":
+                self._send(200, json.dumps({"status": "ok"}))
+            elif self.path in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
+                card = {
+                    "name": AGENT_NAME,
+                    "title": AGENT_TITLE,
+                    "description": "DBS Loan Processing Agent — handles home, personal, and renovation loan applications with automated credit checks, KYC verification, affordability analysis, and policy-governed tool access.",
+                    "version": "1.0.0",
+                    "protocol": "a2a",
+                    "url": f"http://{AGENT_NAME}.team1.svc:8080",
+                    "capabilities": {"tools": True, "streaming": False},
+                    "skills": [
+                        {"name": "Loan Application Processing", "description": "End-to-end loan processing with credit checks and affordability analysis"},
+                        {"name": "KYC Verification", "description": "Identity verification and PEP screening"},
+                        {"name": "Policy-Governed Access", "description": "All tool calls are governed by OPA policies managed by bank compliance officers"},
+                    ],
+                    "tools": [
+                        {"name": "loan_credit_credit_check", "description": "Run a credit bureau check for a customer. Returns credit score, grade, and history length."},
+                        {"name": "loan_credit_credit_score", "description": "Get just the numeric credit score for quick decisioning."},
+                        {"name": "loan_kyc_kyc_verify", "description": "Verify a customer identity document (passport, NRIC, driver license)."},
+                        {"name": "loan_kyc_pep_screen", "description": "Screen a person against the Politically Exposed Persons (PEP) database."},
+                        {"name": "loan_calc_loan_calculate", "description": "Calculate monthly repayment, total interest, and total cost for a loan."},
+                        {"name": "loan_calc_affordability_check", "description": "Check if a customer can afford a loan based on MAS TDSR (55%)."},
+                        {"name": "loan_notify_send_notification", "description": "Send a notification (SMS/email) to a customer about their loan application."},
+                        {"name": "loan_notify_send_approval_letter", "description": "Generate and send an official loan approval letter to the customer."},
+                    ],
+                }
+                self._send(200, json.dumps(card))
+            elif self.path == "/chat" or self.path == "/":
+                with open("/ui/index.html") as f:
+                    self._send(200, f.read(), "text/html")
+            elif self.path == "/api/tools":
+                tools, _ = _get_tools()
+                self._send(200, json.dumps({"tools": [{"name": t["name"], "description": t.get("description", "")} for t in tools]}))
+            else:
+                self._send(404, json.dumps({"error": "not found"}))
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+
+            if self.path == "/api/chat":
+                message = body.get("message", "")
+                if not message:
+                    self._send(400, json.dumps({"error": "message required"}))
+                    return
+
+                # Extract user identity from JWT Authorization header
+                user = "anonymous"
+                groups = []
+                auth_header = self.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    claims = _decode_jwt(auth_header[7:])
+                    user = claims.get("preferred_username", "anonymous")
+                    groups = claims.get("groups", [])
+                    print(f"[auth] user={user} groups={groups}")
+
+                try:
+                    result = run_agent(message, user, groups)
+                    self._send(200, json.dumps(result))
+                except Exception as e:
+                    print(f"[agent] Error: {e}")
+                    self._send(500, json.dumps({"error": str(e)}))
+            else:
+                self._send(404, json.dumps({"error": "not found"}))
+
+    if __name__ == "__main__":
+        print(f"[agent] {AGENT_TITLE} starting on port {PORT}")
+        print(f"[agent] MCP Gateway: {MCP_GATEWAY_URL}")
+        print(f"[agent] OIDC: {OIDC_TOKEN_URL}")
+        print(f"[agent] OPA: {OPA_URL}")
+        server = HTTPServer(("0.0.0.0", PORT), AgentHandler)
+        server.serve_forever()
+
+---
+# ============================================================================
+# LAYER 4: Loan Agent Chat UI
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loan-agent-ui
+  namespace: team1
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>DBS Loan Agent</title>
+    <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Red Hat Display','Segoe UI',sans-serif;background:#151515;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
+    .header{background:#1a1a1a;border-bottom:3px solid #ee0000;padding:16px 24px;display:flex;align-items:center;gap:16px}
+    .header img{height:28px}
+    .header h1{font-size:18px;font-weight:600;color:#fff}
+    .header .badge{background:#ee0000;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px}
+    .header .user-info{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px}
+    .header .user-info .username{color:#ccc}
+    .header .user-info .role-badge{background:#333;color:#4fc3f7;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;border:1px solid #4fc3f7}
+    .header .user-info .role-badge.senior-rm{color:#66bb6a;border-color:#66bb6a}
+    .header .user-info .role-badge.rm{color:#ffa726;border-color:#ffa726}
+    .header .user-info .role-badge.teller{color:#4fc3f7;border-color:#4fc3f7}
+    .header .logout-btn{background:transparent;color:#999;border:1px solid #555;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer}
+    .header .logout-btn:hover{color:#fff;border-color:#ee0000}
+    .chat-area{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:16px}
+    .msg{max-width:80%;padding:14px 18px;border-radius:12px;line-height:1.5;font-size:14px;animation:fadeIn 0.3s}
+    .msg.user{align-self:flex-end;background:#1a4d8f;color:#fff;border-bottom-right-radius:4px}
+    .msg.agent{align-self:flex-start;background:#252525;border:1px solid #333;border-bottom-left-radius:4px}
+    .msg.agent .tool-call{margin:8px 0;padding:8px 12px;border-radius:6px;font-size:12px;font-family:monospace}
+    .msg.agent .tool-call.success{background:#1a3d1a;border:1px solid #2e7d32}
+    .msg.agent .tool-call.denied{background:#3d1a1a;border:1px solid #c62828}
+    .msg.agent .tool-call.error{background:#3d2a1a;border:1px solid #e65100}
+    .input-area{background:#1a1a1a;border-top:1px solid #333;padding:16px 24px;display:flex;gap:12px}
+    .input-area input{flex:1;background:#252525;border:1px solid #444;border-radius:8px;padding:12px 16px;color:#fff;font-size:14px;outline:none}
+    .input-area input:focus{border-color:#ee0000}
+    .input-area button{background:#ee0000;color:#fff;border:none;border-radius:8px;padding:12px 24px;font-weight:600;cursor:pointer;transition:background 0.2s}
+    .input-area button:hover{background:#cc0000}
+    .input-area button:disabled{background:#555;cursor:not-allowed}
+    .typing{align-self:flex-start;color:#888;font-style:italic;font-size:13px}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    pre{white-space:pre-wrap;word-break:break-word}
+    #login-overlay{position:fixed;inset:0;background:#151515;display:flex;align-items:center;justify-content:center;z-index:999}
+    #login-overlay .msg{font-size:16px;color:#999}
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/keycloak-js@25/dist/keycloak.min.js"></script>
+    </head>
+    <body>
+    <div id="login-overlay"><div class="msg">Authenticating with DBS Identity Service...</div></div>
+    <div class="header">
+      <svg width="28" height="28" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="#ee0000"/><text x="50" y="65" text-anchor="middle" fill="white" font-size="40" font-weight="bold">L</text></svg>
+      <h1>DBS Loan Processing Agent<span class="badge">LIVE</span></h1>
+      <div class="user-info">
+        <span class="username" id="user-display"></span>
+        <span class="role-badge" id="role-display"></span>
+        <button class="logout-btn" onclick="keycloak.logout()">Logout</button>
+      </div>
+    </div>
+    <div class="chat-area" id="chat">
+      <div class="msg agent">Welcome to DBS Loan Processing. I can help you with home loans, personal loans, and renovation loans. Ask me anything — for example: <em>"I want a $500K home loan over 25 years"</em></div>
+    </div>
+    <div class="input-area">
+      <input id="input" placeholder="Ask about loans..." autofocus>
+      <button id="send" onclick="sendMessage()">Send</button>
+    </div>
+    <script>
+    const KC_URL = 'https://keycloak-keycloak.__CLUSTER_DOMAIN__';
+    const KC_REALM = 'kagenti';
+    const KC_CLIENT = 'loan-agent-ui';
+
+    const keycloak = new Keycloak({ url: KC_URL, realm: KC_REALM, clientId: KC_CLIENT });
+
+    function doLogin() {
+      keycloak.init({ onLoad: 'login-required', checkLoginIframe: false }).then(authenticated => {
+        if (!authenticated) { keycloak.login(); return; }
+        document.getElementById('login-overlay').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        const user = keycloak.tokenParsed.preferred_username || 'user';
+        const groups = keycloak.tokenParsed.groups || [];
+        const role = groups.find(g => ['senior-rm','rm','teller'].includes(g)) || 'unknown';
+        document.getElementById('user-display').textContent = user;
+        const roleBadge = document.getElementById('role-display');
+        roleBadge.textContent = role;
+        roleBadge.classList.add(role);
+        setInterval(() => { keycloak.updateToken(30).catch(() => keycloak.login()); }, 30000);
+      }).catch(err => {
+        console.error('Keycloak init error:', err);
+        alert('Authentication failed.');
+      });
+    }
+    if (window.location.hash && window.location.hash.indexOf('state=') >= 0) { doLogin(); }
+
+    const chat=document.getElementById('chat'),input=document.getElementById('input'),btn=document.getElementById('send');
+    input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
+
+    async function sendMessage(){
+      const msg=input.value.trim();if(!msg)return;
+      input.value='';btn.disabled=true;
+      appendMsg('user',msg);
+      const typing=document.createElement('div');typing.className='typing';typing.textContent='Agent is processing...';chat.appendChild(typing);chat.scrollTop=chat.scrollHeight;
+      try{
+        await keycloak.updateToken(5);
+        const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+keycloak.token},body:JSON.stringify({message:msg})});
+        const data=await resp.json();
+        typing.remove();
+        let html='';
+        if(data.tool_calls&&data.tool_calls.length>0){
+          html+='<div style="margin-bottom:10px;font-size:12px;color:#888">Tool calls:</div>';
+          data.tool_calls.forEach(tc=>{
+            const cls=tc.status==='SUCCESS'?'success':tc.status==='DENIED'?'denied':'error';
+            const icon=tc.status==='SUCCESS'?'&#10003;':tc.status==='DENIED'?'&#10007;':'&#9888;';
+            html+=`<div class="tool-call ${cls}">${icon} <strong>${tc.tool}</strong>(${JSON.stringify(tc.args||{})}) &rarr; ${tc.status}`;
+            if(tc.reasons)html+=` &mdash; ${tc.reasons.join('; ')}`;
+            html+='</div>';
+          });
+          html+='<hr style="border-color:#333;margin:12px 0">';
+        }
+        html+=`<div>${formatResponse(data.response||data.error||'No response')}</div>`;
+        appendMsg('agent',html,true);
+      }catch(e){typing.remove();appendMsg('agent','Error: '+e.message,true)}
+      btn.disabled=false;input.focus();
+    }
+
+    function appendMsg(role,content,isHtml){
+      const div=document.createElement('div');div.className='msg '+role;
+      if(isHtml)div.innerHTML=content;else div.textContent=content;
+      chat.appendChild(div);chat.scrollTop=chat.scrollHeight;
+    }
+
+    function formatResponse(text){return text.replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}
+    </script>
+    </body>
+    </html>
+
+---
+# ============================================================================
+# LAYER 4+5: Loan Agent Deployment (agent + OPA + policy-sync)
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loan-agent
+  namespace: team1
+  labels:
+    app: loan-agent
+    kagenti.io/inject: disabled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loan-agent
+  template:
+    metadata:
+      labels:
+        app: loan-agent
+        kagenti.io/inject: disabled
+    spec:
+      serviceAccountName: loan-agent
+      containers:
+      # Container 1: The Agent
+      - name: agent
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["sh", "-c", "pip install -q urllib3 && python /app/agent.py"]
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: AGENT_NAME
+          value: loan-agent
+        - name: AGENT_TITLE
+          value: "DBS Loan Processing Agent"
+        - name: PORT
+          value: "8080"
+        - name: DEEPSEEK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-key
+              key: api-key
+        - name: DEEPSEEK_BASE_URL
+          value: "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b"
+        - name: DEEPSEEK_MODEL
+          value: "qwen35-35b-a3b"
+        - name: MCP_GATEWAY_URL
+          value: "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp"
+        - name: MCP_HOST_HEADER
+          value: "mcp-gateway-gateway-system.__CLUSTER_DOMAIN__"
+        - name: OIDC_TOKEN_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/token"
+        - name: OIDC_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: loan-agent-oidc
+              key: client-id
+        - name: OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: loan-agent-oidc
+              key: client-secret
+        - name: OPA_URL
+          value: "http://localhost:8181"
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        - name: ui
+          mountPath: /ui
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+
+      # Container 2: OPA (policy evaluation engine)
+      - name: opa
+        image: openpolicyagent/opa:0.70.0-static
+        args:
+        - "run"
+        - "--server"
+        - "--addr=:8181"
+        ports:
+        - containerPort: 8181
+          name: opa
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8181
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+      # Container 3: Policy Sync (watches CRDs, loads to OPA via REST API)
+      - name: policy-sync
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python", "/sync/sync.py"]
+        env:
+        - name: SYNC_INTERVAL
+          value: "10"
+        - name: NAMESPACE
+          value: team1
+        - name: AGENT_NAME
+          value: loan-agent
+        - name: OPA_URL
+          value: "http://localhost:8181"
+        volumeMounts:
+        - name: policy-sync-code
+          mountPath: /sync
+        - name: opa-base
+          mountPath: /opa-base
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+      volumes:
+      - name: app-code
+        configMap:
+          name: loan-agent-app
+      - name: ui
+        configMap:
+          name: loan-agent-ui
+      - name: policy-sync-code
+        configMap:
+          name: loan-agent-policy-sync
+      - name: opa-base
+        configMap:
+          name: loan-agent-opa-base
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loan-agent
+  namespace: team1
+spec:
+  selector:
+    app: loan-agent
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: loan-agent
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: loan-agent
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# ============================================================================
+# AgentRuntime CRD (Kagenti discovery - inject disabled)
+# ============================================================================
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: loan-agent
+  namespace: team1
+  labels:
+    kagenti.io/framework: custom
+    kagenti.io/inject: disabled
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loan-agent
+
+---
+# ============================================================================
+# RBAC Policy: Role-Based Tool Access Control
+# ============================================================================
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: loan-agent-tool-allowlist
+  namespace: team1
+  annotations:
+    policy.kagenti.dev/description: "Role-based tool access — tellers get credit checks only, RMs add KYC/calc, Senior RMs get full access including notifications"
+    policy.kagenti.dev/created-by: "System (RBAC)"
+    policy.kagenti.dev/created-at: "2026-07-19T14:30:00+08:00"
+    policy.kagenti.dev/status: "active"
+    policy.kagenti.dev/version: "3"
+    policy.kagenti.dev/affected-agents: '["loan-agent"]'
+    policy.kagenti.dev/affected-tools: '["loan_credit_credit_check", "loan_credit_credit_score", "loan_kyc_kyc_verify", "loan_kyc_pep_screen", "loan_calc_loan_calculate", "loan_calc_affordability_check", "loan_notify_send_notification", "loan_notify_send_approval_letter"]'
+spec:
+  clientID: loan-agent
+  scope: client
+  policies:
+  - path: client/loan_agent_rbac.rego
+    content: |
+      package kagenti.client.loan_agent_rbac
+      import rego.v1
+
+      default allow := false
+
+      teller_tools := {"loan_credit_credit_check", "loan_credit_credit_score"}
+
+      rm_tools := teller_tools | {"loan_kyc_kyc_verify", "loan_kyc_pep_screen",
+          "loan_calc_affordability_check", "loan_calc_loan_calculate"}
+
+      senior_rm_tools := rm_tools | {"loan_notify_send_notification",
+          "loan_notify_send_approval_letter"}
+
+      role_tools := {
+          "teller": teller_tools,
+          "rm": rm_tools,
+          "senior-rm": senior_rm_tools,
+      }
+
+      user_role := role if {
+          some role in input.groups
+          role in {"teller", "rm", "senior-rm"}
+      }
+
+      allow if {
+          input.tool in role_tools[user_role]
+      }
+
+      deny contains msg if {
+          not allow
+          msg := sprintf("Role '%s' is not authorized to use tool '%s'. Contact a Senior RM.", [user_role, input.tool])
+      }

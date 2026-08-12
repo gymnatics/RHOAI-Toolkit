@@ -1,0 +1,261 @@
+###############################################################################
+# 02-keycloak.yaml
+# Keycloak deployment with kagenti realm, users, groups, and OIDC client
+# Apply with: oc apply -f 02-keycloak.yaml
+###############################################################################
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-initial-admin
+  namespace: keycloak
+type: Opaque
+stringData:
+  username: temp-admin
+  password: "7a0313c6c2144b669d1332d9161f82a5"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-db-secret
+  namespace: keycloak
+type: Opaque
+stringData:
+  username: keycloak
+  password: keycloak123
+  database: keycloak
+
+---
+# PostgreSQL for Keycloak
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-kc
+  namespace: keycloak
+spec:
+  serviceName: postgres-kc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-kc
+  template:
+    metadata:
+      labels:
+        app: postgres-kc
+    spec:
+      containers:
+      - name: postgres
+        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRESQL_USER
+          value: keycloak
+        - name: POSTGRESQL_PASSWORD
+          value: keycloak123
+        - name: POSTGRESQL_DATABASE
+          value: keycloak
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/pgsql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: pgdata
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-kc
+  namespace: keycloak
+spec:
+  selector:
+    app: postgres-kc
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Keycloak CR (uses RHBK operator)
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  instances: 1
+  db:
+    vendor: postgres
+    host: postgres-kc
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+    database: keycloak
+  http:
+    tlsSecret: ""
+  hostname:
+    strict: false
+  proxy:
+    headers: xforwarded
+
+---
+# Keycloak Route
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  to:
+    kind: Service
+    name: keycloak-service
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# KeycloakRealmImport — kagenti realm with users, groups, client
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: kagenti-realm-import
+  namespace: keycloak
+spec:
+  keycloakCRName: keycloak
+  realm:
+    realm: kagenti
+    enabled: true
+    displayName: "DBS Agentic AI Platform"
+    registrationAllowed: false
+    clients:
+    - clientId: kagenti
+      enabled: true
+      publicClient: true
+      directAccessGrantsEnabled: true
+      redirectUris:
+      - "*"
+      webOrigins:
+      - "*"
+      protocol: openid-connect
+      defaultClientScopes:
+      - profile
+      - email
+      - roles
+      protocolMappers:
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          claim.name: groups
+          full.path: "false"
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+    groups:
+    - name: teller
+    - name: rm
+    - name: senior-rm
+    - name: dbs-admins
+    - name: dbs-loan-officers
+    users:
+    - username: teller1
+      enabled: true
+      firstName: Teller
+      lastName: One
+      email: teller1@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - teller
+    - username: rm1
+      enabled: true
+      firstName: Relationship
+      lastName: Manager
+      email: rm1@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - rm
+    - username: senior-rm1
+      enabled: true
+      firstName: Senior
+      lastName: RM
+      email: senior-rm1@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - senior-rm
+    - username: admin
+      enabled: true
+      firstName: Platform
+      lastName: Admin
+      email: admin@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - dbs-admins
+    - username: alice
+      enabled: true
+      firstName: Alice
+      lastName: Tan
+      email: alice@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - rm
+    - username: bob
+      enabled: true
+      firstName: Bob
+      lastName: Lim
+      email: bob@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - teller
+    - username: dev-user
+      enabled: true
+      firstName: Developer
+      lastName: User
+      email: dev@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - dbs-loan-officers
+    - username: ns-admin
+      enabled: true
+      firstName: Namespace
+      lastName: Admin
+      email: nsadmin@dbs.com
+      credentials:
+      - type: password
+        value: DemoPass123
+        temporary: false
+      groups:
+      - dbs-admins

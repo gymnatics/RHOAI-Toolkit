@@ -1,0 +1,334 @@
+###############################################################################
+# 04-kagenti.yaml
+# KAgenti (Rossoctl) Platform — Backend, UI, Controller, Policy Agent
+# Note: If using the KAgenti Operator, this is created via CR. This manifest
+# is for manual deployment or when operator is not available.
+###############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagenti-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagenti
+  namespace: kagenti-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kagenti-controller
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["*"]
+- apiGroups: ["route.openshift.io"]
+  resources: ["routes"]
+  verbs: ["*"]
+- apiGroups: ["kagenti.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["*"]
+- apiGroups: ["mcp.kagenti.io"]
+  resources: ["mcpserverregistrations"]
+  verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-controller
+subjects:
+- kind: ServiceAccount
+  name: kagenti
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: kagenti-controller
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# PostgreSQL for OTel Collector
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-otel
+  namespace: kagenti-system
+spec:
+  serviceName: postgres-otel
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-otel
+  template:
+    metadata:
+      labels:
+        app: postgres-otel
+    spec:
+      containers:
+      - name: postgres
+        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRESQL_USER
+          value: otel
+        - name: POSTGRESQL_PASSWORD
+          value: otel123
+        - name: POSTGRESQL_DATABASE
+          value: otel
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/pgsql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: pgdata
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-otel
+  namespace: kagenti-system
+spec:
+  selector:
+    app: postgres-otel
+  ports:
+  - port: 5432
+
+---
+# OTel Collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel
+        image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.96.0
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: kagenti-system
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - port: 4317
+    name: otlp-grpc
+  - port: 4318
+    name: otlp-http
+
+---
+# KAgenti Backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-backend
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-backend
+  template:
+    metadata:
+      labels:
+        app: kagenti-backend
+    spec:
+      serviceAccountName: kagenti
+      containers:
+      - name: backend
+        image: quay.io/kagenti/kagenti-backend:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_COLLECTOR_URL
+          value: "http://otel-collector:4317"
+        - name: DATABASE_URL
+          value: "postgresql://otel:otel123@postgres-otel:5432/otel"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagenti-backend
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-backend
+  ports:
+  - port: 8080
+
+---
+# KAgenti Controller Manager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-controller-manager
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-controller-manager
+  template:
+    metadata:
+      labels:
+        app: kagenti-controller-manager
+    spec:
+      serviceAccountName: kagenti
+      containers:
+      - name: manager
+        image: quay.io/kagenti/kagenti-controller:latest
+        env:
+        - name: WATCH_NAMESPACES
+          value: "team1"
+        - name: REGISTRY_URL
+          value: "http://kagenti-backend:8080"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# KAgenti UI
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-ui
+  template:
+    metadata:
+      labels:
+        app: kagenti-ui
+    spec:
+      containers:
+      - name: ui
+        image: quay.io/kagenti/kagenti-ui:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: BACKEND_URL
+          value: "http://kagenti-backend:8080"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-ui
+  ports:
+  - port: 3000
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  to:
+    kind: Service
+    name: kagenti-ui
+  port:
+    targetPort: 3000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# MCP Inspector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-inspector
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-inspector
+  template:
+    metadata:
+      labels:
+        app: mcp-inspector
+    spec:
+      containers:
+      - name: inspector
+        image: quay.io/kagenti/mcp-inspector:latest
+        ports:
+        - containerPort: 5173
+        - containerPort: 3000
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-inspector
+  namespace: kagenti-system
+spec:
+  selector:
+    app: mcp-inspector
+  ports:
+  - port: 5173
+    name: ui
+  - port: 3000
+    name: proxy

@@ -1,0 +1,641 @@
+###############################################################################
+# 10-rossoctl-services.yaml
+# Rossoctl Platform Capabilities:
+# 1. Context Guru (token compaction proxy)
+# 2. Capture the Flag (security testing)
+# 3. Workload Harness (load generation)
+# 4. Serverless Harness (scale-to-zero agents)
+# 5. Agent Skills (self-maintenance agents)
+###############################################################################
+
+---
+# ============================================================================
+# 1. CONTEXT GURU — Token Compaction Proxy
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: context-guru-app
+  namespace: team1
+data:
+  server.py: |
+    import os, json, time, hashlib
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    stats = {"requests": 0, "tokens_in": 0, "tokens_out": 0, "savings_pct": 0.0}
+
+    def estimate_tokens(text):
+        return max(1, len(text) // 4)
+
+    def compact_messages(messages):
+        if len(messages) <= 4:
+            return messages
+        system = [m for m in messages if m.get("role") == "system"]
+        recent = messages[-3:]
+        middle = messages[len(system):-3]
+        if not middle:
+            return messages
+        summary_text = f"[Summary of {len(middle)} previous messages: User discussed topics including "
+        topics = set()
+        for m in middle:
+            words = m.get("content", "").split()[:5]
+            if words:
+                topics.add(" ".join(words))
+        summary_text += ", ".join(list(topics)[:3]) + "...]"
+        compacted = system + [{"role": "assistant", "content": summary_text}] + recent
+        return compacted
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/stats":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(stats).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            messages = body.get("messages", [])
+            tokens_in = sum(estimate_tokens(m.get("content", "")) for m in messages)
+            compacted = compact_messages(messages)
+            tokens_out = sum(estimate_tokens(m.get("content", "")) for m in compacted)
+            stats["requests"] += 1
+            stats["tokens_in"] += tokens_in
+            stats["tokens_out"] += tokens_out
+            stats["savings_pct"] = round((1 - stats["tokens_out"] / max(1, stats["tokens_in"])) * 100, 1)
+            body["messages"] = compacted
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, format, *args):
+            pass
+
+    if __name__ == "__main__":
+        port = int(os.getenv("PORT", "8080"))
+        print(f"Context Guru listening on :{port}")
+        HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: context-guru
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: context-guru
+  template:
+    metadata:
+      labels:
+        app: context-guru
+    spec:
+      containers:
+      - name: guru
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: app
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      volumes:
+      - name: app
+        configMap:
+          name: context-guru-app
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: context-guru
+  namespace: team1
+spec:
+  selector:
+    app: context-guru
+  ports:
+  - port: 8080
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: context-guru
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: context-guru
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+
+---
+# ============================================================================
+# 2. CAPTURE THE FLAG — Security Testing Scenarios
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ctf-security-app
+  namespace: team1
+data:
+  server.py: |
+    import os, json, time, uuid
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    HR_DOCUMENTS = [
+        {"id": "HR-001", "title": "Employee Salary Database", "classification": "CONFIDENTIAL"},
+        {"id": "HR-002", "title": "Executive Bonus Structure", "classification": "SECRET"},
+        {"id": "HR-003", "title": "Performance Review Templates", "classification": "INTERNAL"},
+    ]
+
+    ctf_results = []
+
+    SCENARIOS = [
+        {"id": "leaked-token", "name": "Leaked Service Token", "difficulty": "Medium", "category": "credential-theft"},
+        {"id": "privilege-escalation", "name": "Role Escalation via Group Injection", "difficulty": "Hard", "category": "authz-bypass"},
+        {"id": "lateral-movement", "name": "Cross-Namespace Data Access", "difficulty": "Hard", "category": "network-breach"},
+        {"id": "prompt-injection", "name": "Agent Prompt Injection", "difficulty": "Easy", "category": "ai-safety"},
+        {"id": "data-exfiltration", "name": "Customer PII Extraction", "difficulty": "Medium", "category": "data-loss"},
+    ]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/api/scenarios":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(SCENARIOS).encode())
+            elif self.path == "/api/results":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(ctf_results[-20:]).encode())
+            elif self.path == "/api/documents":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "ACCESS DENIED — SPIFFE identity not in authorized list", "required_spiffe_id": "spiffe://cluster.local/ns/hr-system/sa/hr-admin"}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path == "/api/run-scenario":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                scenario_id = body.get("scenario_id", "")
+                result = {"id": str(uuid.uuid4())[:8], "scenario": scenario_id, "timestamp": time.time(), "status": "BLOCKED", "reason": "Defense layer prevented attack"}
+                ctf_results.append(result)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    if __name__ == "__main__":
+        HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ctf-security
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ctf-security
+  template:
+    metadata:
+      labels:
+        app: ctf-security
+    spec:
+      containers:
+      - name: ctf
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      volumes:
+      - name: app
+        configMap:
+          name: ctf-security-app
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ctf-security
+  namespace: team1
+spec:
+  selector:
+    app: ctf-security
+  ports:
+  - port: 8080
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ctf-security
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: ctf-security
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+
+---
+# ============================================================================
+# 3. WORKLOAD HARNESS — Load Generation & Benchmarks
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-harness-app
+  namespace: team1
+data:
+  server.py: |
+    import os, json, time, random, uuid
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    benchmark_results = []
+    for i in range(5):
+        benchmark_results.append({
+            "id": str(uuid.uuid4())[:8], "timestamp": time.time() - (i * 3600),
+            "scenario": random.choice(["sustained-load", "burst", "cold-start"]),
+            "rps": random.randint(50, 200), "p50_ms": random.randint(100, 300),
+            "p95_ms": random.randint(300, 800), "p99_ms": random.randint(500, 1500),
+            "error_rate": round(random.uniform(0, 2.5), 2), "duration_s": 300
+        })
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/api/results":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(benchmark_results).encode())
+            elif self.path == "/api/results/latest":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(benchmark_results[0] if benchmark_results else {}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path == "/api/run":
+                result = {"id": str(uuid.uuid4())[:8], "status": "running", "started": time.time()}
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    if __name__ == "__main__":
+        HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workload-harness
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: workload-harness
+  template:
+    metadata:
+      labels:
+        app: workload-harness
+    spec:
+      containers:
+      - name: harness
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      volumes:
+      - name: app
+        configMap:
+          name: workload-harness-app
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workload-harness
+  namespace: team1
+spec:
+  selector:
+    app: workload-harness
+  ports:
+  - port: 8080
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: workload-harness
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: workload-harness
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+
+---
+# ============================================================================
+# 4. SERVERLESS HARNESS — Scale-to-Zero Agent Fleet
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serverless-harness-app
+  namespace: team1
+data:
+  server.py: |
+    import os, json, time, random, uuid
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    FLEET_SIZE = 200
+    agents = []
+    for i in range(FLEET_SIZE):
+        agents.append({
+            "name": f"agent-{i:03d}", "status": random.choice(["running", "scaled-to-zero", "scaled-to-zero", "scaled-to-zero"]),
+            "last_invocation": time.time() - random.randint(60, 86400),
+            "cold_starts_24h": random.randint(0, 15), "avg_cold_start_ms": random.randint(800, 3000)
+        })
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/api/fleet/status":
+                running = sum(1 for a in agents if a["status"] == "running")
+                scaled = FLEET_SIZE - running
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"total": FLEET_SIZE, "running": running, "scaled_to_zero": scaled, "cost_savings_pct": round(scaled / FLEET_SIZE * 100, 1)}).encode())
+            elif self.path == "/api/cost-analysis":
+                always_on_cost = FLEET_SIZE * 0.05 * 24 * 30
+                actual_cost = sum(0.05 * 24 * 30 if a["status"] == "running" else 0.001 * 30 for a in agents)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"always_on_monthly_usd": round(always_on_cost, 2), "serverless_monthly_usd": round(actual_cost, 2), "savings_usd": round(always_on_cost - actual_cost, 2), "savings_pct": round((1 - actual_cost / always_on_cost) * 100, 1)}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "invoked", "cold_start_ms": random.randint(800, 2500)}).encode())
+
+        def log_message(self, format, *args):
+            pass
+
+    if __name__ == "__main__":
+        HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serverless-harness
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: serverless-harness
+  template:
+    metadata:
+      labels:
+        app: serverless-harness
+    spec:
+      containers:
+      - name: harness
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      volumes:
+      - name: app
+        configMap:
+          name: serverless-harness-app
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: serverless-harness
+  namespace: team1
+spec:
+  selector:
+    app: serverless-harness
+  ports:
+  - port: 8080
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: serverless-harness
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: serverless-harness
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+
+---
+# ============================================================================
+# 5. AGENT SKILLS — Self-Maintenance Agents
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-skills-app
+  namespace: team1
+data:
+  server.py: |
+    import os, json, time, random, uuid
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    skills_registry = [
+        {"id": "link-health", "name": "Link Health Check", "schedule": "*/30 * * * *", "last_run": time.time() - 1200, "status": "healthy", "findings": 0},
+        {"id": "dep-bump", "name": "Dependency Scanner", "schedule": "0 2 * * *", "last_run": time.time() - 43200, "status": "healthy", "findings": 3},
+        {"id": "weekly-report", "name": "Weekly Status Report", "schedule": "0 9 * * 1", "last_run": time.time() - 172800, "status": "healthy", "findings": 0},
+        {"id": "pr-review", "name": "PR Auto-Reviewer", "schedule": "on-event", "last_run": time.time() - 3600, "status": "healthy", "findings": 2},
+    ]
+
+    run_history = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+            elif self.path == "/api/skills":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(skills_registry).encode())
+            elif self.path == "/api/runs":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(run_history[-20:]).encode())
+            elif self.path == "/api/status":
+                healthy = sum(1 for s in skills_registry if s["status"] == "healthy")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"total_skills": len(skills_registry), "healthy": healthy, "total_runs_24h": len(run_history)}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path == "/api/run":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                skill_id = body.get("skill_id", "link-health")
+                result = {"id": str(uuid.uuid4())[:8], "skill_id": skill_id, "timestamp": time.time(), "status": "completed", "duration_s": random.uniform(2, 30), "findings": random.randint(0, 5)}
+                run_history.append(result)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    if __name__ == "__main__":
+        HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-skills
+  namespace: team1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-skills
+  template:
+    metadata:
+      labels:
+        app: agent-skills
+    spec:
+      containers:
+      - name: skills
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      volumes:
+      - name: app
+        configMap:
+          name: agent-skills-app
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-skills
+  namespace: team1
+spec:
+  selector:
+    app: agent-skills
+  ports:
+  - port: 8080
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: agent-skills
+  namespace: team1
+spec:
+  to:
+    kind: Service
+    name: agent-skills
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge

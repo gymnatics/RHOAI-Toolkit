@@ -1,0 +1,31 @@
+# Exclude non-deployment files
+*.docx
+*.pdf
+*.jpeg
+*.jpg
+*.png
+
+# One-off scripts and scratch files
+agent_patch.py
+agent_v2.py
+generate_scope_doc.py
+generate_roadmap_doc.py
+push_blocked.sh
+push_loki.sh
+guardrails_metrics_pusher.py
+rosa.txt
+
+# Superseded by deploy/ manifests
+loan-agent-real.yaml
+policy-agent.yaml
+grafana-dashboards.yaml
+guardrails-dashboard.json
+
+# Presentation assets (not needed for deployment)
+experience-diagrams/
+assets/
+
+# IDE / OS
+.DS_Store
+.cursor/
+.vscode/

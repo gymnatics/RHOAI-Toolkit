@@ -1,0 +1,299 @@
+###############################################################################
+# 08-dify.yaml
+# Dify AI Agent Builder — Full stack (API, Web, Worker, PostgreSQL, Redis)
+###############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dify
+
+---
+# PostgreSQL for Dify
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-postgres
+  namespace: dify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-postgres
+  template:
+    metadata:
+      labels:
+        app: dify-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRESQL_USER
+          value: dify
+        - name: POSTGRESQL_PASSWORD
+          value: difypass123
+        - name: POSTGRESQL_DATABASE
+          value: dify
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/pgsql/data
+      volumes:
+      - name: pgdata
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dify-postgres
+  namespace: dify
+spec:
+  selector:
+    app: dify-postgres
+  ports:
+  - port: 5432
+
+---
+# Redis for Dify
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-redis
+  namespace: dify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-redis
+  template:
+    metadata:
+      labels:
+        app: dify-redis
+    spec:
+      containers:
+      - name: redis
+        image: registry.access.redhat.com/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+        env:
+        - name: REDIS_PASSWORD
+          value: ""
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dify-redis
+  namespace: dify
+spec:
+  selector:
+    app: dify-redis
+  ports:
+  - port: 6379
+
+---
+# Dify API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-api
+  namespace: dify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-api
+  template:
+    metadata:
+      labels:
+        app: dify-api
+    spec:
+      containers:
+      - name: api
+        image: langgenius/dify-api:0.6.16
+        ports:
+        - containerPort: 5001
+        env:
+        - name: MODE
+          value: api
+        - name: SECRET_KEY
+          value: "sk-super-secret-key-for-dify-demo"
+        - name: DB_USERNAME
+          value: dify
+        - name: DB_PASSWORD
+          value: difypass123
+        - name: DB_HOST
+          value: dify-postgres
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: dify
+        - name: REDIS_HOST
+          value: dify-redis
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          value: ""
+        - name: REDIS_DB
+          value: "0"
+        - name: STORAGE_TYPE
+          value: local
+        - name: STORAGE_LOCAL_PATH
+          value: /app/api/storage
+        - name: CONSOLE_WEB_URL
+          value: ""
+        - name: CONSOLE_API_URL
+          value: ""
+        - name: SERVICE_API_URL
+          value: ""
+        - name: APP_WEB_URL
+          value: ""
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dify-api
+  namespace: dify
+spec:
+  selector:
+    app: dify-api
+  ports:
+  - port: 5001
+    targetPort: 5001
+
+---
+# Dify Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-worker
+  namespace: dify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-worker
+  template:
+    metadata:
+      labels:
+        app: dify-worker
+    spec:
+      containers:
+      - name: worker
+        image: langgenius/dify-api:0.6.16
+        env:
+        - name: MODE
+          value: worker
+        - name: SECRET_KEY
+          value: "sk-super-secret-key-for-dify-demo"
+        - name: DB_USERNAME
+          value: dify
+        - name: DB_PASSWORD
+          value: difypass123
+        - name: DB_HOST
+          value: dify-postgres
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_DATABASE
+          value: dify
+        - name: REDIS_HOST
+          value: dify-redis
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          value: ""
+        - name: REDIS_DB
+          value: "0"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+---
+# Dify Web (Frontend)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-web
+  namespace: dify
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-web
+  template:
+    metadata:
+      labels:
+        app: dify-web
+    spec:
+      containers:
+      - name: web
+        image: langgenius/dify-web:0.6.16
+        ports:
+        - containerPort: 3000
+        env:
+        - name: CONSOLE_API_URL
+          value: ""
+        - name: APP_API_URL
+          value: ""
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dify-web
+  namespace: dify
+spec:
+  selector:
+    app: dify-web
+  ports:
+  - port: 3000
+    targetPort: 3000
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dify
+  namespace: dify
+spec:
+  to:
+    kind: Service
+    name: dify-web
+  port:
+    targetPort: 3000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dify-api
+  namespace: dify
+spec:
+  to:
+    kind: Service
+    name: dify-api
+  port:
+    targetPort: 5001
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

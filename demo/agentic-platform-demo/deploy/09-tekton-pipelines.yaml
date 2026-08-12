@@ -1,0 +1,445 @@
+###############################################################################
+# 09-tekton-pipelines.yaml
+# Tekton Pipelines for automated agent and MCP tool onboarding
+# 1. Dify Agent Onboarding Pipeline
+# 2. Agent-Examples (A2A) Onboarding Pipeline
+# 3. MCP Tool Onboarding Pipeline
+###############################################################################
+
+---
+# Shared: PVC for workspace
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pipeline-workspace
+  namespace: team1
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Pipeline 1: Onboard Dify Agent
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: onboard-dify-agent
+  namespace: team1
+spec:
+  params:
+  - name: dify-app-id
+    type: string
+    description: "Dify application ID to onboard"
+  - name: agent-name
+    type: string
+    description: "Name for the deployed agent"
+  - name: dify-api-url
+    type: string
+    default: "http://dify-api.dify.svc:5001"
+  workspaces:
+  - name: shared
+  tasks:
+  - name: generate-bridge-source
+    taskRef:
+      name: generate-a2a-bridge
+    params:
+    - name: dify-app-id
+      value: "$(params.dify-app-id)"
+    - name: agent-name
+      value: "$(params.agent-name)"
+    - name: dify-api-url
+      value: "$(params.dify-api-url)"
+    workspaces:
+    - name: output
+      workspace: shared
+  - name: build-image
+    taskRef:
+      name: buildah-build
+    params:
+    - name: image-name
+      value: "$(params.agent-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - generate-bridge-source
+  - name: deploy-to-kagenti
+    taskRef:
+      name: deploy-agent
+    params:
+    - name: agent-name
+      value: "$(params.agent-name)"
+    - name: image-name
+      value: "$(params.agent-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - build-image
+
+---
+# Pipeline 2: Onboard Agent from kagenti/agent-examples
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: onboard-agent-examples
+  namespace: team1
+spec:
+  params:
+  - name: agent-name
+    type: string
+    description: "Agent directory name from agent-examples repo"
+  - name: git-url
+    type: string
+    default: "https://github.com/kagenti/agent-examples"
+  - name: git-revision
+    type: string
+    default: "main"
+  workspaces:
+  - name: shared
+  tasks:
+  - name: clone-repo
+    taskRef:
+      name: git-clone
+      kind: ClusterTask
+    params:
+    - name: url
+      value: "$(params.git-url)"
+    - name: revision
+      value: "$(params.git-revision)"
+    workspaces:
+    - name: output
+      workspace: shared
+  - name: build-image
+    taskRef:
+      name: buildah-build
+    params:
+    - name: image-name
+      value: "$(params.agent-name)"
+    - name: context-dir
+      value: "agents/$(params.agent-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - clone-repo
+  - name: deploy-to-kagenti
+    taskRef:
+      name: deploy-agent
+    params:
+    - name: agent-name
+      value: "$(params.agent-name)"
+    - name: image-name
+      value: "$(params.agent-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - build-image
+
+---
+# Pipeline 3: Onboard MCP Tool from kagenti/agent-examples
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: onboard-mcp-tool
+  namespace: team1
+spec:
+  params:
+  - name: tool-name
+    type: string
+    description: "MCP tool directory name from agent-examples repo"
+  - name: git-url
+    type: string
+    default: "https://github.com/kagenti/agent-examples"
+  - name: git-revision
+    type: string
+    default: "main"
+  workspaces:
+  - name: shared
+  tasks:
+  - name: clone-repo
+    taskRef:
+      name: git-clone
+      kind: ClusterTask
+    params:
+    - name: url
+      value: "$(params.git-url)"
+    - name: revision
+      value: "$(params.git-revision)"
+    workspaces:
+    - name: output
+      workspace: shared
+  - name: build-tool-image
+    taskRef:
+      name: buildah-build
+    params:
+    - name: image-name
+      value: "mcp-$(params.tool-name)"
+    - name: context-dir
+      value: "mcp-servers/$(params.tool-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - clone-repo
+  - name: deploy-mcp-tool
+    taskRef:
+      name: deploy-mcp-server
+    params:
+    - name: tool-name
+      value: "$(params.tool-name)"
+    - name: image-name
+      value: "mcp-$(params.tool-name)"
+    workspaces:
+    - name: source
+      workspace: shared
+    runAfter:
+    - build-tool-image
+
+---
+# Task: Generate A2A bridge source code for Dify agent
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: generate-a2a-bridge
+  namespace: team1
+spec:
+  params:
+  - name: dify-app-id
+  - name: agent-name
+  - name: dify-api-url
+  workspaces:
+  - name: output
+  steps:
+  - name: generate
+    image: registry.access.redhat.com/ubi9/python-311:latest
+    script: |
+      #!/bin/bash
+      mkdir -p $(workspaces.output.path)/src
+      cat > $(workspaces.output.path)/src/main.py << 'PYEOF'
+      import os, json, urllib.request, ssl
+      from http.server import HTTPServer, BaseHTTPRequestHandler
+
+      DIFY_URL = os.getenv("DIFY_API_URL", "http://dify-api.dify.svc:5001")
+      DIFY_APP_ID = os.getenv("DIFY_APP_ID", "")
+      DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
+
+      ctx = ssl.create_default_context()
+      ctx.check_hostname = False
+      ctx.verify_mode = ssl.CERT_NONE
+
+      class Handler(BaseHTTPRequestHandler):
+          def do_POST(self):
+              length = int(self.headers.get("Content-Length", 0))
+              body = json.loads(self.rfile.read(length)) if length else {}
+              message = body.get("message", body.get("input", ""))
+              payload = json.dumps({"inputs": {}, "query": message, "response_mode": "blocking", "user": "a2a-bridge"}).encode()
+              req = urllib.request.Request(f"{DIFY_URL}/v1/chat-messages", data=payload, headers={"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                      result = json.loads(resp.read())
+                      answer = result.get("answer", "No response")
+              except Exception as e:
+                  answer = f"Error: {e}"
+              self.send_response(200)
+              self.send_header("Content-Type", "application/json")
+              self.end_headers()
+              self.wfile.write(json.dumps({"response": answer}).encode())
+          def do_GET(self):
+              if self.path == "/healthz":
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b"ok")
+              elif self.path == "/.well-known/agent.json":
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.end_headers()
+                  self.wfile.write(json.dumps({"name": os.getenv("AGENT_NAME", "dify-agent"), "version": "1.0", "protocol": "a2a"}).encode())
+              else:
+                  self.send_response(404)
+                  self.end_headers()
+
+      if __name__ == "__main__":
+          HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+      PYEOF
+
+      cat > $(workspaces.output.path)/Dockerfile << 'DEOF'
+      FROM registry.access.redhat.com/ubi9/python-311:latest
+      WORKDIR /app
+      COPY src/ .
+      ENV UV_CACHE_DIR=/tmp/uv-cache XDG_CACHE_HOME=/tmp/cache HOME=/tmp
+      CMD ["python3", "main.py"]
+      EXPOSE 8000
+      DEOF
+      echo "Bridge source generated for $(params.agent-name)"
+
+---
+# Task: Build container image with Buildah
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah-build
+  namespace: team1
+spec:
+  params:
+  - name: image-name
+  - name: context-dir
+    default: "."
+  workspaces:
+  - name: source
+  steps:
+  - name: build-and-push
+    image: quay.io/buildah/stable:latest
+    securityContext:
+      privileged: true
+    script: |
+      #!/bin/bash
+      REGISTRY="image-registry.openshift-image-registry.svc:5000/team1"
+      IMAGE="${REGISTRY}/$(params.image-name):latest"
+      cd $(workspaces.source.path)/$(params.context-dir)
+      buildah bud --tls-verify=false -t $IMAGE .
+      buildah push --tls-verify=false $IMAGE
+      echo "Pushed: $IMAGE"
+
+---
+# Task: Deploy agent to cluster + register with KAgenti
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-agent
+  namespace: team1
+spec:
+  params:
+  - name: agent-name
+  - name: image-name
+  workspaces:
+  - name: source
+  steps:
+  - name: deploy
+    image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    script: |
+      #!/bin/bash
+      REGISTRY="image-registry.openshift-image-registry.svc:5000/team1"
+      IMAGE="${REGISTRY}/$(params.image-name):latest"
+      cat <<K8S | oc apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: $(params.agent-name)
+        namespace: team1
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: $(params.agent-name)
+        template:
+          metadata:
+            labels:
+              app: $(params.agent-name)
+              kagenti.io/agent: "true"
+          spec:
+            containers:
+            - name: agent
+              image: $IMAGE
+              ports:
+              - containerPort: 8000
+              env:
+              - name: UV_CACHE_DIR
+                value: /tmp/uv-cache
+              - name: XDG_CACHE_HOME
+                value: /tmp/cache
+              - name: HOME
+                value: /tmp
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: $(params.agent-name)-svc
+        namespace: team1
+      spec:
+        selector:
+          app: $(params.agent-name)
+        ports:
+        - port: 8000
+          targetPort: 8000
+      ---
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: $(params.agent-name)
+        namespace: team1
+      spec:
+        to:
+          kind: Service
+          name: $(params.agent-name)-svc
+        port:
+          targetPort: 8000
+        tls:
+          termination: edge
+      K8S
+      echo "Agent $(params.agent-name) deployed successfully"
+
+---
+# Task: Deploy MCP tool server
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-mcp-server
+  namespace: team1
+spec:
+  params:
+  - name: tool-name
+  - name: image-name
+  workspaces:
+  - name: source
+  steps:
+  - name: deploy
+    image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+    script: |
+      #!/bin/bash
+      REGISTRY="image-registry.openshift-image-registry.svc:5000/team1"
+      IMAGE="${REGISTRY}/$(params.image-name):latest"
+      cat <<K8S | oc apply -f -
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-$(params.tool-name)
+        namespace: team1
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: mcp-$(params.tool-name)
+        template:
+          metadata:
+            labels:
+              app: mcp-$(params.tool-name)
+              kagenti.io/mcp-server: "true"
+          spec:
+            containers:
+            - name: tool
+              image: $IMAGE
+              ports:
+              - containerPort: 8000
+              env:
+              - name: UV_CACHE_DIR
+                value: /tmp/uv-cache
+              - name: HOME
+                value: /tmp
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: mcp-$(params.tool-name)
+        namespace: team1
+      spec:
+        selector:
+          app: mcp-$(params.tool-name)
+        ports:
+        - port: 8000
+          targetPort: 8000
+      K8S
+      echo "MCP tool $(params.tool-name) deployed"

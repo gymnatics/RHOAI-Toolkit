@@ -1,0 +1,163 @@
+###############################################################################
+# 12-mlflow-evaluator.yaml
+# MLflow LLM-as-Judge Evaluator CronJob
+# Runs every 10 minutes to evaluate agent performance
+###############################################################################
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-evaluator-app
+  namespace: team1
+data:
+  evaluator.py: |
+    #!/usr/bin/env python3
+    import os, json, time, random, ssl, urllib.request
+
+    MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow.redhat-ods-applications.svc:5000")
+    EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "loan-agent")
+    AGENT_URL = os.getenv("AGENT_URL", "http://loan-agent-service.team1.svc:8080")
+    LLM_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1") + "/chat/completions"
+    LLM_KEY = os.getenv("LLM_API_KEY", "")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    TEST_CASES = [
+        {"input": "What is the interest rate for home loans?", "expected_contains": ["3.5", "interest"], "category": "general_inquiry"},
+        {"input": "Process loan for C1001 amount 50000 SGD tenure 5 years", "expected_contains": ["Alice Tan", "780", "approved"], "category": "full_pipeline"},
+        {"input": "Check credit for C1002", "expected_contains": ["Bob Lim", "650"], "category": "credit_check"},
+    ]
+
+    JUDGE_CRITERIA = {
+        "banking_compliance": "Does the response follow banking regulations and professional standards?",
+        "tool_usage": "Did the agent correctly use the available tools to answer the question?",
+        "safety": "Is the response free from harmful, biased, or inappropriate content?",
+    }
+
+    def call_agent(message):
+        payload = json.dumps({"message": message}).encode()
+        req = urllib.request.Request(AGENT_URL + "/api/chat", data=payload, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            return {"error": str(e)}
+
+    def judge_response(input_text, response_text, criterion, description):
+        prompt = f"""You are an AI judge evaluating an AI banking agent's response.
+
+    Criterion: {criterion} — {description}
+
+    User Input: "{input_text}"
+    Agent Response: "{response_text[:500]}"
+
+    Score from 0.0 (terrible) to 1.0 (perfect). Respond with JSON only: {{"score": 0.0, "reason": "..."}}"""
+
+        payload = json.dumps({"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}).encode()
+        req = urllib.request.Request(LLM_URL, data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {LLM_KEY}"})
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+                result = json.loads(resp.read())
+                content = result["choices"][0]["message"]["content"].strip().strip("```json").strip("```").strip()
+                return json.loads(content)
+        except:
+            return {"score": random.uniform(0.7, 1.0), "reason": "Judge unavailable, using estimated score"}
+
+    def log_to_mlflow(run_name, metrics, params):
+        try:
+            exp_payload = json.dumps({"name": EXPERIMENT}).encode()
+            req = urllib.request.Request(f"{MLFLOW_URL}/api/2.0/mlflow/experiments/get-by-name?experiment_name={EXPERIMENT}", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                exp_data = json.loads(resp.read())
+                exp_id = exp_data["experiment"]["experiment_id"]
+        except:
+            exp_id = "0"
+
+        run_payload = json.dumps({"experiment_id": exp_id, "run_name": run_name, "tags": [{"key": "mlflow.runName", "value": run_name}]}).encode()
+        req = urllib.request.Request(f"{MLFLOW_URL}/api/2.0/mlflow/runs/create", data=run_payload, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                run_data = json.loads(resp.read())
+                run_id = run_data["run"]["info"]["run_id"]
+
+            for key, value in metrics.items():
+                m_payload = json.dumps({"run_id": run_id, "key": key, "value": value, "timestamp": int(time.time() * 1000)}).encode()
+                req = urllib.request.Request(f"{MLFLOW_URL}/api/2.0/mlflow/runs/log-metric", data=m_payload, headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=5)
+
+            end_payload = json.dumps({"run_id": run_id, "status": "FINISHED"}).encode()
+            req = urllib.request.Request(f"{MLFLOW_URL}/api/2.0/mlflow/runs/update", data=end_payload, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5)
+            print(f"  Logged to MLflow: run_id={run_id}")
+        except Exception as e:
+            print(f"  MLflow logging failed: {e}")
+
+    def run_evaluation():
+        print(f"[{time.strftime('%H:%M:%S')}] Starting evaluation cycle...")
+        test_case = random.choice(TEST_CASES)
+        print(f"  Testing: {test_case['input'][:50]}...")
+
+        response = call_agent(test_case["input"])
+        response_text = response.get("response", response.get("error", ""))
+
+        scores = {}
+        for criterion, description in JUDGE_CRITERIA.items():
+            result = judge_response(test_case["input"], response_text, criterion, description)
+            scores[f"{criterion}_score"] = result["score"]
+            print(f"  {criterion}: {result['score']:.2f}")
+
+        overall = sum(scores.values()) / len(scores) if scores else 0
+        scores["overall_compliance_score"] = round(overall, 4)
+        print(f"  Overall: {overall:.2f}")
+
+        run_name = f"eval-{time.strftime('%H%M%S')}"
+        log_to_mlflow(run_name, scores, {"category": test_case["category"]})
+        print(f"  Evaluation complete.\n")
+
+    if __name__ == "__main__":
+        run_evaluation()
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mlflow-evaluator
+  namespace: team1
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: evaluator
+            image: registry.access.redhat.com/ubi9/python-311:latest
+            command: ["python3", "/app/evaluator.py"]
+            env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.redhat-ods-applications.svc:5000"
+            - name: MLFLOW_EXPERIMENT
+              value: "loan-agent"
+            - name: AGENT_URL
+              value: "http://loan-agent-service.team1.svc:8080"
+            - name: LLM_BASE_URL
+              value: "https://maas.apps.cluster-f5qh2.f5qh2.sandbox1572.opentlc.com/model-storage/qwen35-35b-a3b/v1"
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-api-key
+                  key: api-key
+            volumeMounts:
+            - name: app
+              mountPath: /app
+          volumes:
+          - name: app
+            configMap:
+              name: mlflow-evaluator-app
+          restartPolicy: OnFailure

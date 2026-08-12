@@ -1,0 +1,1186 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: policy-agent
+  namespace: kagenti-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: policy-agent-role
+rules:
+- apiGroups: ["agent.kagenti.dev"]
+  resources: ["authorizationpolicies", "agentruntimes"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["namespaces", "services", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: policy-agent-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: policy-agent-role
+subjects:
+- kind: ServiceAccount
+  name: policy-agent
+  namespace: kagenti-system
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: policy-agent-audit
+  namespace: kagenti-system
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deepseek-api-key
+  namespace: kagenti-system
+type: Opaque
+stringData:
+  DEEPSEEK_API_KEY: "REPLACE-WITH-YOUR-API-KEY"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-agent-system-prompt
+  namespace: kagenti-system
+data:
+  system_prompt.txt: |
+    You are the Policy Governance Agent for DBS Bank's AI platform (Red Hat OpenShift AI).
+    You help compliance officers create, modify, simulate, and audit OPA Rego policies that govern AI banking agents.
+
+    CRITICAL RULES:
+    - NEVER apply a policy without explicit officer confirmation (they must say "approve" or click Approve)
+    - ALWAYS present policies in plain English before asking for confirmation
+    - ALWAYS show which agents and tools are affected
+    - ALWAYS specify the scope (Global, Namespace, or Client)
+
+    AVAILABLE SCOPES:
+    - Global: applies to ALL agents in ALL namespaces. Cannot be overridden. Use for compliance/regulatory rules.
+    - Namespace: applies to all agents in a specific team namespace. Use for team-level business rules.
+    - Client: applies to one specific agent. Use for per-agent tool restrictions.
+
+    ENFORCEMENT ORDER: Global AND Namespace AND Client must ALL allow. Deny at any level = BLOCKED.
+
+    AVAILABLE NAMESPACES AND AGENTS:
+    {agents_context}
+
+    AVAILABLE MCP TOOLS:
+    {tools_context}
+
+    BANKING CONTEXT:
+    - Currency: SGD (Singapore Dollars)
+    - Regulator: MAS (Monetary Authority of Singapore)
+    - Exchange: SGX (Singapore Exchange), hours Mon-Fri 09:00-17:00 SGT
+    - PII patterns: Singapore NRIC ([STFG]\d{7}[A-Z]), credit cards (\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4})
+    - Roles: relationship_manager, kyc_officer, fraud_investigator, compliance_officer
+
+    REGO GENERATION RULES:
+    When generating Rego policies, follow this pattern:
+    - Package name: kagenti.<scope>.<policy_name_snake_case>
+    - Always use: default allow := false
+    - Use "deny contains msg if {...}" for denial rules with human-readable messages
+    - End with: allow if count(deny) == 0
+    - Input fields available: input.agent, input.role, input.tool, input.args, input.user, input.groups, input.timestamp
+
+    RESPONSE FORMAT:
+    When proposing policies, use this JSON structure in your response (wrapped in ```policy``` code blocks):
+    ```policy
+    {
+      "action": "create|modify|disable|enable",
+      "policies": [
+        {
+          "name": "kebab-case-name",
+          "scope": "global|namespace|client",
+          "namespace": "team1",
+          "client_id": "agent-name",
+          "description": "Plain English description",
+          "rego": "the rego code",
+          "affected_agents": ["agent1", "agent2"],
+          "affected_tools": ["tool1", "tool2"]
+        }
+      ]
+    }
+    ```
+
+    For simulations, respond with a ```simulation``` block:
+    ```simulation
+    {
+      "input": {"agent": "...", "role": "...", "tool": "...", "args": {...}},
+      "result": "allow|deny",
+      "reason": "explanation",
+      "policy": "policy-name"
+    }
+    ```
+
+    For audit queries, respond with a ```audit``` block:
+    ```audit
+    {
+      "query": "recent|by_officer|by_policy|by_date|integrity_check|export",
+      "filters": {}
+    }
+    ```
+
+    When listing policies, respond with a ```list``` block:
+    ```list
+    {"scope": "all|global|namespace|client", "namespace": "team1"}
+    ```
+
+    ALWAYS include a human-readable explanation BEFORE any code block. The officer should understand what will happen without reading JSON.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-agent-app
+  namespace: kagenti-system
+data:
+  app.py: |
+    import json, os, ssl, hashlib, sqlite3, time, re, csv, io
+    import urllib.request
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from datetime import datetime, timezone, timedelta
+    from pathlib import Path
+
+    SGT = timezone(timedelta(hours=8))
+    DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+    DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+    DEEPSEEK_MODEL = "deepseek-chat"
+    K8S_API = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+    K8S_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    DB_PATH = "/data/audit.db"
+    SYSTEM_PROMPT_PATH = "/config/system_prompt.txt"
+
+    def _k8s_token():
+        with open(TOKEN_PATH) as f:
+            return f.read().strip()
+
+    def _k8s_request(method, path, body=None):
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        url = f"https://{K8S_API}:{K8S_PORT}{path}"
+        data = json.dumps(body).encode() if body else None
+        req = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {_k8s_token()}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            return {"error": f"{e.code}: {err_body[:500]}"}
+
+    def _k8s_get(path):
+        return _k8s_request("GET", path)
+
+    def _k8s_post(path, body):
+        return _k8s_request("POST", path, body)
+
+    def _k8s_put(path, body):
+        return _k8s_request("PUT", path, body)
+
+    def _k8s_patch(path, body):
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        url = f"https://{K8S_API}:{K8S_PORT}{path}"
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, method="PATCH", headers={
+            "Authorization": f"Bearer {_k8s_token()}",
+            "Accept": "application/json",
+            "Content-Type": "application/merge-patch+json",
+        })
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            return {"error": f"{e.code}: {err_body[:500]}"}
+
+    def _k8s_delete(path):
+        return _k8s_request("DELETE", path)
+
+    # --- Audit Engine ---
+    class AuditEngine:
+        def __init__(self, db_path):
+            self.db_path = db_path
+            self._init_db()
+
+        def _init_db(self):
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("""CREATE TABLE IF NOT EXISTS audit_log (
+                id TEXT PRIMARY KEY,
+                sequence INTEGER UNIQUE,
+                timestamp TEXT NOT NULL,
+                officer TEXT NOT NULL,
+                action TEXT NOT NULL,
+                policy_name TEXT,
+                policy_scope TEXT,
+                policy_version INTEGER,
+                description TEXT,
+                details TEXT,
+                previous_hash TEXT,
+                record_hash TEXT
+            )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS policy_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_name TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                scope TEXT,
+                rego TEXT,
+                description TEXT,
+                parameters TEXT,
+                created_at TEXT,
+                created_by TEXT,
+                UNIQUE(policy_name, version)
+            )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS simulations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                officer TEXT,
+                input_data TEXT,
+                result TEXT,
+                reason TEXT,
+                policy_name TEXT
+            )""")
+            conn.commit()
+            conn.close()
+
+        def _get_last_hash(self):
+            conn = sqlite3.connect(self.db_path)
+            row = conn.execute("SELECT record_hash FROM audit_log ORDER BY sequence DESC LIMIT 1").fetchone()
+            conn.close()
+            return row[0] if row else "GENESIS"
+
+        def _get_next_sequence(self):
+            conn = sqlite3.connect(self.db_path)
+            row = conn.execute("SELECT MAX(sequence) FROM audit_log").fetchone()
+            conn.close()
+            return (row[0] or 0) + 1
+
+        def _compute_hash(self, record_data, previous_hash):
+            payload = json.dumps(record_data, sort_keys=True) + previous_hash
+            return hashlib.sha256(payload.encode()).hexdigest()
+
+        def log_event(self, officer, action, policy_name=None, policy_scope=None,
+                      policy_version=None, description=None, details=None):
+            seq = self._get_next_sequence()
+            prev_hash = self._get_last_hash()
+            ts = datetime.now(SGT).isoformat()
+            record_id = f"aud-{ts.replace(':','').replace('-','').replace('+','')[:18]}{seq:04d}"
+
+            record_data = {
+                "id": record_id, "sequence": seq, "timestamp": ts,
+                "officer": officer, "action": action,
+                "policy_name": policy_name, "policy_scope": policy_scope,
+                "policy_version": policy_version, "description": description,
+            }
+            record_hash = self._compute_hash(record_data, prev_hash)
+
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                "INSERT INTO audit_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (record_id, seq, ts, officer, action, policy_name, policy_scope,
+                 policy_version, description, json.dumps(details) if details else None,
+                 prev_hash, record_hash)
+            )
+            conn.commit()
+            conn.close()
+            return {"id": record_id, "sequence": seq}
+
+        def save_policy_version(self, policy_name, version, scope, rego, description, parameters, officer):
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO policy_versions VALUES (NULL,?,?,?,?,?,?,?,?)",
+                (policy_name, version, scope, rego, description,
+                 json.dumps(parameters) if parameters else None,
+                 datetime.now(SGT).isoformat(), officer)
+            )
+            conn.commit()
+            conn.close()
+
+        def log_simulation(self, officer, input_data, result, reason, policy_name):
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                "INSERT INTO simulations VALUES (NULL,?,?,?,?,?,?)",
+                (datetime.now(SGT).isoformat(), officer, json.dumps(input_data),
+                 result, reason, policy_name)
+            )
+            conn.commit()
+            conn.close()
+
+        def get_audit_trail(self, limit=20, officer=None, policy_name=None, date_from=None, date_to=None):
+            conn = sqlite3.connect(self.db_path)
+            query = "SELECT * FROM audit_log WHERE 1=1"
+            params = []
+            if officer:
+                query += " AND officer LIKE ?"
+                params.append(f"%{officer}%")
+            if policy_name:
+                query += " AND policy_name LIKE ?"
+                params.append(f"%{policy_name}%")
+            if date_from:
+                query += " AND timestamp >= ?"
+                params.append(date_from)
+            if date_to:
+                query += " AND timestamp <= ?"
+                params.append(date_to)
+            query += f" ORDER BY sequence DESC LIMIT {limit}"
+            rows = conn.execute(query, params).fetchall()
+            conn.close()
+            cols = ["id","sequence","timestamp","officer","action","policy_name",
+                    "policy_scope","policy_version","description","details","previous_hash","record_hash"]
+            return [dict(zip(cols, r)) for r in rows]
+
+        def verify_integrity(self):
+            conn = sqlite3.connect(self.db_path)
+            rows = conn.execute("SELECT * FROM audit_log ORDER BY sequence ASC").fetchall()
+            conn.close()
+            if not rows:
+                return {"valid": True, "records_checked": 0}
+            cols = ["id","sequence","timestamp","officer","action","policy_name",
+                    "policy_scope","policy_version","description","details","previous_hash","record_hash"]
+            prev_hash = "GENESIS"
+            for row in rows:
+                rec = dict(zip(cols, row))
+                record_data = {
+                    "id": rec["id"], "sequence": rec["sequence"], "timestamp": rec["timestamp"],
+                    "officer": rec["officer"], "action": rec["action"],
+                    "policy_name": rec["policy_name"], "policy_scope": rec["policy_scope"],
+                    "policy_version": rec["policy_version"], "description": rec["description"],
+                }
+                expected_hash = self._compute_hash(record_data, prev_hash)
+                if rec["record_hash"] != expected_hash:
+                    return {"valid": False, "broken_at": rec["sequence"], "record_id": rec["id"]}
+                if rec["previous_hash"] != prev_hash:
+                    return {"valid": False, "broken_at": rec["sequence"], "record_id": rec["id"]}
+                prev_hash = rec["record_hash"]
+            return {"valid": True, "records_checked": len(rows)}
+
+        def export_csv(self, date_from=None, date_to=None):
+            records = self.get_audit_trail(limit=10000, date_from=date_from, date_to=date_to)
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=["timestamp","officer","action","policy_name","policy_scope","policy_version","description"])
+            writer.writeheader()
+            for r in records:
+                writer.writerow({k: r.get(k,"") for k in writer.fieldnames})
+            return output.getvalue()
+
+        def get_policy_versions(self, policy_name):
+            conn = sqlite3.connect(self.db_path)
+            rows = conn.execute(
+                "SELECT * FROM policy_versions WHERE policy_name=? ORDER BY version DESC",
+                (policy_name,)
+            ).fetchall()
+            conn.close()
+            cols = ["id","policy_name","version","scope","rego","description","parameters","created_at","created_by"]
+            return [dict(zip(cols, r)) for r in rows]
+
+    # --- Policy Manager ---
+    class PolicyManager:
+        CRD_GROUP = "agent.kagenti.dev"
+        CRD_VERSION = "v1alpha1"
+        CRD_PLURAL = "authorizationpolicies"
+
+        def __init__(self, audit: AuditEngine):
+            self.audit = audit
+
+        def list_policies(self, namespace=None):
+            if namespace:
+                path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/namespaces/{namespace}/{self.CRD_PLURAL}"
+            else:
+                path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/{self.CRD_PLURAL}"
+            result = _k8s_get(path)
+            if "error" in result:
+                return []
+            return result.get("items", [])
+
+        def get_policy(self, name, namespace):
+            path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/namespaces/{namespace}/{self.CRD_PLURAL}/{name}"
+            return _k8s_get(path)
+
+        def create_policy(self, name, namespace, scope, rego, description, officer,
+                          affected_agents=None, affected_tools=None):
+            now = datetime.now(SGT).isoformat()
+            rego_path = f"{scope}/{name.replace('-','_')}.rego"
+            body = {
+                "apiVersion": f"{self.CRD_GROUP}/{self.CRD_VERSION}",
+                "kind": "AuthorizationPolicy",
+                "metadata": {
+                    "name": name,
+                    "namespace": namespace,
+                    "annotations": {
+                        "policy.kagenti.dev/created-by": officer,
+                        "policy.kagenti.dev/created-at": now,
+                        "policy.kagenti.dev/version": "1",
+                        "policy.kagenti.dev/description": description,
+                        "policy.kagenti.dev/status": "active",
+                        "policy.kagenti.dev/affected-agents": json.dumps(affected_agents or []),
+                        "policy.kagenti.dev/affected-tools": json.dumps(affected_tools or []),
+                    }
+                },
+                "spec": {
+                    "scope": scope,
+                    "policies": [{"path": rego_path, "content": rego}],
+                }
+            }
+            if scope == "client" and affected_agents:
+                body["spec"]["clientID"] = affected_agents[0]
+
+            path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/namespaces/{namespace}/{self.CRD_PLURAL}"
+            result = _k8s_post(path, body)
+
+            if "error" not in result:
+                audit_rec = self.audit.log_event(
+                    officer=officer, action="POLICY_CREATED", policy_name=name,
+                    policy_scope=f"{scope}:{namespace}", policy_version=1,
+                    description=description,
+                    details={"affected_agents": affected_agents, "affected_tools": affected_tools}
+                )
+                self.audit.save_policy_version(name, 1, scope, rego, description, None, officer)
+                return {"success": True, "audit": audit_rec}
+            return {"success": False, "error": result.get("error")}
+
+        def modify_policy(self, name, namespace, rego, description, officer,
+                          affected_agents=None, affected_tools=None):
+            existing = self.get_policy(name, namespace)
+            if "error" in existing:
+                return {"success": False, "error": "Policy not found"}
+
+            annotations = existing.get("metadata", {}).get("annotations", {})
+            old_version = int(annotations.get("policy.kagenti.dev/version", "0"))
+            new_version = old_version + 1
+            old_description = annotations.get("policy.kagenti.dev/description", "")
+            policies_list = existing.get("spec", {}).get("policies", [])
+            old_rego = policies_list[0].get("content", "") if policies_list else ""
+
+            annotations["policy.kagenti.dev/version"] = str(new_version)
+            annotations["policy.kagenti.dev/description"] = description
+            annotations["policy.kagenti.dev/modified-by"] = officer
+            annotations["policy.kagenti.dev/modified-at"] = datetime.now(SGT).isoformat()
+            if affected_agents:
+                annotations["policy.kagenti.dev/affected-agents"] = json.dumps(affected_agents)
+            if affected_tools:
+                annotations["policy.kagenti.dev/affected-tools"] = json.dumps(affected_tools)
+
+            existing["metadata"]["annotations"] = annotations
+            rego_path = f"{existing['spec'].get('scope','client')}/{name.replace('-','_')}.rego"
+            existing["spec"]["policies"] = [{"path": rego_path, "content": rego}]
+
+            path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/namespaces/{namespace}/{self.CRD_PLURAL}/{name}"
+            result = _k8s_put(path, existing)
+
+            if "error" not in result:
+                audit_rec = self.audit.log_event(
+                    officer=officer, action="POLICY_MODIFIED", policy_name=name,
+                    policy_scope=annotations.get("policy.kagenti.dev/scope", namespace),
+                    policy_version=new_version, description=description,
+                    details={"old_description": old_description, "old_version": old_version,
+                             "diff": {"rego_changed": old_rego != rego}}
+                )
+                self.audit.save_policy_version(name, new_version, None, rego, description, None, officer)
+                return {"success": True, "audit": audit_rec, "version": new_version}
+            return {"success": False, "error": result.get("error")}
+
+        def disable_policy(self, name, namespace, officer):
+            existing = self.get_policy(name, namespace)
+            if "error" in existing:
+                return {"success": False, "error": "Policy not found"}
+            annotations = existing.get("metadata", {}).get("annotations", {})
+            annotations["policy.kagenti.dev/status"] = "disabled"
+            annotations["policy.kagenti.dev/disabled-by"] = officer
+            annotations["policy.kagenti.dev/disabled-at"] = datetime.now(SGT).isoformat()
+            existing["metadata"]["annotations"] = annotations
+            path = f"/apis/{self.CRD_GROUP}/{self.CRD_VERSION}/namespaces/{namespace}/{self.CRD_PLURAL}/{name}"
+            result = _k8s_put(path, existing)
+            if "error" not in result:
+                self.audit.log_event(officer=officer, action="POLICY_DISABLED", policy_name=name,
+                                     policy_scope=namespace, description=f"Disabled by {officer}")
+                return {"success": True}
+            return {"success": False, "error": result.get("error")}
+
+        def list_agents(self):
+            path = "/apis/agent.kagenti.dev/v1alpha1/agentruntimes"
+            result = _k8s_get(path)
+            if "error" in result:
+                return []
+            agents = []
+            for item in result.get("items", []):
+                meta = item.get("metadata", {})
+                agents.append({"name": meta.get("name"), "namespace": meta.get("namespace"),
+                               "type": item.get("spec", {}).get("type", "")})
+            return agents
+
+    # --- DeepSeek Client ---
+    class DeepSeekClient:
+        def __init__(self, api_key, model=DEEPSEEK_MODEL):
+            self.api_key = api_key
+            self.model = model
+
+        def chat(self, messages):
+            body = {"model": self.model, "messages": messages, "temperature": 0.3, "max_tokens": 4000}
+            data = json.dumps(body).encode()
+            req = urllib.request.Request(DEEPSEEK_URL, data=data, method="POST", headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            })
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    resp = json.loads(r.read())
+                    return resp["choices"][0]["message"]["content"]
+            except Exception as e:
+                return f"Error calling DeepSeek: {str(e)}"
+
+    # --- Conversation Handler ---
+    class ConversationHandler:
+        def __init__(self, llm: DeepSeekClient, policy_mgr: PolicyManager, audit: AuditEngine):
+            self.llm = llm
+            self.policy_mgr = policy_mgr
+            self.audit = audit
+            self.conversations = {}
+            self.system_prompt = self._load_system_prompt()
+
+        def _load_system_prompt(self):
+            try:
+                with open(SYSTEM_PROMPT_PATH) as f:
+                    template = f.read()
+            except FileNotFoundError:
+                template = "You are a policy governance agent."
+            agents = self.policy_mgr.list_agents()
+            agents_ctx = "\n".join([f"- {a['name']} (namespace: {a['namespace']}, type: {a['type']})" for a in agents]) or "No agents registered yet."
+            tools_ctx = "credit_check, kyc_verify, loan_calculate, send_notification, execute_trade, place_order, modify_order, fraud_score_transaction, loan_approve, corebank_get_customer, corebank_get_portfolio, sanctions_screen_entity"
+            return template.replace("{agents_context}", agents_ctx).replace("{tools_context}", tools_ctx)
+
+        def handle_message(self, session_id, user_message, officer_name="Compliance Officer"):
+            if session_id not in self.conversations:
+                self.conversations[session_id] = []
+
+            self.conversations[session_id].append({"role": "user", "content": user_message})
+            messages = [{"role": "system", "content": self.system_prompt}] + self.conversations[session_id][-20:]
+            response = self.llm.chat(messages)
+            self.conversations[session_id].append({"role": "assistant", "content": response})
+            result = {"response": response, "actions": []}
+
+            policy_blocks = re.findall(r'```policy\s*\n(.*?)\n```', response, re.DOTALL)
+            simulation_blocks = re.findall(r'```simulation\s*\n(.*?)\n```', response, re.DOTALL)
+            audit_blocks = re.findall(r'```audit\s*\n(.*?)\n```', response, re.DOTALL)
+            list_blocks = re.findall(r'```list\s*\n(.*?)\n```', response, re.DOTALL)
+
+            if policy_blocks:
+                for block in policy_blocks:
+                    try:
+                        action_data = json.loads(block)
+                        result["actions"].append({"type": "policy_proposal", "data": action_data})
+                    except json.JSONDecodeError:
+                        pass
+
+            if simulation_blocks:
+                for block in simulation_blocks:
+                    try:
+                        sim_data = json.loads(block)
+                        self.audit.log_simulation(officer_name, sim_data.get("input", {}),
+                                                  sim_data.get("result", ""), sim_data.get("reason", ""),
+                                                  sim_data.get("policy", ""))
+                        result["actions"].append({"type": "simulation", "data": sim_data})
+                    except json.JSONDecodeError:
+                        pass
+
+            if audit_blocks:
+                for block in audit_blocks:
+                    try:
+                        audit_query = json.loads(block)
+                        audit_result = self._handle_audit_query(audit_query)
+                        result["actions"].append({"type": "audit_result", "data": audit_result})
+                    except json.JSONDecodeError:
+                        pass
+
+            if list_blocks:
+                for block in list_blocks:
+                    try:
+                        list_query = json.loads(block)
+                        policies = self._handle_list_query(list_query)
+                        result["actions"].append({"type": "policy_list", "data": policies})
+                    except json.JSONDecodeError:
+                        pass
+
+            return result
+
+        def approve_policy(self, action_data, officer_name):
+            results = []
+            action = action_data.get("action", "create")
+            for policy in action_data.get("policies", []):
+                name = policy.get("name", "unnamed-policy")
+                scope = policy.get("scope", "namespace")
+                namespace = policy.get("namespace", "team1")
+                if scope == "global":
+                    namespace = "kagenti-system"
+                rego = policy.get("rego", "")
+                description = policy.get("description", "")
+                affected_agents = policy.get("affected_agents", [])
+                affected_tools = policy.get("affected_tools", [])
+
+                if action == "create":
+                    res = self.policy_mgr.create_policy(
+                        name, namespace, scope, rego, description, officer_name,
+                        affected_agents, affected_tools)
+                elif action == "modify":
+                    res = self.policy_mgr.modify_policy(
+                        name, namespace, rego, description, officer_name,
+                        affected_agents, affected_tools)
+                elif action == "disable":
+                    res = self.policy_mgr.disable_policy(name, namespace, officer_name)
+                else:
+                    res = {"success": False, "error": f"Unknown action: {action}"}
+                results.append({"policy": name, "result": res})
+            return results
+
+        def _handle_audit_query(self, query):
+            q_type = query.get("query", "recent")
+            filters = query.get("filters", {})
+            if q_type == "integrity_check":
+                return self.audit.verify_integrity()
+            elif q_type == "export":
+                csv_data = self.audit.export_csv(filters.get("date_from"), filters.get("date_to"))
+                return {"csv": csv_data, "record_count": csv_data.count("\n") - 1}
+            else:
+                return self.audit.get_audit_trail(
+                    limit=filters.get("limit", 20),
+                    officer=filters.get("officer"),
+                    policy_name=filters.get("policy_name"),
+                    date_from=filters.get("date_from"),
+                    date_to=filters.get("date_to"))
+
+        def _handle_list_query(self, query):
+            scope = query.get("scope", "all")
+            namespace = query.get("namespace")
+            policies = self.policy_mgr.list_policies(namespace)
+            result = []
+            for p in policies:
+                meta = p.get("metadata", {})
+                annotations = meta.get("annotations", {})
+                result.append({
+                    "name": meta.get("name"),
+                    "namespace": meta.get("namespace"),
+                    "scope": p.get("spec", {}).get("scope", "unknown"),
+                    "description": annotations.get("policy.kagenti.dev/description", ""),
+                    "status": annotations.get("policy.kagenti.dev/status", "active"),
+                    "version": annotations.get("policy.kagenti.dev/version", "1"),
+                    "created_by": annotations.get("policy.kagenti.dev/created-by", ""),
+                    "created_at": annotations.get("policy.kagenti.dev/created-at", ""),
+                })
+            return result
+
+    # --- HTTP Server ---
+    audit_engine = AuditEngine(DB_PATH)
+    policy_mgr = PolicyManager(audit_engine)
+    llm_client = DeepSeekClient(DEEPSEEK_KEY)
+    conversation_handler = ConversationHandler(llm_client, policy_mgr, audit_engine)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                self._json_response(200, {"status": "ok"})
+            elif self.path == "/api/policies":
+                policies = conversation_handler._handle_list_query({"scope": "all"})
+                self._json_response(200, policies)
+            elif self.path == "/api/audit":
+                trail = audit_engine.get_audit_trail()
+                self._json_response(200, trail)
+            elif self.path == "/api/audit/integrity":
+                result = audit_engine.verify_integrity()
+                self._json_response(200, result)
+            elif self.path.startswith("/api/audit/export"):
+                csv_data = audit_engine.export_csv()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Disposition", "attachment; filename=policy-audit.csv")
+                self.end_headers()
+                self.wfile.write(csv_data.encode())
+            elif self.path == "/" or self.path == "/index.html":
+                self._serve_file("/ui/index.html", "text/html")
+            else:
+                self._json_response(404, {"error": "not found"})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+
+            if self.path == "/api/chat":
+                session_id = body.get("session_id", "default")
+                message = body.get("message", "")
+                officer = body.get("officer", "Compliance Officer")
+                result = conversation_handler.handle_message(session_id, message, officer)
+                self._json_response(200, result)
+
+            elif self.path == "/api/approve":
+                action_data = body.get("action_data", {})
+                officer = body.get("officer", "Compliance Officer")
+                results = conversation_handler.approve_policy(action_data, officer)
+                self._json_response(200, {"results": results})
+
+            elif self.path == "/api/simulate":
+                input_data = body.get("input", {})
+                officer = body.get("officer", "Compliance Officer")
+                policies = policy_mgr.list_policies()
+                sim_result = {"result": "allow", "reason": "No matching deny rule", "policy": "none"}
+                for p in policies:
+                    policies_list = p.get("spec", {}).get("policies", [])
+                    rego = policies_list[0].get("content", "") if policies_list else ""
+                    tool_name = input_data.get("tool", "")
+                    if tool_name in rego:
+                        role = input_data.get("role", "")
+                        if role in rego:
+                            amount = input_data.get("args", {}).get("amount_sgd", 0)
+                            limit_match = re.search(r'>\s*(\d+)', rego)
+                            if limit_match and int(amount) > int(limit_match.group(1)):
+                                sim_result = {
+                                    "result": "deny",
+                                    "reason": f"Transaction SGD {amount:,} exceeds limit of SGD {int(limit_match.group(1)):,}",
+                                    "policy": p["metadata"]["name"]
+                                }
+                                break
+                audit_engine.log_simulation(officer, input_data, sim_result["result"],
+                                           sim_result["reason"], sim_result["policy"])
+                self._json_response(200, sim_result)
+            else:
+                self._json_response(404, {"error": "not found"})
+
+        def _json_response(self, code, data):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+
+        def _serve_file(self, path, content_type):
+            try:
+                with open(path) as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.end_headers()
+                self.wfile.write(content.encode())
+            except FileNotFoundError:
+                self._json_response(404, {"error": "file not found"})
+
+        def do_OPTIONS(self):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def log_message(self, fmt, *args):
+            pass
+
+    if __name__ == "__main__":
+        port = int(os.environ.get("PORT", "8080"))
+        print(f"Policy Agent starting on :{port}")
+        print(f"DeepSeek model: {DEEPSEEK_MODEL}")
+        print(f"Audit DB: {DB_PATH}")
+        HTTPServer(("", port), Handler).serve_forever()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-agent-ui
+  namespace: kagenti-system
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Red Hat OpenShift AI — Policy Governance</title>
+    <style>
+    :root{--rh-red:#ee0000;--bg:#151515;--surface:#1f1f1f;--surface2:#2a2a2a;--text:#e8e8e8;--muted:#9a9a9a;--border:#3a3a3a;--green:#22bb33;--yellow:#f0ab00;--blue:#0066cc;--red:#cc0000;--font:'Red Hat Text',-apple-system,BlinkMacSystemFont,sans-serif}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+    header{background:#000;border-bottom:3px solid var(--rh-red);padding:12px 24px;display:flex;align-items:center;gap:16px}
+    header .logo{display:flex;align-items:center;gap:10px}
+    header .logo svg{width:36px;height:36px}
+    header .logo span{font-size:16px;font-weight:700;color:var(--text)}
+    header .subtitle{font-size:13px;color:var(--muted);margin-left:8px;border-left:1px solid var(--border);padding-left:12px}
+    .main{flex:1;display:flex;overflow:hidden}
+    .sidebar{width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+    .sidebar h3{padding:16px;font-size:13px;text-transform:uppercase;color:var(--muted);letter-spacing:0.5px;border-bottom:1px solid var(--border)}
+    .sidebar .policy-item{padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s}
+    .sidebar .policy-item:hover{background:var(--surface2)}
+    .sidebar .policy-item .name{font-size:13px;font-weight:600;margin-bottom:4px}
+    .sidebar .policy-item .meta{font-size:11px;color:var(--muted)}
+    .sidebar .policy-item .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:8px;margin-right:4px}
+    .badge-active{background:#1a3a1a;color:var(--green)}
+    .badge-disabled{background:#2a2a2a;color:var(--muted)}
+    .badge-global{background:#3a1a1a;color:#ff6666}
+    .badge-namespace{background:#1a2a3a;color:#66aaff}
+    .badge-client{background:#2a2a1a;color:#ccaa44}
+    .chat-area{flex:1;display:flex;flex-direction:column}
+    .messages{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:16px}
+    .msg{max-width:85%;padding:14px 18px;border-radius:12px;font-size:14px;line-height:1.6;white-space:pre-wrap}
+    .msg-user{align-self:flex-end;background:var(--blue);color:#fff;border-bottom-right-radius:4px}
+    .msg-agent{align-self:flex-start;background:var(--surface2);border:1px solid var(--border);border-bottom-left-radius:4px}
+    .msg-agent .policy-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin:10px 0}
+    .msg-agent .policy-card h4{font-size:13px;color:var(--green);margin-bottom:6px}
+    .msg-agent .policy-card p{font-size:12px;color:var(--muted);margin:2px 0}
+    .msg-agent .actions{display:flex;gap:8px;margin-top:12px}
+    .btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all .15s}
+    .btn-approve{background:var(--green);color:#fff}
+    .btn-approve:hover{background:#33cc44}
+    .btn-modify{background:var(--yellow);color:#000}
+    .btn-cancel{background:var(--surface);color:var(--muted);border:1px solid var(--border)}
+    .btn-cancel:hover{border-color:var(--red);color:var(--red)}
+    .input-area{padding:16px 24px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:12px}
+    .input-area input{flex:1;padding:12px 16px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;font-family:var(--font)}
+    .input-area input:focus{outline:none;border-color:var(--blue)}
+    .input-area button{padding:12px 24px;border-radius:8px;background:var(--rh-red);color:#fff;border:none;font-size:14px;font-weight:600;cursor:pointer}
+    .input-area button:hover{background:#ff2222}
+    .input-area button:disabled{background:var(--surface2);color:var(--muted);cursor:not-allowed}
+    .audit-table{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+    .audit-table th,.audit-table td{padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)}
+    .audit-table th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:10px}
+    .sim-result{padding:12px;border-radius:8px;margin:8px 0;font-weight:600}
+    .sim-blocked{background:#3a1a1a;color:#ff4444;border:1px solid #cc0000}
+    .sim-allowed{background:#1a3a1a;color:#44ff44;border:1px solid #22bb33}
+    .typing{color:var(--muted);font-size:12px;padding:4px 18px}
+    .integrity-ok{color:var(--green)}
+    .integrity-fail{color:var(--red)}
+    @media(max-width:768px){.sidebar{display:none}.msg{max-width:95%}}
+    </style>
+    </head>
+    <body>
+    <header>
+      <div class="logo">
+        <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M18 2C9.16 2 2 9.16 2 18s7.16 16 16 16 16-7.16 16-16S26.84 2 18 2z" fill="#ee0000"/>
+          <path d="M26.5 14.5c0-2.5-2-4.5-4.5-4.5h-8c-2.5 0-4.5 2-4.5 4.5v7c0 2.5 2 4.5 4.5 4.5h8c2.5 0 4.5-2 4.5-4.5v-7z" fill="#fff" fill-opacity=".9"/>
+          <path d="M14 16h8M14 19h5" stroke="#ee0000" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span>Red Hat OpenShift AI</span>
+      </div>
+      <span class="subtitle">Policy Governance Agent</span>
+    </header>
+    <div class="main">
+      <div class="sidebar" id="sidebar">
+        <h3>Active Policies</h3>
+        <div id="policyList"><div class="policy-item"><div class="meta">Loading...</div></div></div>
+      </div>
+      <div class="chat-area">
+        <div class="messages" id="messages">
+          <div class="msg msg-agent">Welcome to the Policy Governance Agent. I help you create, modify, simulate, and audit OPA policies that govern your AI banking agents.
+
+    Try asking me:
+    • "Show me all active policies"
+    • "Block RMs from approving loans above SGD 500K"
+    • "Simulate a RM trying a 600K transaction"
+    • "Show me the audit trail"
+    • "Verify audit integrity"</div>
+        </div>
+        <div id="approvalArea"></div>
+        <div class="input-area">
+          <input type="text" id="chatInput" placeholder="Describe your policy requirement..." autocomplete="off"/>
+          <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+    </div>
+    <script>
+    const API_BASE = '';
+    let sessionId = 'session-' + Date.now();
+    let officerName = 'Compliance Officer';
+    let pendingAction = null;
+
+    document.getElementById('chatInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+
+    async function sendMessage() {
+      const input = document.getElementById('chatInput');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+      addMessage(msg, 'user');
+      document.getElementById('sendBtn').disabled = true;
+      try {
+        const resp = await fetch(API_BASE + '/api/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({session_id: sessionId, message: msg, officer: officerName})
+        });
+        const data = await resp.json();
+        renderAgentResponse(data);
+      } catch (err) {
+        addMessage('Error: ' + err.message, 'agent');
+      }
+      document.getElementById('sendBtn').disabled = false;
+      loadPolicies();
+    }
+
+    function renderAgentResponse(data) {
+      const responseText = data.response || '';
+      let displayText = responseText.replace(/```(?:policy|simulation|audit|list)\s*\n[\s\S]*?\n```/g, '').trim();
+
+      const msgEl = addMessage(displayText, 'agent');
+
+      for (const action of (data.actions || [])) {
+        if (action.type === 'policy_proposal') {
+          renderPolicyProposal(msgEl, action.data);
+        } else if (action.type === 'simulation') {
+          renderSimulation(msgEl, action.data);
+        } else if (action.type === 'audit_result') {
+          renderAuditResult(msgEl, action.data);
+        } else if (action.type === 'policy_list') {
+          renderPolicyList(msgEl, action.data);
+        }
+      }
+    }
+
+    function renderPolicyProposal(container, actionData) {
+      pendingAction = actionData;
+      let html = '';
+      for (const p of (actionData.policies || [])) {
+        html += `<div class="policy-card">
+          <h4>${actionData.action === 'modify' ? 'MODIFY' : 'NEW'}: ${p.name}</h4>
+          <p><strong>Scope:</strong> ${p.scope}${p.namespace ? ' (' + p.namespace + ')' : ''}</p>
+          <p><strong>Rule:</strong> ${p.description}</p>
+          <p><strong>Tools:</strong> ${(p.affected_tools||[]).join(', ')}</p>
+          <p><strong>Agents:</strong> ${(p.affected_agents||[]).join(', ')}</p>
+        </div>`;
+      }
+      html += `<div class="actions">
+        <button class="btn btn-approve" onclick="approveAction()">Approve & Activate</button>
+        <button class="btn btn-cancel" onclick="cancelAction()">Cancel</button>
+      </div>`;
+      container.innerHTML += html;
+    }
+
+    function renderSimulation(container, simData) {
+      const cls = simData.result === 'deny' ? 'sim-blocked' : 'sim-allowed';
+      const icon = simData.result === 'deny' ? '🚫 BLOCKED' : '✓ ALLOWED';
+      container.innerHTML += `<div class="sim-result ${cls}">
+        ${icon}<br/>
+        <span style="font-size:12px;font-weight:normal">Policy: ${simData.policy || 'N/A'}<br/>Reason: ${simData.reason || 'N/A'}</span>
+      </div>`;
+    }
+
+    function renderAuditResult(container, auditData) {
+      if (auditData.valid !== undefined) {
+        const cls = auditData.valid ? 'integrity-ok' : 'integrity-fail';
+        const msg = auditData.valid
+          ? `✓ Hash chain VALID (${auditData.records_checked} records verified)`
+          : `✗ INTEGRITY BREACH at record #${auditData.broken_at}`;
+        container.innerHTML += `<p class="${cls}" style="margin-top:8px;font-weight:600">${msg}</p>`;
+        return;
+      }
+      if (auditData.csv) {
+        const blob = new Blob([auditData.csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        container.innerHTML += `<p style="margin-top:8px"><a href="${url}" download="policy-audit.csv" style="color:var(--blue)">📥 Download CSV (${auditData.record_count} records)</a></p>`;
+        return;
+      }
+      if (Array.isArray(auditData) && auditData.length > 0) {
+        let table = '<table class="audit-table"><thead><tr><th>Time</th><th>Officer</th><th>Action</th><th>Policy</th><th>Version</th></tr></thead><tbody>';
+        for (const r of auditData) {
+          const time = r.timestamp ? new Date(r.timestamp).toLocaleString('en-SG', {timeZone:'Asia/Singapore', hour12:false}).slice(0,17) : '';
+          table += `<tr><td>${time}</td><td>${r.officer||''}</td><td>${r.action||''}</td><td>${r.policy_name||''}</td><td>v${r.policy_version||'?'}</td></tr>`;
+        }
+        table += '</tbody></table>';
+        container.innerHTML += table;
+      }
+    }
+
+    function renderPolicyList(container, policies) {
+      if (!policies.length) { container.innerHTML += '<p style="color:var(--muted);margin-top:8px">No policies found.</p>'; return; }
+      let table = '<table class="audit-table"><thead><tr><th>Name</th><th>Scope</th><th>Status</th><th>Description</th></tr></thead><tbody>';
+      for (const p of policies) {
+        const badge = p.status === 'active' ? 'badge-active' : 'badge-disabled';
+        table += `<tr><td>${p.name}</td><td><span class="badge badge-${p.scope}">${p.scope}</span>${p.namespace||''}</td><td><span class="badge ${badge}">${p.status}</span></td><td>${p.description}</td></tr>`;
+      }
+      table += '</tbody></table>';
+      container.innerHTML += table;
+    }
+
+    async function approveAction() {
+      if (!pendingAction) return;
+      addMessage('Approve', 'user');
+      try {
+        const resp = await fetch(API_BASE + '/api/approve', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action_data: pendingAction, officer: officerName})
+        });
+        const data = await resp.json();
+        let summary = '✓ Policies activated:\n';
+        for (const r of (data.results || [])) {
+          if (r.result && r.result.success) {
+            summary += `• ${r.policy} — active (audit #${r.result.audit?.sequence || '?'})\n`;
+          } else {
+            summary += `• ${r.policy} — FAILED: ${r.result?.error || 'unknown error'}\n`;
+          }
+        }
+        addMessage(summary, 'agent');
+      } catch (err) {
+        addMessage('Error approving: ' + err.message, 'agent');
+      }
+      pendingAction = null;
+      loadPolicies();
+    }
+
+    function cancelAction() {
+      pendingAction = null;
+      addMessage('Cancelled.', 'agent');
+    }
+
+    function addMessage(text, role) {
+      const messages = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = `msg msg-${role}`;
+      div.textContent = text;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+      return div;
+    }
+
+    async function loadPolicies() {
+      try {
+        const resp = await fetch(API_BASE + '/api/policies');
+        const policies = await resp.json();
+        const list = document.getElementById('policyList');
+        if (!policies.length) {
+          list.innerHTML = '<div class="policy-item"><div class="meta">No policies yet. Ask me to create one.</div></div>';
+          return;
+        }
+        list.innerHTML = policies.map(p => `
+          <div class="policy-item">
+            <div class="name"><span class="badge badge-${p.scope}">${p.scope}</span> ${p.name}</div>
+            <div class="meta">${p.description || 'No description'}</div>
+          </div>
+        `).join('');
+      } catch(e) {
+        console.error('Failed to load policies', e);
+      }
+    }
+
+    loadPolicies();
+    setInterval(loadPolicies, 30000);
+    </script>
+    </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-agent
+  namespace: kagenti-system
+  labels:
+    app.kubernetes.io/name: policy-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-agent
+    spec:
+      serviceAccountName: policy-agent
+      containers:
+      - name: policy-agent
+        image: registry.access.redhat.com/ubi9/python-311:latest
+        command: ["python3", "/app/app.py"]
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DEEPSEEK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: deepseek-api-key
+              key: DEEPSEEK_API_KEY
+        - name: PORT
+          value: "8080"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: ui
+          mountPath: /ui
+          readOnly: true
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: audit-data
+          mountPath: /data
+      volumes:
+      - name: app
+        configMap:
+          name: policy-agent-app
+      - name: ui
+        configMap:
+          name: policy-agent-ui
+      - name: config
+        configMap:
+          name: policy-agent-system-prompt
+      - name: audit-data
+        persistentVolumeClaim:
+          claimName: policy-agent-audit
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-agent
+  namespace: kagenti-system
+spec:
+  selector:
+    app.kubernetes.io/name: policy-agent
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: policy-agent
+  namespace: kagenti-system
+spec:
+  to:
+    kind: Service
+    name: policy-agent
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
