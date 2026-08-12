@@ -79,26 +79,16 @@ install_rhoai_menu() {
     print_info "Selected channel: $selected_channel"
     echo ""
 
+    # Route to the appropriate installer based on channel.
+    # RHOAI 3.x channels all use the unified installer which auto-detects
+    # the version from the packagemanifest CSV.
+    local selected_version="${channel_versions[$((ch_choice - 1))]}"
+
     case "$selected_channel" in
-        *3.4*|fast-3.x)
-            echo -e "${CYAN}Launching RHOAI 3.4 installer (channel: $selected_channel)...${NC}"
-            echo ""
-            read -p "Proceed? (Y/n): " confirm
-            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
-                "$SCRIPT_DIR/scripts/install-rhoai-34.sh" --channel "$selected_channel"
-            fi
-            ;;
-        *3.3*)
-            echo -e "${CYAN}Launching RHOAI 3.3 installer (channel: $selected_channel)...${NC}"
-            echo ""
-            read -p "Proceed? (Y/n): " confirm
-            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
-                "$SCRIPT_DIR/scripts/install-rhoai-33.sh" --channel "$selected_channel"
-            fi
-            ;;
-        stable-2.*|stable)
+        stable-2.*|stable|eus-2.*|stable-2.*)
             local version="${selected_channel#stable-}"
             [ "$version" = "stable" ] && version="2.25"
+            [ "${version%%.*}" = "eus" ] && version="${selected_channel#eus-}"
             echo -e "${CYAN}Launching RHOAI 2.x installer (version $version)...${NC}"
             echo ""
             read -p "Proceed? (Y/n): " confirm
@@ -106,7 +96,7 @@ install_rhoai_menu() {
                 install_rhoai_2x "$version" "$selected_channel"
             fi
             ;;
-        *)
+        alpha|beta|embedded)
             print_info "No dedicated installer for channel '$selected_channel'"
             print_info "Using interactive operator installer..."
             echo ""
@@ -114,6 +104,20 @@ install_rhoai_menu() {
             if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
                 SELECTED_RHOAI_CHANNEL="$selected_channel"
                 install_rhoai_operator_interactive
+            fi
+            ;;
+        *)
+            # All 3.x channels (stable-3.4, stable-3.3, stable-3.x, fast-3.x,
+            # fast, support-required-upgrade, etc.) go through the unified installer
+            local resolved_label=""
+            if echo "$selected_version" | grep -qE '^3\.[0-9]'; then
+                resolved_label="${selected_version%.*}"
+            fi
+            echo -e "${CYAN}Launching unified RHOAI installer (channel: $selected_channel, v${selected_version})...${NC}"
+            echo ""
+            read -p "Proceed? (Y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                "$SCRIPT_DIR/scripts/install-rhoai.sh" --channel "$selected_channel"
             fi
             ;;
     esac
