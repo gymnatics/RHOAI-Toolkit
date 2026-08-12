@@ -5,6 +5,29 @@
 #   export NAMESPACE=lmeval-demo
 #   envsubst < lmeval-rbac.yaml | oc apply -f -
 #
+# NOTE: RHOAI 3.4.2's TrustyAI operator does not ship a
+# `trustyai-operator-lmevaljob-editor-role` ClusterRole (only
+# `trustyaiservices`/`nemoguardrails` editor/viewer roles are bundled).
+# EvalHub's own server-side authorization code hard-resolves this exact
+# ClusterRole name; when it's missing, every EvalHub API call fails with a
+# generic 400 "Unable to authorize bad request" regardless of caller identity.
+# This manifest creates it directly (cluster-scoped, so it's safe even if the
+# operator later starts shipping its own copy -- oc apply is idempotent).
+# See docs/bugs/evalhub-bugs-rhoai-34.md (Bug 8).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trustyai-operator-lmevaljob-editor-role
+  labels:
+    app.kubernetes.io/part-of: trustyai
+rules:
+  - apiGroups:
+      - trustyai.opendatahub.io
+    resources:
+      - '*'
+    verbs:
+      - '*'
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -47,3 +70,25 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: trustyai-operator-lmevaljob-editor-role
+---
+# EvalHub's POST /evaluations/jobs handler also authorizes a second, unrelated
+# check -- "create" on "experiments" in the mlflow.kubeflow.org apiGroup --
+# before it will accept a job submission (used to auto-create the MLflow
+# experiment that results get logged to). deploy.sh already binds the
+# EvalHub job-execution SAs to this ClusterRole, but the caller identity used
+# by client.jobs.submit() (lmeval-sa) needs it too, or submission fails with
+# the same generic 400 "Unable to authorize bad request" (see Bug 8 in
+# docs/bugs/evalhub-bugs-rhoai-34.md).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lmeval-sa-mlflow-access
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: lmeval-sa
+    namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access

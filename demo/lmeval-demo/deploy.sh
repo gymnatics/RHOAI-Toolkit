@@ -245,6 +245,30 @@ oc create configmap demo-config-env \
     -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - 2>/dev/null && \
     print_success "ConfigMap demo-config-env created (mount as .env in workbench)" || true
 
+# --- Pipeline Server (DSPA) + compile KFP pipeline ---
+# Wraps the same submit -> poll -> MLflow flow used in the notebooks as a
+# repeatable Kubeflow Pipeline (see pipeline-kfp.py).
+print_step "Setting up Pipeline Server for KFP benchmark runs..."
+if [ -f "$ROOT_DIR/lib/functions/rhoai.sh" ]; then
+    source "$ROOT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
+fi
+if type setup_pipeline_server &>/dev/null; then
+    setup_pipeline_server "$NAMESPACE" 2>/dev/null || true
+else
+    print_info "Pipeline Server can be created from RHOAI Dashboard > Data Science Pipelines"
+fi
+
+print_step "KFP pipeline (lmeval-benchmark-run)..."
+if command -v python3 &>/dev/null && python3 -c "import kfp" 2>/dev/null; then
+    (cd "$SCRIPT_DIR" && python3 pipeline-kfp.py)
+    print_success "Pipeline compiled to lmeval-pipeline.yaml"
+    print_info "Upload via: RHOAI Dashboard > Pipelines > Import"
+else
+    print_info "KFP SDK not installed locally. Compile inside the workbench:"
+    echo "    pip install kfp"
+    echo "    python pipeline-kfp.py"
+fi
+
 echo ""
 print_success "LMEval Demo infrastructure deployed"
 print_info "Namespace: $NAMESPACE"
@@ -286,12 +310,26 @@ echo "    git clone https://github.com/hyogrin/rhoai-lmeval-builder-lab.git"
 echo ""
 echo "  All results tracked in MLflow via EvalHub"
 echo ""
+echo "  Run as a Data Science Pipeline (KFP):"
+echo "    1. lmeval-pipeline.yaml compiled above -- upload via"
+echo "       RHOAI Dashboard > Pipelines > Import pipeline"
+echo "    2. Create a run, filling in parameters (get auth_token with):"
+echo "         oc get secret lmeval-sa-token -n $NAMESPACE -o jsonpath='{.data.token}' | base64 -d"
+echo "       required: evalhub_url, tenant=$NAMESPACE, auth_token, model_name,"
+echo "                 model_url, benchmark_id, provider_id, tokenizer"
+echo "    3. Results appear in both the KFP run's Metrics tab and MLflow"
+echo "    See README.md 'Run as a Data Science Pipeline' for full details."
+echo ""
 
 # --- Create workbench + clone repo ---
 source "$ROOT_DIR/lib/functions/workbench.sh"
 ensure_workbench "$NAMESPACE" "model-benchmarking"
 
 # --- Inject notebook environment variables into workbench ---
+# EVALHUB_AUTH_TOKEN is now auto-generated from lmeval-sa by inject_notebook_env
+# itself (see lib/functions/notebook-env.sh) -- lmeval-sa is bound to
+# trustyai-operator-lmevaljob-editor-role via lmeval-rbac.yaml above, unlike
+# the workbench's own default SA which has no EvalHub-related RBAC.
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 inject_notebook_env "$NAMESPACE" \
     "MLFLOW_TRACKING_URI=https://mlflow.redhat-ods-applications.svc:8443" \

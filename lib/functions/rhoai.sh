@@ -379,31 +379,32 @@ install_rhoai_operator_interactive() {
     envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$_RHOAI_LIB_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
     unset RHOAI_CHANNEL INSTALL_PLAN_APPROVAL
     
-    # If Manual approval, need to approve the initial InstallPlan
+    # Manual approval: auto-approve the initial InstallPlan so the operator installs,
+    # while keeping Manual mode for future upgrades
     if [ "$SELECTED_INSTALL_PLAN_APPROVAL" = "Manual" ]; then
-        print_step "Waiting for InstallPlan to be created..."
-        sleep 10
+        print_step "Waiting for initial InstallPlan to be created..."
         
-        local timeout=60
+        local timeout=180
         local elapsed=0
         local installplan=""
         
         while [ $elapsed -lt $timeout ]; do
-            installplan=$(oc get installplan -n redhat-ods-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            installplan=$(oc get subscription rhods-operator -n redhat-ods-operator \
+                -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || true)
             if [ -n "$installplan" ]; then
                 break
             fi
             sleep 5
             elapsed=$((elapsed + 5))
+            [ $((elapsed % 15)) -eq 0 ] && echo "  Waiting for OLM to generate InstallPlan... (${elapsed}s elapsed)"
         done
         
         if [ -n "$installplan" ]; then
-            print_step "Approving initial InstallPlan: $installplan"
-            oc patch installplan "$installplan" -n redhat-ods-operator \
-                --type merge -p '{"spec":{"approved":true}}'
-            print_success "InstallPlan approved"
+            print_step "Auto-approving initial InstallPlan: $installplan"
+            print_info "Future upgrades will still require manual approval"
+            approve_installplan "rhods-operator" "redhat-ods-operator"
         else
-            print_warning "InstallPlan not found. You may need to approve it manually:"
+            print_warning "InstallPlan not found after ${timeout}s. Approve it manually:"
             echo "  oc get installplan -n redhat-ods-operator"
             echo "  oc patch installplan <name> -n redhat-ods-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
         fi
@@ -2789,16 +2790,25 @@ setup_pipeline_server() {
     echo -e "${BLUE}Pipeline server requires S3-compatible storage for artifacts.${NC}"
     echo ""
     
-    # Detect existing MinIO deployments
-    local existing_minio_ns=""
+    # Detect existing MinIO deployments (build arrays for a numbered picker below,
+    # so users select an entry instead of free-typing a namespace/name pair)
     local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | grep -i minio | awk '{print $1 "\t" $2}')
-    
+    local -a detect_ns=() detect_dep=() detect_svc=() detect_port=()
+
     if [ -n "$minio_deployments" ]; then
         echo -e "${CYAN}Existing MinIO deployments found:${NC}"
-        echo "$minio_deployments" | while IFS=$'\t' read -r ns name; do
+        while IFS=$'\t' read -r ns name; do
+            [ -z "$ns" ] && continue
             local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
-            echo "  - $ns / $name (service: $minio_svc)"
-        done
+            minio_svc="${minio_svc:-minio}"
+            local minio_port=$(oc get svc "$minio_svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)
+            minio_port="${minio_port:-9000}"
+            echo "  $((${#detect_ns[@]} + 1))) $ns / $name  (service: $minio_svc, port: $minio_port)"
+            detect_ns+=("$ns")
+            detect_dep+=("$name")
+            detect_svc+=("$minio_svc")
+            detect_port+=("$minio_port")
+        done <<< "$minio_deployments"
         echo ""
     fi
     
@@ -2836,56 +2846,90 @@ setup_pipeline_server() {
         mariadb_pvc_size="${mariadb_pvc_size:-10Gi}"
         
     elif [ "$storage_choice" = "2" ]; then
-        # Reuse existing external S3
+        # Reuse existing external S3 -- pick from the detected list above rather
+        # than free-typing a host, which invites pasting the "ns / name" display
+        # format verbatim as the hostname (an easy, hard-to-notice mistake: it
+        # silently produces an invalid host and empty credentials instead of an
+        # error, and the DSPA just sits at Ready=False with no clear reason).
         echo ""
-        echo -e "${CYAN}Enter existing S3-compatible storage details:${NC}"
-        
-        # Try to auto-detect from model-storage namespace
-        local default_ns=$(echo "$minio_deployments" | head -1 | awk '{print $1}')
-        default_ns="${default_ns:-model-storage}"
-        
-        read -p "  S3 host (e.g. minio.model-storage.svc.cluster.local): " s3_host
-        if [ -z "$s3_host" ]; then
-            read -p "  MinIO namespace [$default_ns]: " minio_ns
-            minio_ns="${minio_ns:-$default_ns}"
-            local detected_svc=$(oc get svc -n "$minio_ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
-            detected_svc="${detected_svc:-minio}"
-            read -p "  MinIO service name [$detected_svc]: " minio_svc
-            minio_svc="${minio_svc:-$detected_svc}"
-            s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+        local minio_ns="" minio_svc=""
+
+        if [ "${#detect_ns[@]}" -gt 0 ]; then
+            echo -e "${CYAN}Select which MinIO/S3 to use:${NC}"
+            local i=1
+            while [ "$i" -le "${#detect_ns[@]}" ]; do
+                echo "  $i) ${detect_ns[$((i-1))]} / ${detect_dep[$((i-1))]}"
+                i=$((i+1))
+            done
+            echo "  m) Enter connection details manually"
+            echo ""
+            read -p "Select [1]: " s3_choice
+            s3_choice="${s3_choice:-1}"
+        else
+            s3_choice="m"
         fi
-        
-        read -p "  S3 port [$s3_port]: " input_port
-        s3_port="${input_port:-$s3_port}"
-        
+
+        if [[ "$s3_choice" =~ ^[0-9]+$ ]] && [ "$s3_choice" -ge 1 ] && [ "$s3_choice" -le "${#detect_ns[@]}" ]; then
+            minio_ns="${detect_ns[$((s3_choice-1))]}"
+            minio_svc="${detect_svc[$((s3_choice-1))]}"
+            s3_port="${detect_port[$((s3_choice-1))]}"
+            s3_host="${minio_svc}.${minio_ns}.svc.cluster.local"
+            print_success "Using $s3_host:$s3_port"
+        else
+            echo ""
+            print_info "Hostname only -- no namespace, no slashes. Example: minio-service.minio.svc.cluster.local"
+            read -p "  S3 host: " s3_host
+            read -p "  S3 port [$s3_port]: " input_port
+            s3_port="${input_port:-$s3_port}"
+            read -p "  S3 scheme (http/https) [$s3_scheme]: " input_scheme
+            s3_scheme="${input_scheme:-$s3_scheme}"
+        fi
+
         read -p "  Pipeline bucket name [$s3_bucket]: " input_bucket
         s3_bucket="${input_bucket:-$s3_bucket}"
-        
-        read -p "  S3 scheme (http/https) [$s3_scheme]: " input_scheme
-        s3_scheme="${input_scheme:-$s3_scheme}"
-        
-        # Get credentials
-        if [ -n "${minio_ns:-}" ]; then
+
+        # Auto-detect credentials from a secret in the same namespace. Checks
+        # several common key-naming conventions (AWS_*, lowercase accesskey/
+        # secretkey, and MinIO's own minio_root_user/minio_root_password).
+        if [ -n "$minio_ns" ]; then
             local detected_secret=$(oc get secret -n "$minio_ns" --no-headers 2>/dev/null | grep -E "minio|aws-connection" | awk '{print $1}' | head -1)
             if [ -n "$detected_secret" ]; then
-                print_info "Found credentials secret: $detected_secret in $minio_ns"
-                read -p "  Use these credentials? (Y/n): " use_existing
-                if [[ ! "$use_existing" =~ ^[Nn]$ ]]; then
-                    s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null || \
-                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.accesskey}' 2>/dev/null | base64 -d 2>/dev/null)
-                    s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null || \
-                                   oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath='{.data.secretkey}' 2>/dev/null | base64 -d 2>/dev/null)
+                for key_pair in "AWS_ACCESS_KEY_ID:AWS_SECRET_ACCESS_KEY" "accesskey:secretkey" "minio_root_user:minio_root_password"; do
+                    local ak_field="${key_pair%%:*}" sk_field="${key_pair##*:}"
+                    s3_access_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath="{.data.${ak_field}}" 2>/dev/null | base64 -d 2>/dev/null)
+                    s3_secret_key=$(oc get secret "$detected_secret" -n "$minio_ns" -o jsonpath="{.data.${sk_field}}" 2>/dev/null | base64 -d 2>/dev/null)
+                    [ -n "$s3_access_key" ] && [ -n "$s3_secret_key" ] && break
+                done
+                if [ -n "$s3_access_key" ] && [ -n "$s3_secret_key" ]; then
+                    print_success "Auto-detected credentials from secret '$detected_secret' in $minio_ns"
                 fi
             fi
         fi
-        
-        if [ -z "$s3_access_key" ]; then
+
+        if [ -z "$s3_access_key" ] || [ -z "$s3_secret_key" ]; then
+            echo ""
+            print_warning "Could not auto-detect credentials"
             read -p "  S3 access key: " s3_access_key
             read -p "  S3 secret key: " s3_secret_key
         fi
-        
-        print_success "Using external S3: $s3_host:$s3_port"
-        
+
+        # Best-effort: ensure the bucket exists so the DSPA doesn't fail later.
+        # Non-fatal if we can't find an `mc`-capable pod (e.g. a non-MinIO S3).
+        if [ -n "$minio_ns" ]; then
+            local minio_pod=$(oc get pod -n "$minio_ns" -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            [ -z "$minio_pod" ] && minio_pod=$(oc get pod -n "$minio_ns" --no-headers 2>/dev/null | grep -i minio | awk '{print $1}' | head -1)
+            if [ -n "$minio_pod" ]; then
+                if oc exec "$minio_pod" -n "$minio_ns" -- sh -c "mc alias set local ${s3_scheme}://localhost:${s3_port} '${s3_access_key}' '${s3_secret_key}' >/dev/null 2>&1 && mc mb --ignore-existing local/${s3_bucket} >/dev/null 2>&1" 2>/dev/null; then
+                    print_success "Bucket '$s3_bucket' ready"
+                else
+                    print_warning "Could not confirm/create bucket '$s3_bucket' automatically"
+                    print_info "Create it manually if the pipeline server fails to start: mc mb local/$s3_bucket"
+                fi
+            fi
+        fi
+
+        print_success "Using external S3: $s3_host:$s3_port (bucket: $s3_bucket)"
+
     else
         # Deploy standalone MinIO
         echo ""

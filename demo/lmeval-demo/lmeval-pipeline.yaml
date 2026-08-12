@@ -1,0 +1,334 @@
+# PIPELINE DEFINITION
+# Name: lmeval-benchmark-run
+# Description: Submit an EvalHub benchmark job and wait for completion, with results tracked in both KFP and MLflow
+# Inputs:
+#    auth_token: str [Default: '']
+#    benchmark_id: str [Default: 'arc_easy']
+#    evalhub_url: str [Default: 'https://evalhub.redhat-ods-applications.svc:8443']
+#    experiment_name: str [Default: 'kfp-lmeval-run']
+#    job_name: str [Default: 'kfp-benchmark']
+#    limit: int [Default: 20.0]
+#    model_name: str [Default: 'redhataiqwen3-8b-fp8-dynamic']
+#    model_url: str [Default: 'https://redhataiqwen3-8b-fp8-dynamic-lmeval-demo.apps.example.com/v1']
+#    num_fewshot: int [Default: 0.0]
+#    poll_interval_seconds: int [Default: 15.0]
+#    provider_id: str [Default: 'lm_evaluation_harness']
+#    tenant: str [Default: 'lmeval-demo']
+#    timeout_seconds: int [Default: 1800.0]
+#    tokenizer: str [Default: 'Qwen/Qwen3-8B']
+components:
+  comp-submit-evaluation:
+    executorLabel: exec-submit-evaluation
+    inputDefinitions:
+      parameters:
+        auth_token:
+          parameterType: STRING
+        benchmark_id:
+          parameterType: STRING
+        evalhub_url:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        job_name:
+          parameterType: STRING
+        limit:
+          parameterType: NUMBER_INTEGER
+        model_name:
+          parameterType: STRING
+        model_url:
+          parameterType: STRING
+        num_fewshot:
+          parameterType: NUMBER_INTEGER
+        provider_id:
+          parameterType: STRING
+        tenant:
+          parameterType: STRING
+        tokenizer:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-wait-for-evaluation:
+    executorLabel: exec-wait-for-evaluation
+    inputDefinitions:
+      parameters:
+        auth_token:
+          parameterType: STRING
+        evalhub_url:
+          parameterType: STRING
+        job_id:
+          parameterType: STRING
+        poll_interval_seconds:
+          parameterType: NUMBER_INTEGER
+        tenant:
+          parameterType: STRING
+        timeout_seconds:
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-submit-evaluation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - submit_evaluation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'eval-hub-sdk'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.4'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef submit_evaluation(\n    evalhub_url: str,\n    tenant: str,\n\
+          \    auth_token: str,\n    model_name: str,\n    model_url: str,\n    benchmark_id:\
+          \ str,\n    provider_id: str,\n    tokenizer: str,\n    num_fewshot: int,\n\
+          \    limit: int,\n    experiment_name: str,\n    job_name: str,\n) -> str:\n\
+          \    \"\"\"Submit an evaluation job to EvalHub. Returns the job ID.\"\"\"\
+          \n    from evalhub import (\n        SyncEvalHubClient,\n        ModelConfig,\n\
+          \        BenchmarkConfig,\n        JobSubmissionRequest,\n        ExperimentConfig,\n\
+          \        ExperimentTag,\n    )\n\n    # eval-hub-sdk 0.1.x Benchmark/Provider\
+          \ models require description/category\n    # fields the server doesn't always\
+          \ return -- same workaround as the\n    # notebooks. Harmless no-op on SDK\
+          \ versions where the fields are optional.\n    try:\n        from evalhub.models.api\
+          \ import Benchmark, Provider, ProviderList\n\n        for field_name in\
+          \ (\"description\", \"category\"):\n            if field_name in Benchmark.model_fields:\n\
+          \                Benchmark.model_fields[field_name].default = None\n   \
+          \             Benchmark.model_fields[field_name].annotation = str | None\n\
+          \        Benchmark.model_rebuild(force=True)\n        Provider.model_rebuild(force=True)\n\
+          \        ProviderList.model_rebuild(force=True)\n    except Exception:\n\
+          \        pass\n\n    client = SyncEvalHubClient(\n        base_url=evalhub_url,\n\
+          \        auth_token=auth_token,\n        insecure=True,\n        tenant=tenant,\n\
+          \    )\n\n    parameters = {\"num_fewshot\": num_fewshot}\n    if limit\
+          \ > 0:\n        parameters[\"limit\"] = limit\n    if tokenizer:\n     \
+          \   parameters[\"tokenizer\"] = tokenizer\n\n    request = JobSubmissionRequest(\n\
+          \        name=job_name,\n        model=ModelConfig(url=model_url, name=model_name),\n\
+          \        benchmarks=[\n            BenchmarkConfig(\n                id=benchmark_id,\n\
+          \                provider_id=provider_id,\n                parameters=parameters,\n\
+          \            ),\n        ],\n        experiment=ExperimentConfig(\n    \
+          \        name=experiment_name,\n            tags=[\n                ExperimentTag(key=\"\
+          source\", value=\"kfp-pipeline\"),\n                ExperimentTag(key=\"\
+          model\", value=model_name),\n                ExperimentTag(key=\"benchmark\"\
+          , value=benchmark_id),\n            ],\n        ),\n    )\n\n    job = client.jobs.submit(request)\n\
+          \    print(f\"Job submitted: {job.id}\")\n    print(f\"MLflow experiment:\
+          \ {experiment_name}\")\n    return job.id\n\n"
+        image: registry.redhat.io/ubi9/python-311:latest
+    exec-wait-for-evaluation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - wait_for_evaluation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'eval-hub-sdk'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.4'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef wait_for_evaluation(\n    evalhub_url: str,\n    tenant: str,\n\
+          \    auth_token: str,\n    job_id: str,\n    poll_interval_seconds: int,\n\
+          \    timeout_seconds: int,\n    metrics: Output[Metrics],\n) -> str:\n \
+          \   \"\"\"Poll an EvalHub job until it reaches a terminal state. Logs metrics\n\
+          \    to the KFP run's Metrics tab and returns the final state.\"\"\"\n \
+          \   import time\n    from evalhub import SyncEvalHubClient\n\n    try:\n\
+          \        from evalhub.models.api import Benchmark, Provider, ProviderList\n\
+          \n        for field_name in (\"description\", \"category\"):\n         \
+          \   if field_name in Benchmark.model_fields:\n                Benchmark.model_fields[field_name].default\
+          \ = None\n                Benchmark.model_fields[field_name].annotation\
+          \ = str | None\n        Benchmark.model_rebuild(force=True)\n        Provider.model_rebuild(force=True)\n\
+          \        ProviderList.model_rebuild(force=True)\n    except Exception:\n\
+          \        pass\n\n    client = SyncEvalHubClient(\n        base_url=evalhub_url,\n\
+          \        auth_token=auth_token,\n        insecure=True,\n        tenant=tenant,\n\
+          \    )\n\n    terminal_states = {\"completed\", \"failed\", \"error\", \"\
+          cancelled\"}\n    elapsed = 0\n    job = None\n\n    while elapsed < timeout_seconds:\n\
+          \        job = client.jobs.get(job_id)\n        state = job.status.state.value\
+          \ if hasattr(job.status.state, \"value\") else str(job.status.state)\n \
+          \       print(f\"[{elapsed}s] Job {job_id} state: {state}\")\n\n       \
+          \ if state in terminal_states:\n            break\n\n        time.sleep(poll_interval_seconds)\n\
+          \        elapsed += poll_interval_seconds\n\n    if job is None:\n     \
+          \   raise RuntimeError(f\"Never received a status for job {job_id}\")\n\n\
+          \    final_state = job.status.state.value if hasattr(job.status.state, \"\
+          value\") else str(job.status.state)\n\n    if final_state != \"completed\"\
+          :\n        message = getattr(job.status, \"message\", None)\n        raise\
+          \ RuntimeError(f\"Evaluation job {job_id} ended in state '{final_state}':\
+          \ {message}\")\n\n    # Surface every numeric result in the KFP run's Metrics\
+          \ visualization,\n    # mirroring what EvalHub already logged to MLflow.\n\
+          \    results = job.results or {}\n    logged_any = False\n    for benchmark\
+          \ in results.get(\"benchmarks\", []) if isinstance(results, dict) else []:\n\
+          \        for metric_name, metric_value in (benchmark.get(\"metrics\") or\
+          \ {}).items():\n            if isinstance(metric_value, (int, float)):\n\
+          \                metrics.log_metric(f\"{benchmark.get('id', 'benchmark')}_{metric_name}\"\
+          , float(metric_value))\n                logged_any = True\n\n    if not\
+          \ logged_any:\n        # Fall back to whatever top-level numeric fields\
+          \ are present\n        for key, value in results.items() if isinstance(results,\
+          \ dict) else []:\n            if isinstance(value, (int, float)):\n    \
+          \            metrics.log_metric(key, float(value))\n\n    print(f\"Evaluation\
+          \ completed. mlflow_experiment_id={job.resource.mlflow_experiment_id if\
+          \ hasattr(job, 'resource') else 'n/a'}\")\n    print(f\"Full results: {results}\"\
+          )\n    return final_state\n\n"
+        image: registry.redhat.io/ubi9/python-311:latest
+pipelineInfo:
+  description: Submit an EvalHub benchmark job and wait for completion, with results
+    tracked in both KFP and MLflow
+  name: lmeval-benchmark-run
+root:
+  dag:
+    tasks:
+      submit-evaluation:
+        cachingOptions: {}
+        componentRef:
+          name: comp-submit-evaluation
+        inputs:
+          parameters:
+            auth_token:
+              componentInputParameter: auth_token
+            benchmark_id:
+              componentInputParameter: benchmark_id
+            evalhub_url:
+              componentInputParameter: evalhub_url
+            experiment_name:
+              componentInputParameter: experiment_name
+            job_name:
+              componentInputParameter: job_name
+            limit:
+              componentInputParameter: limit
+            model_name:
+              componentInputParameter: model_name
+            model_url:
+              componentInputParameter: model_url
+            num_fewshot:
+              componentInputParameter: num_fewshot
+            provider_id:
+              componentInputParameter: provider_id
+            tenant:
+              componentInputParameter: tenant
+            tokenizer:
+              componentInputParameter: tokenizer
+        taskInfo:
+          name: submit-evaluation
+      wait-for-evaluation:
+        cachingOptions: {}
+        componentRef:
+          name: comp-wait-for-evaluation
+        dependentTasks:
+        - submit-evaluation
+        inputs:
+          parameters:
+            auth_token:
+              componentInputParameter: auth_token
+            evalhub_url:
+              componentInputParameter: evalhub_url
+            job_id:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: submit-evaluation
+            poll_interval_seconds:
+              componentInputParameter: poll_interval_seconds
+            tenant:
+              componentInputParameter: tenant
+            timeout_seconds:
+              componentInputParameter: timeout_seconds
+        retryPolicy:
+          backoffDuration: 0s
+          backoffFactor: 2.0
+          backoffMaxDuration: 3600s
+        taskInfo:
+          name: wait-for-evaluation
+  inputDefinitions:
+    parameters:
+      auth_token:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      benchmark_id:
+        defaultValue: arc_easy
+        isOptional: true
+        parameterType: STRING
+      evalhub_url:
+        defaultValue: https://evalhub.redhat-ods-applications.svc:8443
+        isOptional: true
+        parameterType: STRING
+      experiment_name:
+        defaultValue: kfp-lmeval-run
+        isOptional: true
+        parameterType: STRING
+      job_name:
+        defaultValue: kfp-benchmark
+        isOptional: true
+        parameterType: STRING
+      limit:
+        defaultValue: 20.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      model_name:
+        defaultValue: redhataiqwen3-8b-fp8-dynamic
+        isOptional: true
+        parameterType: STRING
+      model_url:
+        defaultValue: https://redhataiqwen3-8b-fp8-dynamic-lmeval-demo.apps.example.com/v1
+        isOptional: true
+        parameterType: STRING
+      num_fewshot:
+        defaultValue: 0.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      poll_interval_seconds:
+        defaultValue: 15.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      provider_id:
+        defaultValue: lm_evaluation_harness
+        isOptional: true
+        parameterType: STRING
+      tenant:
+        defaultValue: lmeval-demo
+        isOptional: true
+        parameterType: STRING
+      timeout_seconds:
+        defaultValue: 1800.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      tokenizer:
+        defaultValue: Qwen/Qwen3-8B
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.14.4

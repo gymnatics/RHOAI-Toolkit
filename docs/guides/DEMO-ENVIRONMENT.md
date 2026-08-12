@@ -36,9 +36,13 @@ make setup-demo-environment
 | 15 | MLflow Tracing (Banking) | mlflow-tracing-demo | `demo/mlflow-tracing-demo/deploy.sh` | Yes (uses existing model) |
 | 16 | Marketing Assistant | marketing-assistant | `demo/marketing-assistant-demo/deploy.sh` | Yes (3x L40S) |
 | 17 | Lightspeed + MCP Troubleshooting | lightspeed-demo | `demo/lightspeed-demo/deploy.sh` | No (uses existing model) |
+| 18 | Lemonade Stand Assistant (TrustyAI Edition) | lemonade-trustyai-demo | `demo/lemonade-trustyai-demo/deploy.sh` | Yes (1 GPU, or bring your own endpoint) |
 
 Marketing Assistant Demo is **not** included in deploy-all due to heavy GPU requirements (3x L40S).
 Lightspeed Demo is **standalone** (not part of deploy-all) — requires Lightspeed operator pre-installed.
+Lemonade Stand Assistant (TrustyAI Edition) is **standalone** (not part of deploy-all) — vendors the
+upstream Helm chart as-is and auto-enables the TrustyAI component; runs alongside (not instead of)
+the NeMo Guardrails-based `lemonade-stand-demo`.
 
 ### Technology Preview Features
 
@@ -66,6 +70,7 @@ Every component can be deployed independently:
 ./demo/open-webui-demo/deploy.sh
 ./demo/mlflow-tracing-demo/deploy.sh
 ./demo/marketing-assistant-demo/deploy.sh
+./demo/lemonade-trustyai-demo/deploy.sh
 
 # Standalone scripts
 ./scripts/deploy-nemo-guardrails.sh
@@ -206,4 +211,5 @@ Each demo supports `--delete`:
 ./demo/automl-demo/deploy.sh --delete
 ./demo/autorag-demo/deploy.sh --delete
 ./demo/mlflow-tracing-demo/deploy.sh --delete
+./demo/lemonade-trustyai-demo/deploy.sh --delete
 ```

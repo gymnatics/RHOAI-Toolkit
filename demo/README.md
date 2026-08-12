@@ -11,6 +11,7 @@ This folder contains demo scripts and applications for RHOAI.
 | `banking-demo/` | **Banking Feature Store Demo** - Feast feature store with banking data |
 | `mlflow-tracing-demo/` | **MLflow Tracing Demo** - Banking multi-agent system with MLflow 3.x distributed tracing |
 | `guardrails-demo/` | **Guardrails Demo** - TrustyAI AI safety with PII detection |
+| `lemonade-trustyai-demo/` | **Lemonade Stand Assistant (TrustyAI Edition)** - upstream FMS Orchestr8 guardrails demo (HAP + prompt-injection + language detectors) |
 | `guidellm-demo/` | **GuideLLM Demo** - LLM benchmarking (TTFT, ITL, throughput) |
 | `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
 | `maas-demo/` | **MaaS Demo** - Interactive CLI and web demo for Model as a Service |
@@ -85,6 +86,22 @@ Or via script:
 See `guardrails-demo/README.md` for full documentation.
 
 > **Note**: The `app.py` file is a legacy mock demo for learning concepts locally without OpenShift.
+
+---
+
+## 🍋 Lemonade Stand Assistant (TrustyAI Edition)
+
+Vendors and deploys the upstream [rh-ai-quickstart/lemonade-stand-assistant](https://github.com/rh-ai-quickstart/lemonade-stand-assistant)
+Helm chart as-is: Llama 3.2 3B + TrustyAI Guardrails Orchestrator (FMS Orchestr8) wired to
+HAP, prompt-injection, and language detectors, plus a chat app and Shiny metrics dashboard.
+
+Different from `lemonade-stand-demo/` (which proxies through **NeMo Guardrails** instead).
+
+```bash
+./demo/lemonade-trustyai-demo/deploy.sh
+```
+
+See `lemonade-trustyai-demo/README.md` for full documentation.
 
 ---
 

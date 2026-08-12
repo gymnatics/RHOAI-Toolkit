@@ -46,6 +46,7 @@ kubeconfig
 docs/PRD-rhoai-feature-store-model-registry.md
 docs/PRD-GUARDRAILS-DEMO.md
 docs/PRD-MAAS-DEMO.md
+docs/PRD-LEMONADE-TRUSTYAI-DEMO.md
 
 # Vendor reference docs (kept locally, not tracked)
 docs/reference/RHAIE 3.3 Guide/

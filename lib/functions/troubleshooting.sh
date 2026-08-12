@@ -81,15 +81,24 @@ fix_gpu_operator_cuda_compatibility() {
     oc apply -f "$_TROUBLESHOOTING_LIB_DIR/lib/manifests/operators/gpu-operator-subscription-v246.yaml"
     
     print_step "Waiting for InstallPlan..."
-    sleep 10
+    local timeout=120
+    local elapsed=0
+    local installplan=""
     
-    # Find and approve the InstallPlan
-    local installplan=$(oc get installplan -n nvidia-gpu-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    while [ $elapsed -lt $timeout ]; do
+        installplan=$(oc get subscription gpu-operator-certified -n nvidia-gpu-operator \
+            -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || true)
+        if [ -n "$installplan" ]; then
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
     if [ -n "$installplan" ]; then
-        print_step "Approving InstallPlan: $installplan"
-        oc patch installplan "$installplan" -n nvidia-gpu-operator --type merge -p '{"spec":{"approved":true}}'
+        approve_installplan "gpu-operator-certified" "nvidia-gpu-operator"
     else
-        print_warning "InstallPlan not found yet. You may need to approve it manually:"
+        print_warning "InstallPlan not found after ${timeout}s. Approve it manually:"
         echo "  oc get installplan -n nvidia-gpu-operator"
         echo "  oc patch installplan <name> -n nvidia-gpu-operator --type merge -p '{\"spec\":{\"approved\":true}}'"
     fi

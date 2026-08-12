@@ -329,6 +329,63 @@ Use the InferenceService's **external route URL** (e.g. `https://<isvc>-<ns>.app
 
 ---
 
+## Bug 8: EvalHub server-side authorization hard-checks a ClusterRole the operator doesn't ship, and returns generic 400s instead of 403s
+
+### Severity: High
+
+### Description
+
+EvalHub's own authorization middleware (`server.WithAuthorization`) does not delegate to a standard Kubernetes `SubjectAccessReview`. Instead it resolves specific, hardcoded ClusterRole names and checks whether the caller is bound to them. Two consequences:
+
+1. **Missing ClusterRole**: RHOAI 3.4.2's TrustyAI operator only ships `trustyai-service-operator-{trustyaiservice,nemoguardrail}-{editor,viewer}-role`. It does **not** ship `trustyai-operator-lmevaljob-editor-role` — the exact role name EvalHub's authorization code expects for *every* `/api/v1/evaluations/*` call (`GET /providers`, `POST /jobs`, etc.), regardless of the specific resource/verb in the request. Without it, every call fails.
+2. **Multiple unrelated permission checks per endpoint**: `POST /evaluations/jobs` additionally authorizes `create` on `experiments` in the **`mlflow.kubeflow.org`** API group (to auto-create the MLflow experiment results get logged to) — a completely different ClusterRole (`trustyai-service-operator-evalhub-mlflow-access`) than the one used for `GET /providers`. The caller identity (e.g. a notebook's SDK client) needs *both* roles, in the *same* namespace, or submission fails.
+3. **No distinction between "role doesn't exist" and "denied"**: both failure modes produce the same generic `400 Bad Request` / `"Unable to authorize bad request"` with an empty `reason` field (see `authorization.go:44` in the stack trace) — should be `403 Forbidden` for a real permission denial, and ideally a `5xx`/clear message for a missing ClusterRole (an operator packaging bug, not a caller error).
+
+### Symptom
+
+```
+HTTPStatusError: Client error '400 Bad Request' for url '.../api/v1/evaluations/providers'
+HTTPStatusError: Client error '400 Bad Request' for url '.../api/v1/evaluations/jobs'
+```
+
+EvalHub pod logs show, for every failing call:
+```json
+{"level":"error","caller":"server/authorization.go:44","msg":"Unable to authorize bad request","reason":""}
+```
+or, once the missing ClusterRole above is created, a `reason` naming the *next* missing binding:
+```json
+{"reason":"RBAC: clusterrole.rbac.authorization.k8s.io \"trustyai-operator-lmevaljob-editor-role\" not found"}
+```
+
+### Root Cause
+
+- `trustyai-operator-lmevaljob-editor-role` ClusterRole does not exist on the cluster (verified: `oc get clusterrole trustyai-operator-lmevaljob-editor-role` → `NotFound`).
+- Even the `lmeval-sa` ServiceAccount that `lmeval-rbac.yaml` creates specifically for this purpose (bound to that missing role via a `ClusterRoleBinding`) was not bound to `trustyai-service-operator-evalhub-mlflow-access`, which `POST /evaluations/jobs` also requires.
+- This affects **any caller identity** equally (verified with both the notebook's own default SA and `lmeval-sa` — same error until both roles/bindings existed).
+
+### Fix Applied
+
+1. Created the missing ClusterRole directly (cluster-scoped, safe/idempotent even if the operator ships its own copy later):
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: trustyai-operator-lmevaljob-editor-role
+   rules:
+     - apiGroups: ["trustyai.opendatahub.io"]
+       resources: ["*"]
+       verbs: ["*"]
+   ```
+2. Added a `RoleBinding` for `lmeval-sa` → `trustyai-service-operator-evalhub-mlflow-access` (the same ClusterRole EvalHub's own job-execution SAs already use) in the target namespace.
+3. Both are now part of `demo/lmeval-demo/manifests/lmeval-rbac.yaml`, applied automatically by `demo/lmeval-demo/deploy.sh`.
+4. `lib/functions/notebook-env.sh`'s `inject_notebook_env` now auto-generates `EVALHUB_AUTH_TOKEN` from `lmeval-sa` (previously it looked for a nonexistent `evalhub-service` SA *inside* the target namespace and silently no-op'd) so notebooks default to an identity that's actually authorized instead of falling back to `oc whoami -t` (the workbench's own unprivileged default SA).
+
+### Workaround (if you can't modify cluster RBAC)
+
+None — without the ClusterRole existing and the caller bound to it, EvalHub's SDK/API is completely unusable for both discovery and submission calls.
+
+---
+
 ## Summary of Provider Capabilities
 
 | Capability | `lighteval` (v0.2.0) | `lm_evaluation_harness` |

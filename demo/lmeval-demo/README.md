@@ -129,6 +129,51 @@ Vendored notebooks in `notebooks/` auto-detect the deployed model and EvalHub en
 > Notebooks adapted from [hyogrin/rhoai-lmeval-builder-lab](https://github.com/hyogrin/rhoai-lmeval-builder-lab).
 > The Korean MCQ provider YAML (`../adapters/korean-mcq/`) is in the upstream repo — clone it if you need custom provider definitions.
 
+## Run as a Data Science Pipeline (KFP)
+
+`pipeline-kfp.py` wraps the same submit → poll → MLflow flow used by the
+notebooks as a Kubeflow Pipeline (same pattern as `demo/pipeline-demo/`),
+so benchmark runs become repeatable, parameterized, and get their own
+tracked run history in the RHOAI Dashboard's Pipelines UI — on top of the
+MLflow experiment EvalHub already creates.
+
+Two components:
+
+1. **`submit_evaluation`** — builds a `JobSubmissionRequest` via `eval-hub-sdk` (model,
+   benchmark, and `experiment` config) and submits it to EvalHub. Returns the job ID.
+2. **`wait_for_evaluation`** — polls `client.jobs.get(job_id)` until a terminal state,
+   logs every numeric result to the run's **Metrics** tab, and fails the pipeline run
+   if the job didn't complete successfully.
+
+`./deploy.sh` compiles it automatically (if the `kfp` SDK is installed locally) to
+`lmeval-pipeline.yaml`. To run it:
+
+1. **RHOAI Dashboard > Pipelines > Import pipeline** — upload `lmeval-pipeline.yaml`
+2. **Create run**, filling in parameters:
+
+   | Parameter | Value |
+   |---|---|
+   | `evalhub_url` | `https://evalhub.redhat-ods-applications.svc:8443` |
+   | `tenant` | your namespace (e.g. `lmeval-demo`) |
+   | `auth_token` | `oc get secret lmeval-sa-token -n lmeval-demo -o jsonpath='{.data.token}' \| base64 -d` |
+   | `model_name` | your deployed model's served name (e.g. `redhataiqwen3-8b-fp8-dynamic`) |
+   | `model_url` | the model's route URL + `/v1` |
+   | `benchmark_id` / `provider_id` | e.g. `arc_easy` / `lm_evaluation_harness` |
+   | `tokenizer` | HuggingFace tokenizer ID (see Tokenizer Mismatch note above) |
+
+3. Results appear in the run's **Metrics** tab *and* in MLflow (same experiment the
+   notebooks use).
+
+> **Why pass `auth_token` as a plain parameter instead of relying on the pipeline
+> pod's own identity?** Data Science Pipelines task pods run under a `pipeline-runner-*`
+> ServiceAccount that has no EvalHub-related RBAC by default, and granting it would
+> require binding it to `trustyai-operator-lmevaljob-editor-role` +
+> `trustyai-service-operator-evalhub-mlflow-access` (see `manifests/lmeval-rbac.yaml`
+> and `docs/bugs/evalhub-bugs-rhoai-34.md` Bug 8) — same as `lmeval-sa`. Passing the
+> token directly is simpler for a demo pipeline; for production, mount it via the
+> [`kfp-kubernetes`](https://kfp-kubernetes.readthedocs.io/) extension's
+> `use_secret_as_env` instead of a plaintext parameter.
+
 ## Prerequisites
 
 - TrustyAI operator enabled (`trustyai: Managed` in DSC)

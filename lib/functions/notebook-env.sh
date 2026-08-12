@@ -14,25 +14,37 @@
 ################################################################################
 
 # Detect the first available LLM (LLMInferenceService > vLLM InferenceService)
+# Excludes non-chat models: sklearn/xgboost/lightgbm/onnx (predictive) and
+# guardrails-detector-huggingface (TrustyAI safety classifiers, not chat LLMs).
+# Prefers a match in the given namespace (if provided) over other namespaces.
+# Args: $1 = preferred namespace (optional)
 # Sets: LLM_MODEL_NAME, LLM_MODEL_NS, LLM_BASE_URL
 detect_llm_endpoint() {
+    local preferred_ns="${1:-}"
     LLM_MODEL_NAME=""
     LLM_MODEL_NS=""
     LLM_BASE_URL=""
 
     local detected="" detected_ns=""
 
-    # Try LLMInferenceService first (llm-d / GenAI models)
-    local llmisvc_output
-    llmisvc_output=$(oc get llminferenceservice -A --no-headers \
-        -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null | head -1)
+    # Try LLMInferenceService first (llm-d / GenAI models) -- prefer local namespace
+    local llmisvc_output=""
+    if [ -n "$preferred_ns" ]; then
+        llmisvc_output=$(oc get llminferenceservice -n "$preferred_ns" --no-headers \
+            -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null | head -1)
+    fi
+    if [ -z "$llmisvc_output" ]; then
+        llmisvc_output=$(oc get llminferenceservice -A --no-headers \
+            -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null | head -1)
+    fi
     if [ -n "$llmisvc_output" ]; then
         detected_ns=$(echo "$llmisvc_output" | awk '{print $1}')
         detected=$(echo "$llmisvc_output" | awk '{print $2}')
     fi
 
-    # Fallback: vLLM-based InferenceService (skip sklearn/xgboost/lightgbm/onnx)
+    # Fallback: vLLM-based InferenceService (skip predictive + guardrails-detector formats)
     if [ -z "$detected" ]; then
+        local fallback_ns="" fallback_name=""
         while IFS= read -r line || [ -n "$line" ]; do
             [ -z "$line" ] && continue
             local ns name fmt
@@ -40,13 +52,25 @@ detect_llm_endpoint() {
             name=$(echo "$line" | awk '{print $2}')
             fmt=$(oc get inferenceservice "$name" -n "$ns" \
                 -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
-            if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
+            if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx|guardrails-detector'; then
                 continue
             fi
-            detected_ns="$ns"
-            detected="$name"
-            break
+            if [ -z "$fallback_name" ]; then
+                fallback_ns="$ns"
+                fallback_name="$name"
+            fi
+            if [ -n "$preferred_ns" ] && [ "$ns" = "$preferred_ns" ]; then
+                detected_ns="$ns"
+                detected="$name"
+                break
+            fi
         done < <(oc get inferenceservice -A --no-headers 2>/dev/null || true)
+
+        # No match in preferred namespace -- use the first valid one found anywhere
+        if [ -z "$detected" ]; then
+            detected_ns="$fallback_ns"
+            detected="$fallback_name"
+        fi
     fi
 
     [ -z "$detected" ] && return 1
@@ -73,13 +97,17 @@ detect_llm_endpoint() {
 
 # Detect a standard vLLM InferenceService for direct access (non-MaaS, non-embedding).
 # Use this for consumers like LlamaStack that need a standard vLLM /v1 endpoint.
+# Excludes predictive models, embedding models, and guardrails-detector safety
+# classifiers (not chat LLMs). Prefers a match in the given namespace.
+# Args: $1 = preferred namespace (optional)
 # Sets: DIRECT_MODEL_NAME, DIRECT_MODEL_NS, DIRECT_BASE_URL
 detect_direct_llm_endpoint() {
+    local preferred_ns="${1:-}"
     DIRECT_MODEL_NAME=""
     DIRECT_MODEL_NS=""
     DIRECT_BASE_URL=""
 
-    local detected="" detected_ns=""
+    local detected="" detected_ns="" fallback_ns="" fallback_name=""
 
     while IFS= read -r line || [ -n "$line" ]; do
         [ -z "$line" ] && continue
@@ -89,17 +117,28 @@ detect_direct_llm_endpoint() {
         local fmt
         fmt=$(oc get inferenceservice "$name" -n "$ns" \
             -o jsonpath='{.spec.predictor.model.modelFormat.name}' 2>/dev/null || true)
-        if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx'; then
+        if echo "$fmt" | grep -qi -E 'sklearn|xgboost|lightgbm|onnx|guardrails-detector'; then
             continue
         fi
         # Skip embedding models
         if echo "$name" | grep -qi -E 'bge|e5-|embed|nomic-embed'; then
             continue
         fi
-        detected_ns="$ns"
-        detected="$name"
-        break
+        if [ -z "$fallback_name" ]; then
+            fallback_ns="$ns"
+            fallback_name="$name"
+        fi
+        if [ -n "$preferred_ns" ] && [ "$ns" = "$preferred_ns" ]; then
+            detected_ns="$ns"
+            detected="$name"
+            break
+        fi
     done < <(oc get inferenceservice -A --no-headers 2>/dev/null || true)
+
+    if [ -z "$detected" ]; then
+        detected_ns="$fallback_ns"
+        detected="$fallback_name"
+    fi
 
     [ -z "$detected" ] && return 1
 
@@ -196,14 +235,14 @@ inject_notebook_env() {
     local ns="$1"; shift
     [ -z "$ns" ] && { echo "ERROR: inject_notebook_env requires a namespace"; return 1; }
 
-    # Detect LLM if not already set
+    # Detect LLM if not already set (prefer a match in this namespace)
     if [ -z "${LLM_MODEL_NAME:-}" ]; then
-        detect_llm_endpoint || true
+        detect_llm_endpoint "$ns" || true
     fi
 
     # Detect direct vLLM endpoint (non-MaaS, for LlamaStack etc.)
     if [ -z "${DIRECT_MODEL_NAME:-}" ]; then
-        detect_direct_llm_endpoint || true
+        detect_direct_llm_endpoint "$ns" || true
     fi
 
     # Detect predictive model
@@ -240,7 +279,10 @@ inject_notebook_env() {
     local evalhub_url="https://evalhub.redhat-ods-applications.svc:8443"
     if oc get svc evalhub -n redhat-ods-applications &>/dev/null; then
         cm_args+=("--from-literal=EVALHUB_URL=${evalhub_url}")
-        # Ensure evalhub-service SA can submit evaluations via SDK
+
+        # Job-writer RBAC: only relevant if the central evalhub-service SA has
+        # been mirrored into this namespace (it normally lives centrally in
+        # redhat-ods-applications -- see docs/bugs/evalhub-dashboard-namespace-lookup.md).
         if oc get sa evalhub-service -n "$ns" &>/dev/null; then
             oc apply -f - <<EOROLE 2>/dev/null || true
 apiVersion: rbac.authorization.k8s.io/v1
@@ -273,12 +315,23 @@ subjects:
   name: evalhub-${ns}-job
   namespace: ${ns}
 EOROLE
-            # Generate a long-lived token from the evalhub-service SA for SDK auth
-            local evalhub_token
+        fi
+
+        # Client-side SDK auth: the eval-hub-sdk client (e.g. client.benchmarks.list())
+        # authenticates as whatever identity generated its token. Notebooks default to
+        # `oc whoami -t`, which resolves to the workbench's own default SA -- that SA
+        # has zero EvalHub-related RBAC. Prefer lmeval-sa (bound to
+        # trustyai-operator-lmevaljob-editor-role, the role EvalHub's server-side
+        # authorization hard-checks -- see docs/bugs/evalhub-bugs-rhoai-34.md Bug 8),
+        # falling back to evalhub-service if lmeval-sa isn't present in this namespace.
+        local evalhub_token=""
+        if oc get sa lmeval-sa -n "$ns" &>/dev/null; then
+            evalhub_token=$(oc create token lmeval-sa -n "$ns" --duration=87600h 2>/dev/null || true)
+        elif oc get sa evalhub-service -n "$ns" &>/dev/null; then
             evalhub_token=$(oc create token evalhub-service -n "$ns" --duration=87600h 2>/dev/null || true)
-            if [ -n "$evalhub_token" ]; then
-                cm_args+=("--from-literal=EVALHUB_AUTH_TOKEN=${evalhub_token}")
-            fi
+        fi
+        if [ -n "$evalhub_token" ]; then
+            cm_args+=("--from-literal=EVALHUB_AUTH_TOKEN=${evalhub_token}")
         fi
     fi
 
