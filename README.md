@@ -5,6 +5,10 @@ A comprehensive toolkit for installing and configuring **OpenShift** with **Red 
 > **Latest:** RHOAI 3.4 is now supported. See [What's New in RHOAI 3.4](docs/guides/rhoai-3.4/RHOAI-34-WHATS-NEW.md) for details.
 > MaaS core platform and NeMo Guardrails are now GA. AutoML, AutoRAG, and several MaaS sub-features (vLLM runtime, OIDC, observability, external egress) remain Technology Preview.
 
+> **Known Issue:** When installing via the toolkit menu, select **`stable-3.4`** (not `stable-3.x`) as your channel.
+> The `stable-3.x` rolling channel currently falls through to a bare-bones operator-only installer instead of the full installation flow.
+> A fix is in progress on the [`refactor/rhoai-install`](https://github.com/gymnatics/RHOAI-Toolkit/tree/refactor/rhoai-install) branch.
+
 ## Quick Start
 
 ```bash
