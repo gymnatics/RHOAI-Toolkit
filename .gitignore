@@ -72,8 +72,7 @@ docs/guides/*.pptx
 demo/**/notebooks/.env
 demo/**/.env
 
-# Agentic platform demo (contains cluster-specific config)
-demo/agentic-platform-demo/deploy/env.sh
+# Agentic platform demo PRD (cluster-specific documentation)
 docs/PRD-AGENTIC-PLATFORM-DEMO.md
 
 # Python cache

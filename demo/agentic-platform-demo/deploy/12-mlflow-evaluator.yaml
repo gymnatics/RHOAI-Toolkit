@@ -18,7 +18,7 @@ data:
     MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow.redhat-ods-applications.svc:5000")
     EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "loan-agent")
     AGENT_URL = os.getenv("AGENT_URL", "http://loan-agent-service.team1.svc:8080")
-    LLM_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1") + "/chat/completions"
+    LLM_URL = os.getenv("LLM_BASE_URL", "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1") + "/chat/completions"
     LLM_KEY = os.getenv("LLM_API_KEY", "")
 
     ctx = ssl.create_default_context()
@@ -147,7 +147,7 @@ spec:
             - name: AGENT_URL
               value: "http://loan-agent-service.team1.svc:8080"
             - name: LLM_BASE_URL
-              value: "https://maas.apps.cluster-f5qh2.f5qh2.sandbox1572.opentlc.com/model-storage/qwen35-35b-a3b/v1"
+              value: "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1"
             - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:

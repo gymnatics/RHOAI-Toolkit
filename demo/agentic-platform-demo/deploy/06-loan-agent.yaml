@@ -196,7 +196,7 @@ spec:
       containers:
       - name: server
         image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        command: ["sh", "-c", "pip install -q fastmcp uvicorn starlette && python /app/server.py"]
         env:
         - name: TOOLSET
           value: credit
@@ -268,7 +268,7 @@ spec:
       containers:
       - name: server
         image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        command: ["sh", "-c", "pip install -q fastmcp uvicorn starlette && python /app/server.py"]
         env:
         - name: TOOLSET
           value: kyc
@@ -340,7 +340,7 @@ spec:
       containers:
       - name: server
         image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        command: ["sh", "-c", "pip install -q fastmcp uvicorn starlette && python /app/server.py"]
         env:
         - name: TOOLSET
           value: calc
@@ -412,7 +412,7 @@ spec:
       containers:
       - name: server
         image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sh", "-c", "pip install -q mcp[cli] uvicorn starlette && python /app/server.py"]
+        command: ["sh", "-c", "pip install -q fastmcp uvicorn starlette && python /app/server.py"]
         env:
         - name: TOOLSET
           value: notify
@@ -473,7 +473,7 @@ spec:
   - group: gateway.networking.k8s.io
     kind: Gateway
     name: mcp-gateway
-    namespace: gateway-system
+    namespace: mcp-system
     sectionName: mcps
   hostnames:
   - loan-tools-credit.mcp.local
@@ -509,7 +509,7 @@ spec:
   - group: gateway.networking.k8s.io
     kind: Gateway
     name: mcp-gateway
-    namespace: gateway-system
+    namespace: mcp-system
     sectionName: mcps
   hostnames:
   - loan-tools-kyc.mcp.local
@@ -545,7 +545,7 @@ spec:
   - group: gateway.networking.k8s.io
     kind: Gateway
     name: mcp-gateway
-    namespace: gateway-system
+    namespace: mcp-system
     sectionName: mcps
   hostnames:
   - loan-tools-calc.mcp.local
@@ -581,7 +581,7 @@ spec:
   - group: gateway.networking.k8s.io
     kind: Gateway
     name: mcp-gateway
-    namespace: gateway-system
+    namespace: mcp-system
     sectionName: mcps
   hostnames:
   - loan-tools-notify.mcp.local
@@ -651,6 +651,39 @@ data:
         some pkg_name
         pkg := data.kagenti.global[pkg_name]
         some msg in pkg.deny
+    }
+  client_rbac.rego: |
+    package kagenti.client.loan_agent_rbac
+    import rego.v1
+
+    default allow := false
+
+    teller_tools := {"loan_credit_credit_check", "loan_credit_credit_score"}
+
+    rm_tools := teller_tools | {"loan_kyc_kyc_verify", "loan_kyc_pep_screen",
+        "loan_calc_affordability_check", "loan_calc_loan_calculate"}
+
+    senior_rm_tools := rm_tools | {"loan_notify_send_notification",
+        "loan_notify_send_approval_letter"}
+
+    role_tools := {
+        "teller": teller_tools,
+        "rm": rm_tools,
+        "senior-rm": senior_rm_tools,
+    }
+
+    user_role := role if {
+        some role in input.groups
+        role in {"teller", "rm", "senior-rm"}
+    }
+
+    allow if {
+        input.tool in role_tools[user_role]
+    }
+
+    deny contains msg if {
+        not allow
+        msg := sprintf("Role '%s' is not authorized to use tool '%s'. Contact a Senior RM.", [user_role, input.tool])
     }
 
 ---
@@ -829,8 +862,8 @@ data:
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
-    MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp")
-    MCP_HOST_HEADER = os.getenv("MCP_HOST_HEADER", "mcp-gateway-gateway-system.__CLUSTER_DOMAIN__")
+    MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcp-gateway-istio.mcp-system.svc.cluster.local:8080/mcp")
+    MCP_HOST_HEADER = os.getenv("MCP_HOST_HEADER", "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__")
 
     OIDC_TOKEN_URL = os.getenv("OIDC_TOKEN_URL", "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/token")
     OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "loan-agent")
@@ -1010,6 +1043,32 @@ data:
         with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
             return json.loads(resp.read())
 
+    # ─── Qwen3.5 XML Tool-Call Parser ─────────────────────────────────────────
+    import re
+
+    def _parse_xml_tool_calls(content):
+        """Parse Qwen3.5 XML tool-call format:
+        <tool_call><function=name><parameter=key>value</parameter></function></tool_call>
+        Returns list of {"name": ..., "arguments": {...}} or empty list if no XML tools found.
+        """
+        calls = []
+        pattern = r'<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>'
+        for match in re.finditer(pattern, content, re.DOTALL):
+            fn_name = match.group(1).strip()
+            params_block = match.group(2)
+            args = {}
+            param_pattern = r'<parameter=([^>]+)>(.*?)</parameter>'
+            for pm in re.finditer(param_pattern, params_block, re.DOTALL):
+                key = pm.group(1).strip()
+                val = pm.group(2).strip()
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                args[key] = val
+            calls.append({"name": fn_name, "arguments": args})
+        return calls
+
     # ─── Agent Loop ──────────────────────────────────────────────────────────
     _tools_cache = None
     _tools_openai_format = None
@@ -1050,6 +1109,7 @@ data:
             choice = response["choices"][0]
             msg = choice["message"]
 
+            # Check for OpenAI-format tool_calls first
             if msg.get("tool_calls"):
                 messages.append(msg)
                 for tc in msg["tool_calls"]:
@@ -1060,13 +1120,11 @@ data:
                     except json.JSONDecodeError:
                         args = {}
 
-                    # OPA policy check with user identity
                     allowed, reasons = _opa_check(tool_name, args, user, groups)
                     if not allowed:
                         result_text = f"POLICY DENIED: {' '.join(reasons)}. Do not retry this tool."
                         tool_calls_log.append({"tool": tool_name, "args": args, "status": "DENIED", "reasons": reasons})
                     else:
-                        # Call tool via MCP Gateway
                         try:
                             result = _mcp_call_tool(tool_name, args)
                             result_text = json.dumps(result)
@@ -1076,6 +1134,33 @@ data:
                             tool_calls_log.append({"tool": tool_name, "args": args, "status": "ERROR", "error": str(e)})
 
                     messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result_text})
+
+            # Check for Qwen3.5 XML tool-call format in content
+            elif msg.get("content") and "<tool_call>" in msg.get("content", ""):
+                xml_calls = _parse_xml_tool_calls(msg["content"])
+                if xml_calls:
+                    messages.append(msg)
+                    for xc in xml_calls:
+                        tool_name = xc["name"]
+                        args = xc["arguments"]
+                        tc_id = str(uuid.uuid4())
+
+                        allowed, reasons = _opa_check(tool_name, args, user, groups)
+                        if not allowed:
+                            result_text = f"POLICY DENIED: {' '.join(reasons)}. Do not retry this tool."
+                            tool_calls_log.append({"tool": tool_name, "args": args, "status": "DENIED", "reasons": reasons})
+                        else:
+                            try:
+                                result = _mcp_call_tool(tool_name, args)
+                                result_text = json.dumps(result)
+                                tool_calls_log.append({"tool": tool_name, "args": args, "status": "SUCCESS", "result": result})
+                            except Exception as e:
+                                result_text = f"Tool call failed: {str(e)}"
+                                tool_calls_log.append({"tool": tool_name, "args": args, "status": "ERROR", "error": str(e)})
+
+                        messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_text})
+                else:
+                    return {"response": msg.get("content", ""), "tool_calls": tool_calls_log}
             else:
                 return {"response": msg.get("content", ""), "tool_calls": tool_calls_log}
 
@@ -1268,10 +1353,10 @@ data:
         setInterval(() => { keycloak.updateToken(30).catch(() => keycloak.login()); }, 30000);
       }).catch(err => {
         console.error('Keycloak init error:', err);
-        alert('Authentication failed.');
+        console.log('Authentication failed — check Keycloak URL and client config.');
       });
     }
-    if (window.location.hash && window.location.hash.indexOf('state=') >= 0) { doLogin(); }
+    doLogin();
 
     const chat=document.getElementById('chat'),input=document.getElementById('input'),btn=document.getElementById('send');
     input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
@@ -1360,13 +1445,13 @@ spec:
               name: llm-api-key
               key: api-key
         - name: DEEPSEEK_BASE_URL
-          value: "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b"
+          value: "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1"
         - name: DEEPSEEK_MODEL
           value: "qwen35-35b-a3b"
         - name: MCP_GATEWAY_URL
-          value: "http://mcp-gateway-istio.gateway-system.svc.cluster.local:8080/mcp"
+          value: "http://mcp-gateway-istio.mcp-system.svc.cluster.local:8080/mcp"
         - name: MCP_HOST_HEADER
-          value: "mcp-gateway-gateway-system.__CLUSTER_DOMAIN__"
+          value: "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__"
         - name: OIDC_TOKEN_URL
           value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/token"
         - name: OIDC_CLIENT_ID
@@ -1413,9 +1498,19 @@ spec:
         - "run"
         - "--server"
         - "--addr=:8181"
+        - "/policies"
         ports:
         - containerPort: 8181
           name: opa
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies/authz.rego
+          subPath: authz.rego
+          readOnly: true
+        - name: opa-policies
+          mountPath: /policies/client_rbac.rego
+          subPath: client_rbac.rego
+          readOnly: true
         resources:
           requests:
             cpu: 50m
@@ -1430,31 +1525,18 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 10
 
-      # Container 3: Policy Sync (watches CRDs, loads to OPA via REST API)
+      # Container 3: Policy Sync — DISABLED (CRDs not available without KAgenti operator)
+      # Policies are loaded directly from ConfigMap into OPA via volume mounts above.
       - name: policy-sync
         image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["python", "/sync/sync.py"]
-        env:
-        - name: SYNC_INTERVAL
-          value: "10"
-        - name: NAMESPACE
-          value: team1
-        - name: AGENT_NAME
-          value: loan-agent
-        - name: OPA_URL
-          value: "http://localhost:8181"
-        volumeMounts:
-        - name: policy-sync-code
-          mountPath: /sync
-        - name: opa-base
-          mountPath: /opa-base
+        command: ["sleep", "infinity"]
         resources:
           requests:
-            cpu: 50m
-            memory: 64Mi
+            cpu: 10m
+            memory: 16Mi
           limits:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 50m
+            memory: 32Mi
 
       volumes:
       - name: app-code
@@ -1463,10 +1545,10 @@ spec:
       - name: ui
         configMap:
           name: loan-agent-ui
-      - name: policy-sync-code
-        configMap:
-          name: loan-agent-policy-sync
       - name: opa-base
+        configMap:
+          name: loan-agent-opa-base
+      - name: opa-policies
         configMap:
           name: loan-agent-opa-base
 

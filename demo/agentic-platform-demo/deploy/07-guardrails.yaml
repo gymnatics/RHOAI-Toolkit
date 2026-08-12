@@ -2,32 +2,35 @@
 # 07-guardrails.yaml
 # AI Safety Layer: HAP Detector (Granite Guardian) + LLM-as-Judge + Orchestrator
 # + Guardrails Metrics Pusher (simulated log data for Grafana)
+#
+# Apply with: sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g" 07-guardrails.yaml | oc apply -f -
+#
+# NOTE: The Guardrails Orchestrator uses TrustyAI operator's GuardrailsOrchestrator CR.
+#       TLS secrets are created by deploy-all.sh (self-signed cert).
 ###############################################################################
 
 ---
-# HAP Detector — Granite Guardian model on GPU via KServe
-# NOTE: Requires GPU node with nvidia.com/gpu label
+# HAP Detector — Granite Guardian 38M on CPU via KServe RawDeployment
+# Uses RHOAI-bundled HuggingFace Guardrails Detector runtime (no GPU needed)
 apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
 metadata:
-  name: granite-guardian-hap
+  name: guardrails-detector-runtime-hap
   namespace: team1
 spec:
   supportedModelFormats:
-  - name: pytorch
+  - name: guardrails-detector-huggingface
     version: "1"
   containers:
   - name: kserve-container
-    image: quay.io/opendatahub/text-generation-inference:latest
+    image: registry.redhat.io/rhoai/odh-guardrails-detector-huggingface-runtime-rhel9:latest
     resources:
       requests:
-        cpu: "2"
+        cpu: "1"
         memory: 4Gi
-        nvidia.com/gpu: "1"
       limits:
-        cpu: "4"
+        cpu: "2"
         memory: 8Gi
-        nvidia.com/gpu: "1"
     env:
     - name: MODEL_ID
       value: ibm-granite/granite-guardian-hap-38m
@@ -45,20 +48,30 @@ kind: InferenceService
 metadata:
   name: hap-detector
   namespace: team1
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
 spec:
   predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    maxReplicas: 1
     model:
       modelFormat:
-        name: pytorch
-      runtime: granite-guardian-hap
+        name: guardrails-detector-huggingface
+      runtime: guardrails-detector-runtime-hap
+      storageUri: "hf://ibm-granite/granite-guardian-hap-38m"
       resources:
         requests:
-          cpu: "2"
+          cpu: "1"
           memory: 4Gi
-          nvidia.com/gpu: "1"
+        limits:
+          cpu: "2"
+          memory: 8Gi
 
 ---
-# LLM-as-Judge Detector (lightweight Python service using DeepSeek)
+# LLM-as-Judge Detector (lightweight Python service using on-cluster LLM)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -72,9 +85,9 @@ data:
     import ssl
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
-    LLM_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1") + "/chat/completions"
+    LLM_URL = os.getenv("LLM_BASE_URL", "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1") + "/chat/completions"
     LLM_KEY = os.getenv("LLM_API_KEY", "")
-    LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+    LLM_MODEL = os.getenv("LLM_MODEL", "qwen35-35b-a3b")
 
     JUDGE_CRITERIA = [
         {"name": "professional_tone", "description": "Content must be professional and appropriate for a banking context"},
@@ -181,7 +194,7 @@ spec:
         - containerPort: 8080
         env:
         - name: LLM_BASE_URL
-          value: "https://maas.apps.cluster-f5qh2.f5qh2.sandbox1572.opentlc.com/model-storage/qwen35-35b-a3b/v1"
+          value: "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1"
         - name: LLM_API_KEY
           valueFrom:
             secretKeyRef:
@@ -214,18 +227,7 @@ spec:
   - port: 8080
 
 ---
-# LLM API Key Secret — created by deploy-all.sh, not stored in YAML
-# apiVersion: v1
-# kind: Secret
-# metadata:
-#   name: llm-api-key
-#   namespace: team1
-# type: Opaque
-# stringData:
-#   api-key: "<created via oc create secret during deployment>"
-
----
-# Guardrails Orchestrator (FMS Guardrails Gateway)
+# Guardrails Orchestrator Config (matches TrustyAI service-based format)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -235,61 +237,39 @@ data:
   config.yaml: |
     detectors:
       hap:
-        type: text-contents
-        url: http://hap-detector-predictor.team1.svc:8080
-        threshold: 0.75
-        payload_format: contents
-      llm-judge:
-        type: custom
-        url: http://llm-judge-detector.team1.svc:8080
-        threshold: 0.7
-    orchestrator:
-      mode: input-output
-      default_detectors:
-      - hap
-      - llm-judge
+        type: text_contents
+        service:
+          hostname: hap-detector-predictor
+          port: 8000
+        chunker_id: pass_through
+        default_threshold: 0.75
+      llm_judge:
+        type: text_contents
+        service:
+          hostname: llm-judge-detector
+          port: 8080
+        chunker_id: pass_through
+        default_threshold: 0.7
+    chunkers:
+      pass_through:
+        type: all
+        service:
+          hostname: "127.0.0.1"
+          port: 9999
 
 ---
-apiVersion: apps/v1
-kind: Deployment
+# Guardrails Orchestrator via TrustyAI CR (operator manages image + lifecycle)
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: GuardrailsOrchestrator
 metadata:
   name: loan-agent-guardrails
   namespace: team1
 spec:
   replicas: 1
-  selector:
-    matchLabels:
-      app: loan-agent-guardrails
-  template:
-    metadata:
-      labels:
-        app: loan-agent-guardrails
-    spec:
-      containers:
-      - name: orchestrator
-        image: quay.io/trustyai/guardrails-orchestrator:latest
-        ports:
-        - containerPort: 8090
-        env:
-        - name: CONFIG_FILE
-          value: /config/config.yaml
-        volumeMounts:
-        - name: config
-          mountPath: /config
-        resources:
-          requests:
-            cpu: 200m
-            memory: 256Mi
-      - name: hap-client
-        image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sleep", "infinity"]
-      - name: judge-client
-        image: registry.access.redhat.com/ubi9/python-311:latest
-        command: ["sleep", "infinity"]
-      volumes:
-      - name: config
-        configMap:
-          name: guardrails-orchestrator-config
+  orchestratorConfig: guardrails-orchestrator-config
+  enableBuiltInDetectors: true
+  otelExporter:
+    otlpProtocol: grpc
 
 ---
 apiVersion: v1

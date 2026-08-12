@@ -1,6 +1,9 @@
 ###############################################################################
 # 08-dify.yaml
 # Dify AI Agent Builder — Full stack (API, Web, Worker, PostgreSQL, Redis)
+# Apply with: sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g" 08-dify.yaml | oc apply -f -
+#
+# Post-deploy: run `flask db upgrade` in the API pod (handled by deploy-all.sh)
 ###############################################################################
 
 ---
@@ -28,7 +31,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        image: image-registry.openshift-image-registry.svc:5000/openshift/postgresql:15-el9
         ports:
         - containerPort: 5432
         env:
@@ -76,12 +79,9 @@ spec:
     spec:
       containers:
       - name: redis
-        image: registry.access.redhat.com/rhel9/redis-7:latest
+        image: docker.io/redis:7-alpine
         ports:
         - containerPort: 6379
-        env:
-        - name: REDIS_PASSWORD
-          value: ""
 
 ---
 apiVersion: v1
@@ -145,20 +145,38 @@ spec:
         - name: STORAGE_LOCAL_PATH
           value: /app/api/storage
         - name: CONSOLE_WEB_URL
-          value: ""
+          value: "https://dify-dify.__CLUSTER_DOMAIN__"
         - name: CONSOLE_API_URL
-          value: ""
+          value: "https://dify-api-dify.__CLUSTER_DOMAIN__"
         - name: SERVICE_API_URL
-          value: ""
+          value: "https://dify-api-dify.__CLUSTER_DOMAIN__"
         - name: APP_WEB_URL
-          value: ""
+          value: "https://dify-dify.__CLUSTER_DOMAIN__"
+        - name: APP_API_URL
+          value: "https://dify-api-dify.__CLUSTER_DOMAIN__"
+        - name: VECTOR_STORE
+          value: weaviate
+        - name: WEAVIATE_ENDPOINT
+          value: "http://localhost:18080"
+        - name: WEAVIATE_API_KEY
+          value: "none"
+        volumeMounts:
+        - name: storage
+          mountPath: /app/api/storage
+        - name: hf-cache
+          mountPath: /.cache
         resources:
           requests:
             cpu: 200m
             memory: 512Mi
           limits:
             cpu: "1"
-            memory: 1Gi
+            memory: 2Gi
+      volumes:
+      - name: storage
+        emptyDir: {}
+      - name: hf-cache
+        emptyDir: {}
 
 ---
 apiVersion: v1
@@ -216,10 +234,16 @@ spec:
           value: ""
         - name: REDIS_DB
           value: "0"
+        volumeMounts:
+        - name: cache
+          mountPath: /.cache
         resources:
           requests:
             cpu: 100m
             memory: 256Mi
+      volumes:
+      - name: cache
+        emptyDir: {}
 
 ---
 # Dify Web (Frontend)
@@ -245,13 +269,19 @@ spec:
         - containerPort: 3000
         env:
         - name: CONSOLE_API_URL
-          value: ""
+          value: "https://dify-api-dify.__CLUSTER_DOMAIN__"
         - name: APP_API_URL
-          value: ""
+          value: "https://dify-api-dify.__CLUSTER_DOMAIN__"
+        volumeMounts:
+        - name: pm2
+          mountPath: /.pm2
         resources:
           requests:
             cpu: 50m
             memory: 128Mi
+      volumes:
+      - name: pm2
+        emptyDir: {}
 
 ---
 apiVersion: v1

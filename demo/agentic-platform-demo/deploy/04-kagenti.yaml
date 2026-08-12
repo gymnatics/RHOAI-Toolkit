@@ -1,8 +1,10 @@
 ###############################################################################
 # 04-kagenti.yaml
-# KAgenti (Rossoctl) Platform — Backend, UI, Controller, Policy Agent
-# Note: If using the KAgenti Operator, this is created via CR. This manifest
-# is for manual deployment or when operator is not available.
+# KAgenti (Rossoctl) Platform — Backend, UI, Controller, OTel Collector
+# Apply with: sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g" 04-kagenti.yaml | oc apply -f -
+#
+# NOTE: KAgenti was renamed to Rossoctl (Jul 2026). All images are now at
+#       ghcr.io/rossoctl/rossoctl/ — the old quay.io/kagenti/ org is deleted.
 ###############################################################################
 
 ---
@@ -17,6 +19,36 @@ kind: ServiceAccount
 metadata:
   name: kagenti
   namespace: kagenti-system
+
+---
+# Grant anyuid SCC to default SA (nginx needs /var/cache/nginx write access)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-system-anyuid
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: system:openshift:scc:anyuid
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Grant cluster-reader to kagenti SA (backend needs to list resources)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: kagenti
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-reader
+  apiGroup: rbac.authorization.k8s.io
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -77,7 +109,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        image: image-registry.openshift-image-registry.svc:5000/openshift/postgresql:15-el9
         ports:
         - containerPort: 5432
         env:
@@ -157,7 +189,7 @@ spec:
     name: otlp-http
 
 ---
-# KAgenti Backend
+# KAgenti/Rossoctl Backend
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -176,7 +208,7 @@ spec:
       serviceAccountName: kagenti
       containers:
       - name: backend
-        image: quay.io/kagenti/kagenti-backend:latest
+        image: ghcr.io/rossoctl/rossoctl/backend:v0.7.0-rc.5
         ports:
         - containerPort: 8080
         env:
@@ -184,12 +216,35 @@ spec:
           value: "http://otel-collector:4317"
         - name: DATABASE_URL
           value: "postgresql://otel:otel123@postgres-otel:5432/otel"
+        - name: ENABLE_AUTH
+          value: "true"
+        - name: DOMAIN
+          value: "__CLUSTER_DOMAIN__"
+        - name: DOMAIN_NAME
+          value: "__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_PUBLIC_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_REALM
+          value: "kagenti"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "kagenti"
+        - name: KEYCLOAK_CONSOLE_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/admin/master/console/"
+        - name: AUTH_ENDPOINT
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/auth"
+        - name: REDIRECT_URI
+          value: "https://kagenti-ui-kagenti-system.__CLUSTER_DOMAIN__/oauth2/callback"
+        - name: CORS_ORIGINS
+          value: "[\"https://kagenti-ui-kagenti-system.__CLUSTER_DOMAIN__\"]"
         resources:
           requests:
             cpu: 100m
             memory: 256Mi
 
 ---
+# kagenti-backend Service (port 8080 -> targetPort 8000, backend app listens on 8000)
 apiVersion: v1
 kind: Service
 metadata:
@@ -200,6 +255,21 @@ spec:
     app: kagenti-backend
   ports:
   - port: 8080
+    targetPort: 8000
+
+---
+# rossoctl-backend Service (port 8000 -> 8000, used by nginx UI proxy_pass)
+apiVersion: v1
+kind: Service
+metadata:
+  name: rossoctl-backend
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-backend
+  ports:
+  - port: 8000
+    targetPort: 8000
 
 ---
 # KAgenti Controller Manager
@@ -221,7 +291,7 @@ spec:
       serviceAccountName: kagenti
       containers:
       - name: manager
-        image: quay.io/kagenti/kagenti-controller:latest
+        image: ghcr.io/rossoctl/operator:latest
         env:
         - name: WATCH_NAMESPACES
           value: "team1"
@@ -233,7 +303,7 @@ spec:
             memory: 128Mi
 
 ---
-# KAgenti UI
+# KAgenti/Rossoctl UI (nginx on port 8080, NOT 3000)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -251,12 +321,12 @@ spec:
     spec:
       containers:
       - name: ui
-        image: quay.io/kagenti/kagenti-ui:latest
+        image: ghcr.io/rossoctl/rossoctl/ui-v2:v0.7.0-rc.5
         ports:
-        - containerPort: 3000
+        - containerPort: 8080
         env:
         - name: BACKEND_URL
-          value: "http://kagenti-backend:8080"
+          value: "http://rossoctl-backend:8000"
         resources:
           requests:
             cpu: 50m
@@ -272,9 +342,11 @@ spec:
   selector:
     app: kagenti-ui
   ports:
-  - port: 3000
+  - port: 8080
+    targetPort: 8080
 
 ---
+# Main UI route
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -285,50 +357,25 @@ spec:
     kind: Service
     name: kagenti-ui
   port:
-    targetPort: 3000
+    targetPort: 8080
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
 
 ---
-# MCP Inspector
-apiVersion: apps/v1
-kind: Deployment
+# Separate /api route pointing directly to backend (bypasses nginx proxy timeout)
+apiVersion: route.openshift.io/v1
+kind: Route
 metadata:
-  name: mcp-inspector
+  name: kagenti-api
   namespace: kagenti-system
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mcp-inspector
-  template:
-    metadata:
-      labels:
-        app: mcp-inspector
-    spec:
-      containers:
-      - name: inspector
-        image: quay.io/kagenti/mcp-inspector:latest
-        ports:
-        - containerPort: 5173
-        - containerPort: 3000
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mcp-inspector
-  namespace: kagenti-system
-spec:
-  selector:
-    app: mcp-inspector
-  ports:
-  - port: 5173
-    name: ui
-  - port: 3000
-    name: proxy
+  path: /api
+  to:
+    kind: Service
+    name: kagenti-backend
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

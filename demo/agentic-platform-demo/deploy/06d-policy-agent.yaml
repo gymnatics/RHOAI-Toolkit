@@ -45,14 +45,9 @@ spec:
     requests:
       storage: 5Gi
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: deepseek-api-key
-  namespace: kagenti-system
-type: Opaque
-stringData:
-  DEEPSEEK_API_KEY: "REPLACE-WITH-YOUR-API-KEY"
+---
+# LLM API key secret — create manually or rely on deploy-all.sh:
+#   oc create secret generic llm-api-key -n kagenti-system --from-literal=api-key=YOUR_KEY
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -158,8 +153,8 @@ data:
 
     SGT = timezone(timedelta(hours=8))
     DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-    DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-    DEEPSEEK_MODEL = "deepseek-chat"
+    DEEPSEEK_URL = os.environ.get("LLM_BASE_URL", "https://maas.__CLUSTER_DOMAIN__/model-storage/qwen35-35b-a3b/v1") + "/chat/completions"
+    DEEPSEEK_MODEL = os.environ.get("LLM_MODEL", "qwen35-35b-a3b")
     K8S_API = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
     K8S_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -1108,8 +1103,8 @@ spec:
         - name: DEEPSEEK_API_KEY
           valueFrom:
             secretKeyRef:
-              name: deepseek-api-key
-              key: DEEPSEEK_API_KEY
+              name: llm-api-key
+              key: api-key
         - name: PORT
           value: "8080"
         readinessProbe:

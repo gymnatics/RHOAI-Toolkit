@@ -1,7 +1,18 @@
 ###############################################################################
 # 03-mcp-gateway.yaml
-# MCP Gateway + Controller for tool server routing
-# Depends on: Gateway API CRDs (from 00-prerequisites)
+# MCP Gateway v0.8.0 — Post-Helm resources (Gateway, MCPGatewayExtension)
+#
+# The MCP Gateway itself is installed via Helm in deploy-all.sh:
+#   helm install mcp-gateway oci://ghcr.io/kuadrant/charts/mcp-gateway \
+#     --version 0.8.0 -n mcp-system --create-namespace
+#
+# This file contains only the supplemental resources that Helm does not create:
+#   - Namespace (idempotent)
+#   - Gateway resource (Kubernetes Gateway API, with correct listener name "mcp")
+#   - MCPGatewayExtension (binds to the Gateway listener)
+#
+# After Helm install + this file, the MCP Gateway serves at:
+#   http://mcp-gateway-istio.mcp-system.svc.cluster.local:8080/mcp
 ###############################################################################
 
 ---
@@ -11,162 +22,8 @@ metadata:
   name: mcp-system
 
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mcp-gateway-config
-  namespace: mcp-system
-data:
-  config.yaml: |
-    server:
-      port: 8080
-      healthPort: 8081
-    router:
-      discovery: kubernetes
-      watchNamespaces:
-      - team1
-    logging:
-      level: info
-      format: json
-    session:
-      ttl: 3600
-      maxIdle: 300
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mcp-gateway
-  namespace: mcp-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mcp-gateway
-  template:
-    metadata:
-      labels:
-        app: mcp-gateway
-    spec:
-      serviceAccountName: mcp-gateway
-      containers:
-      - name: gateway
-        image: quay.io/kagenti/mcp-gateway:latest
-        ports:
-        - containerPort: 8080
-          name: http
-        - containerPort: 8081
-          name: health
-        volumeMounts:
-        - name: config
-          mountPath: /etc/mcp-gateway
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: health
-          initialDelaySeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: health
-          initialDelaySeconds: 5
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 256Mi
-      volumes:
-      - name: config
-        configMap:
-          name: mcp-gateway-config
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: mcp-gateway
-  namespace: mcp-system
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: mcp-gateway
-rules:
-- apiGroups: [""]
-  resources: ["services", "configmaps"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["gateway.networking.k8s.io"]
-  resources: ["httproutes", "gateways"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["mcp.kagenti.io"]
-  resources: ["mcpserverregistrations"]
-  verbs: ["get", "list", "watch"]
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: mcp-gateway
-subjects:
-- kind: ServiceAccount
-  name: mcp-gateway
-  namespace: mcp-system
-roleRef:
-  kind: ClusterRole
-  name: mcp-gateway
-  apiGroup: rbac.authorization.k8s.io
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mcp-gateway
-  namespace: mcp-system
-spec:
-  selector:
-    app: mcp-gateway
-  ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
-
----
-# MCP Gateway Controller (watches MCPServerRegistration CRDs)
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mcp-gateway-controller
-  namespace: mcp-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mcp-gateway-controller
-  template:
-    metadata:
-      labels:
-        app: mcp-gateway-controller
-    spec:
-      serviceAccountName: mcp-gateway
-      containers:
-      - name: controller
-        image: quay.io/kagenti/mcp-gateway-controller:latest
-        env:
-        - name: WATCH_NAMESPACES
-          value: "team1"
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 200m
-            memory: 128Mi
-
----
 # Gateway resource (Kubernetes Gateway API)
+# Two listeners: "mcp" for direct access (with hostname), "mcps" for wildcard tool routes
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -175,9 +32,37 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: http
+  - name: mcp
     port: 8080
     protocol: HTTP
+    hostname: "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__"
     allowedRoutes:
       namespaces:
         from: All
+  - name: mcps
+    port: 8080
+    protocol: HTTP
+    hostname: "*.mcp.local"
+    allowedRoutes:
+      namespaces:
+        from: All
+
+---
+# MCPGatewayExtension — binds to the Gateway listener named "mcp"
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPGatewayExtension
+metadata:
+  name: mcp-gateway
+  namespace: mcp-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: mcp-system
+    sectionName: mcp
+  privateHost: mcp-gateway-istio.mcp-system.svc.cluster.local:8080
+  publicHost: "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__"
+  httpRouteManagement: Enabled
+  backendPingIntervalSeconds: 60
+  urlElicitation: Disabled

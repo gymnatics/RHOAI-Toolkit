@@ -1,19 +1,11 @@
 ###############################################################################
 # 02-keycloak.yaml
-# Keycloak deployment with kagenti realm, users, groups, and OIDC client
-# Apply with: oc apply -f 02-keycloak.yaml
+# Keycloak deployment with kagenti realm, users, groups, and OIDC clients
+# Apply with: sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g" 02-keycloak.yaml | oc apply -f -
+#
+# NOTE: The keycloak-initial-admin Secret is intentionally NOT included here.
+#       The RHBK operator generates it automatically. Pre-creating it blocks the operator.
 ###############################################################################
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: keycloak-initial-admin
-  namespace: keycloak
-type: Opaque
-stringData:
-  username: temp-admin
-  password: "7a0313c6c2144b669d1332d9161f82a5"
 
 ---
 apiVersion: v1
@@ -47,7 +39,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: registry.access.redhat.com/rhel9/postgresql-15:latest
+        image: image-registry.openshift-image-registry.svc:5000/openshift/postgresql:15-el9
         ports:
         - containerPort: 5432
         env:
@@ -83,8 +75,8 @@ spec:
     targetPort: 5432
 
 ---
-# Keycloak CR (uses RHBK operator)
-apiVersion: k8s.keycloak.org/v2alpha1
+# Keycloak CR (uses RHBK operator v26)
+apiVersion: k8s.keycloak.org/v2beta1
 kind: Keycloak
 metadata:
   name: keycloak
@@ -102,8 +94,9 @@ spec:
       key: password
     database: keycloak
   http:
-    tlsSecret: ""
+    httpEnabled: true
   hostname:
+    hostname: keycloak-keycloak.__CLUSTER_DOMAIN__
     strict: false
   proxy:
     headers: xforwarded
@@ -127,8 +120,8 @@ spec:
     insecureEdgeTerminationPolicy: Redirect
 
 ---
-# KeycloakRealmImport — kagenti realm with users, groups, client
-apiVersion: k8s.keycloak.org/v2alpha1
+# KeycloakRealmImport — kagenti realm with users, groups, 3 OIDC clients
+apiVersion: k8s.keycloak.org/v2beta1
 kind: KeycloakRealmImport
 metadata:
   name: kagenti-realm-import
@@ -141,9 +134,63 @@ spec:
     displayName: "DBS Agentic AI Platform"
     registrationAllowed: false
     clients:
-    - clientId: kagenti
+    # Public client for Chat UI OIDC login
+    - clientId: loan-agent-ui
       enabled: true
       publicClient: true
+      directAccessGrantsEnabled: true
+      redirectUris:
+      - "https://loan-agent-team1.__CLUSTER_DOMAIN__/*"
+      - "*"
+      webOrigins:
+      - "*"
+      protocol: openid-connect
+      defaultClientScopes:
+      - profile
+      - email
+      - roles
+      protocolMappers:
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          claim.name: groups
+          full.path: "false"
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+    # Public client for Rossoctl/KAgenti UI OIDC login
+    - clientId: rossoctl-ui
+      enabled: true
+      publicClient: true
+      directAccessGrantsEnabled: true
+      redirectUris:
+      - "https://kagenti-ui-kagenti-system.__CLUSTER_DOMAIN__/*"
+      - "*"
+      webOrigins:
+      - "*"
+      protocol: openid-connect
+      defaultClientScopes:
+      - profile
+      - email
+      - roles
+      protocolMappers:
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          claim.name: groups
+          full.path: "false"
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+    # Confidential client for agent service-to-service (client_credentials grant)
+    - clientId: kagenti
+      enabled: true
+      publicClient: false
+      clientAuthenticatorType: client-secret
+      secret: kagenti-secret
+      serviceAccountsEnabled: true
       directAccessGrantsEnabled: true
       redirectUris:
       - "*"
