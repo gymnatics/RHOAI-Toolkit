@@ -10,6 +10,40 @@ A comprehensive toolkit for installing and configuring **OpenShift** with **Red 
 > The `stable-3.x` rolling channel currently falls through to a bare-bones operator-only installer instead of the full installation flow.
 > A fix is in progress on the [`refactor/rhoai-install`](https://github.com/gymnatics/RHOAI-Toolkit/tree/refactor/rhoai-install) branch.
 
+## What's New in the Toolkit
+
+### MaaS Telemetry & Cost Attribution
+- **Auto-enable telemetry** — `configure_maas_telemetry()` runs during install, patches `MaasTenantConfig` with all 4 capture flags (`captureGroup`, `captureModelUsage`, `captureOrganization`, `captureUser`)
+- **Subscription metadata tagging** — `publish_model_to_maas()` now prompts for `costCenter` and `organizationId` after creating a `MaaSSubscription`
+- **Interactive menu** — AI Services → **8) Configure MaaS Telemetry** and **9) Tag MaaS Subscription Metadata** for post-install management
+
+### Technology Preview Features Manager
+- **17 TP/DP dashboard features** — AutoML, AutoRAG, Guardrails, Observability Dashboard, Prompt Management, Tool Calling, External Models, and more
+- **Interactive toggle** — RHOAI Management → Dashboard & Configuration → **Enable Technology Preview Features** — shows current ON/OFF state, enable all or pick specific features
+- **Install flag** — `./scripts/install-rhoai-35.sh --enable-tp-features` enables all TP features during install
+- Auto-creates prerequisites (Thanos proxy secret, dashboard pod restart) when features are enabled
+
+### Observability Dashboard (Full Stack)
+- **Tempo + OpenTelemetry operators** — now auto-installed (required for DSCI monitoring cascade)
+- **DSCI monitoring configuration** — auto-patches `metrics` + `traces` settings so the RHOAI operator creates MonitoringStack → ThanosQuerier → Perses → PersesDashboards
+- **NetworkPolicy fix** — allows `perses-operator` in `openshift-cluster-observability-operator` to sync dashboards (upstream bug workaround)
+- **Perses datasource secret** — `monitoring-prometheus-datasource-secret` auto-created for Thanos Querier access
+- Result: **Observe & monitor → Dashboard** works out of the box with Cluster, Models, and Usage tabs
+
+### MaaS API Key Reliability
+- **Gateway pod restart** after `verify_maas_deployment()` — clears stale Kuadrant WASM shim state that causes `500 "Internal Server Error."` on authenticated `/maas-api/*` calls after initial install turbulence
+- **Thanos proxy secret** always created (previously gated on `observabilityDashboard` flag, causing missing secret when enabled post-install)
+
+### Dashboard & Configuration Submenu
+- Option 5 in RHOAI Management is now a submenu:
+  1. Enable GA Dashboard Features
+  2. Enable Technology Preview Features (interactive picker)
+  3. Show Current Dashboard Config (dumps `OdhDashboardConfig` as JSON)
+
+### Troubleshooting Additions
+- **RHOAI 3.5: WASM shim stale state** — API keys "unmarshal" error diagnosis and fix
+- **RHOAI 3.5: Observability dashboard missing** — Perses NetworkPolicy + DSCI monitoring diagnosis and fix
+
 ## Quick Start
 
 ```bash
