@@ -268,6 +268,106 @@ The RHOAI Dashboard and CLI configurations interfere with each other. Changes in
 
 ---
 
+## MaaS / RHOAI 3.5
+
+### MaaS API Keys Page — "unknown error when invoking maas-api (unmarshal): invalid character" (Stale WASM shim state)
+
+**Error:** Gen AI Studio > API Keys page shows "Error loading API keys — unknown error when invoking maas-api (unmarshal): invalid character 'I' looking for beginning of value". The MaaS API health endpoint (`/maas-api/health`) may return `{"status":"healthy"}`, but authenticated calls to `/v1/api-keys` or `/maas-api/v1/api-keys/search` return HTTP 500 "Internal Server Error."
+
+**Root cause:** During initial RHOAI 3.5 install, the `maas-api` pod crash-loops while waiting for the PostgreSQL database and other dependencies to become ready. The `maas-default-gateway` pod's Kuadrant WASM shim (`kuadrant_wasm_shim`) caches failed gRPC connection state from those initial auth evaluation attempts. Once `maas-api` stabilizes, the WASM shim continues using the stale (broken) gRPC state, returning 500 for every authenticated request. The "invalid character 'I'" in the error message is the first character of the "Internal Server Error." text that the dashboard tries to parse as JSON.
+
+**Diagnosis:**
+```bash
+# Gateway logs show WASM gRPC errors
+oc logs -n openshift-ingress -l gateway.networking.k8s.io/gateway-name=maas-default-gateway --tail=20 \
+  | grep "gRPC status code is not OK"
+
+# Health works but auth calls fail
+curl -sk "https://maas.apps.<cluster>/maas-api/health"
+# Returns: {"status":"healthy"}
+
+curl -sk -X POST "https://maas.apps.<cluster>/maas-api/v1/api-keys/search" \
+  -H "Authorization: Bearer $(oc whoami -t)" -H "Content-Type: application/json" -d '{}'
+# Returns: Internal Server Error.
+```
+
+**Fix:** Restart the gateway pod to clear the stale WASM shim state:
+```bash
+oc delete pod -n openshift-ingress \
+  -l gateway.networking.k8s.io/gateway-name=maas-default-gateway
+```
+
+Wait ~15 seconds for the new pod to start, then retry. The install script (`install-rhoai-35.sh`) now automatically restarts the gateway pod at the end of `verify_maas_deployment()` to prevent this issue.
+
+### Observability Dashboard Missing — "Dashboard" menu item not under "Observe & monitor"
+
+**Error:** After enabling `observabilityDashboard: true` in OdhDashboardConfig, the "Dashboard" menu item does not appear under "Observe & monitor" in the RHOAI dashboard. Only "Workload metrics" and "Infrastructure" are shown.
+
+**Root cause:** Two issues:
+
+1. **NetworkPolicy blocks perses-operator:** The auto-created `NetworkPolicy/perses-operator-access` in `redhat-ods-monitoring` only allows ingress from `openshift-operators`, but the `perses-operator` pod actually runs in `openshift-cluster-observability-operator`. The operator can't reach the Perses server to sync PersesDashboard CRs, so all dashboards stay in `PersesBackendError` state.
+
+2. **Missing `monitoring-prometheus-datasource-secret`:** The PersesDatasource CR references this secret for authenticating to Thanos Querier. Without it, the datasource stays Degraded.
+
+**Diagnosis:**
+```bash
+# Check PersesDashboard status — all should be True/Reconciled
+oc get persesdashboard -n redhat-ods-monitoring \
+  -o custom-columns='NAME:.metadata.name,AVAILABLE:.status.conditions[0].status,REASON:.status.conditions[0].reason'
+
+# Check PersesDatasource status
+oc get persesdatasource -n redhat-ods-monitoring \
+  -o jsonpath='{.items[0].status.conditions}'
+
+# Check if the datasource secret exists
+oc get secret monitoring-prometheus-datasource-secret -n redhat-ods-monitoring
+```
+
+**Fix:**
+```bash
+# 1. Fix the NetworkPolicy to allow perses-operator access
+oc apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perses-coo-operator-access
+  namespace: redhat-ods-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: perses-operator
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-cluster-observability-operator
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: redhat-ods-monitoring
+    ports:
+    - port: 8080
+      protocol: TCP
+  policyTypes:
+  - Ingress
+EOF
+
+# 2. Create the datasource secret
+oc create secret generic monitoring-prometheus-datasource-secret \
+  --from-literal=token="$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h)" \
+  --from-literal=host="$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')" \
+  -n redhat-ods-monitoring
+
+# 3. Trigger re-sync of all dashboards
+for db in $(oc get persesdashboard -n redhat-ods-monitoring -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+  oc annotate persesdashboard "$db" -n redhat-ods-monitoring --overwrite reconcile-trigger="$(date +%s)"
+done
+
+# 4. Restart dashboard pods
+oc rollout restart deployment/rhods-dashboard -n redhat-ods-applications
+```
+
+---
+
 ## MaaS / RHOAI 3.4
 
 ### MaaS API Keys Page — "Error loading components"
@@ -308,6 +408,73 @@ oc get httproute maas-api-route -n redhat-ods-applications -o jsonpath='{.spec.p
 
 # Should return: {"status":"healthy"}
 curl -sk "https://maas.apps.<cluster>/maas-api/health"
+```
+
+### MaaS API Keys Page — Times Out After ~10s, "Error loading components" (NetworkPolicy blocks payload-processing ext_proc)
+
+**Error:** The Gen AI Studio > API Keys page hangs for ~10 seconds then shows "Error loading components — the server encountered a problem and could not process your request." Unlike the `gatewayRef` bug above, this affects **every** authenticated MaaS API call (models list, API key search/create), not just `/maas-api/*` paths — requests without an `Authorization` header still fail fast with 401.
+
+**Root cause:** The operator-managed `NetworkPolicy/payload-processing` in `openshift-ingress` only allows ingress on port 9004 (the `payload-processing` ext_proc gRPC service used by the `EnvoyFilter/payload-processing` for model-provider-resolver, API translation, and API-key injection) from pods labeled `gateway.networking.k8s.io/gateway-name: data-science-gateway`. But the MaaS `Tenant`'s `spec.gatewayRef` (correctly) points to `maas-default-gateway`, whose gateway pod carries the label `gateway.networking.k8s.io/gateway-name: maas-default-gateway` — which the policy does **not** allow. Since the `EnvoyFilter` sets `failure_mode_allow: false`, every request that passes auth and reaches the ext_proc filter blocks on the connection until Envoy gives up, surfacing as `ext_proc_error_gRPC_error_14{...connection_timeout}` → HTTP 500 after ~10s.
+
+This is the same class of bug as the `Tenant.spec.gatewayRef` issue documented in [`docs/bugs/maas-bugs-rhoai-34.md`](bugs/maas-bugs-rhoai-34.md) (RHOAI hardcoding `data-science-gateway` assumptions instead of reading the tenant's actual gateway), but it hits the auto-generated `NetworkPolicy` instead of the `HTTPRoute`. It was observed appearing ~4 days after a DSC reconcile on RHOAI 3.4.4.
+
+**Diagnosis:**
+```bash
+# Gateway controller logs show the ext_proc timeout for any authenticated request
+oc logs deployment/maas-default-gateway-openshift-gateway-controller -n openshift-ingress --tail=50 \
+  | grep ext_proc_error
+# "POST /maas-api/v1/api-keys/search HTTP/2" 500 - ext_proc_error_gRPC_error_14{upstream_connect_error_or_disconnect/reset_before_headers._reset_reason:_connection_timeout} ...
+
+# Confirm the NetworkPolicy selector mismatch
+oc get networkpolicy payload-processing -n openshift-ingress \
+  -o jsonpath='{.spec.ingress[0].from[0].podSelector.matchLabels}'
+# {"gateway.networking.k8s.io/gateway-name":"data-science-gateway"}  <- should include maas-default-gateway
+
+oc get tenant default-tenant -n models-as-a-service -o jsonpath='{.spec.gatewayRef.name}'
+# maas-default-gateway  <- confirms the mismatch
+
+# payload-processing pod itself is healthy — this is purely a NetworkPolicy issue
+oc get pods -n openshift-ingress -l app=payload-processing
+```
+
+**Fix (do NOT edit the `payload-processing` NetworkPolicy directly — the operator reverts it within seconds; confirmed via `resourceVersion`/`generation` jumping after a direct `oc patch`).** Instead, add an **additive** NetworkPolicy targeting the same pods — Kubernetes NetworkPolicies are OR'd together, so this survives operator reconciliation of the original policy:
+```bash
+cat <<'EOF' | oc apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payload-processing-maas-gateway-allow
+  namespace: openshift-ingress
+  labels:
+    app.kubernetes.io/part-of: modelsasservice
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  podSelector:
+    matchLabels:
+      app: payload-processing
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: maas-default-gateway
+      ports:
+        - port: 9004
+          protocol: TCP
+EOF
+```
+
+**Verify:**
+```bash
+TOKEN=$(oc whoami -t)
+curl -sk -m 15 -H "Authorization: Bearer $TOKEN" -o /dev/null \
+  -w "HTTP_CODE:%{http_code} TIME:%{time_total}\n" \
+  "https://maas.apps.<cluster>/maas-api/v1/models"
+# Should be HTTP_CODE:200 in well under 1s (not 500 after ~10s)
 ```
 
 ### Cluster Observability Operator v1.5.0 Breaks MaaS Dashboard
@@ -449,6 +616,67 @@ json.dump(data, sys.stdout)
 ```bash
 oc patch datasciencecluster default-dsc --type='json' \
   -p='[{"op": "replace", "path": "/spec/components/kueue/managementState", "value": "Unmanaged"}]'
+```
+
+---
+
+## Feature Store (Feast)
+
+### FeatureStore Missing from Dashboard Despite Healthy Pods (RBAC permissions.py Namespace Mismatch)
+
+**Symptom:** The `FeatureStore` CR is `Ready`, all pods (`registry`/`online`/`offline`) are `Running`, the required labels (`feature-store-ui: enabled`, `opendatahub.io/dashboard: "true"`) and `restAPI: true` are all correctly set, and `feast-<name>-registry`/`feast-<name>-registry-rest` services both exist — yet the Feature Store still doesn't appear anywhere in the RHOAI dashboard.
+
+**Root cause:** This is specific to the banking demo (`RHRolun/banking-feature-store`, branch `rbac`) but the pattern applies to any Feast repo using `NamespaceBasedPolicy`. Its `feature_repo/permissions.py` defines:
+```python
+prod_namespaces = ["banking"]
+all_resources = Permission(
+    name="all_resources",
+    types=ALL_RESOURCE_TYPES,
+    policy=NamespaceBasedPolicy(namespaces=prod_namespaces),
+    actions=[AuthzedAction.DESCRIBE] + READ,
+)
+```
+`NamespaceBasedPolicy` checks `prod_namespaces` against the **OpenShift namespace** the FeatureStore is deployed into — but `"banking"` here is the **Feast project name**, not a namespace. Unless the target namespace is literally called `banking`, every registry `DESCRIBE`/list call is denied, and the dashboard's feature-store discovery (which queries the registry's REST API) silently gets back an empty list — no error surfaces in the dashboard UI itself.
+
+**Diagnosis:**
+```bash
+FEAST_POD=$(oc get pods -n <namespace> -l feast.dev/name=<name> -o jsonpath='{.items[0].metadata.name}')
+
+# Look for this exact error in the registry container's logs
+oc logs -n <namespace> $FEAST_POD -c registry --tail=100 | grep "permitted namespaces"
+# ERROR:feast.permissions.enforcer:Permission denied: Permission all_resources denied
+#   execution of ['DESCRIBE'] to Project:<project>: User is not added into the permitted namespaces
+
+# Confirm the mismatch directly in the persisted repo checkout
+oc exec -n <namespace> $FEAST_POD -c registry -- \
+  grep 'prod_namespaces =' /feast-data/<name>/feature_repo/permissions.py
+```
+
+**Fix (no git fork/push required — patches the already-cloned checkout on the `feast-data` PVC in place):**
+```bash
+FEAST_POD=$(oc get pods -n <namespace> -l feast.dev/name=<name> -o jsonpath='{.items[0].metadata.name}')
+
+oc exec -n <namespace> $FEAST_POD -c registry -- \
+  cp /feast-data/<name>/feature_repo/permissions.py /feast-data/<name>/feature_repo/permissions.py.bak
+
+oc exec -n <namespace> $FEAST_POD -c registry -- \
+  sed -i 's/prod_namespaces = \[.*\]/prod_namespaces = ["<namespace>"]/' \
+  /feast-data/<name>/feature_repo/permissions.py
+
+oc exec -n <namespace> $FEAST_POD -c registry -- \
+  sh -c "cd /feast-data/<name>/feature_repo && feast apply"
+```
+No pod restart is needed — `feast apply` writes directly into `registry.db`, which the running `serve_registry` process reads live.
+
+**This is now automated:** `./rhoai-toolkit.sh` → `deploy_banking_demo` patches this automatically after the Feast pod comes up, and `Diagnose Feature Store`'s automatic-fixes flow (`check_featurestore_rbac_namespace` / `fix_featurestore_rbac_namespace` in `lib/utils/rhoai-version.sh`) detects and fixes it on existing deployments too.
+
+**Caveat:** This patch lives on the PVC-persisted git checkout, not upstream. If `/feast-data` is ever wiped (FeatureStore CR deleted/recreated with a fresh PVC), `feast-init` re-clones from the original repo and the bug reappears. For a fix that survives that, fork the repo, apply the same one-line change, and point `spec.feastProjectDir.git.url` at your fork.
+
+**Verify:**
+```bash
+curl -sk -H "Authorization: Bearer $(oc whoami -t)" \
+  "https://<dashboard-route>/api/featurestores"
+# Should list the feature store instead of {"featureStores":[]}
 ```
 
 ---

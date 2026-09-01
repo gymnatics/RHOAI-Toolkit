@@ -52,25 +52,41 @@ detect_rhoai_version() {
             # LLMInferenceService CRD exists - this is 3.x
             local dsc_spec=$(oc get datasciencecluster default-dsc -o json 2>/dev/null)
             if echo "$dsc_spec" | grep -q "modelsAsService" 2>/dev/null; then
+                local channel=$(oc get subscription rhods-operator -n redhat-ods-operator -o jsonpath='{.spec.channel}' 2>/dev/null)
+
+                # Check for 3.5-specific indicators first (most specific):
+                # 1. DSC has "ogx" component but NOT "llamastackoperator"
+                #    (llamastackoperator was renamed to ogx in 3.5 - OGX Operator)
+                # 2. Channel contains "3.5"
+                # 3. mcplifecycleoperator is a first-class DSC component in 3.5
+                local has_ogx=false
+                local has_llamastack=false
+                local has_mcplifecycle=false
+                echo "$dsc_spec" | grep -q '"ogx"' 2>/dev/null && has_ogx=true
+                echo "$dsc_spec" | grep -q '"llamastackoperator"' 2>/dev/null && has_llamastack=true
+                echo "$dsc_spec" | grep -q '"mcplifecycleoperator"' 2>/dev/null && has_mcplifecycle=true
+
+                if { [ "$has_ogx" = true ] && [ "$has_llamastack" = false ]; } || \
+                   [ "$has_mcplifecycle" = true ] || \
+                   echo "$channel" | grep -q "3.5" 2>/dev/null; then
+                    RHOAI_VERSION="3.5.x"
+                    RHOAI_MAJOR_VERSION="3"
+                    RHOAI_MINOR_VERSION="5"
                 # Check for 3.4-specific indicators:
                 # 1. MaaS subscription CRDs (only in 3.4+)
                 # 2. Channel contains "3.4"
-                # 3. Tenant CRD exists
-                if oc get crd maassubscriptions.maas.opendatahub.io &>/dev/null 2>&1; then
+                elif oc get crd maassubscriptions.maas.opendatahub.io &>/dev/null 2>&1; then
+                    RHOAI_VERSION="3.4.x"
+                    RHOAI_MAJOR_VERSION="3"
+                    RHOAI_MINOR_VERSION="4"
+                elif echo "$channel" | grep -q "3.4" 2>/dev/null; then
                     RHOAI_VERSION="3.4.x"
                     RHOAI_MAJOR_VERSION="3"
                     RHOAI_MINOR_VERSION="4"
                 else
-                    local channel=$(oc get subscription rhods-operator -n redhat-ods-operator -o jsonpath='{.spec.channel}' 2>/dev/null)
-                    if echo "$channel" | grep -q "3.4" 2>/dev/null; then
-                        RHOAI_VERSION="3.4.x"
-                        RHOAI_MAJOR_VERSION="3"
-                        RHOAI_MINOR_VERSION="4"
-                    else
-                        RHOAI_VERSION="3.3.x"
-                        RHOAI_MAJOR_VERSION="3"
-                        RHOAI_MINOR_VERSION="3"
-                    fi
+                    RHOAI_VERSION="3.3.x"
+                    RHOAI_MAJOR_VERSION="3"
+                    RHOAI_MINOR_VERSION="3"
                 fi
             elif echo "$dsc_spec" | grep -q "modelsAsService" 2>/dev/null; then
                 RHOAI_VERSION="3.3.x"
@@ -111,6 +127,19 @@ get_rhoai_major_minor() {
 ################################################################################
 # Version Comparison Functions
 ################################################################################
+
+# Check if RHOAI version is 3.5 or higher
+# Returns: 0 if >= 3.5, 1 otherwise
+is_rhoai_35_or_higher() {
+    detect_rhoai_version
+
+    if [ "$RHOAI_MAJOR_VERSION" -gt 3 ]; then
+        return 0
+    elif [ "$RHOAI_MAJOR_VERSION" -eq 3 ] && [ "$RHOAI_MINOR_VERSION" -ge 5 ]; then
+        return 0
+    fi
+    return 1
+}
 
 # Check if RHOAI version is 3.4 or higher
 # Returns: 0 if >= 3.4, 1 otherwise
@@ -168,6 +197,23 @@ is_rhoai_2x() {
 ################################################################################
 # MaaS Configuration (Version-Aware)
 ################################################################################
+
+# Get the MaaS infrastructure namespace.
+# RHOAI 3.5+: redhat-ai-gateway-infra (hosts maas-api, maas-controller, maas-db-config)
+# RHOAI 3.4:  redhat-ods-applications
+get_maas_infra_namespace() {
+    detect_rhoai_version
+
+    if is_rhoai_35_or_higher; then
+        # Try dynamic discovery first (from MaasTenantConfig), fall back to default
+        local infra_ns
+        infra_ns=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.infraNamespace}' 2>/dev/null)
+        echo "${infra_ns:-redhat-ai-gateway-infra}"
+    else
+        echo "redhat-ods-applications"
+    fi
+}
 
 # Get MaaS endpoint based on RHOAI version
 # Sets: MAAS_ENDPOINT, MAAS_NAMESPACE
@@ -393,6 +439,77 @@ fix_featurestore_registry() {
     echo -e "${GREEN}✓ Registry restAPI enabled${NC}"
 }
 
+# Check whether the Feast RBAC permissions.py (if present) restricts access
+# to a namespace that doesn't match where the FeatureStore is actually
+# deployed. The RHRolun/banking-feature-store demo (branch: rbac) hardcodes
+# prod_namespaces = ["banking"] (a Feast *project* name, not a namespace),
+# so NamespaceBasedPolicy denies every DESCRIBE/list call unless the target
+# namespace happens to literally be "banking". Symptom: pods are Running,
+# labels/restAPI/services are all correct, but the registry returns 403
+# ("User is not added into the permitted namespaces") and the FeatureStore
+# is silently absent from the dashboard.
+check_featurestore_rbac_namespace() {
+    local namespace="$1"
+    local name="$2"
+
+    local feast_pod
+    feast_pod=$(oc get pods -n "$namespace" -o name 2>/dev/null | grep "feast-$name" | head -1 | sed 's|pod/||')
+    if [ -z "$feast_pod" ]; then
+        return 0  # No pod to check yet; other checks will flag this
+    fi
+
+    local perms_file="/feast-data/${name}/feature_repo/permissions.py"
+    if ! oc exec -n "$namespace" "$feast_pod" -c registry -- test -f "$perms_file" 2>/dev/null; then
+        return 0  # No permissions.py (not using RBAC policy, or different repo layout)
+    fi
+
+    local current_value
+    current_value=$(oc exec -n "$namespace" "$feast_pod" -c registry -- \
+        sh -c "grep -o 'prod_namespaces = \[.*\]' '$perms_file' 2>/dev/null | head -1")
+
+    if [ -n "$current_value" ] && ! echo "$current_value" | grep -q "\"$namespace\""; then
+        echo -e "${YELLOW}⚠ permissions.py RBAC namespace mismatch: $current_value (expected \"$namespace\")${NC}"
+        echo "  This causes the registry to deny DESCRIBE/list with 'User is not added into the permitted namespaces',"
+        echo "  which makes the FeatureStore disappear from the dashboard even though pods are healthy."
+        return 1
+    fi
+
+    return 0
+}
+
+# Fix the Feast RBAC permissions.py namespace mismatch in-place on the
+# feast-data PVC (no git fork/push required) and re-apply so it takes effect.
+fix_featurestore_rbac_namespace() {
+    local namespace="$1"
+    local name="$2"
+
+    local feast_pod
+    feast_pod=$(oc get pods -n "$namespace" -o name 2>/dev/null | grep "feast-$name" | head -1 | sed 's|pod/||')
+    if [ -z "$feast_pod" ]; then
+        echo -e "${YELLOW}⚠ No Feast pod found - cannot patch permissions.py${NC}"
+        return 1
+    fi
+
+    local perms_file="/feast-data/${name}/feature_repo/permissions.py"
+    if ! oc exec -n "$namespace" "$feast_pod" -c registry -- test -f "$perms_file" 2>/dev/null; then
+        echo -e "${BLUE}No permissions.py found - nothing to patch${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}Patching permissions.py RBAC namespace for $name in $namespace...${NC}"
+    oc exec -n "$namespace" "$feast_pod" -c registry -- cp "$perms_file" "${perms_file}.bak" 2>/dev/null
+
+    if oc exec -n "$namespace" "$feast_pod" -c registry -- \
+        sed -i "s/prod_namespaces = \[.*\]/prod_namespaces = [\"$namespace\"]/" "$perms_file"; then
+        echo -e "${GREEN}✓ permissions.py patched: prod_namespaces = [\"$namespace\"]${NC}"
+        echo -e "${BLUE}Re-running feast apply to register the fix...${NC}"
+        oc exec -n "$namespace" "$feast_pod" -c registry -- sh -c "cd $(dirname "$perms_file") && feast apply"
+    else
+        echo -e "${RED}✗ Failed to patch permissions.py${NC}"
+        return 1
+    fi
+}
+
 # Diagnose FeatureStore visibility issues
 diagnose_featurestore() {
     local namespace="$1"
@@ -463,6 +580,13 @@ diagnose_featurestore() {
         echo -e "${GREEN}✓ Registry REST service exists${NC}"
     fi
     
+    # Check RBAC permissions.py namespace mismatch (silent dashboard-visibility killer)
+    if ! check_featurestore_rbac_namespace "$namespace" "$name"; then
+        issues=$((issues + 1))
+    else
+        echo -e "${GREEN}✓ RBAC permissions.py namespace matches (or not in use)${NC}"
+    fi
+    
     # Summary
     echo ""
     if [ $issues -eq 0 ]; then
@@ -479,6 +603,7 @@ diagnose_featurestore() {
         if [[ "$fix_issues" =~ ^[Yy]$ ]]; then
             fix_featurestore_labels "$namespace" "$name"
             fix_featurestore_registry "$namespace" "$name"
+            fix_featurestore_rbac_namespace "$namespace" "$name"
             echo ""
             echo -e "${GREEN}Fixes applied. Wait a few minutes for changes to take effect.${NC}"
         fi
@@ -578,14 +703,24 @@ print_rhoai_info() {
     
     # Check key components
     local feast_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.feastoperator.managementState}' 2>/dev/null || echo "Unknown")
-    local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null || echo "Unknown")
     local kserve_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.managementState}' 2>/dev/null || echo "Unknown")
     
     echo ""
     echo -e "  ${BLUE}Component Status:${NC}"
     echo -e "    KServe:         $([ "$kserve_state" = "Managed" ] && echo "${GREEN}$kserve_state${NC}" || echo "${YELLOW}$kserve_state${NC}")"
     echo -e "    Feast:          $([ "$feast_state" = "Managed" ] && echo "${GREEN}$feast_state${NC}" || echo "${YELLOW}$feast_state${NC}")"
-    echo -e "    LlamaStack:     $([ "$llamastack_state" = "Managed" ] && echo "${GREEN}$llamastack_state${NC}" || echo "${YELLOW}$llamastack_state${NC}")"
+
+    if is_rhoai_35_or_higher; then
+        # llamastackoperator was renamed to ogx (OGX Operator) in 3.5
+        local ogx_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.ogx.managementState}' 2>/dev/null || echo "Unknown")
+        echo -e "    OGX:            $([ "$ogx_state" = "Managed" ] && echo "${GREEN}$ogx_state${NC}" || echo "${YELLOW}$ogx_state${NC}")"
+
+        local mcplifecycle_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.mcplifecycleoperator.managementState}' 2>/dev/null || echo "Unknown")
+        echo -e "    MCP Lifecycle:  $([ "$mcplifecycle_state" = "Managed" ] && echo "${GREEN}$mcplifecycle_state${NC}" || echo "${YELLOW}$mcplifecycle_state${NC}")"
+    else
+        local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null || echo "Unknown")
+        echo -e "    LlamaStack:     $([ "$llamastack_state" = "Managed" ] && echo "${GREEN}$llamastack_state${NC}" || echo "${YELLOW}$llamastack_state${NC}")"
+    fi
     
     if is_rhoai_33_or_higher; then
         local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null || echo "Unknown")
@@ -605,6 +740,12 @@ print_rhoai_info() {
 
             local sub_count=$(oc get maassubscriptions -n models-as-a-service --no-headers 2>/dev/null | wc -l | tr -d ' ')
             echo -e "    Subscriptions:  ${BLUE}${sub_count}${NC}"
+        fi
+
+        if is_rhoai_35_or_higher && [ "$maas_state" = "Managed" ]; then
+            local telemetry=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+                -o jsonpath='{.spec.telemetry.enabled}' 2>/dev/null || echo "N/A")
+            echo -e "    Telemetry:      $([ "$telemetry" = "true" ] && echo "${GREEN}Enabled${NC}" || echo "${YELLOW}${telemetry}${NC}")"
         fi
     fi
 

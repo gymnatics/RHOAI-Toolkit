@@ -150,11 +150,23 @@ Installed via Helm: `helm install mcp-gateway oci://ghcr.io/kuadrant/charts/mcp-
 
 | Item | Priority | Notes |
 |---|---|---|
-| Qwen3.5 tool-call parsing | **High** | Model outputs XML `<tool_call>` format; agent expects OpenAI JSON format |
-| OPA policy persistence | Medium | Policy loaded via API; lost on pod restart |
-| MCP Inspector | Low | Image not available after rename |
-| Tekton pipelines (2/3) | Low | API version mismatch |
-| Kiali | Low | CrashLoopBackOff |
+| Qwen3.5 tool-call parsing | ~~**High**~~ **FIXED** | XML parser `_parse_xml_tool_calls()` added to agent code |
+| OPA policy persistence | ~~Medium~~ **FIXED** | Policies loaded from ConfigMap via subPath volume mounts (survives restarts) |
+| MCP Inspector | Low | Image not available after rename; removed from 04-kagenti.yaml |
+| Tekton pipelines (2/3) | Low | API version mismatch (not critical for demo) |
+| Kiali | Low | CrashLoopBackOff (not critical for demo) |
+
+## 7b. YAML Redeployability Status
+
+**All ~50 live fixes are now captured in the committed YAML files.** The demo can be
+redeployed on any RHOAI 3.4+ / OCP 4.19+ cluster by:
+
+1. Edit `env.sh` — set `CLUSTER_DOMAIN`
+2. Create the LLM API key secret: `oc create secret generic llm-api-key -n team1 --from-literal=api-key=YOUR_KEY`
+3. Run `./deploy-all.sh`
+
+All files use the `__CLUSTER_DOMAIN__` placeholder pattern — `deploy-all.sh` performs
+`sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g"` before `oc apply` on cluster-specific files.
 
 ## 7. Architecture
 

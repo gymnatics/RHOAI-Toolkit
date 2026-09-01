@@ -1453,12 +1453,17 @@ deploy_banking_demo() {
     echo -e "${CYAN}Branch:${NC} $git_ref"
     echo ""
     
-    # RBAC warning
-    print_warning "For RBAC to work correctly, you should fork the repo and update permissions.py"
-    echo -e "  In feature_repo/permissions.py, change line 47 to:"
-    echo -e "  ${CYAN}prod_namespaces = [\"$namespace\"]${NC}"
+    # RBAC note: the upstream repo's feature_repo/permissions.py hardcodes
+    # prod_namespaces = ["banking"] (the Feast *project* name), but Feast's
+    # NamespaceBasedPolicy actually checks it against the OpenShift *namespace*
+    # you deploy into. Unless that namespace happens to be literally "banking",
+    # every DESCRIBE/list call gets denied ("User is not added into the permitted
+    # namespaces"), and the FeatureStore silently disappears from the dashboard
+    # even though every pod is healthy. We auto-patch this after the pod comes up
+    # (see patch_feast_permissions_namespace below) so no manual fork is required.
+    print_info "permissions.py will be auto-patched after deploy so RBAC matches namespace '$namespace' (no fork needed)"
     echo ""
-    read -p "Enter your forked repo URL (or press Enter to use original): " custom_url
+    read -p "Enter a custom fork repo URL (or press Enter to use original): " custom_url
     if [ -n "$custom_url" ]; then
         git_url="$custom_url"
     fi
@@ -1540,6 +1545,19 @@ deploy_banking_demo() {
         -p '{"spec":{"services":{"registry":{"local":{"server":{"restAPI":true}}}}}}'
     print_success "Registry REST API enabled"
     sleep 10
+    
+    # Auto-patch permissions.py so NamespaceBasedPolicy matches the actual
+    # OpenShift namespace instead of the upstream repo's hardcoded "banking"
+    # project name. Must happen before feast apply so the fix is registered.
+    # (See check_featurestore_rbac_namespace/fix_featurestore_rbac_namespace
+    # in lib/utils/rhoai-version.sh - also used by the diagnose flow.)
+    if type check_featurestore_rbac_namespace &>/dev/null; then
+        if ! check_featurestore_rbac_namespace "$namespace" "$feast_project"; then
+            fix_featurestore_rbac_namespace "$namespace" "$feast_project"
+        else
+            print_success "RBAC permissions.py namespace matches (or not in use)"
+        fi
+    fi
     
     # Run feast apply
     echo ""
@@ -2067,15 +2085,17 @@ deploy_guardrails_demo() {
 }
 
 ################################################################################
-# MaaS 3.4 Management Functions
+# MaaS 3.4+ Management Functions
 # RHOAI 3.4 uses subscription-based MaaS (replaces 3.3 tier-based model)
 # New CRDs: MaaSSubscription, MaaSAuthPolicy, MaaSModelRef, Tenant, ExternalModel
+# RHOAI 3.5 reuses the same TLS/verification mechanics unchanged; external OIDC
+# auth and body-based routing are additive/opt-in and don't change this flow.
 ################################################################################
 
-# Configure MaaS TLS using OpenShift service-ca (RHOAI 3.4 method)
+# Configure MaaS TLS using OpenShift service-ca (RHOAI 3.4+ method)
 # This replaces the cert-manager Certificate approach used in 3.3
 configure_maas_tls_34() {
-    print_header "Configuring MaaS TLS (RHOAI 3.4 service-ca method)"
+    print_header "Configuring MaaS TLS (RHOAI 3.4+ service-ca method)"
 
     print_step "Step 1: Annotating Authorino service for service-ca cert generation..."
     oc annotate service authorino-authorino-authorization \
@@ -2122,9 +2142,14 @@ configure_maas_tls_34() {
     print_success "MaaS TLS configuration complete (service-ca method)"
 }
 
-# Verify the full MaaS 3.4 deployment
+# Alias for RHOAI 3.5 — TLS mechanics are unchanged from 3.4
+configure_maas_tls_35() {
+    configure_maas_tls_34
+}
+
+# Verify the full MaaS 3.4+ deployment
 verify_maas_34() {
-    print_header "Verifying MaaS 3.4 Deployment"
+    print_header "Verifying MaaS 3.4+ Deployment"
 
     local all_ok=true
 
@@ -2227,10 +2252,15 @@ verify_maas_34() {
 
     echo ""
     if [ "$all_ok" = true ]; then
-        print_success "MaaS 3.4 deployment fully verified"
+        print_success "MaaS 3.4+ deployment fully verified"
     else
-        print_warning "MaaS 3.4 deployment has issues - check warnings above"
+        print_warning "MaaS 3.4+ deployment has issues - check warnings above"
     fi
+}
+
+# Alias for RHOAI 3.5 — verification checks are unchanged from 3.4
+verify_maas_35() {
+    verify_maas_34
 }
 
 # List MaaS subscriptions
@@ -2262,6 +2292,339 @@ show_maas_tenant() {
     echo ""
     oc get tenant default-tenant -n models-as-a-service -o yaml 2>/dev/null | \
         grep -A 20 "status:" || true
+}
+
+################################################################################
+# Dashboard Technology Preview Features (Interactive)
+################################################################################
+
+# Enable Technology Preview / Developer Preview dashboard features interactively.
+# Shows current state and lets user pick which to enable.
+enable_tp_features_interactive() {
+    print_header "Enable Technology Preview Dashboard Features"
+
+    if ! oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications &>/dev/null; then
+        print_error "OdhDashboardConfig not found — RHOAI may not be installed"
+        return 1
+    fi
+
+    # Define TP features: key|label|category
+    local tp_features=(
+        "automl|AutoML (automated model training)|ML Automation"
+        "autorag|AutoRAG (automated RAG optimization)|ML Automation"
+        "observabilityDashboard|MaaS Observability Dashboard|Observability"
+        "guardrails|Guardrails (content filtering for deployments)|AI Safety"
+        "connectionTest|Connection Test (verify credentials before saving)|Usability"
+        "featureStoreAdmin|Feature Store Admin UI (create wizard)|Feature Store"
+        "promptManagement|Prompt Management (MLflow prompt registry in Playground)|Gen AI Studio"
+        "toolCalling|Tool Calling (filters/labels for model catalog)|Gen AI Studio"
+        "externalModels|External Models (egress to external providers)|MaaS"
+        "externalVectorStores|Vector Stores (AI asset endpoints)|Gen AI Studio"
+        "genAiTracing|GenAI Tracing (request tracing)|Observability"
+        "llmdTemplates|llm-d Templates (topology/routing config)|Model Serving"
+        "llmGatewayField|LLM Gateway Field (gateway selection in deploy wizard)|Model Serving"
+        "mcpRegistry|MCP Registry (Registry tab in MCP Servers)|MCP"
+        "deploymentWizardYAMLViewer|Deployment Wizard YAML Viewer|Usability"
+        "aiAssetCustomEndpoints|AI Asset Custom Endpoints|Gen AI Studio"
+        "globalProjectPrompts|Global Project Prompts|Gen AI Studio"
+    )
+
+    # Read current state
+    local current_config
+    current_config=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig}' 2>/dev/null)
+
+    echo -e "${CYAN}Current Technology Preview feature status:${NC}"
+    echo ""
+
+    local idx=1
+    local enabled_count=0
+    local disabled_count=0
+    for entry in "${tp_features[@]}"; do
+        IFS='|' read -r key label category <<< "$entry"
+        local value
+        value=$(echo "$current_config" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$key','<not set>'))" 2>/dev/null || echo "<not set>")
+
+        local status_icon
+        if [ "$value" = "true" ] || [ "$value" = "True" ]; then
+            status_icon="${GREEN}✓ ON ${NC}"
+            enabled_count=$((enabled_count + 1))
+        else
+            status_icon="${YELLOW}○ OFF${NC}"
+            disabled_count=$((disabled_count + 1))
+        fi
+        printf "  %s %2d) %-55s [%s]\n" "$(echo -e "$status_icon")" "$idx" "$label" "$category"
+        ((idx++))
+    done
+
+    echo ""
+    echo -e "  ${GREEN}$enabled_count enabled${NC}, ${YELLOW}$disabled_count disabled${NC} of ${#tp_features[@]} features"
+    echo ""
+
+    echo -e "${BLUE}Options:${NC}"
+    echo -e "  ${YELLOW}a)${NC} Enable ALL Technology Preview features"
+    echo -e "  ${YELLOW}s)${NC} Select specific features to enable"
+    echo -e "  ${YELLOW}0)${NC} Cancel"
+    echo ""
+
+    read -p "Select option (a/s/0): " tp_option
+
+    case "$tp_option" in
+        a|A)
+            echo ""
+            print_step "Enabling all Technology Preview features..."
+
+            local patch='{"spec":{"dashboardConfig":{'
+            local first=true
+            for entry in "${tp_features[@]}"; do
+                IFS='|' read -r key label category <<< "$entry"
+                if [ "$first" = true ]; then
+                    patch+="\"$key\":true"
+                    first=false
+                else
+                    patch+=",\"$key\":true"
+                fi
+            done
+            patch+='}}}'
+
+            if oc patch odhdashboardconfig odh-dashboard-config \
+                -n redhat-ods-applications --type=merge -p "$patch" 2>/dev/null; then
+                print_success "All ${#tp_features[@]} Technology Preview features enabled"
+            else
+                print_error "Failed to patch dashboard config"
+                return 1
+            fi
+            ;;
+        s|S)
+            echo ""
+            echo -e "${CYAN}Enter feature numbers to enable (comma-separated, e.g., 1,2,5):${NC}"
+            read -p "Features: " selections
+
+            if [ -z "$selections" ]; then
+                print_info "No features selected"
+                return 0
+            fi
+
+            local patch='{"spec":{"dashboardConfig":{'
+            local first=true
+            local selected_names=()
+
+            IFS=',' read -ra nums <<< "$selections"
+            for num in "${nums[@]}"; do
+                num=$(echo "$num" | tr -d '[:space:]')
+                if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le ${#tp_features[@]} ]; then
+                    local entry="${tp_features[$((num - 1))]}"
+                    IFS='|' read -r key label category <<< "$entry"
+                    if [ "$first" = true ]; then
+                        patch+="\"$key\":true"
+                        first=false
+                    else
+                        patch+=",\"$key\":true"
+                    fi
+                    selected_names+=("$label")
+                fi
+            done
+            patch+='}}}'
+
+            if [ ${#selected_names[@]} -eq 0 ]; then
+                print_info "No valid features selected"
+                return 0
+            fi
+
+            print_step "Enabling ${#selected_names[@]} features..."
+            if oc patch odhdashboardconfig odh-dashboard-config \
+                -n redhat-ods-applications --type=merge -p "$patch" 2>/dev/null; then
+                print_success "Features enabled:"
+                for name in "${selected_names[@]}"; do
+                    echo "  ✓ $name"
+                done
+            else
+                print_error "Failed to patch dashboard config"
+                return 1
+            fi
+            ;;
+        0)
+            print_info "Cancelled"
+            return 0
+            ;;
+        *)
+            print_error "Invalid option"
+            return 1
+            ;;
+    esac
+
+    # Create prerequisites for features that need them
+    local obs_now
+    obs_now=$(oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+        -o jsonpath='{.spec.dashboardConfig.observabilityDashboard}' 2>/dev/null)
+    if [ "$obs_now" = "true" ]; then
+        # Observability Dashboard needs the Thanos proxy secret to query metrics
+        if ! oc get secret monitoring-thanos-proxy-secret -n redhat-ods-applications &>/dev/null; then
+            print_step "Creating Thanos proxy secret (required for Observability Dashboard)..."
+            local thanos_host
+            thanos_host=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}' 2>/dev/null)
+            local thanos_token
+            thanos_token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null)
+            if [ -n "$thanos_token" ] && [ -n "$thanos_host" ]; then
+                oc create secret generic monitoring-thanos-proxy-secret \
+                    --from-literal=token="$thanos_token" \
+                    --from-literal=host="$thanos_host" \
+                    -n redhat-ods-applications 2>/dev/null && \
+                    print_success "Thanos proxy secret created" || \
+                    print_warning "Could not create Thanos proxy secret"
+            fi
+        fi
+    fi
+
+    # Restart dashboard pods so they pick up config changes immediately
+    print_step "Restarting dashboard pods to apply changes..."
+    oc rollout restart deployment/rhods-dashboard -n redhat-ods-applications &>/dev/null
+    oc rollout status deployment/rhods-dashboard -n redhat-ods-applications --timeout=90s &>/dev/null && \
+        print_success "Dashboard pods restarted" || \
+        print_warning "Dashboard rollout timed out — pods may still be restarting"
+
+    echo ""
+    print_info "Refresh the RHOAI dashboard to see the new features"
+    local dashboard_url
+    dashboard_url=$(get_dashboard_url 2>/dev/null)
+    [ -n "$dashboard_url" ] && echo "  $dashboard_url"
+}
+
+################################################################################
+# MaaS Telemetry & Subscription Metadata (Interactive)
+################################################################################
+
+# Interactive wrapper for enabling MaaS telemetry metrics
+# Shows current state, explains the 4 metrics, and patches MaasTenantConfig
+configure_maas_telemetry_interactive() {
+    print_header "Configure MaaS Telemetry"
+
+    if ! oc get maastenantconfig default-tenant -n models-as-a-service &>/dev/null; then
+        print_error "MaasTenantConfig not found — MaaS may not be configured yet"
+        return 1
+    fi
+
+    # Show current state
+    local current=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+        -o jsonpath='{.spec.telemetry}' 2>/dev/null)
+    echo -e "${CYAN}Current telemetry configuration:${NC}"
+    if [ -n "$current" ] && [ "$current" != "{}" ]; then
+        echo "$current" | python3 -m json.tool 2>/dev/null || echo "  $current"
+    else
+        echo "  Not configured"
+    fi
+    echo ""
+
+    echo -e "${CYAN}Available telemetry metrics:${NC}"
+    echo "  captureGroup         — Track usage by OpenShift group"
+    echo "  captureModelUsage    — Track per-model token consumption"
+    echo "  captureOrganization  — Track usage by organization"
+    echo "  captureUser          — Track usage by individual user"
+    echo ""
+
+    read -p "Enable all telemetry metrics? (Y/n): " enable_all
+    if [[ "$enable_all" =~ ^[Nn]$ ]]; then
+        print_info "Telemetry unchanged"
+        return 0
+    fi
+
+    # Reuse the same patch logic as the install script
+    local telemetry_enabled=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+        -o jsonpath='{.spec.telemetry.enabled}' 2>/dev/null)
+    if [ "$telemetry_enabled" = "true" ]; then
+        print_success "MaaS telemetry already enabled"
+        return 0
+    fi
+
+    if oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge -p '{
+        "spec": {
+            "telemetry": {
+                "enabled": true,
+                "metrics": {
+                    "captureGroup": true,
+                    "captureModelUsage": true,
+                    "captureOrganization": true,
+                    "captureUser": true
+                }
+            }
+        }
+    }' 2>/dev/null; then
+        print_success "MaaS telemetry enabled (group, model usage, organization, user metrics)"
+    else
+        print_warning "Could not enable MaaS telemetry — apply manually:"
+        echo "  oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge \\"
+        echo "    -p '{\"spec\":{\"telemetry\":{\"enabled\":true,\"metrics\":{\"captureGroup\":true,\"captureModelUsage\":true,\"captureOrganization\":true,\"captureUser\":true}}}}'"
+    fi
+}
+
+# Interactive function to tag a MaaS subscription with cost attribution metadata
+# Lists all subscriptions, lets user pick one, and applies costCenter/organizationId
+configure_maas_subscription_metadata_interactive() {
+    print_header "Tag MaaS Subscription Metadata"
+
+    # List all subscriptions
+    local subs
+    subs=$(oc get maassubscription -n models-as-a-service --no-headers \
+        -o custom-columns='NAME:.metadata.name' 2>/dev/null)
+
+    if [ -z "$subs" ]; then
+        print_error "No MaaS subscriptions found in models-as-a-service"
+        print_info "Deploy a model and publish to MaaS first"
+        return 1
+    fi
+
+    echo -e "${CYAN}Available MaaS Subscriptions:${NC}"
+    echo ""
+    local idx=1
+    local sub_array=()
+    while IFS= read -r sub; do
+        [ -z "$sub" ] && continue
+        local current_meta=$(oc get maassubscription "$sub" -n models-as-a-service \
+            -o jsonpath='{.spec.tokenMetadata}' 2>/dev/null)
+        local meta_display="(no metadata)"
+        if [ -n "$current_meta" ] && [ "$current_meta" != "{}" ]; then
+            meta_display="$current_meta"
+        fi
+        echo -e "  ${YELLOW}$idx)${NC} $sub  $meta_display"
+        sub_array+=("$sub")
+        ((idx++))
+    done <<< "$subs"
+    echo ""
+
+    read -p "Select subscription (1-${#sub_array[@]}): " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#sub_array[@]}" ]; then
+        print_error "Invalid selection"
+        return 1
+    fi
+
+    local selected="${sub_array[$((choice - 1))]}"
+    echo ""
+    print_info "Selected: $selected"
+    echo ""
+
+    read -p "Cost Center (e.g., 101, leave empty to skip): " cost_center
+    read -p "Organization ID (e.g., APAC AI, leave empty to skip): " org_id
+
+    if [ -z "$cost_center" ] && [ -z "$org_id" ]; then
+        print_info "No metadata provided — skipping"
+        return 0
+    fi
+
+    local patch='{"spec":{"tokenMetadata":{'
+    local fields=()
+    [ -n "$cost_center" ] && fields+=("\"costCenter\":\"$cost_center\"")
+    [ -n "$org_id" ] && fields+=("\"organizationId\":\"$org_id\"")
+    patch+=$(IFS=,; echo "${fields[*]}")
+    patch+='}}}'
+
+    if oc patch maassubscription "$selected" -n models-as-a-service \
+        --type=merge -p "$patch" 2>/dev/null; then
+        print_success "Subscription '$selected' tagged"
+        echo "  costCenter: ${cost_center:-<not set>}"
+        echo "  organizationId: ${org_id:-<not set>}"
+    else
+        print_error "Failed to patch subscription"
+    fi
 }
 
 ################################################################################

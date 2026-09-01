@@ -4,6 +4,13 @@ This folder contains demo scripts and applications for RHOAI.
 
 > **RHOAI 3.3 Compatibility**: All demos are compatible with RHOAI 3.3. The LlamaStack demo benefits from Llama Stack 0.4.2 improvements. MaaS demos work with both the integrated 3.3 MaaS and legacy setup.
 
+> **RHOAI 3.5+ note**: The Llama Stack Operator has been renamed to **OGX** (DSC field
+> `llamastackoperator` -> `ogx`; CRD `LlamaStackDistribution` -> `OGXServer`). The
+> LlamaStack-related demos and functions in this repo (`lib/functions/llamastack.sh`,
+> `demo/autorag-demo/`) detect your RHOAI version automatically and deploy an
+> `OGXServer` instead of a `LlamaStackDistribution` on 3.5+. See
+> [docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md](../docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md).
+
 ## 📁 Contents
 
 | Directory/File | Description |
@@ -13,7 +20,7 @@ This folder contains demo scripts and applications for RHOAI.
 | `guardrails-demo/` | **Guardrails Demo** - TrustyAI AI safety with PII detection |
 | `lemonade-trustyai-demo/` | **Lemonade Stand Assistant (TrustyAI Edition)** - upstream FMS Orchestr8 guardrails demo (HAP + prompt-injection + language detectors) |
 | `guidellm-demo/` | **GuideLLM Demo** - LLM benchmarking (TTFT, ITL, throughput) |
-| `llamastack-demo/` | **LlamaStack + MCP Demo UI** - Streamlit chatbot frontend |
+| `llamastack-demo/` | **LlamaStack/OGX + MCP Demo UI** - Streamlit chatbot frontend (version-aware: OGX on RHOAI 3.5+) |
 | `maas-demo/` | **MaaS Demo** - Interactive CLI and web demo for Model as a Service |
 | `open-webui-demo/` | **Open WebUI Demo** - Chat interface for multiple models |
 | `agentic-platform-demo/` | **Managed Agentic AI Platform** - Enterprise AI agent platform with Loan Processing Agent, KAgenti, MCP Gateway, OPA policies, Keycloak OIDC, Grafana dashboards, Dify, Tekton pipelines, Istio mesh |
@@ -24,9 +31,10 @@ This folder contains demo scripts and applications for RHOAI.
 
 ---
 
-## 🤖 LlamaStack Demo UI
+## 🤖 LlamaStack/OGX Demo UI
 
-A Streamlit-based chatbot that demonstrates LlamaStack orchestrating LLM + MCP tools.
+A Streamlit-based chatbot that demonstrates LlamaStack (RHOAI 3.4 and earlier) or OGX
+(RHOAI 3.5+, replaces LlamaStack) orchestrating LLM + MCP tools.
 
 ### Quick Deploy
 
@@ -39,7 +47,7 @@ A Streamlit-based chatbot that demonstrates LlamaStack orchestrating LLM + MCP t
 
 ### Features
 - Real-time MCP tool call visualization
-- Service health checks (LlamaStack, MCP)
+- Service health checks (LlamaStack/OGX, MCP)
 - Automatic tool discovery
 - Configurable via environment variables
 

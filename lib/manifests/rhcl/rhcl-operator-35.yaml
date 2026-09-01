@@ -1,0 +1,37 @@
+# RHCL 1.4.1+ Operator for RHOAI 3.5 MaaS
+#
+# Follows RHOAI 3.5 MaaS prerequisite pattern:
+#   "installed the Red Hat Connectivity Link Operator version 1.4.1 or later
+#    to the openshift-operators namespace and created a Kuadrant custom resource
+#    in the kuadrant-system namespace with ready status."
+#   — Red Hat OpenShift AI Self-Managed 3.5, Govern LLM access with Models-as-a-Service
+#
+# Note: RHCL's own install docs put everything in a single namespace (kuadrant-system).
+# Both patterns work (AllNamespaces mode). We follow the RHOAI-specific prerequisite here
+# because this toolkit deploys RHOAI and that's the tested/supported pattern for MaaS.
+#
+# openshift-operators already has a default OperatorGroup — no need to create one.
+# Kuadrant CR is created separately via kuadrant-instance.yaml in kuadrant-system.
+#
+# RHCL 1.4.0 is DEPRECATED (auth failures, API key errors, gateway instability,
+# gateway pod memory pressure from WASM plugin loading issues). RHCL 1.4.1+ fixes
+# these issues, so we use Automatic approval on the `stable` channel — unlike the
+# 3.4 manifest which pinned Manual to avoid auto-upgrading into the broken 1.4.0.
+# If a future regression reappears, switch back to installPlanApproval: Manual and
+# have the install script auto-approve plans (see install-rhoai-34.sh for the pattern).
+#
+# Service Mesh 3 (Sail): auto-installed as OLM dependency, uses Manual InstallPlan approval.
+# RHCL 1.4 requires OpenShift Service Mesh 3.4 when Service Mesh is used explicitly.
+# Prerequisites: cert-manager Operator 1.18+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: openshift-operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: rhcl-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

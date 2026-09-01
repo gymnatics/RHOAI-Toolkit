@@ -262,7 +262,7 @@ These run on Red Hat-supported infrastructure (UBI9, OCP) but the application lo
 | `registry.access.redhat.com/ubi9/python-311:latest` | Red Hat Registry | **Yes** (RHEL 9 UBI) | All custom Python services |
 | `registry.access.redhat.com/rhel9/postgresql-15:latest` | Red Hat Registry | **Yes** (RHEL 9) | Keycloak DB, Dify DB, OTel DB |
 | `registry.access.redhat.com/rhel9/redis-7:latest` | Red Hat Registry | **Yes** (RHEL 9) | Dify Redis, Serverless Redis |
-| `registry.redhat.io/rhoai/odh-llama-stack-core-rhel9` | Red Hat Registry | **Yes** (RHOAI) | Llama Stack runtime |
+| `registry.redhat.io/rhoai/odh-llama-stack-core-rhel9` | Red Hat Registry | **Yes** (RHOAI) | Llama Stack runtime (RHOAI 3.4.3, as currently deployed; RHOAI 3.5+ renames this to the OGX runtime image -- see [docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md](../../docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md)) |
 | `quay.io/buildah/stable:latest` | Quay.io | **Yes** (part of OCP) | Tekton build tasks |
 | `docker.io/grafana/grafana:11.1.0` | Docker Hub | **No** (community) | Grafana dashboards |
 | `docker.io/grafana/loki:2.9.4` | Docker Hub | **No** (community) | Log aggregation |

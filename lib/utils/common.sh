@@ -28,6 +28,67 @@ apply_manifest() {
     fi
 }
 
+# Apply manifests via stdin or file, retrying on transient API errors.
+# The OpenShift API server occasionally returns errors like "TLS handshake
+# timeout" or a dropped connection during heavy install activity (many
+# operators/CRDs installing at once). These are almost always transient and
+# succeed on retry, so this wrapper mirrors `oc apply` but adds bounded
+# exponential-backoff retries for known-transient failures only.
+#
+# Usage (drop-in replacement for `oc apply`):
+#   oc_apply_retry -f file.yaml
+#   envsubst < template.yaml | oc_apply_retry
+oc_apply_retry() {
+    local max_retries=3
+    local delay=5
+    local attempt=1
+    local tmpfile=""
+    local -a apply_args=()
+
+    # stdin can only be consumed once, so buffer it to a temp file when
+    # piped so the same content can be re-applied on retry.
+    if [ ! -t 0 ]; then
+        tmpfile=$(mktemp)
+        cat > "$tmpfile"
+        apply_args=(-f "$tmpfile")
+    else
+        apply_args=("$@")
+    fi
+
+    local output=""
+    local exit_code=0
+
+    while [ $attempt -le $max_retries ]; do
+        output=$(oc apply "${apply_args[@]}" 2>&1)
+        exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            echo "$output"
+            [ -n "$tmpfile" ] && rm -f "$tmpfile"
+            return 0
+        fi
+
+        if echo "$output" | grep -qE "TLS handshake timeout|connection refused|unexpected EOF|broken pipe|i/o timeout|EOF$|connection reset by peer"; then
+            if [ $attempt -lt $max_retries ]; then
+                print_warning "Transient API error applying manifest (attempt $attempt/$max_retries) — retrying in ${delay}s..."
+                sleep $delay
+            fi
+            attempt=$((attempt + 1))
+            delay=$((delay * 2))
+        else
+            # Not a known-transient error (e.g. validation/RBAC failure) — fail fast
+            echo "$output" >&2
+            [ -n "$tmpfile" ] && rm -f "$tmpfile"
+            return $exit_code
+        fi
+    done
+
+    echo "$output" >&2
+    print_error "oc apply failed after $max_retries attempts (transient API errors)"
+    [ -n "$tmpfile" ] && rm -f "$tmpfile"
+    return $exit_code
+}
+
 # Wait for a resource to exist
 wait_for_resource() {
     local resource_type="$1"
@@ -239,7 +300,7 @@ ensure_gateway_tls_cert() {
     
     local issuer_name="${secret_name}-issuer"
     
-    cat <<CERTEOF | oc apply -f -
+    cat <<CERTEOF | oc_apply_retry
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:

@@ -238,6 +238,33 @@ EOF
     fi
     print_success "MaaSSubscription created"
 
+    # Optional: Tag subscription with cost attribution metadata
+    echo ""
+    read -p "Add cost attribution metadata to this subscription? (y/N): " add_metadata
+    if [[ "$add_metadata" =~ ^[Yy]$ ]]; then
+        read -p "  Cost Center (e.g., 101): " cost_center
+        read -p "  Organization ID (e.g., APAC AI): " org_id
+
+        if [ -n "$cost_center" ] || [ -n "$org_id" ]; then
+            local metadata_patch='{"spec":{"tokenMetadata":{'
+            local fields=()
+            [ -n "$cost_center" ] && fields+=("\"costCenter\":\"$cost_center\"")
+            [ -n "$org_id" ] && fields+=("\"organizationId\":\"$org_id\"")
+            metadata_patch+=$(IFS=,; echo "${fields[*]}")
+            metadata_patch+='}}}'
+
+            if oc patch maassubscription "$sub_name" \
+                -n models-as-a-service --type=merge \
+                -p "$metadata_patch" 2>/dev/null; then
+                print_success "Subscription tagged: costCenter=${cost_center:-<not set>}, organizationId=${org_id:-<not set>}"
+            else
+                print_warning "Could not apply metadata — add manually:"
+                echo "  oc patch maassubscription $sub_name -n models-as-a-service \\"
+                echo "    --type=merge -p '{\"spec\":{\"tokenMetadata\":{\"costCenter\":\"$cost_center\",\"organizationId\":\"$org_id\"}}}'"
+            fi
+        fi
+    fi
+
     # Step 4: Create MaaSAuthPolicy
     print_step "Creating MaaSAuthPolicy '$policy_name' in models-as-a-service..."
 
@@ -666,7 +693,13 @@ deploy_model_interactive() {
             echo ""
             print_header "Deployment Mode"
 
-            echo -e "${BLUE}RHOAI 3.4 detected. Choose deployment mode:${NC}"
+            local _rhoai_ver_label="3.4+"
+            if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+                _rhoai_ver_label="3.5"
+            elif type get_rhoai_major_minor &>/dev/null; then
+                _rhoai_ver_label="$(get_rhoai_major_minor 2>/dev/null || echo '3.4+')"
+            fi
+            echo -e "${BLUE}RHOAI ${_rhoai_ver_label} detected. Choose deployment mode:${NC}"
             echo ""
             echo -e "${YELLOW}1)${NC} MaaS-compatible (LLMInferenceService) ${GREEN}[Recommended]${NC}"
             echo "   Integrates with MaaS gateway, supports subscriptions + API keys"

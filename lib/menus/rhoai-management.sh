@@ -6,6 +6,7 @@
 ################################################################################
 
 _RHOAI_MGMT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_RHOAI_MGMT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
 enable_dashboard_features_interactive() {
     print_header "Enable Dashboard Features"
@@ -351,7 +352,7 @@ model_management_submenu() {
 ai_services_submenu() {
     while true; do
         show_ai_services_submenu
-        read -p "Select an option (1-7, 0): " ai_choice
+        read -p "Select an option (1-9, 0): " ai_choice
         
         case $ai_choice in
             1)
@@ -366,19 +367,23 @@ ai_services_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                # Enable LlamaStack Operator
-                print_header "Enable LlamaStack Operator"
-                local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null || echo "Unknown")
-                echo "Current LlamaStack state: $llamastack_state"
+                # Enable LlamaStack Operator (RHOAI 3.4-) / OGX Operator (RHOAI 3.5+)
+                local _genai_field="llamastackoperator" _genai_label="LlamaStack"
+                if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+                    _genai_field="ogx"; _genai_label="OGX"
+                fi
+                print_header "Enable ${_genai_label} Operator"
+                local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath="{.spec.components.${_genai_field}.managementState}" 2>/dev/null || echo "Unknown")
+                echo "Current ${_genai_label} state: $llamastack_state"
                 if [[ "$llamastack_state" == "Managed" ]]; then
-                    print_success "LlamaStack operator already enabled"
+                    print_success "${_genai_label} operator already enabled"
                 else
-                    read -p "Enable LlamaStack operator? (Y/n): " enable_ls
+                    read -p "Enable ${_genai_label} operator? (Y/n): " enable_ls
                     enable_ls=${enable_ls:-Y}
                     if [[ "$enable_ls" =~ ^[Yy]$ ]]; then
                         oc patch datasciencecluster default-dsc --type='merge' \
-                            -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}'
-                        print_success "LlamaStack operator enabled"
+                            -p "{\"spec\":{\"components\":{\"${_genai_field}\":{\"managementState\":\"Managed\"}}}}"
+                        print_success "${_genai_label} operator enabled"
                     fi
                 fi
                 echo ""
@@ -400,11 +405,56 @@ ai_services_submenu() {
             7)
                 setup_mcp_servers_interactive
                 ;;
+            8)
+                configure_maas_telemetry_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            9)
+                configure_maas_subscription_metadata_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
             0)
                 break
                 ;;
             *)
-                print_error "Invalid option. Please select 1-5 or 0."
+                print_error "Invalid option. Please select 1-9 or 0."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+dashboard_config_submenu() {
+    while true; do
+        show_dashboard_config_submenu
+        read -p "Select an option (1-3, 0): " dash_choice
+
+        case $dash_choice in
+            1)
+                enable_dashboard_features_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                enable_tp_features_interactive
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                print_header "Current Dashboard Configuration"
+                oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+                    -o jsonpath='{.spec.dashboardConfig}' 2>/dev/null | python3 -m json.tool 2>/dev/null || \
+                    print_error "Could not retrieve dashboard config"
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-3 or 0."
                 sleep 1
                 ;;
         esac
@@ -537,9 +587,7 @@ rhoai_management_menu() {
                 rhoai32_features_submenu
                 ;;
             5)
-                enable_dashboard_features_interactive
-                echo ""
-                read -p "Press Enter to return to RHOAI Management menu..."
+                dashboard_config_submenu
                 ;;
             6)
                 quick_start_wizard
@@ -586,19 +634,23 @@ rhoai32_features_submenu() {
                 read -p "Press Enter to continue..."
                 ;;
             4)
-                # Enable LlamaStack operator
-                print_header "Enable LlamaStack Operator"
-                local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null || echo "Unknown")
-                echo "Current LlamaStack state: $llamastack_state"
+                # Enable LlamaStack Operator (RHOAI 3.4-) / OGX Operator (RHOAI 3.5+)
+                local _genai_field="llamastackoperator" _genai_label="LlamaStack"
+                if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+                    _genai_field="ogx"; _genai_label="OGX"
+                fi
+                print_header "Enable ${_genai_label} Operator"
+                local llamastack_state=$(oc get datasciencecluster default-dsc -o jsonpath="{.spec.components.${_genai_field}.managementState}" 2>/dev/null || echo "Unknown")
+                echo "Current ${_genai_label} state: $llamastack_state"
                 if [[ "$llamastack_state" == "Managed" ]]; then
-                    print_success "LlamaStack operator already enabled"
+                    print_success "${_genai_label} operator already enabled"
                 else
-                    read -p "Enable LlamaStack operator? (Y/n): " enable_ls
+                    read -p "Enable ${_genai_label} operator? (Y/n): " enable_ls
                     enable_ls=${enable_ls:-Y}
                     if [[ "$enable_ls" =~ ^[Yy]$ ]]; then
                         oc patch datasciencecluster default-dsc --type='merge' \
-                            -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}'
-                        print_success "LlamaStack operator enabled"
+                            -p "{\"spec\":{\"components\":{\"${_genai_field}\":{\"managementState\":\"Managed\"}}}}"
+                        print_success "${_genai_label} operator enabled"
                     fi
                 fi
                 echo ""

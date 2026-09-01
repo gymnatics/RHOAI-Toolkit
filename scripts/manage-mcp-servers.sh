@@ -20,6 +20,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 MANIFEST_DIR="$PROJECT_DIR/lib/manifests"
+source "$PROJECT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
 # Colors
 RED='\033[0;31m'
@@ -169,11 +170,33 @@ EOF
 # LlamaStack Config Registration
 ################################################################################
 
-# Add MCP connector to LlamaStack config
+# Add MCP connector to LlamaStack config (RHOAI 3.4 and earlier)
+# RHOAI 3.5+: OGX replaces LlamaStack and does NOT expose a patchable run.yaml
+# ConfigMap. Instead, register MCP servers directly on the OGXServer CR under
+# spec.providers.toolRuntime.remote.modelContextProtocol[] (confirmed via
+# `oc explain` on a live RHOAI 3.5.0 cluster).
 register_llamastack_toolgroup() {
     local toolgroup_id="$1"
     local mcp_url="$2"
     local namespace="$3"
+
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        print_step "Registering MCP connector '$toolgroup_id' with OGX..."
+        print_warning "RHOAI 3.5+ uses OGX (not LlamaStack) — registration mechanism has changed"
+        echo ""
+        print_info "Manual step required: edit your OGXServer CR in namespace '$namespace' to add:"
+        echo ""
+        echo "  spec:"
+        echo "    providers:"
+        echo "      toolRuntime:"
+        echo "        remote:"
+        echo "          modelContextProtocol:"
+        echo "            - id: $toolgroup_id"
+        echo ""
+        print_info "MCP server URL: $mcp_url"
+        print_info "Find your OGXServer CR: oc get ogxserver -n $namespace"
+        return 0
+    fi
     
     print_step "Adding connector '$toolgroup_id' to LlamaStack config..."
     
@@ -246,8 +269,8 @@ deploy_kubernetes_mcp() {
             "$namespace"
     fi
     
-    # Ask to register in LlamaStack
-    read -p "Register in LlamaStack config? (Y/n): " register_ls
+    # Ask to register (function routes to OGX or LlamaStack based on RHOAI version)
+    read -p "Register with LlamaStack/OGX config? (Y/n): " register_ls
     if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
         register_llamastack_toolgroup "mcp::kubernetes" "$mcp_url" "$namespace"
     fi
@@ -302,8 +325,8 @@ deploy_weather_mcp() {
             "$namespace"
     fi
     
-    # Ask to register in LlamaStack
-    read -p "Register in LlamaStack config? (Y/n): " register_ls
+    # Ask to register (function routes to OGX or LlamaStack based on RHOAI version)
+    read -p "Register with LlamaStack/OGX config? (Y/n): " register_ls
     if [[ ! "$register_ls" =~ ^[Nn]$ ]]; then
         register_llamastack_toolgroup "mcp::weather-data" "$mcp_url" "$namespace"
     fi
@@ -335,12 +358,22 @@ show_status() {
     fi
     echo ""
     
-    echo -e "${CYAN}LlamaStack Connectors:${NC}"
-    if oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
-        oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}' | \
-            grep "connector_id:" | sed 's/.*connector_id: /  - /' || echo "  No MCP connectors"
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        echo -e "${CYAN}OGX Servers (RHOAI 3.5+):${NC}"
+        if oc get ogxserver -n "$namespace" &>/dev/null 2>&1; then
+            oc get ogxserver -n "$namespace" --no-headers 2>/dev/null | awk '{print "  - " $1}'
+            echo "  (MCP connectors are on spec.providers.toolRuntime.remote.modelContextProtocol[])"
+        else
+            echo "  No OGXServer instances found in $namespace"
+        fi
     else
-        echo "  LlamaStack config not found in $namespace"
+        echo -e "${CYAN}LlamaStack Connectors:${NC}"
+        if oc get configmap llama-stack-config -n "$namespace" &>/dev/null; then
+            oc get configmap llama-stack-config -n "$namespace" -o jsonpath='{.data.run\.yaml}' | \
+                grep "connector_id:" | sed 's/.*connector_id: /  - /' || echo "  No MCP connectors"
+        else
+            echo "  LlamaStack config not found in $namespace"
+        fi
     fi
 }
 
@@ -348,11 +381,23 @@ show_tools() {
     local namespace=$(get_namespace)
     
     print_header "Available MCP Tools"
-    
-    echo -e "${CYAN}Querying LlamaStack for tools...${NC}"
+
+    local target_deployment="lsd-genai-playground"
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        local ogx_name
+        ogx_name=$(oc get ogxserver -n "$namespace" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -z "$ogx_name" ]; then
+            print_error "No OGXServer instance found in $namespace"
+            return 1
+        fi
+        target_deployment="$ogx_name"
+        echo -e "${CYAN}Querying OGX ('$ogx_name') for tools...${NC}"
+    else
+        echo -e "${CYAN}Querying LlamaStack for tools...${NC}"
+    fi
     echo ""
     
-    oc exec deployment/lsd-genai-playground -n "$namespace" -- \
+    oc exec "deployment/${target_deployment}" -n "$namespace" -- \
         curl -s http://localhost:8321/v1/tools 2>/dev/null | python3 -c "
 import sys,json
 try:

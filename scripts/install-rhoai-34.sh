@@ -40,6 +40,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
     MAGENTA='\033[0;35m'
     NC='\033[0m'
 }
+source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
 
 # Default options
 SKIP_PREREQUISITES=false
@@ -1905,27 +1906,27 @@ create_inference_gateway() {
     # GatewayClass for OpenShift Gateway Controller
     if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then
         print_step "Creating openshift-gateway-controller GatewayClass..."
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
     fi
 
     # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins)
     print_step "Applying gateway resource overrides (2Gi memory limit)..."
-    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
 
     # MaaS Gateway - MUST have both annotations for MaaS controller to work in 3.4:
     #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
     #   security.opendatahub.io/authorino-tls-bootstrap: "true" - enables TLS to Authorino
     print_step "Creating maas-default-gateway with MaaS annotations..."
     export CERT_NAME="default-gateway-tls"
-    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc apply -f -
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc_apply_retry
 
     # llm-d inference gateway (for direct model access outside MaaS)
     print_step "Creating openshift-ai-inference gateway..."
     if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
     fi
 
-    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc_apply_retry
 
     # Create default-gateway-tls secret for the HTTPS listeners
     # Without this, Envoy never creates the port 443 listener and the gateway returns 503
@@ -1963,7 +1964,7 @@ create_gateway_tls_secret() {
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
-        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc apply -f -
+        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc_apply_retry
         print_step "Waiting for cert-manager to generate TLS secret..."
         local wait=0
         while [ $wait -lt 120 ]; do
@@ -2062,7 +2063,7 @@ create_gateway_passthrough_routes() {
         export HOSTNAME="$hostname"
         export SERVICE_NAME="$svc_name"
         envsubst '${ROUTE_NAME} ${HOSTNAME} ${SERVICE_NAME}' \
-            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc apply -f -
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc_apply_retry
     done
     print_success "Gateway passthrough routes configured"
 }

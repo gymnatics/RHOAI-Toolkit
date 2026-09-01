@@ -2,6 +2,13 @@
 
 Automated RAG pipeline optimization -- finds the best retrieval-augmented generation configuration for your documents.
 
+> **RHOAI 3.5+ note:** The Llama Stack Operator has been renamed to **OGX** (DSC field
+> `llamastackoperator` -> `ogx`; CRD `LlamaStackDistribution` -> `OGXServer`). `deploy.sh`
+> detects your RHOAI version automatically and deploys `manifests/ogxserver.yaml` (3.5+)
+> or `manifests/llamastack.yaml` (3.4 and earlier) accordingly. See
+> [docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md](../../docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md)
+> for the full list of changes.
+
 ## What AutoRAG Does
 
 Provide documents and test questions, and AutoRAG automatically:
@@ -28,19 +35,21 @@ This deploys:
 
 AutoRAG has the heaviest infrastructure requirements of any RHOAI feature:
 
-| Requirement | How to Enable |
-|------------|--------------|
-| Llama Stack Operator | `llamastackoperator: Managed` in DSC (auto-enabled by deploy script) |
-| Llama Stack Instance | Create via dashboard with foundation + embedding models |
-| Embedding Model | Deploy BAAI/bge-m3 (recommended) via Llama Stack |
-| Foundation Model | Any vLLM-served LLM registered with Llama Stack |
-| Remote Milvus | Deployed by this script |
-| AI Pipelines | `aipipelines: Managed` in DSC |
-| Gen AI Studio | `genAiStudio: true` in dashboard config |
+| Requirement | RHOAI 3.4 and earlier | RHOAI 3.5+ |
+|------------|------------------------|------------|
+| Operator | `llamastackoperator: Managed` in DSC (auto-enabled by deploy script) | `ogx: Managed` in DSC (auto-enabled by deploy script) |
+| Instance | Llama Stack instance with foundation + embedding models | OGXServer instance with foundation + embedding models |
+| Embedding Model | Deploy BAAI/bge-m3 (recommended) via Llama Stack | Deploy BAAI/bge-m3 (recommended) via OGX |
+| Foundation Model | Any vLLM-served LLM registered with Llama Stack | Any vLLM-served LLM registered with OGX |
+| Remote Milvus | Deployed by this script | Deployed by this script |
+| AI Pipelines | `aipipelines: Managed` in DSC | `aipipelines: Managed` in DSC |
+| Gen AI Studio | `genAiStudio: true` in dashboard config | `genAiStudio: true` in dashboard config |
 
 ## Post-Deploy Manual Setup
 
-After running `deploy.sh`, complete these steps in the RHOAI dashboard:
+After running `deploy.sh`, complete these steps in the RHOAI dashboard. The steps below
+reference "Llama Stack" (RHOAI 3.4 and earlier); on RHOAI 3.5+ the equivalent dashboard
+entries may be labeled "OGX" instead -- the underlying workflow is unchanged.
 
 ### 1. Set Up Llama Stack Instance
 
