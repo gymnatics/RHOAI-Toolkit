@@ -6,10 +6,6 @@ A comprehensive toolkit for installing and configuring **OpenShift** with **Red 
 > Key changes: the OGX Operator replaces the Llama Stack Operator (DSC field `llamastackoperator` → `ogx`), external OIDC auth for MaaS is GA, EvalHub is GA, llm-d flow control is GA (breaking API change), and RHCL 1.4.1+ is required. See the install script header in [`scripts/install-rhoai-35.sh`](scripts/install-rhoai-35.sh) for the full list.
 > RHOAI 3.4 remains fully supported via [`scripts/install-rhoai-34.sh`](scripts/install-rhoai-34.sh). See [What's New in RHOAI 3.4](docs/guides/rhoai-3.4/RHOAI-34-WHATS-NEW.md) for that release.
 
-> **Known Issue:** When installing via the toolkit menu, select an explicit version channel like **`stable-3.5`** or **`stable-3.4`** (not `stable-3.x`) as your channel.
-> The `stable-3.x` rolling channel currently falls through to a bare-bones operator-only installer instead of the full installation flow.
-> A fix is in progress on the [`refactor/rhoai-install`](https://github.com/gymnatics/RHOAI-Toolkit/tree/refactor/rhoai-install) branch.
-
 ## What's New in the Toolkit
 
 ### MaaS Telemetry & Cost Attribution
