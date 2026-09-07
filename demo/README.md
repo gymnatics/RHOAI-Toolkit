@@ -4,6 +4,15 @@ This folder contains demo scripts and applications for RHOAI.
 
 > **RHOAI 3.3 Compatibility**: All demos are compatible with RHOAI 3.3. The LlamaStack demo benefits from Llama Stack 0.4.2 improvements. MaaS demos work with both the integrated 3.3 MaaS and legacy setup.
 
+> **MaaS demos & RHOAI version**: `maas-demo/` targets RHOAI 3.3's tier-based MaaS
+> only -- its entry scripts detect RHOAI 3.4+/3.5 and exit with guidance rather than
+> run against the wrong system (subscription CRDs replaced tiers in 3.4; body-based
+> routing replaced per-model URLs in 3.5). `setup-demo-model.sh`,
+> `generate-maas-token.sh`, and `test-maas-api.sh` (this directory, not
+> `maas-demo/`) are version-aware and work across 3.3/3.4/3.5. For RHOAI 3.4+/3.5
+> rate limiting and governance demos, use [`maas-ratelimit-demo/`](maas-ratelimit-demo/)
+> and `../scripts/deploy-maas-model.sh` / `../scripts/verify-maas.sh` instead.
+
 > **RHOAI 3.5+ note**: The Llama Stack Operator has been renamed to **OGX** (DSC field
 > `llamastackoperator` -> `ogx`; CRD `LlamaStackDistribution` -> `OGXServer`). The
 > LlamaStack-related demos and functions in this repo (`lib/functions/llamastack.sh`,
@@ -216,6 +225,9 @@ Generates a MaaS API token for authentication.
 
 ## API Usage Examples
 
+> The examples below are legacy (RHOAI 3.2 and earlier, `maas-api` namespace).
+> For current versions, see the version-specific examples further down.
+
 ### Using curl
 
 ```bash
@@ -259,6 +271,54 @@ data = {
 
 response = requests.post(MAAS_ENDPOINT, headers=headers, json=data)
 print(response.json())
+```
+
+## API Usage by RHOAI Version
+
+### RHOAI 3.3 (Tech Preview, tier-based)
+
+```bash
+# Token: OpenShift SA token, audience must be https://kubernetes.default.svc
+TOKEN=$(oc create token default -n <namespace> --audience=https://kubernetes.default.svc --duration=1h)
+
+curl -sk -X POST "https://inference-gateway.apps.<cluster>/<namespace>/<model>/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"model": "<model>", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+### RHOAI 3.4 (GA, subscription-based)
+
+```bash
+HOST="https://maas.apps.<cluster>"
+
+# API key (sk-oai-*), NOT /maas-api/v1/tokens -- that legacy endpoint no longer exists
+API_KEY=$(curl -sk -X POST "${HOST}/maas-api/v1/api-keys" \
+  -H "Authorization: Bearer $(oc whoami -t)" -H "Content-Type: application/json" \
+  -d '{"name":"demo","subscription":"<sub-name>","expiresIn":"1h"}' | jq -r '.key')
+
+# Per-model URL routing (same pattern as 3.3, but with the sk-oai-* key)
+curl -sk -X POST "${HOST}/<namespace>/<model>/v1/chat/completions" \
+  -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+  -d '{"model": "<model>", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+### RHOAI 3.5+ (body-based routing)
+
+```bash
+HOST="https://maas.apps.<cluster>"
+
+API_KEY=$(curl -sk -X POST "${HOST}/maas-api/v1/api-keys" \
+  -H "Authorization: Bearer $(oc whoami -t)" -H "Content-Type: application/json" \
+  -d '{"name":"demo","subscription":"<sub-name>","expiresIn":"1h"}' | jq -r '.key')
+
+# GET /v1/models to find the exact model id (publishers/<ns>/models/<name> --
+# <name> is spec.model.name, which may differ from the k8s resource name)
+curl -sk "${HOST}/v1/models" -H "Authorization: Bearer ${API_KEY}"
+
+# Single shared endpoint -- model id goes in the BODY, not the URL path
+curl -sk -X POST "${HOST}/v1/chat/completions" \
+  -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+  -d '{"model": "publishers/<ns>/models/<name>", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
 ## Troubleshooting

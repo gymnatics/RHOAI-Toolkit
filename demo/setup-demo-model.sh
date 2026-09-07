@@ -146,8 +146,13 @@ print_step "Checking MaaS gateway TLS certificate..."
 # Get cluster domain for certificate
 CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
-if is_rhoai_33_or_higher; then
-    # RHOAI 3.3+: Check openshift-ai-inference gateway
+if is_rhoai_34_or_higher; then
+    # RHOAI 3.4+: maas-default-gateway TLS is handled by OpenShift service-ca
+    # (security.opendatahub.io/authorino-tls-bootstrap annotation) -- no
+    # cert-manager/openssl step needed here.
+    print_success "Gateway TLS handled automatically by OpenShift service-ca (RHOAI 3.4+)"
+elif is_rhoai_33_or_higher; then
+    # RHOAI 3.3 only: Check openshift-ai-inference gateway
     GATEWAY_NS="openshift-ingress"
     TLS_SECRET="default-gateway-tls"
     GATEWAY_HOSTNAME="inference-gateway.${CLUSTER_DOMAIN}"
@@ -224,13 +229,44 @@ echo ""
 print_step "Checking MaaS infrastructure..."
 
 MAAS_READY=false
-if is_rhoai_33_or_higher; then
-    # RHOAI 3.3+: Check for gateway
+if is_rhoai_35_or_higher; then
+    # RHOAI 3.5+: aigateway.modelsAsAService + maas-default-gateway
+    MAAS_STATE=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}' 2>/dev/null)
+    if [ "$MAAS_STATE" = "Managed" ] && oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null; then
+        PROGRAMMED=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
+        if [ "$PROGRAMMED" = "True" ]; then
+            print_success "MaaS gateway is ready (RHOAI 3.5+, aigateway.modelsAsAService)"
+            MAAS_READY=true
+        else
+            print_warning "MaaS gateway exists but not programmed"
+        fi
+    else
+        print_warning "MaaS gateway not found"
+        echo "Enable MaaS with: aigateway.modelsAsAService.managementState: Managed in DataScienceCluster"
+        echo "Or run: ../scripts/setup-maas.sh"
+    fi
+elif is_rhoai_34_or_higher; then
+    # RHOAI 3.4: kserve.modelsAsService + maas-default-gateway
+    MAAS_STATE=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null)
+    if [ "$MAAS_STATE" = "Managed" ] && oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null; then
+        PROGRAMMED=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
+        if [ "$PROGRAMMED" = "True" ]; then
+            print_success "MaaS gateway is ready (RHOAI 3.4, subscription-based)"
+            MAAS_READY=true
+        else
+            print_warning "MaaS gateway exists but not programmed"
+        fi
+    else
+        print_warning "MaaS gateway not found"
+        echo "Enable MaaS with: modelsAsService.managementState: Managed in DataScienceCluster"
+        echo "Or run: ../scripts/setup-maas.sh"
+    fi
+elif is_rhoai_33_or_higher; then
+    # RHOAI 3.3: Check for openshift-ai-inference gateway
     if oc get gateway openshift-ai-inference -n openshift-ingress &>/dev/null; then
-        # Check if gateway is programmed
         PROGRAMMED=$(oc get gateway openshift-ai-inference -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
         if [ "$PROGRAMMED" = "True" ]; then
-            print_success "MaaS gateway is ready (RHOAI 3.3+)"
+            print_success "MaaS gateway is ready (RHOAI 3.3, tier-based)"
             MAAS_READY=true
         else
             print_warning "MaaS gateway exists but not programmed"
@@ -497,34 +533,85 @@ echo ""
 
 # Get the endpoint based on version
 CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-if is_rhoai_33_or_higher; then
+
+if is_rhoai_34_or_higher; then
+    # RHOAI 3.4+: maas.<cluster> gateway, sk-oai-* API keys via /maas-api/v1/api-keys.
+    ENDPOINT="maas.${CLUSTER_DOMAIN}"
+
+    print_warning "This script only creates the LLMInferenceService -- it does NOT create"
+    echo "  the MaaSModelRef/MaaSAuthPolicy/MaaSSubscription CRs required for sk-oai-*"
+    echo "  API key auth or gateway-based access on RHOAI 3.4+."
+    echo ""
+    echo "  For a fully MaaS-registered model (with subscriptions + auth policy), use:"
+    echo -e "   ${YELLOW}../scripts/deploy-maas-model.sh --model auto -n $PROJECT_NAME${NC}"
+    echo ""
+
+    if is_rhoai_35_or_higher; then
+        echo "3. If you add MaaS CRs for this model, test with body-based routing (3.5+):"
+        echo -e "   ${YELLOW}API_KEY=\$(curl -sk -X POST \"https://$ENDPOINT/maas-api/v1/api-keys\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$(oc whoami -t)\" -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"name\":\"demo\",\"subscription\":\"<sub-name>\",\"expiresIn\":\"1h\"}' | jq -r '.key')${NC}"
+        echo ""
+        echo "   # List models to get the exact id (publishers/<ns>/models/<name>):"
+        echo -e "   ${YELLOW}curl -sk \"https://$ENDPOINT/v1/models\" -H \"Authorization: Bearer \$API_KEY\"${NC}"
+        echo ""
+        echo "   # Inference (single shared endpoint, model id in body -- NOT the URL path):"
+        echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT/v1/chat/completions\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$API_KEY\" -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"model\":\"publishers/$PROJECT_NAME/models/<spec.model.name>\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}'${NC}"
+    else
+        echo "3. If you add MaaS CRs for this model, test with per-model routing (3.4):"
+        echo -e "   ${YELLOW}API_KEY=\$(curl -sk -X POST \"https://$ENDPOINT/maas-api/v1/api-keys\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$(oc whoami -t)\" -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"name\":\"demo\",\"subscription\":\"<sub-name>\",\"expiresIn\":\"1h\"}' | jq -r '.key')${NC}"
+        echo ""
+        echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT/$PROJECT_NAME/$MODEL_NAME/v1/chat/completions\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$API_KEY\" -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}'${NC}"
+    fi
+    echo ""
+elif is_rhoai_33_or_higher; then
+    # RHOAI 3.3: inference-gateway.<cluster>, per-model URL, oc create token (SA token).
     ENDPOINT="inference-gateway.${CLUSTER_DOMAIN}"
     API_PATH="/$PROJECT_NAME/$MODEL_NAME/v1/chat/completions"
+
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        echo "3. Generate API token:"
+        echo -e "   ${YELLOW}TOKEN=\$(oc create token default -n $PROJECT_NAME --duration=1h --audience=https://kubernetes.default.svc)${NC}"
+        echo ""
+        echo "4. Test the model:"
+        echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT$API_PATH\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$TOKEN\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"model\": \"$MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'${NC}"
+        echo ""
+        print_info "Note: Token audience must be 'https://kubernetes.default.svc' for RHOAI 3.3"
+    else
+        echo "3. Test the model (no auth required):"
+        echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT$API_PATH\" \\${NC}"
+        echo -e "   ${YELLOW}  -H \"Content-Type: application/json\" \\${NC}"
+        echo -e "   ${YELLOW}  -d '{\"model\": \"$MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'${NC}"
+    fi
+    echo ""
 else
+    # RHOAI 3.2 and earlier: legacy maas-api namespace
     ENDPOINT=$(oc get route maas-api -n maas-api -o jsonpath='{.spec.host}' 2>/dev/null || echo "maas-api.apps.<cluster>")
     API_PATH="/v1/chat/completions"
-fi
 
-if [ "$AUTH_ENABLED" = "true" ]; then
-    echo "3. Generate API token:"
-    echo -e "   ${YELLOW}TOKEN=\$(oc create token default -n $PROJECT_NAME --duration=1h --audience=https://kubernetes.default.svc)${NC}"
-    echo ""
-    echo "4. Test the model:"
-    echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT$API_PATH\" \\${NC}"
-    echo -e "   ${YELLOW}  -H \"Authorization: Bearer \$TOKEN\" \\${NC}"
-    echo -e "   ${YELLOW}  -H \"Content-Type: application/json\" \\${NC}"
-    echo -e "   ${YELLOW}  -d '{\"model\": \"$MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'${NC}"
-    echo ""
-    echo ""
-    print_info "Note: Token audience must be 'https://kubernetes.default.svc' for RHOAI 3.3+"
-else
-    echo "3. Test the model (no auth required):"
+    echo "3. Test the model:"
     echo -e "   ${YELLOW}curl -sk -X POST \"https://$ENDPOINT$API_PATH\" \\${NC}"
     echo -e "   ${YELLOW}  -H \"Content-Type: application/json\" \\${NC}"
     echo -e "   ${YELLOW}  -d '{\"model\": \"$MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'${NC}"
+    echo ""
 fi
 
 echo ""
-echo "5. Run the MaaS demo:"
-echo -e "   ${YELLOW}./maas-demo/demo-maas.sh${NC}"
+if is_rhoai_34_or_higher; then
+    echo "5. For RHOAI 3.4+/3.5 MaaS demos, use instead:"
+    echo -e "   ${YELLOW}../demo/maas-ratelimit-demo/deploy.sh${NC}   (rate limiting + API key auth)"
+    echo -e "   ${YELLOW}../scripts/verify-maas.sh${NC}                (full E2E check)"
+else
+    echo "5. Run the MaaS demo:"
+    echo -e "   ${YELLOW}./maas-demo/demo-maas.sh${NC}"
+fi
 echo ""
