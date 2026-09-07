@@ -75,6 +75,9 @@ demo/**/.env
 # Agentic platform demo PRD (cluster-specific documentation)
 docs/PRD-AGENTIC-PLATFORM-DEMO.md
 
+# University safeguard demo PRD (cluster-specific documentation)
+docs/PRD-UNIVERSITY-SAFEGUARD-DEMO.md
+
 # Python cache
 __pycache__/
 *.pyc

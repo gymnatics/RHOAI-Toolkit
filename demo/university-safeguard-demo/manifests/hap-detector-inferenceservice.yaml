@@ -1,0 +1,39 @@
+# HAP (Hate/Abuse/Profanity) Detector — Granite Guardian HAP 38M
+# CPU-only classifier (38M params) — no GPU required. Called by NeMo Guardrails
+# via the hf_classifier rail (engine: kserve).
+#
+# Note: this model classifies toxicity/hate/abuse/profanity. It does NOT detect
+# self-harm content specifically — see the "self harm alert check" custom Colang
+# flow in nemo-guardrails-config.yaml for that.
+#
+# Usage:
+#   export NAMESPACE=acme-university-demo
+#   envsubst < hap-detector-inferenceservice.yaml | oc apply -f -
+#
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: hap-detector
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: guardrails-detector-hf-runtime
+      runtime: guardrails-detector-huggingface-runtime
+      storageUri: "hf://ibm-granite/granite-guardian-hap-38m"
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi

@@ -73,7 +73,7 @@ This single command provides an interactive menu to:
 | **MCP Servers** | 8 deployable MCP servers with Gateway API routing |
 | **HuggingFace to S3** | Download models from HuggingFace to MinIO for deployment |
 | **GenAI Playground** | Interactive model testing interface |
-| **19 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, NIM, Pipelines, and more |
+| **20 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, NIM, Pipelines, and more |
 | **Cross-Platform** | Works on macOS and Linux |
 
 ---

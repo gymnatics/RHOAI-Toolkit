@@ -35,12 +35,14 @@ show_main_menu() {
     echo -e "${YELLOW}6)${NC} Create GPU MachineSet (add GPU nodes to existing cluster)"
     echo -e "${YELLOW}7)${NC} GPU & ClusterPolicy Management ${CYAN}[NVIDIA]${NC}"
     echo -e "${YELLOW}8)${NC} Configure Kubeconfig (login, set, or create kubeconfig) ${CYAN}[Connection]${NC}"
+    echo -e "${YELLOW}u)${NC} User Management (create users, assign ClusterRoles) ${GREEN}[New]${NC}"
     echo -e "${YELLOW}a)${NC} TLS Certificate Setup (Let's Encrypt / Self-signed)"
     echo -e "${YELLOW}h)${NC} Help (show scripts and documentation)"
     echo -e "${YELLOW}0)${NC} Exit"
     echo ""
     echo -e "${CYAN}Tip:${NC} Use command mode to skip menus: ${GREEN}./rhoai-toolkit.sh deploy demo webui${NC}"
-    echo -e "     Type ${GREEN}./rhoai-toolkit.sh help${NC} for all available commands."
+    echo -e "     Type ${GREEN}./rhoai-toolkit.sh help${NC} for all available commands.
+     Manage users: ${GREEN}./rhoai-toolkit.sh setup users${NC}"
     echo ""
 }
 

@@ -30,6 +30,7 @@ help:
 	@echo "  make setup-rhoai-35        Install RHOAI 3.5 with all prerequisites [Recommended]"
 	@echo "  make setup-rhoai-34        Install RHOAI 3.4 with all prerequisites"
 	@echo "  make setup-users           Create demo users with htpasswd + groups"
+	@echo "  make manage-users          Create users + assign ClusterRoles (interactive)"
 	@echo "  make setup-rhoai-33        Install RHOAI 3.3 with all prerequisites"
 	@echo "  make setup-rhoai           Install RHOAI 3.0 with all operators"
 	@echo "  make setup-operators       Install only operators (NFD, GPU, Kueue, LWS)"
@@ -56,6 +57,7 @@ help:
 	@echo "  make deploy-financial-loan Deploy financial loan demo"
 	@echo "  make deploy-pipeline-demo  Deploy AI pipeline demo (KFP + Elyra)"
 	@echo "  make deploy-nemo-guardrails Deploy NeMo Guardrails (RHOAI 3.4)"
+	@echo "  make deploy-university-safeguard-demo Deploy University Safeguard demo (HAP + self-harm alerting)"
 	@echo "  make deploy-lemonade-stand Deploy Lemonade Stand Chat (NeMo Edition)"
 	@echo "  make deploy-lmeval-lab     Deploy LMEval Builder Lab"
 	@echo "  make deploy-maas-ratelimit Deploy MaaS Rate Limiting Demo"
@@ -106,6 +108,10 @@ setup-users:
 	@echo -e "$(GREEN)▶ Setting up demo users...$(NC)"
 	@$(BASE)/scripts/setup-users.sh $(ARGS)
 	@echo -e "$(GREEN)✓ User setup complete$(NC)"
+
+.PHONY: manage-users
+manage-users:
+	@$(BASE)/rhoai-toolkit.sh setup users $(ARGS)
 
 .PHONY: setup-rhoai-33
 setup-rhoai-33:
@@ -246,6 +252,10 @@ deploy-pipeline-demo:
 .PHONY: deploy-nemo-guardrails
 deploy-nemo-guardrails:
 	@$(BASE)/demo/nemo-guardrails-demo/deploy.sh
+
+.PHONY: deploy-university-safeguard-demo
+deploy-university-safeguard-demo:
+	@$(BASE)/demo/university-safeguard-demo/deploy.sh
 
 .PHONY: deploy-lemonade-stand
 deploy-lemonade-stand:

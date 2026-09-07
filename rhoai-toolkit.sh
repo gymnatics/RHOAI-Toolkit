@@ -52,6 +52,7 @@ source "$SCRIPT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/rhoai.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/operators.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/workshop-setup.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/functions/user-management.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/mcp.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/llamastack.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/functions/demos.sh" 2>/dev/null || true
@@ -63,6 +64,7 @@ source "$SCRIPT_DIR/lib/functions/troubleshooting.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/display.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/commands.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/workshop.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/menus/users.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/mcp.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/rhoai-management.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/lib/menus/troubleshooting.sh" 2>/dev/null || true
@@ -108,7 +110,7 @@ main() {
     # Interactive menu mode
     while true; do
         show_main_menu
-        read -p "Select an option (1-8, a, h, 0): " choice
+        read -p "Select an option (1-8, u, a, h, 0): " choice
         
         case $choice in
             1)
@@ -137,6 +139,9 @@ main() {
             8)
                 configure_kubeconfig_interactive
                 ;;
+            u|U)
+                user_management_menu
+                ;;
             a|A)
                 if [ -f "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh" ]; then
                     "$ROOT_DIR/scripts/setup-letsencrypt-tls.sh"
@@ -156,7 +161,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-8, a, h, or 0."
+                print_error "Invalid option. Please select 1-8, u, a, h, or 0."
                 sleep 2
                 ;;
         esac

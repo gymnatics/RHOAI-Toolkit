@@ -43,6 +43,10 @@ show_commands_help() {
     echo "  setup pipeline-server         Deploy Pipeline Server"
     echo "  setup feast                   Feature Store management"
     echo ""
+    echo -e "${MAGENTA}User Management:${NC}"
+    echo "  setup users                   Create users + assign ClusterRoles"
+    echo "  setup users --roles-only      Add roles to existing users"
+    echo ""
     echo -e "${MAGENTA}GPU & Hardware:${NC}"
     echo "  create gpu-machineset         Create GPU MachineSet on AWS"
     echo "  create hardware-profile       Create GPU Hardware Profile"
@@ -142,9 +146,16 @@ route_command() {
                 feast|feature-store)
                     feast_submenu
                     ;;
+                users|user)
+                    if [ "$1" = "--roles-only" ]; then
+                        add_roles_interactive
+                    else
+                        manage_users_interactive
+                    fi
+                    ;;
                 *)
                     print_error "Unknown setup target: $subcmd"
-                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast"
+                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast, users"
                     return 1
                     ;;
             esac
