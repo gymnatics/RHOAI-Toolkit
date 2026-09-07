@@ -1,0 +1,56 @@
+# Disconnected/air-gapped variant of the CPU-only simulator.
+# Uses an oci:// storage URI instead of hf:// since HuggingFace is unreachable in
+# disconnected environments. Functionally identical to the connected simulator --
+# the inference container generates random responses regardless of the model URI.
+# Requires the modelcar image to be mirrored via ITMS (see docs/TROUBLESHOOTING.md
+# "Disconnected / Air-Gapped MaaS" section).
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: simulator
+  # Namespace set by kustomization.yaml `namespace:` transformer (default: llm).
+spec:
+  model:
+    name: facebook/opt-125m
+    uri: oci://${DISCONNECTED_REGISTRY}/llm-d/simulator-modelcar:latest
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    containers:
+      - name: main
+        # See lib/manifests/maas/models/simulator/llm/model.yaml for why `command`
+        # must explicitly override KServe's auto-generated vLLM-serve wrapper.
+        # See lib/manifests/maas/models/simulator/llm/model.yaml for why this is
+        # pinned to v0.7.1 rather than v0.9.0 (render sidecar dependency).
+        image: ${DISCONNECTED_REGISTRY}/llm-d-inference-sim:v0.7.1
+        command:
+          - /app/llm-d-inference-sim
+        args:
+          - "--port=8000"
+          - "--model=facebook/opt-125m"
+          - "--mode=echo"
+          - "--ssl-certfile=/var/run/kserve/tls/tls.crt"
+          - "--ssl-keyfile=/var/run/kserve/tls/tls.key"
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5

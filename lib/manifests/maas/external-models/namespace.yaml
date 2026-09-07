@@ -1,0 +1,11 @@
+# External models live in their own namespace, separate from the MaaS platform
+# and locally-served models. The gateway-access label is required for the
+# Gateway to accept HTTPRoutes from this namespace.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-models
+  labels:
+    maas.opendatahub.io/gateway-access: "true"
+    opendatahub.io/dashboard: "true"

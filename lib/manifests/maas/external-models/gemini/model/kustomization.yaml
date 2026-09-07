@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# RHOAI 3.5+ only. On RHOAI 3.4, Gemini is broken (RHOAIENG-68592) -- see
+# external-model-34.yaml comments. Do not use this kustomization on 3.4.
+resources:
+  - external-provider.yaml
+  - external-model.yaml

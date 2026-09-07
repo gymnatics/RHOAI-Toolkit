@@ -1,10 +1,10 @@
-# Registers the simulator model with the MaaS control plane
 ---
 apiVersion: maas.opendatahub.io/v1alpha1
 kind: MaaSModelRef
 metadata:
   name: simulator
-  namespace: ${MODEL_NAMESPACE}
+  namespace: llm
 spec:
-  llmInferenceServiceRef:
+  modelRef:
+    kind: LLMInferenceService
     name: simulator

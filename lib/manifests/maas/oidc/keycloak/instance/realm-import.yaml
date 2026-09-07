@@ -1,0 +1,59 @@
+# Creates the "maas" realm with a public OIDC client ("maas-oidc"), two test
+# groups (data-scientists, ml-engineers), and two test users so the External
+# OIDC flow can be verified end-to-end without a real corporate IdP.
+#
+# Test users:  maas-user/maas-user (both groups), restricted-user/restricted-user
+#              (data-scientists only)
+#
+# IMPORTANT: these are demo credentials for a throwaway Keycloak instance.
+# Never reuse this realm import for a production identity provider.
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: maas
+  namespace: maas-keycloak
+spec:
+  keycloakCRName: keycloak
+  realm:
+    id: maas
+    realm: maas
+    enabled: true
+    groups:
+      - name: data-scientists
+      - name: ml-engineers
+    clients:
+      - clientId: maas-oidc
+        publicClient: true
+        directAccessGrantsEnabled: true
+        standardFlowEnabled: true
+        redirectUris:
+          - "*"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            config:
+              "claim.name": "groups"
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+    users:
+      - username: maas-user
+        enabled: true
+        credentials:
+          - type: password
+            value: maas-user
+            temporary: false
+        groups:
+          - /data-scientists
+          - /ml-engineers
+      - username: restricted-user
+        enabled: true
+        credentials:
+          - type: password
+            value: restricted-user
+            temporary: false
+        groups:
+          - /data-scientists

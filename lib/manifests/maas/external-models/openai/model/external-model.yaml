@@ -1,0 +1,15 @@
+# RHOAI 3.5+ only. Maps the model + routing config onto the ExternalProvider.
+---
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: gpt-4o-mini
+  namespace: external-models
+spec:
+  modelName: gpt-4o-mini
+  externalProviderRefs:
+    - ref:
+        name: openai
+      targetModel: gpt-4o-mini
+      apiFormat: openai-chat
+      path: /v1/chat/completions

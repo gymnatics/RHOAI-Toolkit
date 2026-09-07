@@ -1,0 +1,18 @@
+# RHOAI 3.5+ only. The `path` override is REQUIRED for Gemini -- its
+# OpenAI-compatible endpoint lives at /v1beta/openai/chat/completions, not the
+# /v1/chat/completions default. This `path` field did not exist in RHOAI 3.4,
+# which is why Gemini is broken there (RHOAIENG-68592, see docs/TROUBLESHOOTING.md).
+---
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: gemini-2.5-flash
+  namespace: external-models
+spec:
+  modelName: gemini-2.5-flash
+  externalProviderRefs:
+    - ref:
+        name: gemini
+      targetModel: gemini-2.5-flash
+      apiFormat: openai-chat
+      path: /v1beta/openai/chat/completions

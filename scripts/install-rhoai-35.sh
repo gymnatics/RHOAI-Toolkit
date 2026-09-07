@@ -1117,15 +1117,15 @@ setup_maas_database() {
     fi
 
     print_step "Deploying POC PostgreSQL in $MAAS_INFRA_NS..."
-    oc apply -n "$MAAS_INFRA_NS" -f "$ROOT_DIR/lib/manifests/maas/postgres-pvc.yaml"
-    oc apply -n "$MAAS_INFRA_NS" -f "$ROOT_DIR/lib/manifests/maas/postgres-service.yaml"
+    oc apply -n "$MAAS_INFRA_NS" -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-pvc.yaml"
+    oc apply -n "$MAAS_INFRA_NS" -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-service.yaml"
 
     export PG_IMAGE="$pg_image"
     export PG_USER="$pg_user"
     export PG_PASSWORD="$pg_password"
     export PG_DB="$pg_db"
     envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
-        < "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml" | oc apply -n "$MAAS_INFRA_NS" -f -
+        < "$ROOT_DIR/lib/manifests/maas/platform/postgres-deployment.yaml" | oc apply -n "$MAAS_INFRA_NS" -f -
     unset PG_PASSWORD
 
     print_step "Waiting for PostgreSQL to be ready..."
@@ -1777,49 +1777,13 @@ spec:
     - Ingress
 EOF
 
-    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
-        oc apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-web-tls-ca
-  namespace: ${mon_ns}
-  annotations:
-    service.beta.openshift.io/inject-cabundle: "true"
-data: {}
-EOF
-        print_info "Created service-ca ConfigMap for PersesDatasource"
-    fi
-
-    # Create the monitoring-prometheus-datasource-secret that the PersesDatasource
-    # references for authenticating to Thanos Querier. Without this secret the
-    # datasource stays Degraded and all dashboards fail to sync.
-    if ! oc get secret monitoring-prometheus-datasource-secret -n "$mon_ns" &>/dev/null; then
-        print_step "Creating Prometheus datasource secret for Perses..."
-        local thanos_host
-        thanos_host=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}' 2>/dev/null)
-        local ds_token
-        ds_token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null)
-        if [ -n "$ds_token" ] && [ -n "$thanos_host" ]; then
-            oc create secret generic monitoring-prometheus-datasource-secret \
-                --from-literal=token="$ds_token" \
-                --from-literal=host="$thanos_host" \
-                -n "$mon_ns" 2>/dev/null && \
-                print_success "Prometheus datasource secret created" || \
-                print_warning "Could not create Prometheus datasource secret"
-        else
-            print_warning "Could not create Prometheus datasource secret — token or host unavailable"
-        fi
-    fi
-
-    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
-
-    print_success "Observability Perses setup complete"
-
-    # Configure DSCI monitoring to trigger the operator's observability cascade
-    # (MonitoringStack, ThanosQuerier, Perses datasources, tracing).
+    # Configure DSCI monitoring FIRST to trigger the operator's observability
+    # cascade (MonitoringStack, ThanosQuerier, Perses datasources, tracing).
     # Without this, DSCI monitoring.metrics stays empty ({}) and the RHOAI
-    # "Dashboard" menu item under "Observe & monitor" never appears.
+    # "Dashboard" menu item under "Observe & monitor" never appears. This must
+    # run BEFORE the PersesDatasource fallback logic below, since RHOAI 3.5's
+    # DSC-managed Monitoring component only auto-creates its own default
+    # "cluster-prometheus-datasource" PersesDatasource once this is configured.
     # Reference: https://rh-aiservices-bu.github.io/rhoai-maas-guide/modules/main/07-observability.html
     local dsci_metrics
     dsci_metrics=$(oc get dsci default-dsci -o jsonpath='{.spec.monitoring.metrics.replicas}' 2>/dev/null)
@@ -1852,6 +1816,73 @@ EOF
     else
         print_info "DSCI monitoring already configured (replicas=$dsci_metrics)"
     fi
+
+    # RHOAI's Monitoring operator reconciles cluster-prometheus-datasource
+    # asynchronously after DSCI is Ready — give it a short window to appear
+    # before deciding whether the toolkit needs to create a fallback.
+    print_step "Checking for RHOAI-native 'cluster-prometheus-datasource'..."
+    local ds_elapsed=0
+    while [ $ds_elapsed -lt 60 ]; do
+        if oc get persesdatasource cluster-prometheus-datasource -n "$mon_ns" &>/dev/null; then
+            break
+        fi
+        sleep 5
+        ds_elapsed=$((ds_elapsed + 5))
+    done
+
+    # Perses only allows ONE default datasource per kind. If we also apply our
+    # own default PersesDatasource ("monitoring-prometheus-datasource") when
+    # RHOAI's native one already exists, whichever is created SECOND gets
+    # rejected by the Perses API (400: "cannot be a default PrometheusDatasource
+    # because there is already one defined") and stays permanently Degraded —
+    # breaking the RHOAI dashboard's Observe & monitor page with
+    # "No datasource found for kind 'PrometheusDatasource'".
+    # Only fall back to creating our own if RHOAI's native one truly isn't
+    # present (e.g. an older RHOAI 3.5.x build that doesn't auto-create it).
+    if oc get persesdatasource cluster-prometheus-datasource -n "$mon_ns" &>/dev/null; then
+        print_info "RHOAI-native 'cluster-prometheus-datasource' found — skipping toolkit's duplicate datasource to avoid a default-datasource conflict"
+    else
+        print_info "RHOAI-native datasource not found — falling back to toolkit-managed PersesDatasource"
+
+        if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+            oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-web-tls-ca
+  namespace: ${mon_ns}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}
+EOF
+            print_info "Created service-ca ConfigMap for PersesDatasource"
+        fi
+
+        # Create the monitoring-prometheus-datasource-secret that the PersesDatasource
+        # references for authenticating to Thanos Querier. Without this secret the
+        # datasource stays Degraded and all dashboards fail to sync.
+        if ! oc get secret monitoring-prometheus-datasource-secret -n "$mon_ns" &>/dev/null; then
+            print_step "Creating Prometheus datasource secret for Perses..."
+            local thanos_host
+            thanos_host=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}' 2>/dev/null)
+            local ds_token
+            ds_token=$(oc create token prometheus-k8s -n openshift-monitoring --duration=87600h 2>/dev/null)
+            if [ -n "$ds_token" ] && [ -n "$thanos_host" ]; then
+                oc create secret generic monitoring-prometheus-datasource-secret \
+                    --from-literal=token="$ds_token" \
+                    --from-literal=host="$thanos_host" \
+                    -n "$mon_ns" 2>/dev/null && \
+                    print_success "Prometheus datasource secret created" || \
+                    print_warning "Could not create Prometheus datasource secret"
+            else
+                print_warning "Could not create Prometheus datasource secret — token or host unavailable"
+            fi
+        fi
+
+        oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+    fi
+
+    print_success "Observability Perses setup complete"
 }
 
 create_thanos_proxy_secret() {

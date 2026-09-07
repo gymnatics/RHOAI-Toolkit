@@ -1086,15 +1086,15 @@ setup_maas_database() {
     fi
 
     print_step "Deploying POC PostgreSQL in redhat-ods-applications..."
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-pvc.yaml"
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-service.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-pvc.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-service.yaml"
 
     export PG_IMAGE="$pg_image"
     export PG_USER="$pg_user"
     export PG_PASSWORD="$pg_password"
     export PG_DB="$pg_db"
     envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
-        < "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
+        < "$ROOT_DIR/lib/manifests/maas/platform/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
     unset PG_PASSWORD
 
     print_step "Waiting for PostgreSQL to be ready..."
@@ -1572,8 +1572,20 @@ spec:
     - Ingress
 EOF
 
-    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
-        oc apply -f - <<EOF
+    # RHOAI 3.4 doesn't ship a DSC-managed Monitoring component that auto-creates
+    # its own default PersesDatasource, so this toolkit's "monitoring-prometheus-datasource"
+    # is normally the only default in play here. However, if this script is ever
+    # run against a cluster that already has a native "cluster-prometheus-datasource"
+    # (e.g. a later RHOAI upgrade, or a mixed 3.4/3.5 environment), skip creating
+    # our own — Perses only allows ONE default datasource per kind, and having two
+    # causes the loser to be rejected by the Perses API (400 error) and stay
+    # permanently Degraded, breaking the dashboard's Observe & monitor page with
+    # "No datasource found for kind 'PrometheusDatasource'".
+    if oc get persesdatasource cluster-prometheus-datasource -n "$mon_ns" &>/dev/null; then
+        print_info "A 'cluster-prometheus-datasource' already exists — skipping toolkit's duplicate datasource to avoid a default-datasource conflict"
+    else
+        if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+            oc apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1583,10 +1595,11 @@ metadata:
     service.beta.openshift.io/inject-cabundle: "true"
 data: {}
 EOF
-        print_info "Created service-ca ConfigMap for PersesDatasource"
-    fi
+            print_info "Created service-ca ConfigMap for PersesDatasource"
+        fi
 
-    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+        oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+    fi
 
     print_success "Observability Perses setup complete"
 }

@@ -1,0 +1,19 @@
+# Free tier: 10,000 tokens/hour (external model calls cost real money -- keep
+# the default limit conservative).
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: gpt-4o-mini-free
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: gpt-4o-mini
+      namespace: external-models
+      tokenRateLimits:
+        - limit: 10000
+          window: 1h
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 10

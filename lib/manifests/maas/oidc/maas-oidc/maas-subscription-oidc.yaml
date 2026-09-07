@@ -1,0 +1,34 @@
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: oidc-data-scientists
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+      tokenRateLimits:
+        - limit: 1000
+          window: 1m
+  owner:
+    groups:
+      - name: data-scientists
+  priority: 10
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: oidc-ml-engineers
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+      tokenRateLimits:
+        - limit: 5000
+          window: 1m
+  owner:
+    groups:
+      - name: ml-engineers
+  priority: 15

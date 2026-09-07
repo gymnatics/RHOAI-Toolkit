@@ -1,0 +1,82 @@
+# CPU-only simulator model for MaaS platform validation.
+# No GPU required -- uses the llm-d-inference-sim container to simulate an
+# OpenAI-compatible inference endpoint. Deploys in ~30 seconds.
+#
+# Uses the proper upstream LLMInferenceService API (spec.model.uri +
+# spec.router.gateway.refs) rather than a raw container spec, so the model
+# is automatically wired into the MaaS gateway's HTTPRoute.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: simulator
+  # Namespace is set by the kustomization.yaml `namespace:` transformer (default: llm).
+  # Override by patching the kustomization.yaml namespace field, or use
+  # scripts/deploy-maas-model.sh -n <namespace> which does this for you.
+spec:
+  model:
+    name: facebook/opt-125m
+    uri: hf://sshleifer/tiny-gpt2
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    containers:
+      - name: main
+        # NOTE: LLMInferenceService's `spec.model` field makes KServe ALWAYS
+        # auto-generate a `/bin/bash -c "... exec vllm serve /mnt/models ..."`
+        # wrapper for `command`, appending any user-supplied `args` as trailing
+        # positional args -- it does NOT let `args` alone override the launch
+        # command. This breaks non-vLLM images two ways: (1) if `vllm` isn't on
+        # PATH, the wrapper's `vllm --version` version-detection line fails with
+        # "exec: vllm: not found"; (2) some minimal images lack /bin/bash entirely
+        # ("executable file /bin/bash not found"). quay.io/opendatahub/llm-d-inference-sim:latest
+        # is also NOT a viable fallback -- that repo currently returns
+        # "unauthorized" on pull. All three failure modes verified against a
+        # live RHOAI 3.5 cluster on 2026-09-03. Fix: set `command` explicitly to
+        # the image's real entrypoint (found via `oc image info ... --filter-by-os
+        # linux/amd64`) so KServe's wrapper is bypassed entirely.
+        # NOTE: pinned to v0.7.1, NOT the newer v0.9.0. Starting in v0.9.0 this
+        # image requires a separate vLLM "render" sidecar on localhost:8082 for
+        # ALL tokenization (even in --mode=echo for /v1/chat/completions), and
+        # there is no flag to disable it ("--force-dummy-tokenizer" does not
+        # exist in v0.9.0 -- confirmed via --help). v0.7.1 uses a self-contained
+        # Go tokenizer (--tokenizers-cache-dir) with no external dependency.
+        # Verified against a live RHOAI 3.5 cluster on 2026-09-03.
+        image: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1
+        command:
+          - /app/llm-d-inference-sim
+        args:
+          - "--port=8000"
+          - "--model=facebook/opt-125m"
+          # echo mode loops the request back as the response.
+          - "--mode=echo"
+          # The router (Envoy/HTTPRoute) connects to the backend over HTTPS using
+          # the self-signed cert KServe auto-provisions at this path (regardless
+          # of whether `command` is overridden) -- without these flags the
+          # simulator serves plain HTTP and the router's TLS ClientHello bytes
+          # are rejected as "unsupported http request method". Verified against
+          # a live RHOAI 3.5 cluster on 2026-09-03.
+          - "--ssl-certfile=/var/run/kserve/tls/tls.crt"
+          - "--ssl-keyfile=/var/run/kserve/tls/tls.key"
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5

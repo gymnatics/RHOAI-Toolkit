@@ -1,0 +1,16 @@
+# Registers the simulator LLMInferenceService with the MaaS control plane.
+# Lives in the SAME namespace as the LLMInferenceService (llm), not models-as-a-service.
+#
+# NOTE: spec.modelRef (singular) is the correct schema -- verified against a live
+# RHOAI 3.5 cluster and matching lib/functions/model-deployment.sh::publish_model_to_maas.
+# Do not change to `llmInferenceServiceRef` (a since-fixed drift in the old manifest).
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: simulator
+  namespace: llm
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: simulator

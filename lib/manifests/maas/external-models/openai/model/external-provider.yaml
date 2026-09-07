@@ -1,0 +1,22 @@
+# RHOAI 3.5+ only. ExternalProvider defines the upstream endpoint + auth config.
+# The credential Secret ("openai-api-key") must be created imperatively (never
+# committed here) and labeled inference.llm-d.ai/ipp-managed=true so the
+# payload-processing ext-proc can inject it into upstream requests:
+#
+#   oc create secret generic openai-api-key -n external-models \
+#     --from-literal=api-key="$OPENAI_API_KEY"
+#   oc label secret openai-api-key -n external-models \
+#     inference.llm-d.ai/ipp-managed=true --overwrite
+---
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalProvider
+metadata:
+  name: openai
+  namespace: external-models
+spec:
+  provider: openai
+  endpoint: api.openai.com
+  auth:
+    type: apikey
+    secretRef:
+      name: openai-api-key

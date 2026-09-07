@@ -224,9 +224,45 @@ get_maas_endpoint() {
     MAAS_ENDPOINT=""
     MAAS_NAMESPACE=""
     
-    if is_rhoai_34_or_higher; then
-        # RHOAI 3.4+: MaaS uses subscription CRDs, maas-default-gateway, models-as-a-service namespace
-        echo -e "${BLUE}Checking RHOAI 3.4+ MaaS (subscription-based)...${NC}"
+    if is_rhoai_35_or_higher; then
+        # RHOAI 3.5+: MaaS uses aigateway.modelsAsAService (NOT kserve.modelsAsService,
+        # which is frozen/deprecated but still respected through ~3.6), MaasTenantConfig
+        # (NOT Tenant, which is 3.4-only), and the infra namespace may be
+        # redhat-ai-gateway-infra rather than redhat-ods-applications.
+        echo -e "${BLUE}Checking RHOAI 3.5+ MaaS (aigateway.modelsAsAService)...${NC}"
+
+        local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}' 2>/dev/null)
+
+        if [ "$maas_state" = "Managed" ]; then
+            MAAS_NAMESPACE="models-as-a-service"
+
+            local gateway_host=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
+
+            if [ -n "$gateway_host" ]; then
+                MAAS_ENDPOINT="$gateway_host"
+            else
+                local cluster_domain=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+                if [ -n "$cluster_domain" ]; then
+                    MAAS_ENDPOINT="maas.${cluster_domain}"
+                fi
+            fi
+
+            if [ -n "$MAAS_ENDPOINT" ]; then
+                # 3.5+ uses MaasTenantConfig, not the 3.4-only Tenant CRD
+                local tenant_ready=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                local tenant_info=""
+                [ "$tenant_ready" = "True" ] && tenant_info=" (MaasTenantConfig: Ready)" || tenant_info=" (MaasTenantConfig: ${tenant_ready:-pending})"
+                echo -e "${GREEN}✓ MaaS endpoint (3.5+ aigateway): $MAAS_ENDPOINT${tenant_info}${NC}"
+                return 0
+            fi
+        else
+            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.5+${NC}"
+            echo "Enable with: aigateway.modelsAsAService.managementState: Managed in DataScienceCluster"
+        fi
+    elif is_rhoai_34_or_higher; then
+        # RHOAI 3.4: MaaS uses subscription CRDs, maas-default-gateway, models-as-a-service namespace
+        echo -e "${BLUE}Checking RHOAI 3.4 MaaS (subscription-based)...${NC}"
         
         local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null)
         
@@ -246,16 +282,16 @@ get_maas_endpoint() {
             fi
             
             if [ -n "$MAAS_ENDPOINT" ]; then
-                # Check Tenant status
+                # Check Tenant status (3.4-only CRD)
                 local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
                     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
                 local tenant_info=""
                 [ "$tenant_ready" = "True" ] && tenant_info=" (Tenant: Ready)" || tenant_info=" (Tenant: ${tenant_ready:-pending})"
-                echo -e "${GREEN}✓ MaaS endpoint (3.4+ subscription-based): $MAAS_ENDPOINT${tenant_info}${NC}"
+                echo -e "${GREEN}✓ MaaS endpoint (3.4 subscription-based): $MAAS_ENDPOINT${tenant_info}${NC}"
                 return 0
             fi
         else
-            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.4+${NC}"
+            echo -e "${YELLOW}MaaS not enabled in RHOAI 3.4${NC}"
             echo "Enable with: modelsAsService.managementState: Managed in DataScienceCluster"
         fi
     elif is_rhoai_33_or_higher; then

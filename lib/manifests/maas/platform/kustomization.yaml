@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PostgreSQL platform resources for MaaS API key/subscription storage.
+#
+# NOTE: postgres-deployment.yaml is an envsubst template (${PG_IMAGE}, ${PG_USER},
+# ${PG_PASSWORD}, ${PG_DB}) and is NOT included here. Apply it separately:
+#   envsubst < postgres-deployment.yaml | oc apply -n <namespace> -f -
+# The maas-db-config.yaml.tmpl secret template is also applied separately since
+# secrets with generated passwords must never be committed to a static manifest.
+#
+# Namespace is set by the caller via `oc apply -k . -n <namespace>` or by adding
+# a namespace: field when this is consumed from a higher-level kustomization.
+resources:
+  - postgres-pvc.yaml
+  - postgres-service.yaml

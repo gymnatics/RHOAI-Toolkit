@@ -1,0 +1,38 @@
+# OpenAI gpt-oss-20b on Red Hat AI Inference Server (vLLM CUDA). Requires a capable
+# GPU node (L4 or better) with >= 16GB VRAM.
+#
+# NOTE: verify the exact modelcar image tag against the current Red Hat registry
+# catalog (registry.redhat.io) before production use -- tags are updated over time.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: gpt-oss-20b
+  # Namespace set by kustomization.yaml `namespace:` transformer (default: llm).
+spec:
+  model:
+    name: openai/gpt-oss-20b
+    uri: oci://registry.redhat.io/rhelai1/modelcar-gpt-oss-20b:1.5
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    containers:
+      - name: main
+        image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3.0
+        resources:
+          requests:
+            cpu: "2"
+            memory: 16Gi
+          limits:
+            cpu: "4"
+            memory: 60Gi
+            nvidia.com/gpu: "1"
