@@ -2,13 +2,11 @@
 ################################################################################
 # Test MaaS API
 ################################################################################
-# This script tests the MaaS API with a sample prompt. Routing and auth are
-# version-aware:
-#   RHOAI 3.5+: body-based routing -- model id (publishers/<ns>/models/<name>)
-#               looked up from GET /v1/models and sent in the body to a single
-#               shared /v1/chat/completions endpoint.
-#   RHOAI 3.4:  per-model URL (/<ns>/<model>/v1/chat/completions), sk-oai-* key.
-#   RHOAI 3.3-: per-model URL, OpenShift SA token.
+# This script tests the MaaS API with a sample prompt. Works across RHOAI
+# 3.3/3.4/3.5 using per-model URL routing by default (confirmed HTTP 200 on
+# a live RHOAI 3.5.0 GA cluster -- contrary to earlier assumptions, this does
+# NOT 404 on 3.5+). Set MAAS_ROUTING=body before running to opt into RHOAI
+# 3.5+'s single shared /v1/chat/completions endpoint instead.
 ################################################################################
 
 set -e
@@ -50,7 +48,9 @@ if ! oc whoami &>/dev/null; then
     exit 1
 fi
 
-# Detect RHOAI version and get MaaS endpoint
+# Detect RHOAI version and get MaaS endpoint (routing defaults to per-model
+# URL; export MAAS_ROUTING=body before running this script to opt into
+# body-based routing on RHOAI 3.5+ instead)
 detect_rhoai_version
 
 if ! get_maas_endpoint; then
@@ -65,59 +65,37 @@ if ! get_maas_endpoint; then
     exit 1
 fi
 
+echo -e "${CYAN}Routing: $([ "$MAAS_ROUTING" = "body" ] && echo "body-based (opt-in)" || echo "per-model URL (default)")${NC}"
 echo ""
 
-if is_rhoai_35_or_higher; then
-    ############################################################################
-    # RHOAI 3.5+: body-based routing -- fetch /v1/models to get the exact id
-    ############################################################################
-    echo -e "${BLUE}Fetching available models (GET /v1/models)...${NC}"
-    MODELS_JSON=$(curl -sk "https://${MAAS_ENDPOINT}/v1/models" -H "Authorization: Bearer ${TOKEN}" 2>/dev/null)
-
-    if ! echo "$MODELS_JSON" | jq -e '.data[0]' >/dev/null 2>&1; then
-        echo -e "${RED}✗ No models returned from /v1/models${NC}"
-        echo "Response: $MODELS_JSON"
-        echo ""
-        echo "Deploy a model first: ../scripts/deploy-maas-model.sh --model simulator"
-        exit 1
-    fi
-
-    echo -e "${GREEN}✓ Models available:${NC}"
-    echo "$MODELS_JSON" | jq -r '.data[] | "  - \(.id)  (ready: \(.ready))"'
+# List available models (k8s resources -- works on all versions)
+echo -e "${BLUE}Available models:${NC}"
+if is_rhoai_33_or_higher; then
+    oc get llminferenceservice -A 2>/dev/null | grep -v NAME || echo "No LLMInferenceService models found"
     echo ""
-
-    read -p "Enter model id (default: first listed): " MODEL_ID
-    if [ -z "$MODEL_ID" ]; then
-        MODEL_ID=$(echo "$MODELS_JSON" | jq -r '.data[0].id')
-    fi
-
-    CHAT_URL="https://${MAAS_ENDPOINT}/v1/chat/completions"
-    echo ""
-    echo -e "${GREEN}✓ Chat endpoint (body-based routing): $CHAT_URL${NC}"
-    echo -e "${GREEN}✓ Model id: $MODEL_ID${NC}"
+    oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No InferenceService models found"
 else
-    ############################################################################
-    # RHOAI 3.4 and earlier: per-model URL routing
-    ############################################################################
-    echo -e "${BLUE}Available models:${NC}"
-    if is_rhoai_33_or_higher; then
-        oc get llminferenceservice -A 2>/dev/null | grep -v NAME || echo "No LLMInferenceService models found"
-        echo ""
-        oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No InferenceService models found"
-    else
-        oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No models found"
-    fi
-    echo ""
-
-    read -p "Enter model namespace (default: current project): " MODEL_NAMESPACE
-    MODEL_NAMESPACE=${MODEL_NAMESPACE:-$(oc project -q 2>/dev/null)}
-    read -p "Enter model name (default: demo-model): " MODEL_ID
-    MODEL_ID=${MODEL_ID:-demo-model}
-
-    CHAT_URL=$(get_maas_chat_url "$MODEL_NAMESPACE" "$MODEL_ID")
-    echo ""
-    echo -e "${GREEN}✓ Chat endpoint (per-model routing): $CHAT_URL${NC}"
+    oc get inferenceservice -A 2>/dev/null | grep -v NAME || echo "No models found"
 fi
+echo ""
+
+read -p "Enter model namespace (default: current project): " MODEL_NAMESPACE
+MODEL_NAMESPACE=${MODEL_NAMESPACE:-$(oc project -q 2>/dev/null)}
+read -p "Enter model name (k8s resource name, default: demo-model): " MODEL_NAME
+MODEL_NAME=${MODEL_NAME:-demo-model}
+
+# Resolve the exact model id to send in the request body. This is the
+# LLMInferenceService's spec.model.name (e.g. "facebook/opt-125m"), which is
+# often DIFFERENT from the k8s resource name (e.g. "simulator") -- sending the
+# bare resource name returns a 404 "model does not exist" regardless of
+# routing mode. get_maas_model_id resolves this via `oc` (preferred) or the
+# API (fallback), and formats it correctly for the active MAAS_ROUTING mode.
+MODEL_ID=$(get_maas_model_id "$MODEL_NAMESPACE" "$MODEL_NAME" "$TOKEN")
+CHAT_URL=$(get_maas_chat_url "$MODEL_NAMESPACE" "$MODEL_NAME")
+
+echo ""
+echo -e "${GREEN}✓ Chat endpoint: $CHAT_URL${NC}"
+echo -e "${GREEN}✓ Model id: $MODEL_ID${NC}"
 
 # Get prompt
 echo ""
@@ -189,14 +167,9 @@ else
         echo -e "${YELLOW}⚠ Authentication failed - key/token may be invalid or expired${NC}"
         echo "Generate a new credential: ./generate-maas-token.sh"
     elif echo "$RESPONSE" | grep -qi "not found"; then
-        echo -e "${YELLOW}⚠ Model not found - check model id${NC}"
-        if is_rhoai_35_or_higher; then
-            echo "List models: curl -sk https://${MAAS_ENDPOINT}/v1/models -H \"Authorization: Bearer \$TOKEN\""
-        elif is_rhoai_33_or_higher; then
-            echo "List models: oc get llminferenceservice -A"
-        else
-            echo "List models: oc get inferenceservice -A"
-        fi
+        echo -e "${YELLOW}⚠ Model not found - check model id/name${NC}"
+        echo "  Verify the k8s resource name matches: oc get llminferenceservice -n $MODEL_NAMESPACE"
+        echo "  And that spec.model.name resolved correctly: oc get llminferenceservice $MODEL_NAME -n $MODEL_NAMESPACE -o jsonpath='{.spec.model.name}'"
     elif echo "$RESPONSE" | grep -qi "service unavailable"; then
         echo -e "${YELLOW}⚠ Model may not be ready yet${NC}"
         if is_rhoai_33_or_higher; then

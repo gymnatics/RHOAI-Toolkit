@@ -110,14 +110,18 @@ if is_rhoai_34_or_higher; then
     echo -e "${YELLOW}RHOAI Version:${NC} $RHOAI_VERSION"
     echo -e "${YELLOW}Subscription:${NC}  $SUBSCRIPTION"
     echo ""
+    echo -e "${YELLOW}API Endpoint (per-model routing, default):${NC}"
+    echo "  https://$MAAS_ENDPOINT/<namespace>/<model>/v1/chat/completions"
+    echo "  (the \"model\" field in the request body must be the LLMInferenceService's"
+    echo "   spec.model.name, which may differ from <model> above -- see: oc get"
+    echo "   llminferenceservice <model> -n <namespace> -o jsonpath='{.spec.model.name}')"
     if is_rhoai_35_or_higher; then
-        echo -e "${YELLOW}API Endpoint (body-based routing):${NC}"
+        echo ""
+        echo -e "${YELLOW}Alternative -- body-based routing (RHOAI 3.5+ opt-in):${NC}"
+        echo "  export MAAS_ROUTING=body   # before sourcing lib/rhoai-detect.sh"
         echo "  https://$MAAS_ENDPOINT/v1/chat/completions"
         echo "  (model id goes in the request body, e.g. \"publishers/<ns>/models/<name>\" --"
         echo "   look it up first with: curl -sk https://$MAAS_ENDPOINT/v1/models -H \"Authorization: Bearer \$MAAS_API_KEY\")"
-    else
-        echo -e "${YELLOW}API Endpoint (per-model routing):${NC}"
-        echo "  https://$MAAS_ENDPOINT/<namespace>/<model>/v1/chat/completions"
     fi
     echo ""
     echo -e "${YELLOW}Key (first 20 chars):${NC}"

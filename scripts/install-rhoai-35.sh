@@ -3299,5 +3299,8 @@ main() {
     print_summary
 }
 
-main "$@"
-exit 0
+# Only run main when executed directly, not when sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+    exit 0
+fi

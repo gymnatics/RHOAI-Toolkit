@@ -82,22 +82,17 @@ else
     FIRST_MODEL_NAME=""
 fi
 
-# The MaaS gateway routes/model ids use the LLMInferenceService's spec.model.name
-# field, which is often different from the k8s resource name (e.g. resource
-# "simulator" -> spec.model.name "facebook/opt-125m"). Look it up so the
-# injected MODEL_ID is correct for 3.5+ body-based routing.
-FIRST_MODEL_SPEC_NAME=""
+# Resolve the exact model id to send in the request body. This must be the
+# LLMInferenceService's spec.model.name (e.g. "facebook/opt-125m"), which is
+# often different from the k8s resource name (e.g. "simulator") -- sending
+# the bare resource name returns a 404 "model does not exist" regardless of
+# routing mode. get_maas_model_id resolves this via `oc` and formats it
+# correctly for the active MAAS_ROUTING mode (default: per-model URL routing,
+# confirmed working on RHOAI 3.5.0 GA; export MAAS_ROUTING=body to opt into
+# the 3.5+ single shared endpoint instead).
+MODEL_ID=""
 if [ -n "$FIRST_MODEL_NAME" ]; then
-    FIRST_MODEL_SPEC_NAME=$(oc get llminferenceservice "$FIRST_MODEL_NAME" -n "$FIRST_MODEL_NS" \
-        -o jsonpath='{.spec.model.name}' 2>/dev/null)
-fi
-FIRST_MODEL_SPEC_NAME="${FIRST_MODEL_SPEC_NAME:-$FIRST_MODEL_NAME}"
-
-if is_rhoai_35_or_higher; then
-    MODEL_ID="publishers/${FIRST_MODEL_NS}/models/${FIRST_MODEL_SPEC_NAME}"
-else
-    # RHOAI 3.4: per-model URL routing uses the k8s resource name directly.
-    MODEL_ID="$FIRST_MODEL_NAME"
+    MODEL_ID=$(get_maas_model_id "$FIRST_MODEL_NS" "$FIRST_MODEL_NAME")
 fi
 
 echo ""
@@ -118,7 +113,8 @@ ensure_workbench "$NAMESPACE" "rate-limit-testing"
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 inject_notebook_env "$NAMESPACE" \
     "MAAS_ENDPOINT=${MAAS_ENDPOINT_URL}" \
-    "MODEL_ID=${MODEL_ID}"
+    "MODEL_ID=${MODEL_ID}" \
+    "MAAS_ROUTING=${MAAS_ROUTING}"
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
 
 echo ""
@@ -138,11 +134,14 @@ echo "     API_KEY = \"sk-oai-your-key-here\""
 echo "     MODEL_ID = \"${MODEL_ID:-<see /v1/models>}\""
 echo "     MAAS_ENDPOINT = \"${MAAS_ENDPOINT_URL}\""
 echo ""
-if is_rhoai_35_or_higher; then
-    echo "  Routing: RHOAI 3.5+ body-based -- single endpoint \${MAAS_ENDPOINT}/v1/chat/completions,"
+if [ "$MAAS_ROUTING" = "body" ]; then
+    echo "  Routing: body-based (opt-in) -- single endpoint \${MAAS_ENDPOINT}/v1/chat/completions,"
     echo "  model id goes in the request body (\"model\": \"${MODEL_ID}\")."
 else
-    echo "  Routing: RHOAI 3.4 per-model URL -- \${MAAS_ENDPOINT}/${FIRST_MODEL_NS}/${FIRST_MODEL_NAME}/v1/chat/completions"
+    echo "  Routing: per-model URL (default) -- \${MAAS_ENDPOINT}/${FIRST_MODEL_NS}/${FIRST_MODEL_NAME}/v1/chat/completions"
+    if is_rhoai_35_or_higher; then
+        echo "  (body-based routing also available on 3.5+: export MAAS_ROUTING=body before deploying)"
+    fi
 fi
 echo ""
 echo "  The notebook tests:"

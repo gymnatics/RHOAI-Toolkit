@@ -25,10 +25,22 @@ RHOAI_MAJOR_VERSION=""
 RHOAI_MINOR_VERSION=""
 MAAS_ENDPOINT=""
 MAAS_NAMESPACE=""
-# "body"  -> RHOAI 3.5+: single shared /v1/chat/completions endpoint, model id
-#            (publishers/<ns>/models/<name>) goes in the request body
-# "path"  -> RHOAI 3.3/3.4: per-model URL /<ns>/<model>/v1/chat/completions
-MAAS_ROUTING=""
+# "path"  -> per-model URL /<ns>/<model>/v1/chat/completions. Works on ALL
+#            versions (3.3/3.4/3.5+) -- this is the default, and what the
+#            official BU MaaS guide (rh-aiservices-bu.github.io/rhoai-maas-guide)
+#            exclusively uses. Confirmed HTTP 200 against a live RHOAI 3.5.0
+#            GA cluster.
+# "body"  -> RHOAI 3.5+ ONLY: single shared /v1/chat/completions endpoint,
+#            model id (publishers/<ns>/models/<name>) goes in the request
+#            body instead of the URL path. Documented by Red Hat as the
+#            "recommended" mode, but "legacy" path-based routing remains
+#            fully supported (NOT a 404, contrary to earlier assumptions in
+#            this codebase). Opt in with: export MAAS_ROUTING=body
+#
+# NOTE: preserves a pre-set environment value (e.g. `export MAAS_ROUTING=body`
+# before sourcing this file) -- do NOT unconditionally reset to "" here, or
+# the opt-in is wiped out before get_maas_endpoint() ever reads it.
+MAAS_ROUTING="${MAAS_ROUTING:-}"
 INFERENCE_GATEWAY=""
 DASHBOARD_URL=""
 
@@ -110,7 +122,8 @@ is_rhoai_34_or_higher() {
     return 1
 }
 
-# Check if RHOAI version is 3.5 or higher (aigateway.modelsAsAService, body-based routing)
+# Check if RHOAI version is 3.5 or higher (aigateway.modelsAsAService; supports
+# both per-model URL routing (default) and opt-in body-based routing)
 is_rhoai_35_or_higher() {
     detect_rhoai_version
     [ "$RHOAI_MAJOR_VERSION" -gt 3 ] 2>/dev/null && return 0
@@ -134,20 +147,27 @@ is_rhoai_3x() {
 get_maas_endpoint() {
     detect_rhoai_version
 
+    # Respect a caller-set MAAS_ROUTING=body opt-in (only meaningful on 3.5+;
+    # body-based routing doesn't exist on 3.3/3.4). Captured before we reset
+    # the variable below. Defaults to "path".
+    local _routing_pref="${MAAS_ROUTING:-path}"
+    [ "$_routing_pref" != "body" ] && _routing_pref="path"
+
     MAAS_ENDPOINT=""
     MAAS_NAMESPACE=""
     MAAS_ROUTING=""
 
     if is_rhoai_35_or_higher; then
-        # RHOAI 3.5+: aigateway.modelsAsAService, maas-default-gateway,
-        # body-based routing (single shared /v1/chat/completions endpoint).
-        echo -e "${BLUE}Checking RHOAI 3.5+ MaaS (aigateway.modelsAsAService, body-based routing)...${NC}"
+        # RHOAI 3.5+: aigateway.modelsAsAService, maas-default-gateway.
+        # Defaults to per-model URL routing (works, matches the official BU
+        # guide); body-based is available as an opt-in (MAAS_ROUTING=body).
+        echo -e "${BLUE}Checking RHOAI 3.5+ MaaS (aigateway.modelsAsAService, routing: ${_routing_pref})...${NC}"
 
         local maas_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}' 2>/dev/null)
 
         if [ "$maas_state" = "Managed" ]; then
             MAAS_NAMESPACE="models-as-a-service"
-            MAAS_ROUTING="body"
+            MAAS_ROUTING="$_routing_pref"
 
             local gateway_host=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
             if [ -n "$gateway_host" ]; then
@@ -158,7 +178,7 @@ get_maas_endpoint() {
             fi
 
             if [ -n "$MAAS_ENDPOINT" ]; then
-                echo -e "${GREEN}✓ MaaS endpoint (3.5+ body-based routing): $MAAS_ENDPOINT${NC}"
+                echo -e "${GREEN}✓ MaaS endpoint (3.5+, ${MAAS_ROUTING}-based routing): $MAAS_ENDPOINT${NC}"
                 return 0
             fi
         else
@@ -291,17 +311,15 @@ get_maas_api_key() {
 }
 
 ################################################################################
-# Look up the model id to send in chat completion requests.
-#
-# IMPORTANT (3.5+): the body-based routing id is "publishers/<ns>/models/<name>"
-# where <name> is the LLMInferenceService's spec.model.name field (e.g.
-# "facebook/opt-125m"), which is often DIFFERENT from the k8s resource name
-# (e.g. "simulator"). The only reliable way to get it is to query GET
-# /v1/models with a valid API key -- do NOT construct it by guessing.
+# Look up a model's id via GET /v1/models (fallback when `oc` access to the
+# LLMInferenceService isn't available, e.g. from inside a notebook pod with
+# only an API key).
 #
 # Args: $1 = api_key, $2 = optional owner filter substring
 #       (matches the "owned_by" field, typically "<k8s-ns>/<k8s-name>")
-# Echoes the first matching model id, or empty string if none found.
+# Echoes the first matching model id (format varies -- may be a bare name or
+# "publishers/<ns>/models/<name>" depending on cluster/model type), or empty
+# string if none found.
 ################################################################################
 get_maas_model_id_from_api() {
     local api_key="$1"
@@ -323,39 +341,66 @@ get_maas_model_id_from_api() {
 }
 
 ################################################################################
-# Build the model id used in the request body.
-#   3.5+: body-based routing id ("publishers/<ns>/models/<spec.model.name>") --
-#         looked up via the API (requires an api_key); falls back to a best-
-#         effort guess of "publishers/<ns>/models/<name>" if no api_key given.
-#   3.4-: the bare k8s resource name (used verbatim in both the URL path and body).
+# Resolve the model name to send in the request body's "model" field.
+#
+# IMPORTANT: this must be the LLMInferenceService's spec.model.name (e.g.
+# "facebook/opt-125m"), which is often DIFFERENT from the k8s resource name
+# (e.g. "simulator") for models deployed via lib/manifests/maas/models/ (the
+# BU-guide pattern). Sending the bare k8s resource name returns HTTP 404
+# "model does not exist" from the backend server -- even through the correct
+# URL path. Confirmed against a live RHOAI 3.5.0 cluster. This applies
+# EQUALLY to path-based and body-based routing; it is not a routing issue.
+#
+# Resolution order:
+#   1. `oc get llminferenceservice <name> -n <ns> -o jsonpath spec.model.name`
+#      -- no API key needed, works immediately after deploy.
+#   2. GET /v1/models with the given api_key, matched by owned_by -- fallback
+#      for contexts without `oc` access (e.g. a notebook with only an API key).
+#   3. Assume spec.model.name == the k8s resource name (best-effort guess,
+#      prints a warning). Correct for models deployed via
+#      demo/setup-demo-model.sh, which always sets them equal; wrong for
+#      BU-guide-style models like simulator.
+#
 # Args: $1 = model_namespace, $2 = model_name (k8s resource name), $3 = optional api_key
+# Echoes the id to use in the request body:
+#   MAAS_ROUTING=path (default): bare resolved name (e.g. "facebook/opt-125m")
+#   MAAS_ROUTING=body:           "publishers/<ns>/models/<resolved name>"
 ################################################################################
 get_maas_model_id() {
     local model_namespace="$1"
     local model_name="$2"
     local api_key="${3:-}"
 
-    detect_rhoai_version
-    if is_rhoai_35_or_higher; then
-        if [ -n "$api_key" ]; then
-            local looked_up
-            looked_up=$(get_maas_model_id_from_api "$api_key" "${model_namespace}/${model_name}")
-            if [ -n "$looked_up" ]; then
-                echo "$looked_up"
-                return 0
-            fi
+    local resolved_name
+    resolved_name=$(oc get llminferenceservice "$model_name" -n "$model_namespace" \
+        -o jsonpath='{.spec.model.name}' 2>/dev/null)
+
+    if [ -z "$resolved_name" ] && [ -n "$api_key" ]; then
+        local looked_up
+        looked_up=$(get_maas_model_id_from_api "$api_key" "${model_namespace}/${model_name}")
+        if [ -n "$looked_up" ]; then
+            # The API may return either a bare name or "publishers/<ns>/models/<name>" --
+            # normalize to the bare name here, then re-add the prefix below if needed.
+            resolved_name="${looked_up#publishers/*/models/}"
         fi
-        echo -e "${YELLOW}⚠ Could not look up exact model id via /v1/models -- guessing (may be wrong if spec.model.name != resource name)${NC}" >&2
-        echo "publishers/${model_namespace}/models/${model_name}"
+    fi
+
+    if [ -z "$resolved_name" ]; then
+        echo -e "${YELLOW}⚠ Could not resolve spec.model.name via oc or GET /v1/models -- guessing it equals the resource name '${model_name}' (wrong for BU-guide-style models, e.g. simulator)${NC}" >&2
+        resolved_name="$model_name"
+    fi
+
+    if [ "$MAAS_ROUTING" = "body" ]; then
+        echo "publishers/${model_namespace}/models/${resolved_name}"
     else
-        echo "$model_name"
+        echo "$resolved_name"
     fi
 }
 
 ################################################################################
-# Build the full chat completions URL for the detected RHOAI version.
-#   3.5+: https://${MAAS_ENDPOINT}/v1/chat/completions (model id goes in body)
-#   3.4-: https://${MAAS_ENDPOINT}/${ns}/${model}/v1/chat/completions
+# Build the full chat completions URL.
+#   path (default, all versions): https://${MAAS_ENDPOINT}/${ns}/${model}/v1/chat/completions
+#   body (3.5+ opt-in):            https://${MAAS_ENDPOINT}/v1/chat/completions
 ################################################################################
 get_maas_chat_url() {
     local model_namespace="$1"
@@ -505,7 +550,7 @@ print_rhoai_info() {
     if get_maas_endpoint; then
         echo -e "  MaaS Endpoint:    ${GREEN}$MAAS_ENDPOINT${NC}"
         echo -e "  MaaS Namespace:   ${GREEN}$MAAS_NAMESPACE${NC}"
-        echo -e "  MaaS Routing:     ${GREEN}$([ "$MAAS_ROUTING" = "body" ] && echo "body-based (single /v1/chat/completions)" || echo "per-model URL")${NC}"
+        echo -e "  MaaS Routing:     ${GREEN}$([ "$MAAS_ROUTING" = "body" ] && echo "body-based (single /v1/chat/completions)" || echo "per-model URL (default)")${NC}"
     else
         echo -e "  MaaS:             ${YELLOW}Not configured${NC}"
     fi
