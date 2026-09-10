@@ -217,7 +217,7 @@ EOROLE
     fi
 else
     print_warning "EvalHub CRD not available. Ensure TrustyAI is Managed in your DSC."
-    print_info "EvalHub requires RHOAI 3.4 with trustyai.managementState: Managed"
+    print_info "EvalHub requires RHOAI 3.4+ with trustyai.managementState: Managed"
     EVALHUB_URL="(not deployed -- EvalHub CRD not available)"
 fi
 

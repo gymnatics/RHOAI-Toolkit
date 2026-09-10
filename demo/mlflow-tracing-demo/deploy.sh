@@ -7,7 +7,7 @@
 # Compliance Reviewer — all traced end-to-end via RHOAI MLflow.
 #
 # Requires:
-#   - RHOAI 3.4 with MLflow operator enabled
+#   - RHOAI 3.4+ with MLflow operator enabled
 #   - A vLLM model endpoint (Qwen3-8B or similar with tool-calling)
 #   - 1x GPU for the LLM (already deployed via MaaS or InferenceService)
 #
@@ -91,7 +91,7 @@ if [ "$MLFLOW_STATE" != "Managed" ]; then
     fi
 fi
 
-print_info "Prerequisites: RHOAI 3.4 + MLflow operator + a vLLM model endpoint"
+print_info "Prerequisites: RHOAI 3.4+, MLflow operator, and a vLLM model endpoint"
 print_info "The demo will create namespace 'mlflow-tracing-demo'"
 echo ""
 
