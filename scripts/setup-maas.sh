@@ -42,6 +42,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
     NC='\033[0m'
 }
 source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
 
 ################################################################################
 # Helper Functions
@@ -64,15 +65,19 @@ print_info() { echo -e "${CYAN}ℹ $1${NC}"; }
 CLUSTER_DOMAIN=""
 FROM_PHASE=1
 RUN_DIAGNOSE=false
+ENABLE_REDIS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --from-phase) FROM_PHASE="$2"; shift 2 ;;
         --diagnose) RUN_DIAGNOSE=true; shift ;;
+        --enable-redis) ENABLE_REDIS=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [--from-phase N] [--diagnose]"
+            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis]"
             echo "  --from-phase N   Resume from phase N (1-5, RHOAI 3.4+ only)"
             echo "  --diagnose       Run scripts/diagnose-maas.sh after setup"
+            echo "  --enable-redis   Deploy Redis for Limitador rate-limit counter"
+            echo "                   persistence (survives Limitador pod restarts)"
             exit 0
             ;;
         *) shift ;;
@@ -487,6 +492,11 @@ setup_maas_34_plus() {
     [ "$FROM_PHASE" -le 2 ] && phase2_gateway
     [ "$FROM_PHASE" -le 3 ] && phase3_postgres
     [ "$FROM_PHASE" -le 4 ] && phase4_dsc
+
+    if [ "$ENABLE_REDIS" = true ]; then
+        setup_redis_limitador
+    fi
+
     [ "$FROM_PHASE" -le 5 ] && phase5_verify
 
     display_usage_instructions_34_plus

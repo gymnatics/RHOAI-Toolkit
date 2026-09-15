@@ -1,0 +1,36 @@
+# Health check interceptor -- prevents health probes from saturating the
+# Kuadrant WasmPlugin's 100-span buffer (which causes token usage reports to
+# be dropped under load). Intercepts /healthz and /ready at the gateway
+# listener before they reach the WASM filter chain.
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: healthcheck-filter
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.health_check
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+            pass_through_mode: false
+            headers:
+              - name: ":path"
+                string_match:
+                  exact: "/healthz"
+              - name: ":path"
+                string_match:
+                  exact: "/ready"

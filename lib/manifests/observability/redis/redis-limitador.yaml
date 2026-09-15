@@ -1,0 +1,55 @@
+# Redis for Limitador rate-limit counter persistence.
+#
+# By default, Limitador stores rate-limit counters in memory. If the Limitador
+# pod restarts, scales, or gets rescheduled, all counters reset to zero -- e.g.
+# with a 7-day rate limit window, a pod restart on day 6 gives every user a
+# full quota refresh for the remaining window. This dev/test Redis instance
+# (single replica, no persistence) lets counters survive Limitador pod
+# lifecycle events. For production, use a supported Redis-based data store
+# (Redis Enterprise, Amazon ElastiCache, Dragonfly) instead -- see
+# docs/TROUBLESHOOTING.md.
+#
+# Deployed in kuadrant-system (alongside Limitador itself) rather than a
+# dedicated namespace, to keep it self-contained with the RHCL install.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+  labels:
+    app: limitador-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: limitador-redis
+  template:
+    metadata:
+      labels:
+        app: limitador-redis
+    spec:
+      containers:
+      - name: redis
+        image: registry.redhat.io/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: limitador-redis
+  namespace: kuadrant-system
+spec:
+  selector:
+    app: limitador-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
