@@ -14,15 +14,21 @@
 # - oc CLI configured and logged in
 #
 # Usage:
-#   ./scripts/setup-maas.sh                  # full setup, auto-detects version
-#   ./scripts/setup-maas.sh --from-phase 3   # resume from a specific phase (3.4+ only)
-#   ./scripts/setup-maas.sh --diagnose       # run scripts/diagnose-maas.sh after setup
+#   ./scripts/setup-maas.sh                      # full setup, auto-detects version
+#   ./scripts/setup-maas.sh --from-phase 3       # resume from a specific phase (3.4+ only)
+#   ./scripts/setup-maas.sh --diagnose           # run scripts/diagnose-maas.sh after setup
+#   ./scripts/setup-maas.sh --enable-redis       # + Redis for Limitador persistence
+#   ./scripts/setup-maas.sh --enable-observability  # + DSCI monitoring (metrics/tracing)
 #
 # Phases (RHOAI 3.4+):
-#   1. RHCL operator + Kuadrant + Authorino TLS
+#   1. RHCL operator + Kuadrant + Authorino TLS + User Workload Monitoring (required,
+#      matches the BU MaaS guide's Phase 2 -- Prometheus needs UWM to scrape
+#      MaaS/Kuadrant metrics)
 #   2. GatewayClass + Gateway + gateway-resources ConfigMap + namespace labels + AUTH_SERVICE_TIMEOUT
 #   3. PostgreSQL platform (lib/manifests/maas/platform/) + secrets
 #   4. Enable MaaS in DataScienceCluster (version-branched DSC field) + dashboard flags
+#      [optional] Redis for Limitador persistence (--enable-redis)
+#      [optional] DSCI monitoring metrics/tracing (--enable-observability)
 #   5. Verify
 ################################################################################
 
@@ -66,18 +72,24 @@ CLUSTER_DOMAIN=""
 FROM_PHASE=1
 RUN_DIAGNOSE=false
 ENABLE_REDIS=false
+ENABLE_OBSERVABILITY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --from-phase) FROM_PHASE="$2"; shift 2 ;;
         --diagnose) RUN_DIAGNOSE=true; shift ;;
         --enable-redis) ENABLE_REDIS=true; shift ;;
+        --enable-observability) ENABLE_OBSERVABILITY=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis]"
-            echo "  --from-phase N   Resume from phase N (1-5, RHOAI 3.4+ only)"
-            echo "  --diagnose       Run scripts/diagnose-maas.sh after setup"
-            echo "  --enable-redis   Deploy Redis for Limitador rate-limit counter"
-            echo "                   persistence (survives Limitador pod restarts)"
+            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis] [--enable-observability]"
+            echo "  --from-phase N          Resume from phase N (1-5, RHOAI 3.4+ only)"
+            echo "  --diagnose              Run scripts/diagnose-maas.sh after setup"
+            echo "  --enable-redis          Deploy Redis for Limitador rate-limit counter"
+            echo "                          persistence (survives Limitador pod restarts)"
+            echo "  --enable-observability  Configure DSCI monitoring (metrics + tracing)."
+            echo "                          Requires Tempo/OpenTelemetry/COO operators --"
+            echo "                          use scripts/install-rhoai-35.sh for the full"
+            echo "                          observability stack (Perses dashboards, Grafana)."
             exit 0
             ;;
         *) shift ;;
@@ -313,6 +325,69 @@ apply_gateway_resources_configmap() {
 }
 
 # Phase 2: GatewayClass + Gateway + gateway-resources ConfigMap + namespace labels
+# User Workload Monitoring -- REQUIRED per the BU MaaS guide's Phase 2 (not just
+# recommended): Prometheus needs UWM enabled to scrape MaaS/Kuadrant metrics from
+# user namespaces. Without it, Kuadrant's `observability.enable: true` (set on the
+# Kuadrant CR in phase1_rhcl) has nothing to feed. Idempotent -- safe to re-run.
+enable_user_workload_monitoring() {
+    print_step "Enabling User Workload Monitoring (required for MaaS/Kuadrant metrics)..."
+
+    if oc get deployment prometheus-operator -n openshift-user-workload-monitoring &>/dev/null; then
+        print_success "User Workload Monitoring already enabled"
+        return 0
+    fi
+
+    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
+
+    print_step "Waiting for User Workload Monitoring stack to start..."
+    oc wait --for=condition=Available deployment/prometheus-operator \
+        -n openshift-user-workload-monitoring --timeout=300s 2>/dev/null || \
+        print_warning "Timeout waiting for prometheus-operator -- it may still be starting"
+
+    print_success "User Workload Monitoring enabled"
+}
+
+# DSCI monitoring (metrics + tracing) -- optional (BU guide Phase 7). Triggers the
+# RHOAI operator's observability cascade (MonitoringStack, ThanosQuerier, Perses,
+# tracing). Requires the Tempo/OpenTelemetry/COO operators to actually reconcile --
+# use scripts/install-rhoai-35.sh --enable-observability for those plus Perses
+# dashboards. This function only sets the DSCI field; it does not install operators.
+configure_dsci_monitoring() {
+    print_step "Configuring DSCI monitoring (metrics + tracing)..."
+
+    local dsci_metrics
+    dsci_metrics=$(oc get dsci default-dsci -o jsonpath='{.spec.monitoring.metrics.replicas}' 2>/dev/null)
+    if [ -n "$dsci_metrics" ] && [ "$dsci_metrics" != "null" ]; then
+        print_info "DSCI monitoring already configured (replicas=$dsci_metrics)"
+        return 0
+    fi
+
+    oc patch dsci default-dsci --type=merge -p '{
+        "spec": {
+            "monitoring": {
+                "namespace": "redhat-ods-monitoring",
+                "metrics": {
+                    "replicas": 1,
+                    "storage": {
+                        "size": "5Gi",
+                        "retention": "90d"
+                    }
+                },
+                "traces": {
+                    "sampleRatio": "0.1",
+                    "storage": {
+                        "backend": "pv",
+                        "retention": "2160h"
+                    }
+                }
+            }
+        }
+    }' 2>/dev/null && print_success "DSCI monitoring configured" || \
+        print_warning "Could not configure DSCI monitoring"
+
+    oc wait --for=jsonpath='{.status.phase}'=Ready dsci/default-dsci --timeout=120s 2>/dev/null || true
+}
+
 phase2_gateway() {
     print_header "Phase 2: Gateway + Namespace Labels"
 
@@ -489,12 +564,17 @@ setup_maas_34_plus() {
     detect_maas_state
 
     [ "$FROM_PHASE" -le 1 ] && phase1_rhcl
+    [ "$FROM_PHASE" -le 1 ] && enable_user_workload_monitoring
     [ "$FROM_PHASE" -le 2 ] && phase2_gateway
     [ "$FROM_PHASE" -le 3 ] && phase3_postgres
     [ "$FROM_PHASE" -le 4 ] && phase4_dsc
 
     if [ "$ENABLE_REDIS" = true ]; then
         setup_redis_limitador
+    fi
+
+    if [ "$ENABLE_OBSERVABILITY" = true ]; then
+        configure_dsci_monitoring
     fi
 
     [ "$FROM_PHASE" -le 5 ] && phase5_verify
