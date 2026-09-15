@@ -1,0 +1,43 @@
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${TARGET_NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
+  annotations:
+    serving.kserve.io/stop: 'false'
+    ${AUTH_ANNOTATION}
+    openshift.io/description: ''
+    openshift.io/display-name: ${MODEL_NAME}
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/connections: ${MODEL_NAME}-storage
+    opendatahub.io/model-type: generative
+${HW_PROFILE_ANNOTATIONS}
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    model:
+${MODEL_ARGS}
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '${CPU_LIMIT}'
+          memory: ${MEMORY_LIMIT}
+          nvidia.com/gpu: '${GPU_LIMIT}'
+        requests:
+          cpu: '${CPU_REQUEST}'
+          memory: ${MEMORY_REQUEST}
+          nvidia.com/gpu: '${GPU_LIMIT}'
+      runtime: ${MODEL_NAME}-runtime
+      storageUri: '${MODEL_URI}'

@@ -1,0 +1,24 @@
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ${NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    openshift.io/display-name: "${NAME}"
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.knative.openshift.io/enablePassthrough: "true"
+${HW_ANNOTATIONS}
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  predictor:
+    minReplicas: ${MIN_REPLICAS}
+    model:
+      modelFormat:
+        name: ${MODEL_FORMAT}
+      name: ""
+      runtime: ${RUNTIME_NAME}
+      storage:
+        key: ${DATA_CONNECTION}
+        path: ${MODEL_PATH}

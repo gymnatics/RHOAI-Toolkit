@@ -152,17 +152,8 @@ publish_model_to_maas() {
     # Step 1: Create MaaSModelRef
     print_step "Creating MaaSModelRef for '$model_name' in namespace '$namespace'..."
 
-    cat <<EOF | oc apply -f -
-apiVersion: maas.opendatahub.io/v1alpha1
-kind: MaaSModelRef
-metadata:
-  name: $model_name
-  namespace: $namespace
-spec:
-  modelRef:
-    kind: LLMInferenceService
-    name: $model_name
-EOF
+    export MODEL_NAME="$model_name" NAMESPACE="$namespace"
+    envsubst '${MODEL_NAME} ${NAMESPACE}' < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/maas-model-ref.yaml.tmpl" | oc apply -f -
 
     if [ $? -ne 0 ]; then
         print_error "Failed to create MaaSModelRef"
@@ -211,26 +202,10 @@ EOF
     echo ""
     print_step "Creating MaaSSubscription '$sub_name' in models-as-a-service..."
 
-    cat <<EOF | oc apply -f -
-apiVersion: maas.opendatahub.io/v1alpha1
-kind: MaaSSubscription
-metadata:
-  name: $sub_name
-  namespace: models-as-a-service
-  annotations:
-    openshift.io/display-name: "$model_name subscription for $maas_group"
-spec:
-  modelRefs:
-    - name: $model_name
-      namespace: $namespace
-      tokenRateLimits:
-        - limit: $token_limit
-          window: $token_window
-  owner:
-    groups:
-      - name: $maas_group
-  priority: $maas_priority
-EOF
+    export SUB_NAME="$sub_name" MODEL_NAME="$model_name" MAAS_GROUP="$maas_group" NAMESPACE="$namespace" \
+        TOKEN_LIMIT="$token_limit" TOKEN_WINDOW="$token_window" MAAS_PRIORITY="$maas_priority"
+    envsubst '${SUB_NAME} ${MODEL_NAME} ${MAAS_GROUP} ${NAMESPACE} ${TOKEN_LIMIT} ${TOKEN_WINDOW} ${MAAS_PRIORITY}' \
+        < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/maas-subscription.yaml.tmpl" | oc apply -f -
 
     if [ $? -ne 0 ]; then
         print_error "Failed to create MaaSSubscription"
@@ -268,20 +243,9 @@ EOF
     # Step 4: Create MaaSAuthPolicy
     print_step "Creating MaaSAuthPolicy '$policy_name' in models-as-a-service..."
 
-    cat <<EOF | oc apply -f -
-apiVersion: maas.opendatahub.io/v1alpha1
-kind: MaaSAuthPolicy
-metadata:
-  name: $policy_name
-  namespace: models-as-a-service
-spec:
-  modelRefs:
-    - name: $model_name
-      namespace: $namespace
-  subjects:
-    groups:
-      - name: $maas_group
-EOF
+    export POLICY_NAME="$policy_name" MODEL_NAME="$model_name" NAMESPACE="$namespace" MAAS_GROUP="$maas_group"
+    envsubst '${POLICY_NAME} ${MODEL_NAME} ${NAMESPACE} ${MAAS_GROUP}' \
+        < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/maas-auth-policy.yaml.tmpl" | oc apply -f -
 
     if [ $? -ne 0 ]; then
         print_error "Failed to create MaaSAuthPolicy"
@@ -507,31 +471,10 @@ deploy_predictive_model() {
     # The bucket is already configured in the data connection secret
     model_path="${model_path#*/}"
 
-    cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: $name
-  namespace: $namespace
-  annotations:
-    openshift.io/display-name: "$name"
-    serving.kserve.io/deploymentMode: RawDeployment
-    serving.knative.openshift.io/enablePassthrough: "true"
-${hw_annotations}
-  labels:
-    opendatahub.io/dashboard: "true"
-spec:
-  predictor:
-    minReplicas: $min_replicas
-    model:
-      modelFormat:
-        name: $model_format
-      name: ""
-      runtime: $runtime_name
-      storage:
-        key: $data_connection
-        path: $model_path
-EOF
+    export NAME="$name" NAMESPACE="$namespace" HW_ANNOTATIONS="$hw_annotations" MIN_REPLICAS="$min_replicas" \
+        MODEL_FORMAT="$model_format" RUNTIME_NAME="$runtime_name" DATA_CONNECTION="$data_connection" MODEL_PATH="$model_path"
+    envsubst '${NAME} ${NAMESPACE} ${HW_ANNOTATIONS} ${MIN_REPLICAS} ${MODEL_FORMAT} ${RUNTIME_NAME} ${DATA_CONNECTION} ${MODEL_PATH}' \
+        < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/predictive-inferenceservice.yaml.tmpl" | oc apply -f -
 
     if [ $? -ne 0 ]; then
         print_error "Failed to create InferenceService '$name'"
@@ -1421,26 +1364,11 @@ deploy_model_interactive() {
                 -o jsonpath='{.spec.template.containers[0].image}' 2>/dev/null)
 
             if [ -n "$config_image" ]; then
-                cat <<CFGEOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha2
-kind: LLMInferenceServiceConfig
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  annotations:
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-name: $selected_llmisvc_config
-    openshift.io/description: "$selected_llmisvc_config_display"
-    openshift.io/display-name: "$selected_llmisvc_config_display"
-spec:
-  model:
-    uri: ""
-  template:
-    containers:
-    - image: $config_image
-      name: main
-      resources: {}
-CFGEOF
+                export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" \
+                    SELECTED_LLMISVC_CONFIG="$selected_llmisvc_config" \
+                    SELECTED_LLMISVC_CONFIG_DISPLAY="$selected_llmisvc_config_display" CONFIG_IMAGE="$config_image"
+                envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${SELECTED_LLMISVC_CONFIG} ${SELECTED_LLMISVC_CONFIG_DISPLAY} ${CONFIG_IMAGE}' \
+                    < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/llminferenceserviceconfig.yaml.tmpl" | oc apply -f -
                 if [ $? -eq 0 ]; then
                     print_success "LLMInferenceServiceConfig created"
                 else
@@ -1472,53 +1400,11 @@ CFGEOF
             fi
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha2
-kind: LLMInferenceService
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/genai-asset: "true"
-  annotations:
-    openshift.io/display-name: $model_name
-    opendatahub.io/model-type: generative
-    serving.kserve.io/stop: "false"
-    $auth_annotation
-$hw_profile_annotations_llmd
-spec:
-  baseRefs:
-  - name: $model_name
-  replicas: 1
-  model:
-    uri: $model_uri
-  router:
-    route: {}
-    gateway:
-      refs:
-      - name: maas-default-gateway
-        namespace: openshift-ingress
-  template:
-    nodeSelector:
-      nvidia.com/gpu.present: "true"
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    containers:
-    - name: main
-$env_section
-      resources:
-        limits:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: "$gpu_limit"
-        requests:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: "$gpu_limit"
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" AUTH_ANNOTATION="$auth_annotation" \
+            HW_PROFILE_ANNOTATIONS_LLMD="$hw_profile_annotations_llmd" MODEL_URI="$model_uri" ENV_SECTION="$env_section" \
+            CPU_LIMIT="$cpu_limit" MEMORY_LIMIT="$memory_limit" GPU_LIMIT="$gpu_limit"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${AUTH_ANNOTATION} ${HW_PROFILE_ANNOTATIONS_LLMD} ${MODEL_URI} ${ENV_SECTION} ${CPU_LIMIT} ${MEMORY_LIMIT} ${GPU_LIMIT}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/llminferenceservice.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "LLMInferenceService created!"
@@ -1546,69 +1432,18 @@ EOF
         # Base64 encode the model URI (OS-compatible)
         local encoded_uri=$(base64_encode "$model_uri")
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${model_name}-storage
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-  annotations:
-    opendatahub.io/connection-type-protocol: uri
-    opendatahub.io/connection-type-ref: uri-v1
-    openshift.io/description: 'Model storage for ${model_name}'
-    openshift.io/display-name: ${model_name}
-data:
-  URI: ${encoded_uri}
-type: Opaque
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" ENCODED_URI="$encoded_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${ENCODED_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/model-storage-secret.yaml.tmpl" | oc apply -f -
         
         print_success "Model storage secret created"
         
         # Step 2: Create ServingRuntime
         print_step "Creating vLLM ServingRuntime..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  name: ${model_name}-runtime
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-  annotations:
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
-    opendatahub.io/template-name: vllm-cuda-runtime-template
-    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: '8080'
-  containers:
-    - args:
-        - '--port=8080'
-        - '--model=/mnt/models'
-        - '--served-model-name={{.Name}}'
-      command:
-        - python
-        - '-m'
-        - vllm.entrypoints.openai.api_server
-      env:
-        - name: HF_HOME
-          value: /tmp/hf_home
-      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3'
-      name: kserve-container
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/servingruntime-vllm-redhat.yaml.tmpl" | oc apply -f -
         
         print_success "ServingRuntime created"
         
@@ -1653,50 +1488,12 @@ EOF
             fi
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: 'true'
-  annotations:
-    serving.kserve.io/stop: 'false'
-    $auth_annotation
-    openshift.io/description: ''
-    openshift.io/display-name: $model_name
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/connections: ${model_name}-storage
-    opendatahub.io/model-type: generative
-$hw_profile_annotations
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    model:
-$model_args
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: '$gpu_limit'
-        requests:
-          cpu: '$cpu_request'
-          memory: $memory_request
-          nvidia.com/gpu: '$gpu_limit'
-      runtime: ${model_name}-runtime
-      storageUri: '$model_uri'
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" AUTH_ANNOTATION="$auth_annotation" \
+            HW_PROFILE_ANNOTATIONS="$hw_profile_annotations" MODEL_ARGS="$model_args" CPU_LIMIT="$cpu_limit" \
+            MEMORY_LIMIT="$memory_limit" GPU_LIMIT="$gpu_limit" CPU_REQUEST="$cpu_request" MEMORY_REQUEST="$memory_request" \
+            MODEL_URI="$model_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${AUTH_ANNOTATION} ${HW_PROFILE_ANNOTATIONS} ${MODEL_ARGS} ${CPU_LIMIT} ${MEMORY_LIMIT} ${GPU_LIMIT} ${CPU_REQUEST} ${MEMORY_REQUEST} ${MODEL_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/vllm-inferenceservice.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
@@ -1833,23 +1630,9 @@ EOF
         
         local encoded_uri=$(base64_encode "$model_uri")
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${model_name}-storage
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-  annotations:
-    opendatahub.io/connection-type-protocol: uri
-    opendatahub.io/connection-type-ref: uri-v1
-    openshift.io/description: 'Model storage for ${model_name}'
-    openshift.io/display-name: ${model_name}
-data:
-  URI: ${encoded_uri}
-type: Opaque
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" ENCODED_URI="$encoded_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${ENCODED_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/model-storage-secret.yaml.tmpl" | oc apply -f -
         
         print_success "Model storage secret created"
         
@@ -1873,76 +1656,9 @@ EOF
             done
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  name: ${model_name}-runtime
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-  annotations:
-    opendatahub.io/template-display-name: "vLLM Community Runtime (CUDA 13+)"
-    openshift.io/display-name: "vLLM Community Runtime"
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: "8080"
-  containers:
-  - name: kserve-container
-    image: $vllm_image
-$args_section
-    env:
-    # Disable telemetry/usage stats
-    - name: VLLM_NO_USAGE_STATS
-      value: "1"
-    - name: DO_NOT_TRACK
-      value: "1"
-    # Writable directories for non-root container
-    - name: HOME
-      value: "/tmp/vllm-home"
-    - name: HF_HOME
-      value: "/tmp/hf-cache"
-    - name: HF_HUB_OFFLINE
-      value: "1"
-    - name: TRANSFORMERS_CACHE
-      value: "/tmp/transformers-cache"
-    - name: XDG_CACHE_HOME
-      value: "/tmp/cache"
-    - name: XDG_CONFIG_HOME
-      value: "/tmp/config"
-    - name: PYTHONDONTWRITEBYTECODE
-      value: "1"
-    ports:
-    - containerPort: 8080
-      protocol: TCP
-    # Security context - prevent privilege escalation
-    securityContext:
-      allowPrivilegeEscalation: false
-      capabilities:
-        drop:
-        - ALL
-      runAsNonRoot: true
-      seccompProfile:
-        type: RuntimeDefault
-    volumeMounts:
-    - mountPath: /dev/shm
-      name: shm
-    - mountPath: /tmp
-      name: tmp-volume
-  multiModel: false
-  supportedModelFormats:
-  - autoSelect: true
-    name: vLLM
-  volumes:
-  - emptyDir:
-      medium: Memory
-      sizeLimit: 12Gi
-    name: shm
-  - emptyDir:
-      sizeLimit: 1Gi
-    name: tmp-volume
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" VLLM_IMAGE="$vllm_image" ARGS_SECTION="$args_section"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${VLLM_IMAGE} ${ARGS_SECTION}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/servingruntime-vllm-community.yaml.tmpl" | oc apply -f -
         
         print_success "ServingRuntime created"
         
@@ -1967,49 +1683,12 @@ EOF
             fi
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: 'true'
-  annotations:
-    serving.kserve.io/stop: 'false'
-    $auth_annotation
-    openshift.io/description: 'Deployed with community vLLM (CUDA 13+)'
-    openshift.io/display-name: $model_name
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/connections: ${model_name}-storage
-    opendatahub.io/model-type: generative
-$hw_profile_annotations_community
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    minReplicas: 1
-    maxReplicas: 1
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    model:
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: '$gpu_limit'
-        requests:
-          cpu: '$cpu_request'
-          memory: $memory_request
-          nvidia.com/gpu: '$gpu_limit'
-      runtime: ${model_name}-runtime
-      storageUri: '$model_uri'
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" AUTH_ANNOTATION="$auth_annotation" \
+            HW_PROFILE_ANNOTATIONS_COMMUNITY="$hw_profile_annotations_community" CPU_LIMIT="$cpu_limit" \
+            MEMORY_LIMIT="$memory_limit" GPU_LIMIT="$gpu_limit" CPU_REQUEST="$cpu_request" MEMORY_REQUEST="$memory_request" \
+            MODEL_URI="$model_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${AUTH_ANNOTATION} ${HW_PROFILE_ANNOTATIONS_COMMUNITY} ${CPU_LIMIT} ${MEMORY_LIMIT} ${GPU_LIMIT} ${CPU_REQUEST} ${MEMORY_REQUEST} ${MODEL_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/vllm-community-inferenceservice.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
@@ -2065,89 +1744,17 @@ EOF
         print_step "Creating model storage secret..."
         local encoded_uri=$(base64_encode "$model_uri")
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${model_name}-storage
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-  annotations:
-    opendatahub.io/connection-type-protocol: uri
-    opendatahub.io/connection-type-ref: uri-v1
-    openshift.io/display-name: ${model_name}
-data:
-  URI: ${encoded_uri}
-type: Opaque
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" ENCODED_URI="$encoded_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${ENCODED_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/model-storage-secret-omni.yaml.tmpl" | oc apply -f -
         print_success "Secret created"
         
         # Step 2: Create vLLM-Omni ServingRuntime
         print_step "Creating vLLM-Omni ServingRuntime..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  annotations:
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/serving-runtime-scope: global
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
-    openshift.io/display-name: ${model_name}
-  name: ${model_name}-runtime
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: '8080'
-  containers:
-    - args:
-        - serve
-        - /mnt/models
-        - '--omni'
-        - '--port=8080'
-        - '--served-model-name={{.Name}}'
-        - '--host=0.0.0.0'
-        - '--trust-remote-code'
-      command:
-        - vllm
-      env:
-        - name: HOME
-          value: /tmp
-        - name: HF_HOME
-          value: /tmp/hf_home
-        - name: VLLM_ATTENTION_BACKEND
-          value: FLASH_ATTN
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "expandable_segments:True"
-        - name: XDG_CACHE_HOME
-          value: /tmp/.cache
-        - name: FLASHINFER_WORKSPACE_DIR
-          value: /tmp/flashinfer
-        - name: TRITON_CACHE_DIR
-          value: /tmp/triton_cache
-      image: 'vllm/vllm-omni:v0.18.0'
-      name: kserve-container
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      volumeMounts:
-        - mountPath: /dev/shm
-          name: shm
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-  volumes:
-    - emptyDir:
-        medium: Memory
-        sizeLimit: 12Gi
-      name: shm
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/servingruntime-vllm-omni.yaml.tmpl" | oc apply -f -
         print_success "ServingRuntime created"
         
         # Step 3: Create InferenceService
@@ -2172,49 +1779,15 @@ EOF
             done
         fi
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: 'true'
-  annotations:
-    serving.kserve.io/stop: 'false'
-    $auth_annotation
-    openshift.io/display-name: $model_name
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/connections: ${model_name}-storage
-    opendatahub.io/model-type: generative
-$hw_profile_annotations
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    model:
-$omni_args
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: '$gpu_limit'
-        requests:
-          cpu: '$(echo "$cpu_limit" | awk '{print int($1/2)}')'
-          memory: $(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')Gi
-          nvidia.com/gpu: '$gpu_limit'
-      runtime: ${model_name}-runtime
-      storageUri: '$model_uri'
-EOF
+        local omni_cpu_request=$(echo "$cpu_limit" | awk '{print int($1/2)}')
+        local omni_mem_request=$(echo "$memory_limit" | sed 's/Gi//' | awk '{print int($1/2)}')
+
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" AUTH_ANNOTATION="$auth_annotation" \
+            HW_PROFILE_ANNOTATIONS="$hw_profile_annotations" OMNI_ARGS="$omni_args" CPU_LIMIT="$cpu_limit" \
+            MEMORY_LIMIT="$memory_limit" GPU_LIMIT="$gpu_limit" OMNI_CPU_REQUEST="$omni_cpu_request" \
+            OMNI_MEM_REQUEST="$omni_mem_request" MODEL_URI="$model_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${AUTH_ANNOTATION} ${HW_PROFILE_ANNOTATIONS} ${OMNI_ARGS} ${CPU_LIMIT} ${MEMORY_LIMIT} ${GPU_LIMIT} ${OMNI_CPU_REQUEST} ${OMNI_MEM_REQUEST} ${MODEL_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/vllm-omni-inferenceservice.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
@@ -2242,59 +1815,9 @@ EOF
         # Step 1: Create ServingRuntime for Gemma4
         print_step "Creating Gemma4 ServingRuntime..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  name: vllm-gemma4-runtime
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-  annotations:
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-display-name: vLLM Gemma4 ServingRuntime
-    openshift.io/display-name: vLLM Gemma4 Runtime
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: '8080'
-  containers:
-    - name: kserve-container
-      image: 'vllm/vllm-openai:gemma4-0505-cu129'
-      command:
-        - python
-        - '-m'
-        - vllm.entrypoints.openai.api_server
-      args:
-        - '--port=8080'
-        - '--model=/mnt/models'
-        - '--served-model-name={{.Name}}'
-        - '--kv-cache-dtype=fp8'
-        - '--trust-remote-code'
-      env:
-        - name: HOME
-          value: /tmp
-        - name: HF_HOME
-          value: /tmp/hf_home
-        - name: XDG_CACHE_HOME
-          value: /tmp/.cache
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      volumeMounts:
-        - mountPath: /dev/shm
-          name: shm
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-  volumes:
-    - emptyDir:
-        medium: Memory
-        sizeLimit: 12Gi
-      name: shm
-EOF
+        export TARGET_NAMESPACE="$target_namespace"
+        envsubst '${TARGET_NAMESPACE}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/servingruntime-vllm-gemma4.yaml.tmpl" | oc apply -f -
         print_success "Gemma4 ServingRuntime created"
         
         # Step 2: Create HuggingFace token secret if needed
@@ -2335,47 +1858,11 @@ EOF
         - '--tool-call-parser=gemma4'
         - '--reasoning-parser=gemma4'"
         
-        cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: $model_name
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: 'true'
-  annotations:
-    $auth_annotation
-    openshift.io/display-name: $model_name
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/model-type: generative
-$hw_profile_annotations_gemma4
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    model:
-$gemma4_args
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '$cpu_limit'
-          memory: $memory_limit
-          nvidia.com/gpu: '$gpu_limit'
-        requests:
-          cpu: '2'
-          memory: 12Gi
-          nvidia.com/gpu: '$gpu_limit'
-      runtime: vllm-gemma4-runtime
-      storageUri: 'hf://$model_uri'
-EOF
+        export MODEL_NAME="$model_name" TARGET_NAMESPACE="$target_namespace" AUTH_ANNOTATION="$auth_annotation" \
+            HW_PROFILE_ANNOTATIONS_GEMMA4="$hw_profile_annotations_gemma4" GEMMA4_ARGS="$gemma4_args" \
+            CPU_LIMIT="$cpu_limit" MEMORY_LIMIT="$memory_limit" GPU_LIMIT="$gpu_limit" MODEL_URI="$model_uri"
+        envsubst '${MODEL_NAME} ${TARGET_NAMESPACE} ${AUTH_ANNOTATION} ${HW_PROFILE_ANNOTATIONS_GEMMA4} ${GEMMA4_ARGS} ${CPU_LIMIT} ${MEMORY_LIMIT} ${GPU_LIMIT} ${MODEL_URI}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/vllm-gemma4-inferenceservice.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "InferenceService created!"
@@ -2404,58 +1891,10 @@ EOF
         fi
         
         # Create ServiceAccount, Secret, Role, and RoleBinding (based on CAI guide)
-        cat <<EOF | oc apply -f -
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: $service_account_name
-  namespace: $target_namespace
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${service_account_name}-token
-  namespace: $target_namespace
-  annotations:
-    kubernetes.io/service-account.name: "$service_account_name"
-    openshift.io/display-name: $service_account_name
-  labels:
-    opendatahub.io/dashboard: "true"
-type: kubernetes.io/service-account-token
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ${model_name}-view-role
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-rules:
-- apiGroups:
-  - serving.kserve.io
-  resourceNames:
-  - $model_name
-  resources:
-  - $resource_type
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ${model_name}-view
-  namespace: $target_namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: ${model_name}-view-role
-subjects:
-- kind: ServiceAccount
-  name: $service_account_name
-EOF
+        export SERVICE_ACCOUNT_NAME="$service_account_name" TARGET_NAMESPACE="$target_namespace" \
+            MODEL_NAME="$model_name" RESOURCE_TYPE="$resource_type"
+        envsubst '${SERVICE_ACCOUNT_NAME} ${TARGET_NAMESPACE} ${MODEL_NAME} ${RESOURCE_TYPE}' \
+            < "${_MODEL_DEPLOY_DIR}/../manifests/model-deployment/model-auth-rbac.yaml.tmpl" | oc apply -f -
         
         if [ $? -eq 0 ]; then
             print_success "ServiceAccount and RBAC created"

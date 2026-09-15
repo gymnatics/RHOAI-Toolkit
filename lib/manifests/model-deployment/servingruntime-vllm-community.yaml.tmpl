@@ -1,0 +1,69 @@
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: ${MODEL_NAME}-runtime
+  namespace: ${TARGET_NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/template-display-name: "vLLM Community Runtime (CUDA 13+)"
+    openshift.io/display-name: "vLLM Community Runtime"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+  - name: kserve-container
+    image: ${VLLM_IMAGE}
+${ARGS_SECTION}
+    env:
+    # Disable telemetry/usage stats
+    - name: VLLM_NO_USAGE_STATS
+      value: "1"
+    - name: DO_NOT_TRACK
+      value: "1"
+    # Writable directories for non-root container
+    - name: HOME
+      value: "/tmp/vllm-home"
+    - name: HF_HOME
+      value: "/tmp/hf-cache"
+    - name: HF_HUB_OFFLINE
+      value: "1"
+    - name: TRANSFORMERS_CACHE
+      value: "/tmp/transformers-cache"
+    - name: XDG_CACHE_HOME
+      value: "/tmp/cache"
+    - name: XDG_CONFIG_HOME
+      value: "/tmp/config"
+    - name: PYTHONDONTWRITEBYTECODE
+      value: "1"
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    # Security context - prevent privilege escalation
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - mountPath: /dev/shm
+      name: shm
+    - mountPath: /tmp
+      name: tmp-volume
+  multiModel: false
+  supportedModelFormats:
+  - autoSelect: true
+    name: vLLM
+  volumes:
+  - emptyDir:
+      medium: Memory
+      sizeLimit: 12Gi
+    name: shm
+  - emptyDir:
+      sizeLimit: 1Gi
+    name: tmp-volume

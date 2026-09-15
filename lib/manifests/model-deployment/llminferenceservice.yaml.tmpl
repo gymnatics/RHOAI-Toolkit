@@ -1,0 +1,46 @@
+---
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${TARGET_NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    openshift.io/display-name: ${MODEL_NAME}
+    opendatahub.io/model-type: generative
+    serving.kserve.io/stop: "false"
+    ${AUTH_ANNOTATION}
+${HW_PROFILE_ANNOTATIONS_LLMD}
+spec:
+  baseRefs:
+  - name: ${MODEL_NAME}
+  replicas: 1
+  model:
+    uri: ${MODEL_URI}
+  router:
+    route: {}
+    gateway:
+      refs:
+      - name: maas-default-gateway
+        namespace: openshift-ingress
+  template:
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    containers:
+    - name: main
+${ENV_SECTION}
+      resources:
+        limits:
+          cpu: '${CPU_LIMIT}'
+          memory: ${MEMORY_LIMIT}
+          nvidia.com/gpu: "${GPU_LIMIT}"
+        requests:
+          cpu: '${CPU_LIMIT}'
+          memory: ${MEMORY_LIMIT}
+          nvidia.com/gpu: "${GPU_LIMIT}"
