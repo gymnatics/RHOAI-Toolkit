@@ -50,6 +50,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/usage-logging.sh" 2>/dev/null || true
 
 ################################################################################
 # Helper Functions
@@ -74,6 +75,7 @@ FROM_PHASE=1
 RUN_DIAGNOSE=false
 ENABLE_REDIS=false
 ENABLE_OBSERVABILITY=false
+ENABLE_USAGE_LOGGING=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -81,8 +83,9 @@ while [[ $# -gt 0 ]]; do
         --diagnose) RUN_DIAGNOSE=true; shift ;;
         --enable-redis) ENABLE_REDIS=true; shift ;;
         --enable-observability) ENABLE_OBSERVABILITY=true; shift ;;
+        --enable-usage-logging) ENABLE_USAGE_LOGGING=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis] [--enable-observability]"
+            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis] [--enable-observability] [--enable-usage-logging]"
             echo "  --from-phase N          Resume from phase N (1-5, RHOAI 3.4+ only)"
             echo "  --diagnose              Run scripts/diagnose-maas.sh after setup"
             echo "  --enable-redis          Deploy Redis for Limitador rate-limit counter"
@@ -91,6 +94,9 @@ while [[ $# -gt 0 ]]; do
             echo "                          Requires Tempo/OpenTelemetry/COO operators --"
             echo "                          use scripts/install-rhoai-35.sh for the full"
             echo "                          observability stack (Perses dashboards, Grafana)."
+            echo "  --enable-usage-logging  Enable log-based MaaS usage dashboards (RHOAI 3.5+"
+            echo "                          only -- Loki Operator + MinIO/S3 + LokiStack, for"
+            echo "                          per-request token/user tracking)."
             exit 0
             ;;
         *) shift ;;
@@ -603,6 +609,10 @@ setup_maas_34_plus() {
 
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
         configure_dsci_monitoring
+    fi
+
+    if [ "$ENABLE_USAGE_LOGGING" = true ]; then
+        setup_maas_usage_logging
     fi
 
     [ "$FROM_PHASE" -le 5 ] && phase5_verify

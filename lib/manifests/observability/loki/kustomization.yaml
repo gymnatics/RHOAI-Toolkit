@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Loki Operator subscription. Required for RHOAI 3.5+ MaaS usage-logging
+# dashboards (per-request token consumption, user attribution, subscription
+# tracking) -- see lib/manifests/observability/usage-logging/ for the LokiStack
+# + MinIO storage, and lib/functions/usage-logging.sh for the orchestrating
+# function.
+resources:
+  - namespace.yaml
+  - operatorgroup.yaml
+  - subscription.yaml

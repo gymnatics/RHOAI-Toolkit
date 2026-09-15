@@ -1,0 +1,28 @@
+# LokiStack for RHOAI 3.5+ MaaS usage-logging dashboards.
+#
+# storageClassName defaults to gp3-csi (common on AWS, and this cluster's
+# actual default StorageClass). If your cluster uses a different default
+# (e.g. ocs-external-storagecluster-ceph-rbd on OCS), edit storageClassName
+# before applying -- see docs/TROUBLESHOOTING.md.
+#
+# size: 1x.demo is the smallest non-production tier (single replica per
+# component). For production usage-logging volume, use 1x.extra-small or
+# larger -- see the Loki Operator sizing docs.
+---
+apiVersion: loki.grafana.com/v1
+kind: LokiStack
+metadata:
+  name: usage
+  namespace: redhat-ods-monitoring
+spec:
+  size: 1x.demo
+  storage:
+    schemas:
+      - version: v13
+        effectiveDate: "2024-01-01"
+    secret:
+      name: usage-logs-object-storage
+      type: s3
+  storageClassName: gp3-csi
+  tenants:
+    mode: openshift-logging

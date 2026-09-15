@@ -53,6 +53,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/usage-logging.sh" 2>/dev/null || true
 
 # Default options
 SKIP_PREREQUISITES=false
@@ -64,6 +65,7 @@ ENABLE_LLMD=true
 ENABLE_VLLM_MAAS=false
 ENABLE_OBSERVABILITY=false
 ENABLE_TP_FEATURES=false
+ENABLE_USAGE_LOGGING=false
 DEPLOY_GRAFANA=false
 POSTGRES_CONNECTION=""
 CLUSTER_DOMAIN=""
@@ -133,6 +135,8 @@ usage() {
     echo "  --enable-tp-features  Enable ALL Technology Preview dashboard features"
     echo "                         (AutoML, AutoRAG, Guardrails, Observability, Tracing, etc.)"
     echo "  --deploy-grafana      Deploy standalone Grafana with GPU/vLLM dashboards"
+    echo "  --enable-usage-logging Enable log-based MaaS usage dashboards (Loki Operator +"
+    echo "                         MinIO/S3 + LokiStack; per-request token/user tracking)"
     echo "  --postgres-connection <url>  External PostgreSQL for MaaS (skips POC DB deployment)"
     echo "                         Format: postgresql://user:pass@host:5432/db?sslmode=require"
     echo "  --skip-maas-db         Skip MaaS PostgreSQL setup entirely"
@@ -3003,6 +3007,10 @@ main() {
                 DEPLOY_GRAFANA=true
                 shift
                 ;;
+            --enable-usage-logging)
+                ENABLE_USAGE_LOGGING=true
+                shift
+                ;;
             --postgres-connection)
                 POSTGRES_CONNECTION="$2"
                 shift 2
@@ -3170,6 +3178,14 @@ main() {
     # Gateway telemetry (MaaS usage metrics) is optional
     if [ "$ENABLE_OBSERVABILITY" = true ]; then
         configure_gateway_telemetry
+    fi
+
+    # Log-based MaaS usage dashboards (RHOAI 3.5+ only, optional -- Loki Operator
+    # + MinIO/S3 + LokiStack). Provides per-request token consumption, user
+    # attribution, and subscription tracking, distinct from the Prometheus-based
+    # gateway telemetry above (which aggregates rather than tracking per-call).
+    if [ "$ENABLE_USAGE_LOGGING" = true ]; then
+        setup_maas_usage_logging
     fi
 
     if [ "$SETUP_PIPELINES" = true ]; then
