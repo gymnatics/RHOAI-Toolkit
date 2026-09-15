@@ -38,7 +38,7 @@
 | **Dify AI** | `admin@redhat.com` | `DemoPass123` | Agent builder admin |
 | **Grafana** | *(no login needed)* | — | Anonymous admin access enabled |
 | **MLflow** | *(OpenShift SSO)* | — | Login with OpenShift credentials (`cluster-admin`) |
-| **Bastion SSH** | `rosa` | `CxiPUYgX8QGE` | `ssh rosa@bastion.zk6s2.sandbox1706.opentlc.com` |
+| **Bastion SSH** | `rosa` | `<see sandbox provisioning email/portal>` | `ssh rosa@<bastion-host-from-your-sandbox>` |
 
 ### Keycloak User → OPA Role Mapping (3-Level Policy)
 
@@ -516,7 +516,7 @@ curl -sk -X POST https://loan-agent-guardrails-team1.apps.rosa.rosa-zk6s2.xtob.p
 
 ### Check MLflow traces (from bastion):
 ```bash
-ssh rosa@bastion.zk6s2.sandbox1706.opentlc.com  # password: CxiPUYgX8QGE
+ssh rosa@<bastion-host-from-your-sandbox>  # see sandbox provisioning email/portal for password
 
 POD=$(oc get pods -n team1 -l app=loan-agent --field-selector=status.phase=Running -o jsonpath="{.items[0].metadata.name}")
 oc exec -n team1 $POD -c agent -- python3 -c "
