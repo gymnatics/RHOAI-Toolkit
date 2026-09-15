@@ -1,0 +1,19 @@
+---
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceServiceConfig
+metadata:
+  name: ${MODEL_NAME}
+  namespace: ${TARGET_NAMESPACE}
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-name: ${SELECTED_LLMISVC_CONFIG}
+    openshift.io/description: "${SELECTED_LLMISVC_CONFIG_DISPLAY}"
+    openshift.io/display-name: "${SELECTED_LLMISVC_CONFIG_DISPLAY}"
+spec:
+  model:
+    uri: ""
+  template:
+    containers:
+    - image: ${CONFIG_IMAGE}
+      name: main
+      resources: {}
