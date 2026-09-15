@@ -4,9 +4,14 @@
 #   ${MODEL_NAME}       - Model deployment name
 #   ${NAMESPACE}        - Target namespace
 #   ${AUTH_ANNOTATION}  - "true" or "false" for auth
+#   ${DISPLAY_NAME}     - Human-readable display name (openshift.io/display-name)
 #   ${MODEL_URI}        - Model URI (oci://, hf://)
-#   ${GPU_COUNT}        - Number of GPUs
+#   ${TOOL_PARSER}      - vLLM tool-call parser (e.g. hermes, llama3_json, mistral)
+#   ${GPU_COUNT}        - Number of GPUs (limits + requests)
 #   ${MEMORY_LIMIT}     - Memory limit (e.g. 16Gi)
+#   ${MEMORY_REQUEST}   - Memory request (e.g. 8Gi)
+#   ${CPU_LIMIT}        - CPU limit (e.g. '4')
+#   ${CPU_REQUEST}      - CPU request (e.g. '2')
 ---
 apiVersion: serving.kserve.io/v1alpha1
 kind: LLMInferenceService
@@ -19,6 +24,7 @@ metadata:
     opendatahub.io/genai-asset: "true"
   annotations:
     security.opendatahub.io/enable-auth: "${AUTH_ANNOTATION}"
+    openshift.io/display-name: "${DISPLAY_NAME}"
 spec:
   replicas: 1
   model:
@@ -37,13 +43,13 @@ spec:
     - name: main
       env:
         - name: VLLM_ADDITIONAL_ARGS
-          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
+          value: "--enable-auto-tool-choice --tool-call-parser=${TOOL_PARSER}"
       resources:
         limits:
-          cpu: '4'
+          cpu: '${CPU_LIMIT}'
           memory: ${MEMORY_LIMIT}
           nvidia.com/gpu: "${GPU_COUNT}"
         requests:
-          cpu: '1'
-          memory: 8Gi
+          cpu: '${CPU_REQUEST}'
+          memory: ${MEMORY_REQUEST}
           nvidia.com/gpu: "${GPU_COUNT}"

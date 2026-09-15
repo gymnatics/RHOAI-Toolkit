@@ -25,6 +25,7 @@ NC='\033[0m'
 
 # Source RHOAI detection utility
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -f "$SCRIPT_DIR/lib/rhoai-detect.sh" ]; then
     source "$SCRIPT_DIR/lib/rhoai-detect.sh"
 fi
@@ -105,14 +106,7 @@ else
         
         # Create LeaderWorkerSetOperator instance if it doesn't exist
         if ! oc get leaderworkersetoperator cluster &>/dev/null 2>&1; then
-            cat <<EOF | oc apply -f -
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-spec:
-  managementState: Managed
-EOF
+            oc apply -f "$ROOT_DIR/lib/manifests/operators/lws-operator-cr.yaml"
             print_info "Waiting for LeaderWorkerSet CRD to be created..."
             for i in {1..30}; do
                 if oc get crd leaderworkersets.leaderworkerset.x-k8s.io &>/dev/null; then
@@ -438,50 +432,15 @@ print_header "Deploying Model with llm-d"
 print_step "Creating LLMInferenceService '$MODEL_NAME' in namespace '$PROJECT_NAME'..."
 echo ""
 
-cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: LLMInferenceService
-metadata:
-  name: $MODEL_NAME
-  namespace: $PROJECT_NAME
-  labels:
-    kueue.x-k8s.io/queue-name: default
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/genai-asset: "true"
-  annotations:
-    security.opendatahub.io/enable-auth: "$AUTH_ENABLED"
-    openshift.io/display-name: "$MODEL_DISPLAY_NAME"
-spec:
-  replicas: 1
-  model:
-    uri: $MODEL_URI
-    name: $MODEL_NAME
-  router:
-    route: {}
-    gateway: {}
-    scheduler: {}
-  template:
-    containers:
-    - name: main
-      env:
-        - name: VLLM_ADDITIONAL_ARGS
-          value: "--enable-auto-tool-choice --tool-call-parser=$TOOL_PARSER"
-      resources:
-        limits:
-          cpu: '4'
-          memory: 16Gi
-          nvidia.com/gpu: "1"
-        requests:
-          cpu: '2'
-          memory: 8Gi
-          nvidia.com/gpu: "1"
-    tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-EOF
+export MODEL_NAME NAMESPACE="$PROJECT_NAME" AUTH_ANNOTATION="$AUTH_ENABLED" \
+    DISPLAY_NAME="$MODEL_DISPLAY_NAME" MODEL_URI TOOL_PARSER \
+    GPU_COUNT="1" MEMORY_LIMIT="16Gi" MEMORY_REQUEST="8Gi" CPU_LIMIT="4" CPU_REQUEST="2"
+envsubst '${MODEL_NAME} ${NAMESPACE} ${AUTH_ANNOTATION} ${DISPLAY_NAME} ${MODEL_URI} ${TOOL_PARSER} ${GPU_COUNT} ${MEMORY_LIMIT} ${MEMORY_REQUEST} ${CPU_LIMIT} ${CPU_REQUEST}' \
+    < "$ROOT_DIR/lib/manifests/templates/llminferenceservice.yaml.tmpl" | oc apply -f -
+LLMISVC_APPLY_STATUS=$?
+unset NAMESPACE AUTH_ANNOTATION DISPLAY_NAME TOOL_PARSER GPU_COUNT MEMORY_LIMIT MEMORY_REQUEST CPU_LIMIT CPU_REQUEST
 
-if [ $? -eq 0 ]; then
+if [ $LLMISVC_APPLY_STATUS -eq 0 ]; then
     print_success "LLMInferenceService created!"
 else
     print_error "Failed to create LLMInferenceService"

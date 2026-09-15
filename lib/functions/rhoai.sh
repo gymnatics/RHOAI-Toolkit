@@ -1300,12 +1300,17 @@ deploy_llminferenceservice() {
     export MODEL_NAME="$model_name"
     export NAMESPACE="$namespace"
     export AUTH_ANNOTATION="$auth_annotation"
+    export DISPLAY_NAME="$model_name"
     export MODEL_URI="$model_uri"
+    export TOOL_PARSER="hermes"
     export GPU_COUNT="$gpu_count"
     export MEMORY_LIMIT="$memory_limit"
-    envsubst '${MODEL_NAME} ${NAMESPACE} ${AUTH_ANNOTATION} ${MODEL_URI} ${GPU_COUNT} ${MEMORY_LIMIT}' \
+    export MEMORY_REQUEST="8Gi"
+    export CPU_LIMIT="4"
+    export CPU_REQUEST="1"
+    envsubst '${MODEL_NAME} ${NAMESPACE} ${AUTH_ANNOTATION} ${DISPLAY_NAME} ${MODEL_URI} ${TOOL_PARSER} ${GPU_COUNT} ${MEMORY_LIMIT} ${MEMORY_REQUEST} ${CPU_LIMIT} ${CPU_REQUEST}' \
         < "$_RHOAI_LIB_DIR/lib/manifests/templates/llminferenceservice.yaml.tmpl" | oc apply -f -
-    unset MODEL_NAME NAMESPACE AUTH_ANNOTATION MODEL_URI GPU_COUNT MEMORY_LIMIT
+    unset MODEL_NAME NAMESPACE AUTH_ANNOTATION DISPLAY_NAME MODEL_URI TOOL_PARSER GPU_COUNT MEMORY_LIMIT MEMORY_REQUEST CPU_LIMIT CPU_REQUEST
     
     if [ $? -eq 0 ]; then
         print_success "LLMInferenceService created"
