@@ -52,6 +52,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 }
 source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
 
 # Default options
 SKIP_PREREQUISITES=false
@@ -2112,6 +2113,11 @@ create_inference_gateway() {
     print_step "Creating inference Gateways for llm-d/MaaS..."
 
     get_cluster_domain
+
+    # Non-cloud platforms (BareMetal, OpenStack, None/SNO) have no cloud LB
+    # controller to provision the Gateway's LoadBalancer Service external IP --
+    # without MetalLB, the Gateway never reaches Programmed=True. No-op on cloud.
+    setup_metallb_if_needed
 
     # GatewayClass for OpenShift Gateway Controller
     if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then

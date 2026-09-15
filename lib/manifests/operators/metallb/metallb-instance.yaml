@@ -1,0 +1,7 @@
+# The MetalLB operand. Created after the metallb-operator CSV succeeds.
+---
+apiVersion: metallb.io/v1beta1
+kind: MetalLB
+metadata:
+  name: metallb
+  namespace: metallb-system

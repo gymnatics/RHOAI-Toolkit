@@ -49,6 +49,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 }
 source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
 
 ################################################################################
 # Helper Functions
@@ -391,6 +392,11 @@ configure_dsci_monitoring() {
 phase2_gateway() {
     print_header "Phase 2: Gateway + Namespace Labels"
 
+    # Non-cloud platforms (BareMetal, OpenStack, None/SNO) have no cloud LB
+    # controller to provision the Gateway's LoadBalancer Service external IP --
+    # without MetalLB, the Gateway never reaches Programmed=True. No-op on cloud.
+    setup_metallb_if_needed
+
     if [ "$HAS_GATEWAY" = true ]; then
         print_success "Gateway already Programmed -- checking namespace labels only"
     else
@@ -420,6 +426,28 @@ phase2_gateway() {
             elapsed=$((elapsed + 10))
         done
         print_success "Gateway created"
+    fi
+
+    # Bridge *.apps.<cluster> wildcard DNS (OpenShift Router) to the gateway's own
+    # LoadBalancer Service. Required on non-cloud platforms; harmless/idempotent
+    # elsewhere -- confirmed working this way on live AWS test clusters.
+    if ! oc get route maas-default-gateway-passthrough -n openshift-ingress &>/dev/null; then
+        print_step "Creating passthrough route for maas-default-gateway..."
+        local svc_name
+        svc_name=$(oc get svc -n openshift-ingress -l "gateway.networking.k8s.io/gateway-name=maas-default-gateway" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        if [ -n "$svc_name" ]; then
+            export ROUTE_NAME="maas-default-gateway-passthrough"
+            export HOSTNAME="maas.apps.${CLUSTER_DOMAIN}"
+            export SERVICE_NAME="$svc_name"
+            envsubst '${ROUTE_NAME} ${HOSTNAME} ${SERVICE_NAME}' \
+                < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc apply -f -
+            print_success "Passthrough route created"
+        else
+            print_warning "No service found for maas-default-gateway yet -- skipping passthrough route (retry later)"
+        fi
+    else
+        print_success "Passthrough route already exists"
     fi
 
     # REQUIRED (not just preventive): lib/manifests/rhcl/gateway-maas.yaml uses
