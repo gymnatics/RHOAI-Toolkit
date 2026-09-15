@@ -33,18 +33,23 @@ declare -a _COMMON_ROLES=(
     "registry-editor"
 )
 
-declare -A _COMMON_ROLE_DESCRIPTIONS=(
-    ["cluster-admin"]="Full cluster access (superuser)"
-    ["admin"]="Namespace admin (all resources incl. RBAC)"
-    ["edit"]="Edit most resources (no RBAC changes)"
-    ["view"]="Read-only access to most resources"
-    ["self-provisioner"]="Create new projects/namespaces"
-    ["cluster-reader"]="Read-only cluster-wide (all namespaces)"
-    ["cluster-monitoring-view"]="View monitoring metrics and dashboards"
-    ["sudoer"]="Impersonate any user (privilege escalation)"
-    ["registry-viewer"]="Pull images from internal registry"
-    ["registry-editor"]="Push and pull images in internal registry"
-)
+# Bash 3.x-compatible role description lookup (declare -A requires bash 4+,
+# which is not available on stock macOS /bin/bash 3.2).
+_get_role_description() {
+    case "$1" in
+        cluster-admin)             echo "Full cluster access (superuser)" ;;
+        admin)                     echo "Namespace admin (all resources incl. RBAC)" ;;
+        edit)                      echo "Edit most resources (no RBAC changes)" ;;
+        view)                      echo "Read-only access to most resources" ;;
+        self-provisioner)          echo "Create new projects/namespaces" ;;
+        cluster-reader)            echo "Read-only cluster-wide (all namespaces)" ;;
+        cluster-monitoring-view)   echo "View monitoring metrics and dashboards" ;;
+        sudoer)                    echo "Impersonate any user (privilege escalation)" ;;
+        registry-viewer)           echo "Pull images from internal registry" ;;
+        registry-editor)           echo "Push and pull images in internal registry" ;;
+        *)                         echo "" ;;
+    esac
+}
 
 ################################################################################
 # create_users — Create htpasswd users with OAuth IdP
@@ -250,7 +255,7 @@ pick_cluster_roles() {
     for role in "${_COMMON_ROLES[@]}"; do
         # Verify the role actually exists on the cluster
         if oc get clusterrole "$role" &>/dev/null 2>&1; then
-            local desc="${_COMMON_ROLE_DESCRIPTIONS[$role]:-}"
+            local desc="$(_get_role_description "$role")"
             printf "    ${YELLOW}%2d)${NC} %-28s %s\n" "$idx" "$role" "$desc"
             display_roles+=("$role")
             idx=$((idx + 1))
