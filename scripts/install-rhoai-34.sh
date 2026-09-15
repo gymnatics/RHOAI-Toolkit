@@ -43,6 +43,7 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
 source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/rhcl-install.sh" 2>/dev/null || true
 
 # Default options
 SKIP_PREREQUISITES=false
@@ -387,22 +388,8 @@ check_prerequisites() {
 # Admin User Creation
 ################################################################################
 
-wait_for_api_server() {
-    local max_wait=${1:-120}
-    local elapsed=0
-    local interval=5
-    while [ $elapsed -lt $max_wait ]; do
-        if oc get nodes &>/dev/null; then
-            return 0
-        fi
-        sleep $interval
-        elapsed=$((elapsed + interval))
-        echo "  Waiting for API server... (${elapsed}s/${max_wait}s)"
-    done
-    print_warning "API server did not respond within ${max_wait}s"
-    return 1
-}
-
+# wait_for_api_server() now lives in lib/functions/rhcl-install.sh (shared
+# with install-rhoai-35.sh and scripts/setup-maas.sh).
 # Retry a command up to N times with API server recovery between attempts
 retry_with_api_wait() {
     local max_retries=${1:-3}
@@ -719,530 +706,21 @@ install_lws_operator() {
     print_success "LWS Operator installed"
 }
 
-install_servicemesh_operator() {
-    print_step "Installing OpenShift Service Mesh 3 Operator..."
-
-    if oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; then
-        print_info "Service Mesh 3 Operator already installed and ready"
-    else
-        if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
-            oc apply -f "$ROOT_DIR/lib/manifests/operators/servicemesh3-subscription.yaml"
-        fi
-
-        print_step "Waiting for Service Mesh InstallPlan to be created..."
-        local ip_wait=0
-        local ip_timeout=60
-        while [ $ip_wait -lt $ip_timeout ]; do
-            local has_plan=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-                jq -r '[.items[] | select(.spec.approved == false) | select(.spec.clusterServiceVersionNames[] | test("servicemesh|kiali"))] | length' 2>/dev/null)
-            if [ -n "$has_plan" ] && [ "$has_plan" -gt 0 ]; then
-                print_info "Found pending InstallPlan(s)"
-                break
-            fi
-            sleep 5
-            ip_wait=$((ip_wait + 5))
-        done
-
-        approve_servicemesh_installplans
-
-        print_step "Waiting for Service Mesh operator to be ready..."
-        local timeout=300
-        local elapsed=0
-        until oc get csv -n openshift-operators 2>/dev/null | grep -q "servicemeshoperator3.*Succeeded"; do
-            if [ $elapsed -ge $timeout ]; then
-                print_warning "Service Mesh operator not ready after ${timeout}s (continuing anyway)"
-                break
-            fi
-            approve_servicemesh_installplans 2>/dev/null || true
-            sleep 10
-            elapsed=$((elapsed + 10))
-        done
-    fi
-
-    approve_servicemesh_installplans 2>/dev/null || true
-
-    print_success "Service Mesh 3 Operator installed"
-}
-
-approve_servicemesh_installplans() {
-    local approved_any=false
-
-    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
-    for plan in $all_pending; do
-        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
-        if [ "$is_approved" = "false" ]; then
-            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
-            if echo "$csv_names" | grep -qiE "servicemesh|kiali|sail"; then
-                print_step "Approving InstallPlan: $plan (CSVs: $csv_names)"
-                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
-                print_success "Approved InstallPlan: $plan"
-                approved_any=true
-            fi
-        fi
-    done
-
-    if [ "$approved_any" = true ]; then
-        sleep 10
-    fi
-}
-
-approve_rhcl_installplans() {
-    local all_pending=$(oc get installplan -n openshift-operators --no-headers 2>/dev/null | awk '{print $1}')
-    for plan in $all_pending; do
-        local is_approved=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.approved}' 2>/dev/null)
-        if [ "$is_approved" = "false" ]; then
-            local csv_names=$(oc get installplan "$plan" -n openshift-operators -o jsonpath='{.spec.clusterServiceVersionNames[*]}' 2>/dev/null)
-            if echo "$csv_names" | grep -qiE "rhcl|authorino|limitador|dns-operator"; then
-                print_step "Approving RHCL InstallPlan: $plan"
-                print_info "  CSVs: $csv_names"
-                oc patch installplan "$plan" -n openshift-operators --type merge -p '{"spec":{"approved":true}}'
-                print_success "Approved InstallPlan: $plan"
-            fi
-        fi
-    done
-}
-
-setup_istio_for_kuadrant() {
-    print_step "Setting up Istio for Kuadrant..."
-
-    oc create namespace istio-system 2>/dev/null || true
-    oc create namespace istio-cni 2>/dev/null || true
-
-    if oc get istio default -n istio-system &>/dev/null; then
-        print_info "Istio instance already exists in istio-system"
-    else
-        local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.30.1")
-
-        print_step "Creating IstioCNI..."
-        export ISTIO_VERSION="$istio_version"
-        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istiocni.yaml" | oc apply -f -
-
-        print_step "Waiting for IstioCNI to be ready..."
-        local elapsed=0
-        local timeout=120
-        while [ $elapsed -lt $timeout ]; do
-            local cni_ready=$(oc get istiocni default -n istio-cni -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-            if [ "$cni_ready" = "True" ]; then
-                print_success "IstioCNI is ready"
-                break
-            fi
-            sleep 10
-            elapsed=$((elapsed + 10))
-            echo "  Waiting for IstioCNI... (${elapsed}s elapsed)"
-        done
-
-        print_step "Creating Istio instance in istio-system..."
-        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istio.yaml" | oc apply -f -
-
-        print_step "Waiting for Istio to be healthy..."
-        elapsed=0
-        timeout=180
-        while [ $elapsed -lt $timeout ]; do
-            local istio_status=$(oc get istio default -n istio-system -o jsonpath='{.status.state}' 2>/dev/null)
-            if [ "$istio_status" = "Healthy" ]; then
-                print_success "Istio is healthy"
-                break
-            fi
-            sleep 10
-            elapsed=$((elapsed + 10))
-            echo "  Waiting for Istio... Status: $istio_status (${elapsed}s elapsed)"
-        done
-    fi
-
-    # API server may bounce during Istio/Sail webhook registration
-    wait_for_api_server 90
-
-    # Fix OCP ingress operator if its ISTIO_VERSION doesn't match a supported version.
-    # OCP 4.20 ships with ISTIO_VERSION=v1.26.2 which is EOL in Service Mesh 3.4.0+.
-    # The ingress operator creates Istio CRs for GatewayClasses, so the version must be valid.
-    local ingress_istio_ver
-    ingress_istio_ver=$(oc get deployment ingress-operator -n openshift-ingress-operator \
-        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ISTIO_VERSION")].value}' 2>/dev/null)
-    if [ -n "$ingress_istio_ver" ]; then
-        local istio_version_needed
-        istio_version_needed=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || echo "v1.30.1")
-        if [ "$ingress_istio_ver" != "$istio_version_needed" ]; then
-            # Check if the ingress operator's version is actually supported by the SM operator
-            local sm_pod
-            sm_pod=$(oc get pods -n openshift-operators --no-headers 2>/dev/null | grep servicemesh-operator | head -1 | awk '{print $1}')
-            if [ -n "$sm_pod" ]; then
-                local supported_versions
-                supported_versions=$(oc logs "$sm_pod" -n openshift-operators 2>/dev/null \
-                    | grep "config loaded" | grep -oE '"v[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | sort -u)
-                if [ -n "$supported_versions" ] && ! echo "$supported_versions" | grep -q "^${ingress_istio_ver}$"; then
-                    print_warning "OCP ingress operator has ISTIO_VERSION=$ingress_istio_ver (unsupported by SM operator)"
-                    print_step "Patching ingress operator to ISTIO_VERSION=$istio_version_needed..."
-                    oc set env deployment/ingress-operator -n openshift-ingress-operator \
-                        ISTIO_VERSION="$istio_version_needed" 2>/dev/null
-                    print_success "Ingress operator patched"
-                    sleep 10
-                fi
-            fi
-        fi
-    fi
-
-    if ! oc get gatewayclass openshift-default &>/dev/null; then
-        print_step "Creating openshift-default GatewayClass..."
-        local attempt=1
-        while [ $attempt -le 3 ]; do
-            if oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-default.yaml"; then
-                break
-            fi
-            print_warning "GatewayClass creation failed (attempt $attempt/3), waiting for API server..."
-            wait_for_api_server 60
-            attempt=$((attempt + 1))
-        done
-    fi
-
-    print_success "Istio setup complete for Kuadrant"
-}
-
-restart_kuadrant_operator() {
-    print_step "Restarting Kuadrant operator to detect Istio..."
-
-    local pod_name=$(oc get pods -n kuadrant-system -o name 2>/dev/null | grep kuadrant-operator-controller)
-    if [ -n "$pod_name" ]; then
-        oc delete $pod_name -n kuadrant-system 2>/dev/null || true
-        sleep 20
-    fi
-
-    print_step "Waiting for Kuadrant to be ready..."
-    local elapsed=0
-    local timeout=120
-    while [ $elapsed -lt $timeout ]; do
-        local kuadrant_ready=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        local kuadrant_reason=$(oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
-
-        if [ "$kuadrant_ready" = "True" ]; then
-            print_success "Kuadrant is ready"
-            return 0
-        fi
-
-        sleep 10
-        elapsed=$((elapsed + 10))
-        echo "  Waiting for Kuadrant... Reason: $kuadrant_reason (${elapsed}s elapsed)"
-    done
-
-    print_warning "Kuadrant may not be fully ready. Check: oc get kuadrant -n kuadrant-system"
-}
-
-install_rhcl_operator() {
-    # RHOAI 3.4 MaaS prerequisite (Govern LLM access with Models-as-a-Service, §1.2):
-    #   "installed the Red Hat Connectivity Link Operator version 1.2 or later
-    #    to the openshift-operators namespace and created a Kuadrant custom resource
-    #    in the kuadrant-system namespace with ready status."
-    #
-    # Note: RHCL 1.3's own docs put everything in kuadrant-system. Both patterns work
-    # (AllNamespaces mode). We follow RHOAI's documented prerequisite since this is an RHOAI toolkit.
-    #
-    # Service Mesh 3 (Sail) is auto-installed as an OLM dependency. It uses Manual InstallPlan
-    # approval, so we must ensure plans are approved.
-    print_step "Installing Red Hat Connectivity Link (RHCL) v1.2+ Operator..."
-
-    # Service Mesh 3 comes in as an OLM dependency — ensure it's installed and plans approved
-    install_servicemesh_operator
-
-    # Check if RHCL already installed
-    if oc get csv -n openshift-operators 2>/dev/null | grep -q "rhcl-operator"; then
-        print_info "RHCL Operator already installed in openshift-operators"
-    elif oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
-        print_info "RHCL Operator already installed in kuadrant-system"
-    else
-        # Subscription goes to openshift-operators (per RHOAI 3.4 MaaS docs)
-        # openshift-operators already has a default OperatorGroup — no need to create one
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator-34.yaml"
-
-        # Wait for Subscription to create an InstallPlan
-        print_step "Waiting for RHCL InstallPlan..."
-        local ip_wait=0
-        while [ $ip_wait -lt 60 ]; do
-            if oc get subscription rhcl-operator -n openshift-operators \
-                -o jsonpath='{.status.installPlanRef.name}' &>/dev/null; then
-                break
-            fi
-            sleep 5
-            ip_wait=$((ip_wait + 5))
-        done
-
-        # Auto-approve RHCL InstallPlan (OLM may set Manual even with Automatic
-        # when dependency operators like Authorino/DNS/Limitador are being upgraded)
-        approve_rhcl_installplans
-
-        # Wait for operator with periodic re-approval (InstallPlan may appear late)
-        print_step "Waiting for rhcl-operator to be ready..."
-        local rhcl_elapsed=0
-        local rhcl_timeout=300
-        while [ $rhcl_elapsed -lt $rhcl_timeout ]; do
-            local rhcl_csv=$(oc get csv -n openshift-operators 2>/dev/null | grep "rhcl-operator" | head -1)
-            local rhcl_status=$(echo "$rhcl_csv" | awk '{print $NF}')
-            
-            if [ "$rhcl_status" = "Succeeded" ]; then
-                print_success "rhcl-operator is ready"
-                break
-            fi
-            
-            # Re-approve any pending InstallPlans on each iteration
-            approve_rhcl_installplans 2>/dev/null || true
-            
-            if [ -z "$rhcl_csv" ] && [ $((rhcl_elapsed % 30)) -eq 0 ] && [ $rhcl_elapsed -gt 0 ]; then
-                echo "  rhcl-operator: CSV not yet created — ${rhcl_elapsed}s elapsed"
-            elif [ -n "$rhcl_status" ] && [ "$rhcl_status" != "Succeeded" ]; then
-                echo "  rhcl-operator: $rhcl_status — ${rhcl_elapsed}s elapsed"
-            fi
-            
-            sleep 10
-            rhcl_elapsed=$((rhcl_elapsed + 10))
-        done
-        
-        if [ $rhcl_elapsed -ge $rhcl_timeout ]; then
-            print_warning "rhcl-operator may not be fully ready (continuing)"
-        fi
-    fi
-
-    # Verify RHCL component operators (Authorino, DNS, Limitador)
-    # These are installed by the RHCL operator as dependencies
-    print_step "Verifying RHCL component operators..."
-    local comp_timeout=120
-    local comp_elapsed=0
-    local all_found=false
-    while [ $comp_elapsed -lt $comp_timeout ]; do
-        all_found=true
-        for component in "authorino" "dns" "limitador"; do
-            if ! oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded"; then
-                all_found=false
-                break
-            fi
-        done
-        if [ "$all_found" = true ]; then
-            break
-        fi
-        sleep 10
-        comp_elapsed=$((comp_elapsed + 10))
-    done
-
-    for component in "authorino" "dns" "limitador"; do
-        if oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded"; then
-            print_success "  $component operator ready"
-        else
-            print_info "  $component operator not yet ready (may take a moment)"
-        fi
-    done
-
-    # Kuadrant CR goes in kuadrant-system (per RHOAI 3.4 MaaS docs)
-    oc create namespace kuadrant-system 2>/dev/null || true
-
-    print_step "Creating Kuadrant instance in kuadrant-system..."
-    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
-
-    setup_istio_for_kuadrant
-
-    restart_kuadrant_operator
-
-    print_success "RHCL Operator installed and configured"
-}
-
-setup_maas_database() {
-    # PostgreSQL 14+ is required for MaaS API key validation
-    # Secret format: DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require'
-    # Reference: https://opendatahub-io.github.io/models-as-a-service/latest/install/maas-setup/#database-setup
-    print_step "Setting up MaaS PostgreSQL database..."
-
-    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
-        print_success "maas-db-config secret already exists in redhat-ods-applications"
-        return 0
-    fi
-
-    # If user provided a connection string via --postgres-connection, use it
-    if [ -n "$POSTGRES_CONNECTION" ]; then
-        print_step "Creating maas-db-config secret from provided connection string..."
-        printf '%s' "$POSTGRES_CONNECTION" | \
-            oc create secret generic maas-db-config \
-                --from-file=DB_CONNECTION_URL=/dev/stdin \
-                --dry-run=client -o yaml | \
-            oc label --local -f - app=maas-api --dry-run=client -o yaml | \
-            oc apply -n redhat-ods-applications -f -
-        print_success "maas-db-config secret created from provided connection string"
-        return 0
-    fi
-
-    # Deploy a POC-grade PostgreSQL instance (NOT for production)
-    print_warning "No --postgres-connection provided. Deploying POC PostgreSQL (NOT for production)."
-    print_info "For production, use AWS RDS, Crunchy Operator, or Azure Database for PostgreSQL."
-    print_info "Then pass: --postgres-connection 'postgresql://user:pass@host:5432/db?sslmode=require'"
-    echo ""
-
-    local pg_user="maas"
-    local pg_db="maas"
-    local pg_password
-    pg_password="$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)"
-
-    # Resolve PostgreSQL image from RHOAI operator CSV (fallback to default)
-    local pg_image
-    pg_image=$(oc get csv -l 'olm.copiedFrom=redhat-ods-operator' \
-        -o jsonpath='{.items[0].spec.relatedImages[?(@.name=="postgresql_16_image")].image}' 2>/dev/null) || true
-    if [ -z "$pg_image" ]; then
-        pg_image="registry.redhat.io/rhel9/postgresql-16:latest"
-        print_info "Using default PostgreSQL image (operator CSV not available)"
-    else
-        print_info "Resolved PostgreSQL image from operator CSV"
-    fi
-
-    print_step "Deploying POC PostgreSQL in redhat-ods-applications..."
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-pvc.yaml"
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-service.yaml"
-
-    export PG_IMAGE="$pg_image"
-    export PG_USER="$pg_user"
-    export PG_PASSWORD="$pg_password"
-    export PG_DB="$pg_db"
-    envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
-        < "$ROOT_DIR/lib/manifests/maas/platform/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
-    unset PG_PASSWORD
-
-    print_step "Waiting for PostgreSQL to be ready..."
-    local elapsed=0
-    while [ $elapsed -lt 120 ]; do
-        if oc rollout status deployment/postgres -n redhat-ods-applications --timeout=5s &>/dev/null; then
-            print_success "PostgreSQL is ready"
-            break
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-
-    # URL-encode the password (encode all chars to be safe with special chars)
-    local encoded_password
-    encoded_password=$(printf '%s' "$pg_password" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')
-    local db_url="postgresql://${pg_user}:${encoded_password}@postgres:5432/${pg_db}?sslmode=disable"
-
-    print_step "Creating maas-db-config secret..."
-    printf '%s' "$db_url" | \
-        oc create secret generic maas-db-config \
-            --from-file=DB_CONNECTION_URL=/dev/stdin \
-            --dry-run=client -o yaml | \
-        oc label --local -f - app=maas-api --dry-run=client -o yaml | \
-        oc apply -n redhat-ods-applications -f -
-
-    # Store credentials for reference
-    oc create secret generic postgres-creds \
-        --from-literal=user="$pg_user" \
-        --from-literal=password="$pg_password" \
-        --from-literal=database="$pg_db" \
-        -n redhat-ods-applications --dry-run=client -o yaml | \
-        oc apply -n redhat-ods-applications -f -
-
-    print_success "POC PostgreSQL deployed and maas-db-config secret created"
-    print_warning "This is NOT production-grade. For production use:"
-    print_info "  - AWS RDS for PostgreSQL"
-    print_info "  - Crunchy Postgres Operator"
-    print_info "  - Azure Database for PostgreSQL"
-    print_info "  Then: oc create secret generic maas-db-config \\"
-    print_info "    --from-literal=DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require' \\"
-    print_info "    -n redhat-ods-applications"
-}
-
-configure_maas_tls() {
-    # RHOAI 3.4 MaaS TLS uses OpenShift service-ca (NOT cert-manager)
-    # Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/govern_llm_access_with_models-as-a-service/deploy-and-manage-models-as-a-service_maas#configure-tls-for-maas_maas-deploy
-    print_step "Configuring TLS for Models-as-a-Service (3.4 service-ca method)..."
-
-    # Step 1: Annotate Authorino service for OpenShift service-ca cert generation
-    print_step "Annotating Authorino service for service-ca TLS cert..."
-    oc annotate service authorino-authorino-authorization \
-        -n kuadrant-system \
-        service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
-        --overwrite 2>/dev/null || {
-        print_warning "Could not annotate Authorino service - it may not exist yet"
-        return 1
-    }
-
-    # Wait for the service-ca operator to generate the TLS secret
-    print_step "Waiting for service-ca to generate authorino-server-cert secret..."
-    local cert_wait=0
-    while [ $cert_wait -lt 60 ]; do
-        if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
-            print_success "Authorino TLS certificate generated by service-ca"
-            break
-        fi
-        sleep 5
-        cert_wait=$((cert_wait + 5))
-    done
-
-    if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
-        print_warning "authorino-server-cert secret not yet available - service-ca may need more time"
-    fi
-
-    # Step 2: Patch Authorino CR to enable TLS listener
-    print_step "Patching Authorino CR for TLS listener..."
-    oc patch authorino authorino -n kuadrant-system --type=merge --patch '{
-      "spec": {
-        "listener": {
-          "tls": {
-            "enabled": true,
-            "certSecretRef": {
-              "name": "authorino-server-cert"
-            }
-          }
-        }
-      }
-    }' 2>/dev/null || print_warning "Could not patch Authorino CR"
-
-    # Step 3: Set TLS cert env vars on Authorino deployment for CA validation
-    print_step "Configuring Authorino TLS certificate validation env vars..."
-    oc -n kuadrant-system set env deployment/authorino \
-        SSL_CERT_FILE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
-        REQUESTS_CA_BUNDLE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
-        2>/dev/null || print_warning "Could not set Authorino TLS env vars"
-
-    # Step 4: Annotate the MaaS gateway for automatic TLS configuration
-    print_step "Annotating maas-default-gateway for Authorino TLS bootstrap..."
-    oc annotate gateway maas-default-gateway \
-        -n openshift-ingress \
-        security.opendatahub.io/authorino-tls-bootstrap="true" \
-        --overwrite 2>/dev/null || print_warning "Could not annotate maas-default-gateway (it may not exist yet)"
-
-    # Verification
-    print_step "Verifying MaaS TLS configuration..."
-    local tls_ok=true
-
-    local cert_annotation=$(oc get service authorino-authorino-authorization -n kuadrant-system \
-        -o jsonpath='{.metadata.annotations.service\.beta\.openshift\.io/serving-cert-secret-name}' 2>/dev/null)
-    if [ "$cert_annotation" = "authorino-server-cert" ]; then
-        print_success "Authorino service has serving-cert annotation"
-    else
-        print_warning "Authorino service missing serving-cert annotation"
-        tls_ok=false
-    fi
-
-    local tls_enabled=$(oc get authorino authorino -n kuadrant-system \
-        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
-    if [ "$tls_enabled" = "true" ]; then
-        print_success "Authorino TLS listener enabled"
-    else
-        print_warning "Authorino TLS listener not enabled"
-        tls_ok=false
-    fi
-
-    if [ "$tls_ok" = true ]; then
-        print_success "MaaS TLS configuration complete"
-    else
-        print_warning "MaaS TLS configuration may be incomplete - check manually"
-    fi
-}
-
-################################################################################
-# MaaS Rate Limiting Fixes
-# Fixes WasmPlugin span buffer overflow that prevents token rate limiting
-# from working under load. See docs/maas-token-ratelimit-span-buffer-bug.md
-################################################################################
-
-configure_maas_rate_limiting() {
-    # Redis persistence + health-check/timeout EnvoyFilters are extracted into
-    # lib/manifests/observability/redis/ + lib/functions/redis-limitador.sh
-    # (manifests-source-of-truth) since they're reusable outside the full installer
-    # (e.g. scripts/setup-maas.sh --enable-redis).
-    setup_redis_limitador
-}
+# install_servicemesh_operator(), approve_servicemesh_installplans(),
+# approve_rhcl_installplans(), setup_istio_for_kuadrant(), and
+# restart_kuadrant_operator() now live in lib/functions/rhcl-install.sh
+# (shared with install-rhoai-35.sh and scripts/setup-maas.sh's phase1_rhcl).
+#
+# install_rhcl_operator(), setup_maas_database(), and configure_maas_tls()
+# have been removed: this installer now delegates RHCL + Kuadrant + Istio +
+# Gateway + PostgreSQL + Authorino TLS setup to
+# "$ROOT_DIR/scripts/setup-maas.sh --called-from-installer --rhoai-version 3.4"
+# (phases 1-2 pre-RHOAI, phases 3-5 post-RHOAI) -- see main() below.
+
+# configure_maas_rate_limiting() has been removed: Redis-for-Limitador setup
+# (lib/functions/redis-limitador.sh) is now always requested via the
+# `--enable-redis` flag on setup-maas.sh's post-RHOAI call in main() below,
+# instead of a separate wrapper function.
 
 enable_user_workload_monitoring() {
     print_step "Enabling User Workload Monitoring..."
@@ -1751,88 +1229,33 @@ EOF
     fi
 }
 
-# Apply the gateway-resources ConfigMap, choosing the proxy-aware variant when
-# running on OCP < 4.22 behind a corporate proxy (OCPBUGS-77457 workaround,
-# fixed natively in OCP 4.22+).
-apply_gateway_resources_configmap() {
-    local ocp_version http_proxy_val https_proxy_val no_proxy_val major minor
+# apply_gateway_resources_configmap() has been removed: it's a MaaS-gateway
+# concern (the ConfigMap is referenced via maas-default-gateway's
+# infrastructure.parametersRef), so it now lives solely in setup-maas.sh's
+# phase2_gateway.
 
-    ocp_version=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null)
-    http_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpProxy}' 2>/dev/null)
-    major=$(echo "$ocp_version" | cut -d. -f1)
-    minor=$(echo "$ocp_version" | cut -d. -f2)
-
-    if [ -n "$http_proxy_val" ] && [ -n "$major" ] && [ -n "$minor" ] && \
-       { [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 22 ]; }; }; then
-        print_step "Detected OCP $ocp_version behind a corporate proxy -- applying proxy-aware gateway-resources ConfigMap..."
-        https_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpsProxy}' 2>/dev/null)
-        no_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.noProxy}' 2>/dev/null)
-        export HTTP_PROXY="$http_proxy_val" HTTPS_PROXY="$https_proxy_val" NO_PROXY="$no_proxy_val"
-        envsubst '${HTTP_PROXY} ${HTTPS_PROXY} ${NO_PROXY}' \
-            < "$ROOT_DIR/lib/manifests/rhcl/gateway-resources-proxy.yaml.tmpl" | oc_apply_retry
-        unset HTTP_PROXY HTTPS_PROXY NO_PROXY
-        print_success "Proxy-aware gateway-resources ConfigMap applied"
-    else
-        print_step "Applying gateway resource overrides (2Gi memory limit)..."
-        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
-    fi
-}
-
+# Creates ONLY the non-MaaS "openshift-ai-inference" Gateway, for direct
+# model access outside MaaS governance (no auth/rate-limiting). The MaaS
+# gateway (maas-default-gateway) is created by setup-maas.sh's phase2_gateway,
+# called from main() before this function runs -- see
+# .cursor/rules/manifests-source-of-truth.mdc.
 create_inference_gateway() {
-    print_step "Creating inference Gateways for llm-d/MaaS..."
+    print_step "Creating openshift-ai-inference Gateway (direct model access, outside MaaS)..."
 
     get_cluster_domain
 
-    # Non-cloud platforms (BareMetal, OpenStack, None/SNO) have no cloud LB
-    # controller to provision the Gateway's LoadBalancer Service external IP --
-    # without MetalLB, the Gateway never reaches Programmed=True. No-op on cloud.
-    setup_metallb_if_needed
-
-    # GatewayClass for OpenShift Gateway Controller
-    if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then
-        print_step "Creating openshift-gateway-controller GatewayClass..."
-        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
-    fi
-
-    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins).
-    # On OCP < 4.22 behind a corporate proxy, use the proxy-aware variant so the
-    # istio-proxy container gets HTTP_PROXY/HTTPS_PROXY/NO_PROXY (OCPBUGS-77457).
-    apply_gateway_resources_configmap
-
-    # MaaS Gateway - MUST have both annotations for MaaS controller to work in 3.4:
-    #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
-    #   security.opendatahub.io/authorino-tls-bootstrap: "true" - enables TLS to Authorino
-    print_step "Creating maas-default-gateway with MaaS annotations..."
-    export CERT_NAME="default-gateway-tls"
-    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc_apply_retry
-
-    # llm-d inference gateway (for direct model access outside MaaS)
     print_step "Creating openshift-ai-inference gateway..."
     if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
         oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
     fi
 
+    export CERT_NAME="default-gateway-tls"
     envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc_apply_retry
 
-    # Create default-gateway-tls secret for the HTTPS listeners
-    # Without this, Envoy never creates the port 443 listener and the gateway returns 503
-    create_gateway_tls_secret
-
-    # Create passthrough Route so *.apps.<cluster> wildcard DNS reaches the gateway
-    # The gateway gets its own LoadBalancer ELB, but *.apps.<cluster> DNS points to the
-    # default OpenShift Router. A passthrough Route bridges the two.
+    # Create passthrough Routes so *.apps.<cluster> wildcard DNS reaches both
+    # gateways (each gets its own LoadBalancer ELB, but *.apps.<cluster> DNS
+    # points to the default OpenShift Router).
     create_gateway_passthrough_routes
-
-    # maas-default-gateway restricts route binding to namespaces labeled
-    # maas.opendatahub.io/gateway-access=true (from: Selector) -- label every
-    # namespace known to host a route/model that attaches to this gateway.
-    # Without this, maas-api's own HTTPRoute (in redhat-ods-applications on
-    # 3.4) would be unreachable after Selector hardening.
-    print_step "Labeling namespaces for MaaS gateway route access..."
-    for ns in redhat-ods-applications models-as-a-service; do
-        oc get namespace "$ns" &>/dev/null && \
-            oc label namespace "$ns" maas.opendatahub.io/gateway-access=true --overwrite &>/dev/null
-    done
 
     print_success "Gateways created"
     print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
@@ -2183,93 +1606,9 @@ EOF
     print_warning "MLflow server not ready yet (may still be starting) — check: oc get mlflow mlflow"
 }
 
-verify_maas_deployment() {
-    print_step "Verifying MaaS deployment..."
-
-    # Check MaaS CRDs
-    local maas_crds=$(oc get crd 2>/dev/null | grep -c "maas.opendatahub.io" || echo "0")
-    if [ "$maas_crds" -ge 3 ]; then
-        print_success "MaaS CRDs installed ($maas_crds found)"
-    else
-        print_warning "MaaS CRDs not fully installed yet ($maas_crds found, expected 5)"
-        print_info "Expected CRDs: maassubscriptions, maasauthpolicies, maasmodelrefs, tenants, externalmodels"
-    fi
-
-    # Check Tenant CR
-    local tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
-        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-    if [ "$tenant_ready" = "True" ]; then
-        print_success "MaaS Tenant 'default-tenant' is Ready"
-    elif [ -n "$tenant_ready" ]; then
-        local tenant_msg=$(oc get tenant default-tenant -n models-as-a-service \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
-        print_warning "MaaS Tenant not ready yet: $tenant_msg"
-    else
-        print_info "MaaS Tenant not found yet (it will be auto-created by the MaaS controller)"
-    fi
-
-    # Check maas-db-config secret
-    print_step "Checking maas-db-config secret..."
-    if oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
-        local has_url=$(oc get secret maas-db-config -n redhat-ods-applications \
-            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null)
-        if [ -n "$has_url" ]; then
-            print_success "maas-db-config secret exists with DB_CONNECTION_URL"
-        else
-            print_warning "maas-db-config secret exists but may be missing DB_CONNECTION_URL key"
-        fi
-    else
-        print_warning "maas-db-config secret NOT found — MaaS Tenant will show Degraded"
-    fi
-
-    # Check User Workload Monitoring
-    local uwm=$(oc get configmap cluster-monitoring-config -n openshift-monitoring \
-        -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep -c "enableUserWorkload: true" || echo "0")
-    if [ "$uwm" -gt 0 ]; then
-        print_success "User Workload Monitoring is enabled"
-    else
-        print_warning "User Workload Monitoring may not be enabled - MaaS requires it"
-    fi
-
-    # Check Gateway
-    local gw_exists=$(oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null && echo "yes" || echo "no")
-    if [ "$gw_exists" = "yes" ]; then
-        local gw_managed=$(oc get gateway maas-default-gateway -n openshift-ingress \
-            -o jsonpath='{.metadata.annotations.opendatahub\.io/managed}' 2>/dev/null)
-        local gw_tls=$(oc get gateway maas-default-gateway -n openshift-ingress \
-            -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/authorino-tls-bootstrap}' 2>/dev/null)
-        if [ "$gw_managed" = "false" ] && [ "$gw_tls" = "true" ]; then
-            print_success "maas-default-gateway has correct annotations"
-        else
-            print_warning "maas-default-gateway missing required annotations"
-            [ "$gw_managed" != "false" ] && print_info "  Missing: opendatahub.io/managed: \"false\""
-            [ "$gw_tls" != "true" ] && print_info "  Missing: security.opendatahub.io/authorino-tls-bootstrap: \"true\""
-        fi
-    else
-        print_warning "maas-default-gateway not found"
-    fi
-
-    # Check Authorino TLS
-    local auth_tls=$(oc get authorino authorino -n kuadrant-system \
-        -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
-    if [ "$auth_tls" = "true" ]; then
-        print_success "Authorino TLS listener is enabled"
-    else
-        print_warning "Authorino TLS listener not enabled"
-    fi
-
-    # Check MaaS API health endpoint
-    print_step "Checking MaaS API health endpoint..."
-    local maas_health
-    maas_health=$(curl -sk "https://maas.apps.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null || true)
-    if echo "$maas_health" | grep -q "healthy"; then
-        print_success "MaaS API health endpoint responding: $maas_health"
-    elif [ -n "$maas_health" ]; then
-        print_warning "MaaS API health endpoint returned: $maas_health"
-    else
-        print_info "MaaS API health endpoint not reachable yet (maas-api may still be starting)"
-    fi
-}
+# verify_maas_deployment() has been removed: this is now setup-maas.sh's
+# phase5_verify() (single source of truth, called via --called-from-installer
+# --from-phase 3 in main() below).
 
 ################################################################################
 # User Management
@@ -2655,10 +1994,13 @@ main() {
     fi
 
     if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
-        install_rhcl_operator
+        # Ensure the shared gateway TLS secret exists before delegating gateway
+        # creation to setup-maas.sh's phase2_gateway, which prefers it when present.
+        create_gateway_tls_secret
+        "$ROOT_DIR/scripts/setup-maas.sh" --called-from-installer --rhoai-version 3.4 --from-phase 1 --to-phase 2
         create_inference_gateway
     elif [ "$SKIP_RHCL" = false ]; then
-        install_rhcl_operator
+        "$ROOT_DIR/scripts/setup-maas.sh" --called-from-installer --rhoai-version 3.4 --from-phase 1 --to-phase 1
     else
         print_info "Skipping RHCL/MaaS (--skip-rhcl or --skip-maas)"
     fi
@@ -2673,23 +2015,29 @@ main() {
     create_hardware_profile
     create_mlflow_server
 
-    # MaaS DB + TLS setup (3.4) - must run after RHCL and gateway are created
-    # DB secret must exist BEFORE modelsAsService becomes Managed (or restart maas-api after)
+    # MaaS DB + DSC flags + verify (3.4) - must run after RHCL and gateway are created.
+    # DB secret must exist BEFORE modelsAsService becomes Managed (or restart maas-api after).
+    # Delegates to setup-maas.sh (phases 3-5: PostgreSQL, DSC flags, verify) -- the
+    # single source of truth for MaaS setup logic (manifests-source-of-truth.mdc).
     if [ "$SKIP_RHCL" = false ] && [ "$SKIP_MAAS" = false ]; then
-        if [ "$SKIP_MAAS_DB" = false ]; then
-            setup_maas_database
-        else
+        local maas_from_phase=3
+        if [ "$SKIP_MAAS_DB" = true ]; then
             print_info "Skipping MaaS DB setup (--skip-maas-db)"
-            if ! oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
-                print_warning "maas-db-config secret not found — MaaS Tenant will show Degraded"
-                print_info "Create it with: oc create secret generic maas-db-config \\"
-                print_info "  --from-literal=DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require' \\"
-                print_info "  -n redhat-ods-applications"
-            fi
+            maas_from_phase=4
         fi
-        configure_maas_tls
-        configure_maas_rate_limiting
-        verify_maas_deployment
+
+        local maas_extra_flags=()
+        [ -n "$POSTGRES_CONNECTION" ] && maas_extra_flags+=(--postgres-connection "$POSTGRES_CONNECTION")
+
+        "$ROOT_DIR/scripts/setup-maas.sh" --called-from-installer --rhoai-version 3.4 \
+            --from-phase "$maas_from_phase" --enable-redis "${maas_extra_flags[@]}"
+
+        if [ "$SKIP_MAAS_DB" = true ] && ! oc get secret maas-db-config -n redhat-ods-applications &>/dev/null; then
+            print_warning "maas-db-config secret not found — MaaS Tenant will show Degraded"
+            print_info "Create it with: oc create secret generic maas-db-config \\"
+            print_info "  --from-literal=DB_CONNECTION_URL='postgresql://user:pass@host:5432/db?sslmode=require' \\"
+            print_info "  -n redhat-ods-applications"
+        fi
     fi
 
     # Observability stack — COO + UIPlugins + Perses + Thanos proxy are always installed.

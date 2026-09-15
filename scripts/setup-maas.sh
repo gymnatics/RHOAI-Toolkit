@@ -51,6 +51,7 @@ source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/usage-logging.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/rhcl-install.sh" 2>/dev/null || true
 
 ################################################################################
 # Helper Functions
@@ -70,23 +71,49 @@ print_error() { echo -e "${RED}✗ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 print_info() { echo -e "${CYAN}ℹ $1${NC}"; }
 
-CLUSTER_DOMAIN=""
+CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-}"
 FROM_PHASE=1
+TO_PHASE=5
 RUN_DIAGNOSE=false
 ENABLE_REDIS=false
 ENABLE_OBSERVABILITY=false
 ENABLE_USAGE_LOGGING=false
+CALLED_FROM_INSTALLER=false
+POSTGRES_CONNECTION="${POSTGRES_CONNECTION:-}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --from-phase) FROM_PHASE="$2"; shift 2 ;;
+        --to-phase) TO_PHASE="$2"; shift 2 ;;
+        --called-from-installer) CALLED_FROM_INSTALLER=true; shift ;;
+        --rhoai-version)
+            # Explicit version override for the pre-RHOAI installer call (phases
+            # 1-2 run before the DataScienceCluster exists, so detect_rhoai_version's
+            # cluster-state detection has nothing to inspect yet). install-rhoai-34.sh
+            # and install-rhoai-35.sh already know their own target version.
+            case "$2" in
+                3.5|3.5.x) RHOAI_VERSION="3.5.x"; RHOAI_MAJOR_VERSION="3"; RHOAI_MINOR_VERSION="5" ;;
+                3.4|3.4.x) RHOAI_VERSION="3.4.x"; RHOAI_MAJOR_VERSION="3"; RHOAI_MINOR_VERSION="4" ;;
+                *) echo "Unsupported --rhoai-version: $2 (expected 3.4 or 3.5)"; exit 1 ;;
+            esac
+            shift 2
+            ;;
         --diagnose) RUN_DIAGNOSE=true; shift ;;
         --enable-redis) ENABLE_REDIS=true; shift ;;
         --enable-observability) ENABLE_OBSERVABILITY=true; shift ;;
         --enable-usage-logging) ENABLE_USAGE_LOGGING=true; shift ;;
+        --postgres-connection) POSTGRES_CONNECTION="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--from-phase N] [--diagnose] [--enable-redis] [--enable-observability] [--enable-usage-logging]"
+            echo "Usage: $0 [--from-phase N] [--to-phase N] [--diagnose] [--enable-redis] [--enable-observability] [--enable-usage-logging] [--postgres-connection URL]"
             echo "  --from-phase N          Resume from phase N (1-5, RHOAI 3.4+ only)"
+            echo "  --to-phase N            Stop after phase N (1-5, RHOAI 3.4+ only, default 5)"
+            echo "  --called-from-installer Internal flag used by install-rhoai-34.sh/install-rhoai-35.sh"
+            echo "                          to delegate MaaS setup to this script. Skips prerequisite"
+            echo "                          checks and final usage banner (caller handles both); reuses"
+            echo "                          CLUSTER_DOMAIN/RHOAI_VERSION env vars if already exported."
+            echo "  --rhoai-version X.Y     Explicit RHOAI version (3.4 or 3.5) -- used by the installers'"
+            echo "                          pre-RHOAI call (phases 1-2), before RHOAI/DSC exist on the"
+            echo "                          cluster for auto-detection to inspect."
             echo "  --diagnose              Run scripts/diagnose-maas.sh after setup"
             echo "  --enable-redis          Deploy Redis for Limitador rate-limit counter"
             echo "                          persistence (survives Limitador pod restarts)"
@@ -97,6 +124,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --enable-usage-logging  Enable log-based MaaS usage dashboards (RHOAI 3.5+"
             echo "                          only -- Loki Operator + MinIO/S3 + LokiStack, for"
             echo "                          per-request token/user tracking)."
+            echo "  --postgres-connection URL  Use an existing PostgreSQL instance instead of"
+            echo "                          deploying the POC PostgreSQL (phase 3)."
             exit 0
             ;;
         *) shift ;;
@@ -104,42 +133,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 ################################################################################
-# Service Mesh InstallPlan Approval
-################################################################################
-
-approve_servicemesh_installplans() {
-    print_step "Checking for pending Service Mesh InstallPlans..."
-
-    local pending_ips
-    pending_ips=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-        python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    approved = item.get('spec', {}).get('approved', True)
-    names = [n for n in item.get('spec', {}).get('clusterServiceVersionNames', []) if 'servicemesh' in n.lower() or 'istio' in n.lower()]
-    if not approved and names:
-        print(item['metadata']['name'])
-" 2>/dev/null)
-
-    if [ -n "$pending_ips" ]; then
-        while IFS= read -r ip; do
-            [ -z "$ip" ] && continue
-            print_step "Approving Service Mesh InstallPlan: $ip"
-            oc patch installplan "$ip" -n openshift-operators --type=merge -p '{"spec":{"approved":true}}'
-        done <<< "$pending_ips"
-        print_success "Service Mesh InstallPlans approved"
-        sleep 15
-    else
-        print_success "No pending Service Mesh InstallPlans found"
-    fi
-}
-
-################################################################################
 # Prerequisites Check (Common)
 ################################################################################
 
 check_common_prerequisites() {
+    if [ "$CALLED_FROM_INSTALLER" = true ]; then
+        # Caller (install-rhoai-34.sh / install-rhoai-35.sh) already verified oc
+        # login and RHOAI installation, and typically exports CLUSTER_DOMAIN before
+        # calling this script. detect_rhoai_version() is a no-op if RHOAI_VERSION
+        # is already set (also commonly pre-exported by the caller).
+        detect_rhoai_version
+        if [ -z "$CLUSTER_DOMAIN" ]; then
+            CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null | sed 's/^apps\.//')
+        fi
+        return 0
+    fi
+
     print_header "Checking Prerequisites"
 
     if ! command -v oc &> /dev/null; then
@@ -161,7 +170,7 @@ check_common_prerequisites() {
     print_success "RHOAI installation detected"
 
     detect_rhoai_version
-    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
+    CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null | sed 's/^apps\.//')
     if [ -z "$CLUSTER_DOMAIN" ]; then
         print_error "Failed to get cluster domain"
         exit 1
@@ -210,16 +219,24 @@ detect_maas_state() {
     return 0
 }
 
-# Phase 1: RHCL operator + Kuadrant + Authorino TLS
+# Phase 1: RHCL operator + Kuadrant + Istio + Authorino TLS
 phase1_rhcl() {
-    print_header "Phase 1: RHCL Operator + Kuadrant + Authorino TLS"
+    print_header "Phase 1: RHCL Operator + Kuadrant + Istio + Authorino TLS"
 
     if [ "$HAS_RHCL" = true ] && [ "$HAS_KUADRANT" = true ]; then
         print_success "RHCL + Kuadrant already installed and Ready -- skipping"
         return 0
     fi
 
-    approve_servicemesh_installplans
+    # Service Mesh 3 (Sail) is an OLM dependency of RHCL, and Kuadrant needs a
+    # working Istio/Gateway-API stack to become Ready. install_servicemesh_operator
+    # and setup_istio_for_kuadrant (lib/functions/rhcl-install.sh) also carry a
+    # fix for a real OCP 4.20 bug: the ingress operator ships an EOL ISTIO_VERSION
+    # that Service Mesh 3.4.0+ no longer supports, which breaks GatewayClass
+    # reconciliation for the gateways created in phase2_gateway.
+    if [ "$HAS_RHCL" != true ]; then
+        install_servicemesh_operator
+    fi
 
     if [ "$HAS_RHCL" != true ]; then
         print_step "Installing RHCL operator..."
@@ -227,19 +244,21 @@ phase1_rhcl() {
             oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator-35.yaml"
         else
             oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator-34.yaml"
-            # 3.4 manifest pins Manual approval to avoid the broken 1.4.0 release -- auto-approve the initial plan.
-            sleep 15
-            local ip
-            ip=$(oc get installplan -n openshift-operators -o json 2>/dev/null | \
-                python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    if any('rhcl-operator' in n for n in item.get('spec', {}).get('clusterServiceVersionNames', [])):
-        print(item['metadata']['name']); break
-" 2>/dev/null)
-            [ -n "$ip" ] && oc patch installplan "$ip" -n openshift-operators --type=merge -p '{"spec":{"approved":true}}' 2>/dev/null || true
         fi
+
+        # Auto-approve RHCL InstallPlan (OLM may set Manual even with Automatic
+        # when dependency operators like Authorino/DNS/Limitador are being
+        # upgraded; the 3.4 manifest also pins Manual explicitly to avoid the
+        # broken 1.4.0 release).
+        print_step "Waiting for RHCL InstallPlan..."
+        local ip_wait=0
+        while [ $ip_wait -lt 60 ]; do
+            oc get subscription rhcl-operator -n openshift-operators \
+                -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null | grep -q . && break
+            sleep 5
+            ip_wait=$((ip_wait + 5))
+        done
+        approve_rhcl_installplans
 
         print_step "Waiting for RHCL operator CSV to succeed (this may take a few minutes)..."
         local elapsed=0
@@ -248,10 +267,30 @@ for item in data.get('items', []):
                 print_warning "Timeout waiting for RHCL CSV -- continuing anyway"
                 break
             fi
+            approve_rhcl_installplans 2>/dev/null || true
             sleep 10
             elapsed=$((elapsed + 10))
         done
         print_success "RHCL operator installed"
+
+        print_step "Verifying RHCL component operators (Authorino, DNS, Limitador)..."
+        local comp_elapsed=0
+        while [ $comp_elapsed -lt 120 ]; do
+            local all_found=true
+            for component in "authorino" "dns" "limitador"; do
+                oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded" || all_found=false
+            done
+            [ "$all_found" = true ] && break
+            sleep 10
+            comp_elapsed=$((comp_elapsed + 10))
+        done
+        for component in "authorino" "dns" "limitador"; do
+            if oc get csv -n openshift-operators 2>/dev/null | grep -qi "$component.*Succeeded"; then
+                print_success "  $component operator ready"
+            else
+                print_info "  $component operator not yet ready (may take a moment)"
+            fi
+        done
     fi
 
     # Preventive fix (BU Issue 7): default 200ms AUTH_SERVICE_TIMEOUT causes HTTP
@@ -265,19 +304,8 @@ for item in data.get('items', []):
         oc create namespace kuadrant-system 2>/dev/null || true
         oc apply -f "$ROOT_DIR/lib/manifests/rhcl/kuadrant-instance.yaml"
 
-        print_step "Waiting for Kuadrant to become Ready..."
-        local elapsed=0
-        until oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; do
-            if [ $elapsed -ge 180 ]; then
-                print_warning "Timeout waiting for Kuadrant Ready -- checking for Istio race condition..."
-                oc delete pod -n openshift-operators -l control-plane=controller-manager 2>/dev/null || true
-                sleep 20
-            fi
-            sleep 10
-            elapsed=$((elapsed + 10))
-            [ $elapsed -ge 300 ] && { print_warning "Kuadrant still not Ready -- continuing anyway"; break; }
-        done
-        print_success "Kuadrant is Ready"
+        setup_istio_for_kuadrant
+        restart_kuadrant_operator
     fi
 
     print_step "Configuring Authorino TLS (service-ca method)..."
@@ -295,6 +323,10 @@ for item in data.get('items', []):
     oc -n kuadrant-system set env deployment/authorino \
         SSL_CERT_FILE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt \
         REQUESTS_CA_BUNDLE=/etc/ssl/certs/openshift-service-ca/service-ca-bundle.crt 2>/dev/null || true
+
+    print_step "Waiting for Authorino deployment to be Available..."
+    oc wait --for=condition=Available deployment/authorino -n kuadrant-system --timeout=300s 2>/dev/null || \
+        print_warning "Authorino deployment not yet Available -- continuing anyway"
 
     print_success "Phase 1 complete: RHCL + Kuadrant + Authorino TLS"
 }
@@ -413,9 +445,18 @@ phase2_gateway() {
 
         print_step "Creating MaaS Gateway..."
         local cert_name
-        cert_name=$(oc get ingresscontroller default -n openshift-ingress-operator \
-            -o jsonpath='{.spec.defaultCertificate.name}' 2>/dev/null)
-        cert_name="${cert_name:-router-certs-default}"
+        # Prefer a dedicated "default-gateway-tls" secret if one already exists
+        # (e.g. created by install-rhoai-34.sh/install-rhoai-35.sh's
+        # create_gateway_tls_secret() before delegating here) -- it's shared with
+        # the non-MaaS openshift-ai-inference gateway. Otherwise fall back to
+        # whatever certificate the IngressController is already using.
+        if oc get secret default-gateway-tls -n openshift-ingress &>/dev/null; then
+            cert_name="default-gateway-tls"
+        else
+            cert_name=$(oc get ingresscontroller default -n openshift-ingress-operator \
+                -o jsonpath='{.spec.defaultCertificate.name}' 2>/dev/null)
+            cert_name="${cert_name:-router-certs-default}"
+        fi
         export CLUSTER_DOMAIN CERT_NAME="$cert_name"
         envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' \
             < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc apply -f -
@@ -487,6 +528,18 @@ phase3_postgres() {
     print_step "Ensuring infrastructure namespace '$infra_ns' exists..."
     oc create namespace "$infra_ns" 2>/dev/null || true
 
+    # If the caller (or user) provided an existing PostgreSQL connection string,
+    # use it directly instead of deploying the POC PostgreSQL below.
+    if [ -n "$POSTGRES_CONNECTION" ]; then
+        print_step "Creating maas-db-config secret from provided connection string..."
+        printf '%s' "$POSTGRES_CONNECTION" | oc create secret generic maas-db-config \
+            --from-file=DB_CONNECTION_URL=/dev/stdin --dry-run=client -o yaml | \
+            oc label --local -f - app=maas-api --dry-run=client -o yaml | \
+            oc apply -n "$infra_ns" -f -
+        print_success "Phase 3 complete: maas-db-config created from provided connection string"
+        return 0
+    fi
+
     print_step "Deploying PostgreSQL platform manifests..."
     oc apply -n "$infra_ns" -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-pvc.yaml"
     oc apply -n "$infra_ns" -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-service.yaml"
@@ -494,7 +547,14 @@ phase3_postgres() {
     local pg_user="maas" pg_db="maas"
     local pg_password
     pg_password=$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)
-    local pg_image="registry.redhat.io/rhel9/postgresql-16:latest"
+
+    # Resolve PostgreSQL image from the RHOAI operator CSV (fallback to default)
+    local pg_image
+    pg_image=$(oc get csv -l 'olm.copiedFrom=redhat-ods-operator' \
+        -o jsonpath='{.items[0].spec.relatedImages[?(@.name=="postgresql_16_image")].image}' 2>/dev/null) || true
+    if [ -z "$pg_image" ]; then
+        pg_image="registry.redhat.io/rhel9/postgresql-16:latest"
+    fi
 
     export PG_IMAGE="$pg_image" PG_USER="$pg_user" PG_PASSWORD="$pg_password" PG_DB="$pg_db"
     envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
@@ -511,6 +571,7 @@ phase3_postgres() {
     print_step "Creating maas-db-config secret in $infra_ns..."
     printf '%s' "$db_url" | oc create secret generic maas-db-config \
         --from-file=DB_CONNECTION_URL=/dev/stdin --dry-run=client -o yaml | \
+        oc label --local -f - app=maas-api --dry-run=client -o yaml | \
         oc apply -n "$infra_ns" -f -
 
     oc create secret generic postgres-creds \
@@ -560,6 +621,11 @@ phase4_dsc() {
 }
 
 # Phase 5: Verify
+# Phase 5: Verify (version-aware; this is the single source of truth for MaaS
+# post-install verification -- previously duplicated as install-rhoai-35.sh's
+# verify_maas_deployment() [3.5-specific: ModelsAsAServiceReady/MaasTenantConfig/
+# redhat-ai-gateway-infra] and install-rhoai-34.sh's verify_maas_deployment()
+# [3.4-specific: ModelsAsServiceReady/Tenant/redhat-ods-applications]).
 phase5_verify() {
     print_header "Phase 5: Verify"
 
@@ -576,13 +642,199 @@ phase5_verify() {
     oc rollout status deployment/maas-api -n "$infra_ns" --timeout=120s 2>/dev/null || \
         print_warning "maas-api not rolled out yet"
 
+    if is_rhoai_35_or_higher; then
+        # RHOAI 3.5: Check ModelsAsAServiceReady DSC condition (note: "AsA" not "As")
+        local maas_ready maas_msg
+        maas_ready=$(oc get datasciencecluster default-dsc \
+            -o jsonpath='{.status.conditions[?(@.type=="ModelsAsAServiceReady")].status}' 2>/dev/null)
+        maas_msg=$(oc get datasciencecluster default-dsc \
+            -o jsonpath='{.status.conditions[?(@.type=="ModelsAsAServiceReady")].message}' 2>/dev/null)
+        if [ "$maas_ready" = "True" ]; then
+            print_success "ModelsAsAServiceReady is True"
+        elif [ -n "$maas_ready" ]; then
+            print_warning "ModelsAsAServiceReady is $maas_ready"
+            [ -n "$maas_msg" ] && print_info "  Message: $maas_msg"
+        else
+            print_info "ModelsAsAServiceReady condition not found yet (controller may still be starting)"
+        fi
+
+        local maas_crds
+        maas_crds=$(oc get crd 2>/dev/null | grep -c "maas.opendatahub.io" || echo "0")
+        if [ "$maas_crds" -ge 5 ]; then
+            print_success "MaaS CRDs installed ($maas_crds found)"
+        else
+            print_warning "MaaS CRDs not fully installed yet ($maas_crds found, expected 5+)"
+        fi
+
+        local tenant_ready
+        tenant_ready=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$tenant_ready" = "True" ]; then
+            print_success "MaasTenantConfig 'default-tenant' is Ready"
+        elif [ -n "$tenant_ready" ]; then
+            local tenant_msg
+            tenant_msg=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+            print_warning "MaasTenantConfig not ready yet: $tenant_msg"
+        else
+            print_info "MaasTenantConfig not found yet (it will be auto-created by the MaaS controller)"
+        fi
+
+        local telemetry_enabled
+        telemetry_enabled=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+            -o jsonpath='{.spec.telemetry.enabled}' 2>/dev/null)
+        if [ "$telemetry_enabled" = "true" ]; then
+            print_success "MaaS telemetry is enabled"
+        else
+            print_info "MaaS telemetry not enabled (optional -- see configure_maas_telemetry in the installers)"
+        fi
+    else
+        # RHOAI 3.4: Tenant CRD (not MaasTenantConfig), fewer CRDs expected
+        local maas_crds
+        maas_crds=$(oc get crd 2>/dev/null | grep -c "maas.opendatahub.io" || echo "0")
+        if [ "$maas_crds" -ge 3 ]; then
+            print_success "MaaS CRDs installed ($maas_crds found)"
+        else
+            print_warning "MaaS CRDs not fully installed yet ($maas_crds found, expected 3+)"
+        fi
+
+        local tenant_ready
+        tenant_ready=$(oc get tenant default-tenant -n models-as-a-service \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$tenant_ready" = "True" ]; then
+            print_success "MaaS Tenant 'default-tenant' is Ready"
+        elif [ -n "$tenant_ready" ]; then
+            local tenant_msg
+            tenant_msg=$(oc get tenant default-tenant -n models-as-a-service \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+            print_warning "MaaS Tenant not ready yet: $tenant_msg"
+        else
+            print_info "MaaS Tenant not found yet (it will be auto-created by the MaaS controller)"
+        fi
+    fi
+
+    print_step "Checking maas-db-config secret in $infra_ns..."
+    if oc get secret maas-db-config -n "$infra_ns" &>/dev/null; then
+        local has_url
+        has_url=$(oc get secret maas-db-config -n "$infra_ns" -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null)
+        if [ -n "$has_url" ]; then
+            print_success "maas-db-config secret exists with DB_CONNECTION_URL in $infra_ns"
+        else
+            print_warning "maas-db-config secret exists but may be missing DB_CONNECTION_URL key"
+        fi
+    else
+        print_warning "maas-db-config secret NOT found in $infra_ns -- MaaS Tenant will show Degraded"
+    fi
+
+    print_step "Checking MaaS deployments..."
+    for deploy_spec in "maas-api:$infra_ns" "maas-controller:redhat-ods-applications" "ai-gateway-operator:redhat-ods-applications"; do
+        local deploy="${deploy_spec%%:*}"
+        local ns="${deploy_spec##*:}"
+        if oc get deployment "$deploy" -n "$ns" &>/dev/null; then
+            local ready
+            ready=$(oc get deployment "$deploy" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            if [ "${ready:-0}" -gt 0 ]; then
+                print_success "  $deploy ($ns): running ($ready replicas ready)"
+            else
+                print_warning "  $deploy ($ns): exists but has no ready replicas"
+            fi
+        else
+            print_info "  $deploy not found in $ns (may still be starting or not applicable on this version)"
+        fi
+    done
+
+    local uwm
+    uwm=$(oc get configmap cluster-monitoring-config -n openshift-monitoring \
+        -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep -c "enableUserWorkload: true" || echo "0")
+    if [ "$uwm" -gt 0 ]; then
+        print_success "User Workload Monitoring is enabled"
+    else
+        print_warning "User Workload Monitoring may not be enabled - MaaS requires it"
+    fi
+
+    local gw_exists
+    gw_exists=$(oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null && echo "yes" || echo "no")
+    if [ "$gw_exists" = "yes" ]; then
+        local gw_managed gw_tls
+        gw_managed=$(oc get gateway maas-default-gateway -n openshift-ingress \
+            -o jsonpath='{.metadata.annotations.opendatahub\.io/managed}' 2>/dev/null)
+        gw_tls=$(oc get gateway maas-default-gateway -n openshift-ingress \
+            -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/authorino-tls-bootstrap}' 2>/dev/null)
+        if [ "$gw_managed" = "false" ] && [ "$gw_tls" = "true" ]; then
+            print_success "maas-default-gateway has correct annotations"
+        else
+            print_warning "maas-default-gateway missing required annotations"
+        fi
+    else
+        print_warning "maas-default-gateway not found"
+    fi
+
+    print_step "Checking auto-created gateway policies..."
+    local auth_policies
+    auth_policies=$(oc get authpolicy -n openshift-ingress --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${auth_policies:-0}" -gt 0 ]; then
+        print_success "  AuthPolicy in openshift-ingress: $auth_policies found"
+    else
+        print_info "  No AuthPolicy found yet (maas-controller may still be reconciling)"
+    fi
+    if oc get tokenratelimitpolicy -n openshift-ingress --no-headers &>/dev/null 2>&1; then
+        local trl_count
+        trl_count=$(oc get tokenratelimitpolicy -n openshift-ingress --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        print_success "  TokenRateLimitPolicy in openshift-ingress: $trl_count found"
+    else
+        print_info "  No TokenRateLimitPolicy found yet (maas-controller may still be reconciling)"
+    fi
+
+    local auth_tls
+    auth_tls=$(oc get authorino authorino -n kuadrant-system -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null)
+    if [ "$auth_tls" = "true" ]; then
+        print_success "Authorino TLS listener is enabled"
+    else
+        print_warning "Authorino TLS listener not enabled"
+    fi
+
     print_step "Checking MaaS health endpoint..."
     local health
-    health=$(curl -sk "https://maas.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null)
+    health=$(curl -sk "https://maas.apps.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null)
     if echo "$health" | grep -q "healthy"; then
         print_success "MaaS API health: $health"
     else
         print_warning "MaaS API health check inconclusive: ${health:-no response}"
+
+        # Restart the maas-default-gateway pod to clear stale WASM shim state.
+        # During initial install the maas-api may crash-loop while waiting for the
+        # database and other dependencies. The gateway's Kuadrant WASM shim caches
+        # gRPC connection state from those failed attempts, causing persistent 500
+        # "Internal Server Error." responses on authenticated /maas-api/* and
+        # /v1/api-keys/* calls. Restarting the gateway after maas-api has
+        # stabilized clears the stale state.
+        print_step "Restarting maas-default-gateway to clear stale WASM shim state..."
+        if oc delete pod -n openshift-ingress \
+            -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+            --wait=false 2>/dev/null; then
+            sleep 10
+            local gw_elapsed=0
+            while [ $gw_elapsed -lt 60 ]; do
+                if oc get pods -n openshift-ingress \
+                    -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+                    --no-headers 2>/dev/null | grep -q "1/1.*Running"; then
+                    print_success "maas-default-gateway pod restarted"
+                    break
+                fi
+                sleep 5
+                gw_elapsed=$((gw_elapsed + 5))
+            done
+            sleep 5
+            local post_health
+            post_health=$(curl -sk "https://maas.apps.${CLUSTER_DOMAIN}/maas-api/health" 2>/dev/null)
+            if echo "$post_health" | grep -q "healthy"; then
+                print_success "MaaS API healthy after gateway restart: $post_health"
+            else
+                print_info "MaaS API not yet healthy after restart -- may need a few more seconds"
+            fi
+        else
+            print_info "No maas-default-gateway pods to restart (gateway may not be deployed yet)"
+        fi
     fi
 
     print_success "Phase 5 complete: verification done"
@@ -597,27 +849,31 @@ setup_maas_34_plus() {
     print_header "Setting up MaaS for RHOAI $(is_rhoai_35_or_higher && echo '3.5+' || echo '3.4')"
     detect_maas_state
 
-    [ "$FROM_PHASE" -le 1 ] && phase1_rhcl
-    [ "$FROM_PHASE" -le 1 ] && enable_user_workload_monitoring
-    [ "$FROM_PHASE" -le 2 ] && phase2_gateway
-    [ "$FROM_PHASE" -le 3 ] && phase3_postgres
-    [ "$FROM_PHASE" -le 4 ] && phase4_dsc
+    [ "$FROM_PHASE" -le 1 ] && [ "$TO_PHASE" -ge 1 ] && phase1_rhcl
+    [ "$FROM_PHASE" -le 1 ] && [ "$TO_PHASE" -ge 1 ] && enable_user_workload_monitoring
+    [ "$FROM_PHASE" -le 2 ] && [ "$TO_PHASE" -ge 2 ] && phase2_gateway
+    [ "$FROM_PHASE" -le 3 ] && [ "$TO_PHASE" -ge 3 ] && phase3_postgres
+    [ "$FROM_PHASE" -le 4 ] && [ "$TO_PHASE" -ge 4 ] && phase4_dsc
 
-    if [ "$ENABLE_REDIS" = true ]; then
-        setup_redis_limitador
+    if [ "$FROM_PHASE" -le 4 ] && [ "$TO_PHASE" -ge 4 ]; then
+        if [ "$ENABLE_REDIS" = true ]; then
+            setup_redis_limitador
+        fi
+
+        if [ "$ENABLE_OBSERVABILITY" = true ]; then
+            configure_dsci_monitoring
+        fi
+
+        if [ "$ENABLE_USAGE_LOGGING" = true ]; then
+            setup_maas_usage_logging
+        fi
     fi
 
-    if [ "$ENABLE_OBSERVABILITY" = true ]; then
-        configure_dsci_monitoring
+    [ "$FROM_PHASE" -le 5 ] && [ "$TO_PHASE" -ge 5 ] && phase5_verify
+
+    if [ "$CALLED_FROM_INSTALLER" != true ]; then
+        display_usage_instructions_34_plus
     fi
-
-    if [ "$ENABLE_USAGE_LOGGING" = true ]; then
-        setup_maas_usage_logging
-    fi
-
-    [ "$FROM_PHASE" -le 5 ] && phase5_verify
-
-    display_usage_instructions_34_plus
 }
 
 display_usage_instructions_34_plus() {
