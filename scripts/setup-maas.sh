@@ -187,35 +187,53 @@ check_common_prerequisites() {
 ################################################################################
 
 # Idempotent state detection: sets HAS_* variables used to decide which phases to skip.
+# Disables `set -e` for the whole function: this purely probes whether
+# resources exist yet, and `oc get <named-resource>` exits non-zero when it
+# doesn't -- expected and harmless here, but fatal under `set -e` via a bare
+# `VAR=$(oc get ...)` assignment (confirmed live: this crashed setup-maas.sh
+# immediately when called via --called-from-installer's pre-RHOAI phase,
+# before the DataScienceCluster exists -- a scenario the standalone-only
+# code path never hit, since it enforces DSC already existing as a
+# prerequisite).
 detect_maas_state() {
+    set +e
     HAS_RHCL=false
     HAS_KUADRANT=false
     HAS_GATEWAY=false
     HAS_POSTGRES=false
     HAS_MAAS_ENABLED=false
 
-    oc get csv -A 2>/dev/null | grep -q "rhcl-operator.*Succeeded" && HAS_RHCL=true
-    oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True && HAS_KUADRANT=true
-    oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null | grep -q True && HAS_GATEWAY=true
+    # NOTE: every bare `cmd && VAR=true` line below must end in `|| true`.
+    # Under `set -e`, a standalone `A && B` statement (not guarded by
+    # if/while) DOES abort the script when A fails/doesn't match -- this is
+    # a real bash gotcha, not just defensive styling. It was never caught
+    # before because prior test runs always ran against a cluster that
+    # already had RHCL/Kuadrant/Gateway installed (grep always matched);
+    # confirmed live on a truly fresh cluster (nothing installed yet).
+    oc get csv -A 2>/dev/null | grep -q "rhcl-operator.*Succeeded" && HAS_RHCL=true || true
+    oc get kuadrant kuadrant -n kuadrant-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True && HAS_KUADRANT=true || true
+    oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null | grep -q True && HAS_GATEWAY=true || true
 
     local infra_ns
     infra_ns=$(get_maas_infra_namespace 2>/dev/null || echo "redhat-ods-applications")
-    oc get secret maas-db-config -n "$infra_ns" &>/dev/null && HAS_POSTGRES=true
+    oc get secret maas-db-config -n "$infra_ns" &>/dev/null && HAS_POSTGRES=true || true
 
     if is_rhoai_35_or_higher; then
         local state
-        state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}' 2>/dev/null)
-        [ "$state" = "Managed" ] && HAS_MAAS_ENABLED=true
+        # NOTE: `oc get datasciencecluster` exits non-zero if the DSC doesn't
+        # exist yet (e.g. called via --called-from-installer's pre-RHOAI
+        # phase 1-2, before create_datasciencecluster() has run). A bare
+        # `VAR=$(cmd)` assignment (unlike `cmd && VAR=...`) IS exposed to
+        # `set -e`, so this needs an explicit `|| true` fallback.
+        state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}' 2>/dev/null) || true
+        [ "$state" = "Managed" ] && HAS_MAAS_ENABLED=true || true
     else
         local state
-        state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null)
-        [ "$state" = "Managed" ] && HAS_MAAS_ENABLED=true
+        state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.kserve.modelsAsService.managementState}' 2>/dev/null) || true
+        [ "$state" = "Managed" ] && HAS_MAAS_ENABLED=true || true
     fi
 
-    # IMPORTANT: this function is called as a bare statement (not inside a
-    # condition), so its own return status must always be 0. Without this,
-    # a false `[ "$state" = "Managed" ]` comparison above would make the
-    # function return non-zero, which triggers `set -e` at the call site.
+    set -e
     return 0
 }
 
@@ -620,13 +638,17 @@ phase4_dsc() {
     print_success "Phase 4 complete: MaaS enabled + dashboard flags set"
 }
 
-# Phase 5: Verify
 # Phase 5: Verify (version-aware; this is the single source of truth for MaaS
 # post-install verification -- previously duplicated as install-rhoai-35.sh's
 # verify_maas_deployment() [3.5-specific: ModelsAsAServiceReady/MaasTenantConfig/
 # redhat-ai-gateway-infra] and install-rhoai-34.sh's verify_maas_deployment()
 # [3.4-specific: ModelsAsServiceReady/Tenant/redhat-ods-applications]).
+# Disables `set -e` for the whole function: this is a read-only diagnostic
+# pass that probes many resources that may not exist (yet) -- see
+# detect_maas_state()'s comment above for why that's fatal under `set -e`
+# via bare `VAR=$(oc get ...)` assignments otherwise.
 phase5_verify() {
+    set +e
     print_header "Phase 5: Verify"
 
     local infra_ns
@@ -843,6 +865,7 @@ phase5_verify() {
         print_step "Running full diagnostic (scripts/diagnose-maas.sh)..."
         bash "$SCRIPT_DIR/diagnose-maas.sh" || true
     fi
+    set -e
 }
 
 setup_maas_34_plus() {
