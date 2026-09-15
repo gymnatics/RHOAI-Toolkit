@@ -1,0 +1,30 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-server-cert
+  namespace: authorino
+spec:
+  secretName: authorino-server-cert
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+  commonName: authorino.authorino.svc
+  dnsNames:
+    - authorino.authorino.svc
+    - authorino.authorino.svc.cluster.local
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authorino-oidc-server-cert
+  namespace: authorino
+spec:
+  secretName: authorino-oidc-server-cert
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+  commonName: authorino-oidc.authorino.svc
+  dnsNames:
+    - authorino-oidc.authorino.svc
+    - authorino-oidc.authorino.svc.cluster.local

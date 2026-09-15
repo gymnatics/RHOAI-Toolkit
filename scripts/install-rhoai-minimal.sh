@@ -366,18 +366,7 @@ enable_user_workload_monitoring() {
     
     print_step "Creating cluster-monitoring-config ConfigMap..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
+    oc apply -f "$SCRIPT_DIR/lib/manifests/monitoring/cluster-monitoring-config.yaml"
     
     print_success "User Workload Monitoring enabled"
 }
@@ -398,33 +387,8 @@ install_nfd() {
     else
         print_step "Creating NFD namespace and operator (channel: $CHANNEL_NFD)..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-nfd
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: openshift-nfd
-  namespace: openshift-nfd
-spec:
-  targetNamespaces:
-    - openshift-nfd
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: nfd
-  namespace: openshift-nfd
-spec:
-  channel: $CHANNEL_NFD
-  installPlanApproval: Automatic
-  name: nfd
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        export CHANNEL_NFD
+        envsubst '${CHANNEL_NFD}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/nfd-operator.yaml.tmpl" | oc apply -f -
         
         # Wait for operator with InstallPlan approval handling
         print_step "Waiting for NFD operator to be ready..."
@@ -446,21 +410,7 @@ EOF
     if ! oc get nodefeaturediscovery nfd-instance -n openshift-nfd &>/dev/null; then
         print_step "Creating NFD instance..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: nfd.openshift.io/v1
-kind: NodeFeatureDiscovery
-metadata:
-  name: nfd-instance
-  namespace: openshift-nfd
-spec:
-  operand:
-    image: registry.redhat.io/openshift4/ose-node-feature-discovery-rhel9:v4.19
-    servicePort: 12000
-  workerConfig:
-    configData: |
-      core:
-        sleepInterval: 60s
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/nfd-instance.yaml"
         
         print_success "NFD instance created"
     fi
@@ -478,33 +428,8 @@ install_gpu_operator() {
     else
         print_step "Creating GPU operator namespace and subscription (channel: $CHANNEL_GPU)..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: nvidia-gpu-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: nvidia-gpu-operator
-  namespace: nvidia-gpu-operator
-spec:
-  targetNamespaces:
-    - nvidia-gpu-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: gpu-operator-certified
-  namespace: nvidia-gpu-operator
-spec:
-  channel: $CHANNEL_GPU
-  installPlanApproval: Automatic
-  name: gpu-operator-certified
-  source: certified-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        export CHANNEL_GPU
+        envsubst '${CHANNEL_GPU}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/gpu-operator.yaml.tmpl" | oc apply -f -
         
         # Wait for operator with InstallPlan approval handling
         print_step "Waiting for GPU operator to be ready..."
@@ -529,37 +454,7 @@ EOF
         if [ "$gpu_nodes" -gt 0 ]; then
             print_step "GPU nodes detected, creating ClusterPolicy..."
             
-            cat <<EOF | oc apply -f -
-apiVersion: nvidia.com/v1
-kind: ClusterPolicy
-metadata:
-  name: gpu-cluster-policy
-spec:
-  operator:
-    defaultRuntime: crio
-    use_ocp_driver_toolkit: true
-  driver:
-    enabled: true
-  dcgm:
-    enabled: true
-  dcgmExporter:
-    enabled: true
-  devicePlugin:
-    enabled: true
-  gfd:
-    enabled: true
-  migManager:
-    enabled: true
-  nodeStatusExporter:
-    enabled: true
-  toolkit:
-    enabled: true
-  validator:
-    plugin:
-      env:
-        - name: WITH_WORKLOAD
-          value: "false"
-EOF
+            oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/gpu-clusterpolicy.yaml"
             
             print_success "GPU ClusterPolicy created"
         else
@@ -586,33 +481,8 @@ install_certmanager() {
     
     print_step "Creating cert-manager namespace and subscription (channel: $CHANNEL_CERTMANAGER)..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cert-manager-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: cert-manager-operator
-  namespace: cert-manager-operator
-spec:
-  targetNamespaces:
-    - cert-manager-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: cert-manager-operator
-  namespace: cert-manager-operator
-spec:
-  channel: $CHANNEL_CERTMANAGER
-  installPlanApproval: Automatic
-  name: openshift-cert-manager-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    export CHANNEL_CERTMANAGER
+    envsubst '${CHANNEL_CERTMANAGER}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/certmanager-operator.yaml.tmpl" | oc apply -f -
     
     # Wait for operator with InstallPlan approval handling
     print_step "Waiting for cert-manager operator to be ready..."
@@ -646,19 +516,8 @@ install_kueue() {
     
     print_step "Installing Kueue subscription (channel: $CHANNEL_KUEUE)..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: kueue-operator
-  namespace: openshift-operators
-spec:
-  channel: $CHANNEL_KUEUE
-  installPlanApproval: Automatic
-  name: kueue-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    export CHANNEL_KUEUE
+    envsubst '${CHANNEL_KUEUE}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/kueue-subscription.yaml.tmpl" | oc apply -f -
     
     # Wait for operator with InstallPlan approval handling
     print_step "Waiting for Kueue operator to be ready..."
@@ -691,33 +550,8 @@ install_lws() {
     
     print_step "Creating LWS namespace and subscription (channel: $CHANNEL_LWS)..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: openshift-lws-operator
-  namespace: openshift-lws-operator
-spec:
-  targetNamespaces:
-    - openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: leader-worker-set
-  namespace: openshift-lws-operator
-spec:
-  channel: $CHANNEL_LWS
-  installPlanApproval: Automatic
-  name: leader-worker-set
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+    export CHANNEL_LWS
+    envsubst '${CHANNEL_LWS}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/lws-operator.yaml.tmpl" | oc apply -f -
     
     # Wait for operator with InstallPlan approval handling
     print_step "Waiting for LWS operator to be ready..."
@@ -748,31 +582,8 @@ install_rhcl() {
     else
         print_step "Creating RHCL namespace and subscription (channel: $CHANNEL_RHCL)..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: kuadrant-system
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kuadrant-system
-  namespace: kuadrant-system
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhcl-operator
-  namespace: kuadrant-system
-spec:
-  channel: $CHANNEL_RHCL
-  installPlanApproval: Automatic
-  name: rhcl-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        export CHANNEL_RHCL
+        envsubst '${CHANNEL_RHCL}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/rhcl-operator.yaml.tmpl" | oc apply -f -
         
         # Wait for operator with InstallPlan approval handling
         print_step "Waiting for RHCL operator to be ready..."
@@ -794,14 +605,7 @@ EOF
     if ! oc get kuadrant kuadrant -n "$ns" &>/dev/null; then
         print_step "Creating Kuadrant instance..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: kuadrant.io/v1beta1
-kind: Kuadrant
-metadata:
-  name: kuadrant
-  namespace: kuadrant-system
-spec: {}
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/kuadrant-instance.yaml"
         
         print_success "Kuadrant instance created"
     else
@@ -826,19 +630,7 @@ install_servicemesh_for_kuadrant() {
         if ! oc get subscription servicemeshoperator3 -n openshift-operators &>/dev/null; then
             print_step "Creating Service Mesh 3 subscription..."
             
-            cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: servicemeshoperator3
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Manual
-  name: servicemeshoperator3
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+            oc apply -f "$SCRIPT_DIR/lib/manifests/operators/servicemesh3-subscription.yaml"
         fi
         
         # Wait for InstallPlan to appear (retry up to 60s)
@@ -922,16 +714,8 @@ setup_istio_for_kuadrant() {
     local istio_version=$(oc get istio -A -o jsonpath='{.items[0].spec.version}' 2>/dev/null || get_default_istio_version)
     
     print_step "Creating IstioCNI..."
-    cat <<EOF | oc apply -f -
-apiVersion: sailoperator.io/v1
-kind: IstioCNI
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-cni
-  version: $istio_version
-EOF
+    export ISTIO_VERSION="$istio_version"
+    envsubst '${ISTIO_VERSION}' < "$SCRIPT_DIR/lib/manifests/rhcl/istiocni.yaml" | oc apply -f -
     
     # Wait for IstioCNI to be ready
     print_step "Waiting for IstioCNI to be ready..."
@@ -948,16 +732,8 @@ EOF
     done
     
     print_step "Creating Istio instance in istio-system..."
-    cat <<EOF | oc apply -f -
-apiVersion: sailoperator.io/v1
-kind: Istio
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-system
-  version: $istio_version
-EOF
+    export ISTIO_VERSION="$istio_version"
+    envsubst '${ISTIO_VERSION}' < "$SCRIPT_DIR/lib/manifests/rhcl/istio.yaml" | oc apply -f -
     
     # Wait for Istio to be healthy
     print_step "Waiting for Istio to be healthy..."
@@ -976,14 +752,7 @@ EOF
     # Create openshift-default GatewayClass (required by RHCL docs)
     if ! oc get gatewayclass openshift-default &>/dev/null; then
         print_step "Creating openshift-default GatewayClass..."
-        cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-default
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhcl/gatewayclass-default.yaml"
     fi
     
     print_success "Istio setup complete for Kuadrant"
@@ -1033,37 +802,12 @@ install_authorino() {
         print_step "Creating Authorino namespace and subscription (channel: $CHANNEL_AUTHORINO)..."
         
         # Create namespace
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: authorino
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/authorino-namespace.yaml"
         
         # Install Authorino Operator from community operators
         # Note: Use certified-operators if available in your catalog
-        cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: authorino
-  namespace: authorino
-spec:
-  targetNamespaces:
-    - authorino
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: authorino-operator
-  namespace: authorino
-spec:
-  channel: $CHANNEL_AUTHORINO
-  installPlanApproval: Automatic
-  name: authorino-operator
-  source: community-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        export CHANNEL_AUTHORINO
+        envsubst '${CHANNEL_AUTHORINO}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/authorino-operator.yaml.tmpl" | oc apply -f -
         
         # Wait for operator with InstallPlan approval handling
         print_step "Waiting for Authorino operator to be ready..."
@@ -1088,61 +832,12 @@ EOF
         # First ensure cert-manager created the certificates
         print_step "Setting up TLS certificates for Authorino..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: authorino-server-cert
-  namespace: authorino
-spec:
-  secretName: authorino-server-cert
-  issuerRef:
-    name: selfsigned-issuer
-    kind: ClusterIssuer
-  commonName: authorino.authorino.svc
-  dnsNames:
-    - authorino.authorino.svc
-    - authorino.authorino.svc.cluster.local
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: authorino-oidc-server-cert
-  namespace: authorino
-spec:
-  secretName: authorino-oidc-server-cert
-  issuerRef:
-    name: selfsigned-issuer
-    kind: ClusterIssuer
-  commonName: authorino-oidc.authorino.svc
-  dnsNames:
-    - authorino-oidc.authorino.svc
-    - authorino-oidc.authorino.svc.cluster.local
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/authorino-certificates.yaml"
         
         sleep 5
         
         # Create Authorino instance
-        cat <<EOF | oc apply -f -
-apiVersion: operator.authorino.kuadrant.io/v1beta1
-kind: Authorino
-metadata:
-  name: authorino
-  namespace: authorino
-spec:
-  replicas: 1
-  clusterWide: true
-  listener:
-    tls:
-      enabled: true
-      certSecretRef:
-        name: authorino-server-cert
-  oidcServer:
-    tls:
-      enabled: true
-      certSecretRef:
-        name: authorino-oidc-server-cert
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/authorino-instance.yaml"
         
         print_success "Authorino instance created"
     else
@@ -1205,26 +900,7 @@ create_dsci() {
     
     print_step "Creating DSCInitialization..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: dscinitialization.opendatahub.io/v1
-kind: DSCInitialization
-metadata:
-  name: default-dsci
-spec:
-  applicationsNamespace: redhat-ods-applications
-  monitoring:
-    managementState: Managed
-    namespace: redhat-ods-monitoring
-  serviceMesh:
-    controlPlane:
-      metricsCollection: Istio
-      name: data-science-smcp
-      namespace: istio-system
-    managementState: Managed
-  trustedCABundle:
-    customCABundle: ''
-    managementState: Managed
-EOF
+    oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/dscinitialization.yaml"
     
     print_success "DSCInitialization created"
 }
@@ -1249,45 +925,8 @@ create_dsc() {
     fi
     
     # Based on CAI guide Section 1, but without llm-d specific components
-    cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-  labels:
-    app.kubernetes.io/name: datasciencecluster
-spec:
-  components:
-    dashboard:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    datasciencepipelines:
-      managementState: Managed
-    aipipelines:
-      managementState: Managed
-    kserve:
-      managementState: Managed
-    modelmeshserving:
-      managementState: Managed
-    modelregistry:
-      managementState: Managed
-      registriesNamespace: rhoai-model-registries
-    ray:
-      managementState: Managed
-    trainingoperator:
-      managementState: Managed
-    trustyai:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
-    ${genai_field}:
-      managementState: Managed
-    kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
-EOF
+    export GENAI_FIELD="$genai_field"
+    envsubst '${GENAI_FIELD}' < "$SCRIPT_DIR/lib/manifests/rhoai-minimal/datasciencecluster.yaml.tmpl" | oc apply -f -
     
     print_success "DataScienceCluster created"
 }
@@ -1385,25 +1024,7 @@ create_kueue_resources() {
     else
         print_step "Creating default ClusterQueue..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ClusterQueue
-metadata:
-  name: default
-spec:
-  namespaceSelector: {}
-  resourceGroups:
-    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
-      flavors:
-        - name: default-flavor
-          resources:
-            - name: "cpu"
-              nominalQuota: 100
-            - name: "memory"
-              nominalQuota: 200Gi
-            - name: "nvidia.com/gpu"
-              nominalQuota: 10
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/kueue-clusterqueue.yaml"
         
         print_success "ClusterQueue created"
     fi
@@ -1414,13 +1035,7 @@ EOF
     else
         print_step "Creating default ResourceFlavor..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: default-flavor
-spec: {}
-EOF
+        oc apply -f "$SCRIPT_DIR/lib/manifests/rhoai-minimal/kueue-resourceflavor.yaml"
         
         print_success "ResourceFlavor created"
     fi
