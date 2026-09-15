@@ -147,6 +147,19 @@ if [ "$FROM_PHASE" -le 4 ]; then
     run oc delete secret postgres-creds maas-db-config -n "$INFRA_NS" --ignore-not-found
     # Legacy 3.4-style location, in case it differs from the resolved infra namespace
     run oc delete secret maas-db-config -n redhat-ods-applications --ignore-not-found
+
+    # RHOAI 3.5+: the cluster-scoped Config/default object carries a
+    # maas.opendatahub.io/default-aitenant-bootstrapped annotation once a
+    # default AITenant/MaasTenantConfig has ever been bootstrapped. Because
+    # it's cluster-scoped, it survives any namespace-scoped teardown above and
+    # tells the maas-controller on the next install "an admin already
+    # bootstrapped and intentionally removed the default tenant -- respect the
+    # zero-tenant state" (per upstream opendatahub-io/models-as-a-service
+    # docs), which blocks auto-bootstrap on a fresh reinstall. Delete it here
+    # so a teardown+reinstall cycle via this toolkit doesn't hit that trap.
+    if oc get crd configs.maas.opendatahub.io &>/dev/null; then
+        run oc delete configs.maas.opendatahub.io default --ignore-not-found
+    fi
     print_success "Phase 4 complete: PostgreSQL removed"
 fi
 
