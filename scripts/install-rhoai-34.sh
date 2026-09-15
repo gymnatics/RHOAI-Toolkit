@@ -40,6 +40,9 @@ source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
     MAGENTA='\033[0;35m'
     NC='\033[0m'
 }
+source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/redis-limitador.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/functions/metallb.sh" 2>/dev/null || true
 
 # Default options
 SKIP_PREREQUISITES=false
@@ -1085,15 +1088,15 @@ setup_maas_database() {
     fi
 
     print_step "Deploying POC PostgreSQL in redhat-ods-applications..."
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-pvc.yaml"
-    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/postgres-service.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-pvc.yaml"
+    oc apply -n redhat-ods-applications -f "$ROOT_DIR/lib/manifests/maas/platform/postgres-service.yaml"
 
     export PG_IMAGE="$pg_image"
     export PG_USER="$pg_user"
     export PG_PASSWORD="$pg_password"
     export PG_DB="$pg_db"
     envsubst '${PG_IMAGE} ${PG_USER} ${PG_PASSWORD} ${PG_DB}' \
-        < "$ROOT_DIR/lib/manifests/maas/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
+        < "$ROOT_DIR/lib/manifests/maas/platform/postgres-deployment.yaml" | oc apply -n redhat-ods-applications -f -
     unset PG_PASSWORD
 
     print_step "Waiting for PostgreSQL to be ready..."
@@ -1234,173 +1237,11 @@ configure_maas_tls() {
 ################################################################################
 
 configure_maas_rate_limiting() {
-    print_step "Configuring MaaS token rate limiting (Redis + EnvoyFilters)..."
-
-    # Fix 1: Deploy Redis for Limitador persistent storage
-    if oc get deployment limitador-redis -n kuadrant-system &>/dev/null; then
-        print_info "Limitador Redis already deployed"
-    else
-        print_step "Deploying Redis for Limitador..."
-        oc apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: limitador-redis
-  namespace: kuadrant-system
-  labels:
-    app: limitador-redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: limitador-redis
-  template:
-    metadata:
-      labels:
-        app: limitador-redis
-    spec:
-      containers:
-      - name: redis
-        image: registry.redhat.io/rhel9/redis-7:latest
-        ports:
-        - containerPort: 6379
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 256Mi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: limitador-redis
-  namespace: kuadrant-system
-spec:
-  selector:
-    app: limitador-redis
-  ports:
-  - port: 6379
-    targetPort: 6379
-EOF
-        oc rollout status deployment/limitador-redis -n kuadrant-system --timeout=60s 2>/dev/null
-        print_success "Redis deployed"
-    fi
-
-    # Create Redis connection secret
-    if ! oc get secret limitador-redis-config -n kuadrant-system &>/dev/null; then
-        oc create secret generic limitador-redis-config \
-            --from-literal=URL="redis://limitador-redis.kuadrant-system.svc.cluster.local:6379" \
-            -n kuadrant-system
-    fi
-
-    # Patch Limitador to use redis-cached storage
-    local current_storage
-    current_storage=$(oc get limitador limitador -n kuadrant-system \
-        -o jsonpath='{.spec.storage.redis-cached}' 2>/dev/null || true)
-    if [ -z "$current_storage" ]; then
-        print_step "Configuring Limitador with redis-cached storage..."
-        oc patch limitador limitador -n kuadrant-system --type=merge -p '{
-            "spec": {
-                "storage": {
-                    "redis-cached": {
-                        "configSecretRef": {
-                            "name": "limitador-redis-config"
-                        },
-                        "options": {
-                            "flush-period": 500,
-                            "max-cached": 10000,
-                            "batch-size": 100,
-                            "response-timeout": 500
-                        }
-                    }
-                }
-            }
-        }'
-        print_success "Limitador configured with Redis-cached storage"
-    else
-        print_info "Limitador already using redis-cached storage"
-    fi
-
-    # Fix 2: Health check interceptor — prevents health probes from saturating
-    # the WasmPlugin's 100-span buffer (causing token reports to be dropped)
-    if ! oc get envoyfilter healthcheck-filter -n openshift-ingress &>/dev/null; then
-        print_step "Applying health check interceptor EnvoyFilter..."
-        oc apply -f - <<EOF
-apiVersion: networking.istio.io/v1alpha3
-kind: EnvoyFilter
-metadata:
-  name: healthcheck-filter
-  namespace: openshift-ingress
-spec:
-  workloadSelector:
-    labels:
-      gateway.networking.k8s.io/gateway-name: maas-default-gateway
-  configPatches:
-    - applyTo: HTTP_FILTER
-      match:
-        context: GATEWAY
-        listener:
-          filterChain:
-            filter:
-              name: envoy.filters.network.http_connection_manager
-      patch:
-        operation: INSERT_FIRST
-        value:
-          name: envoy.filters.http.health_check
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
-            pass_through_mode: false
-            headers:
-              - name: ":path"
-                string_match:
-                  exact: "/healthz"
-              - name: ":path"
-                string_match:
-                  exact: "/ready"
-EOF
-        print_success "Health check interceptor applied"
-    else
-        print_info "Health check interceptor already exists"
-    fi
-
-    # Fix 3: Increase ratelimit cluster timeout (default ~100ms is too low)
-    if ! oc get envoyfilter increase-ratelimit-cluster-timeout -n openshift-ingress &>/dev/null; then
-        print_step "Applying ratelimit cluster timeout EnvoyFilter..."
-        oc apply -f - <<EOF
-apiVersion: networking.istio.io/v1alpha3
-kind: EnvoyFilter
-metadata:
-  name: increase-ratelimit-cluster-timeout
-  namespace: openshift-ingress
-spec:
-  workloadSelector:
-    labels:
-      gateway.networking.k8s.io/gateway-name: maas-default-gateway
-  configPatches:
-    - applyTo: CLUSTER
-      match:
-        context: GATEWAY
-        cluster:
-          name: kuadrant-ratelimit-service
-      patch:
-        operation: MERGE
-        value:
-          connect_timeout: 2s
-EOF
-        print_success "Ratelimit cluster timeout increased to 2s"
-    else
-        print_info "Ratelimit cluster timeout already configured"
-    fi
-
-    # Restart gateway to pick up new filters and clear span buffer
-    print_step "Restarting MaaS gateway to apply filters..."
-    oc rollout restart deployment/maas-default-gateway-openshift-gateway-controller \
-        -n openshift-ingress 2>/dev/null || true
-    sleep 10
-
-    print_success "MaaS rate limiting configured (Redis + health check filter + timeout fix)"
+    # Redis persistence + health-check/timeout EnvoyFilters are extracted into
+    # lib/manifests/observability/redis/ + lib/functions/redis-limitador.sh
+    # (manifests-source-of-truth) since they're reusable outside the full installer
+    # (e.g. scripts/setup-maas.sh --enable-redis).
+    setup_redis_limitador
 }
 
 enable_user_workload_monitoring() {
@@ -1571,8 +1412,20 @@ spec:
     - Ingress
 EOF
 
-    if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
-        oc apply -f - <<EOF
+    # RHOAI 3.4 doesn't ship a DSC-managed Monitoring component that auto-creates
+    # its own default PersesDatasource, so this toolkit's "monitoring-prometheus-datasource"
+    # is normally the only default in play here. However, if this script is ever
+    # run against a cluster that already has a native "cluster-prometheus-datasource"
+    # (e.g. a later RHOAI upgrade, or a mixed 3.4/3.5 environment), skip creating
+    # our own — Perses only allows ONE default datasource per kind, and having two
+    # causes the loser to be rejected by the Perses API (400 error) and stay
+    # permanently Degraded, breaking the dashboard's Observe & monitor page with
+    # "No datasource found for kind 'PrometheusDatasource'".
+    if oc get persesdatasource cluster-prometheus-datasource -n "$mon_ns" &>/dev/null; then
+        print_info "A 'cluster-prometheus-datasource' already exists — skipping toolkit's duplicate datasource to avoid a default-datasource conflict"
+    else
+        if ! oc get configmap prometheus-web-tls-ca -n "$mon_ns" &>/dev/null; then
+            oc apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1582,10 +1435,11 @@ metadata:
     service.beta.openshift.io/inject-cabundle: "true"
 data: {}
 EOF
-        print_info "Created service-ca ConfigMap for PersesDatasource"
-    fi
+            print_info "Created service-ca ConfigMap for PersesDatasource"
+        fi
 
-    oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+        oc apply -f "$ROOT_DIR/lib/manifests/monitoring/persesdatasource-monitoring.yaml"
+    fi
 
     print_success "Observability Perses setup complete"
 }
@@ -1897,35 +1751,68 @@ EOF
     fi
 }
 
+# Apply the gateway-resources ConfigMap, choosing the proxy-aware variant when
+# running on OCP < 4.22 behind a corporate proxy (OCPBUGS-77457 workaround,
+# fixed natively in OCP 4.22+).
+apply_gateway_resources_configmap() {
+    local ocp_version http_proxy_val https_proxy_val no_proxy_val major minor
+
+    ocp_version=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null)
+    http_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpProxy}' 2>/dev/null)
+    major=$(echo "$ocp_version" | cut -d. -f1)
+    minor=$(echo "$ocp_version" | cut -d. -f2)
+
+    if [ -n "$http_proxy_val" ] && [ -n "$major" ] && [ -n "$minor" ] && \
+       { [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 22 ]; }; }; then
+        print_step "Detected OCP $ocp_version behind a corporate proxy -- applying proxy-aware gateway-resources ConfigMap..."
+        https_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpsProxy}' 2>/dev/null)
+        no_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.noProxy}' 2>/dev/null)
+        export HTTP_PROXY="$http_proxy_val" HTTPS_PROXY="$https_proxy_val" NO_PROXY="$no_proxy_val"
+        envsubst '${HTTP_PROXY} ${HTTPS_PROXY} ${NO_PROXY}' \
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-resources-proxy.yaml.tmpl" | oc_apply_retry
+        unset HTTP_PROXY HTTPS_PROXY NO_PROXY
+        print_success "Proxy-aware gateway-resources ConfigMap applied"
+    else
+        print_step "Applying gateway resource overrides (2Gi memory limit)..."
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    fi
+}
+
 create_inference_gateway() {
     print_step "Creating inference Gateways for llm-d/MaaS..."
 
     get_cluster_domain
 
+    # Non-cloud platforms (BareMetal, OpenStack, None/SNO) have no cloud LB
+    # controller to provision the Gateway's LoadBalancer Service external IP --
+    # without MetalLB, the Gateway never reaches Programmed=True. No-op on cloud.
+    setup_metallb_if_needed
+
     # GatewayClass for OpenShift Gateway Controller
     if ! oc get gatewayclass openshift-gateway-controller &>/dev/null; then
         print_step "Creating openshift-gateway-controller GatewayClass..."
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
     fi
 
-    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins)
-    print_step "Applying gateway resource overrides (2Gi memory limit)..."
-    oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins).
+    # On OCP < 4.22 behind a corporate proxy, use the proxy-aware variant so the
+    # istio-proxy container gets HTTP_PROXY/HTTPS_PROXY/NO_PROXY (OCPBUGS-77457).
+    apply_gateway_resources_configmap
 
     # MaaS Gateway - MUST have both annotations for MaaS controller to work in 3.4:
     #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
     #   security.opendatahub.io/authorino-tls-bootstrap: "true" - enables TLS to Authorino
     print_step "Creating maas-default-gateway with MaaS annotations..."
     export CERT_NAME="default-gateway-tls"
-    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc apply -f -
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-maas.yaml" | oc_apply_retry
 
     # llm-d inference gateway (for direct model access outside MaaS)
     print_step "Creating openshift-ai-inference gateway..."
     if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
     fi
 
-    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc apply -f -
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc_apply_retry
 
     # Create default-gateway-tls secret for the HTTPS listeners
     # Without this, Envoy never creates the port 443 listener and the gateway returns 503
@@ -1935,6 +1822,17 @@ create_inference_gateway() {
     # The gateway gets its own LoadBalancer ELB, but *.apps.<cluster> DNS points to the
     # default OpenShift Router. A passthrough Route bridges the two.
     create_gateway_passthrough_routes
+
+    # maas-default-gateway restricts route binding to namespaces labeled
+    # maas.opendatahub.io/gateway-access=true (from: Selector) -- label every
+    # namespace known to host a route/model that attaches to this gateway.
+    # Without this, maas-api's own HTTPRoute (in redhat-ods-applications on
+    # 3.4) would be unreachable after Selector hardening.
+    print_step "Labeling namespaces for MaaS gateway route access..."
+    for ns in redhat-ods-applications models-as-a-service; do
+        oc get namespace "$ns" &>/dev/null && \
+            oc label namespace "$ns" maas.opendatahub.io/gateway-access=true --overwrite &>/dev/null
+    done
 
     print_success "Gateways created"
     print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
@@ -1963,7 +1861,7 @@ create_gateway_tls_secret() {
     if [ -n "$issuer" ]; then
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
-        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc apply -f -
+        envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc_apply_retry
         print_step "Waiting for cert-manager to generate TLS secret..."
         local wait=0
         while [ $wait -lt 120 ]; do
@@ -2062,7 +1960,7 @@ create_gateway_passthrough_routes() {
         export HOSTNAME="$hostname"
         export SERVICE_NAME="$svc_name"
         envsubst '${ROUTE_NAME} ${HOSTNAME} ${SERVICE_NAME}' \
-            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc apply -f -
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-passthrough-route.yaml" | oc_apply_retry
     done
     print_success "Gateway passthrough routes configured"
 }
@@ -2825,5 +2723,8 @@ main() {
     print_summary
 }
 
-main "$@"
-exit 0
+# Only run main when executed directly, not when sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+    exit 0
+fi

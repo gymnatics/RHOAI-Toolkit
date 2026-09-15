@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NOTE: no top-level `namespace:` transformer here -- these resources are
+# intentionally split across two namespaces (llm for MaaSModelRef, matching
+# the model's own namespace; models-as-a-service for the AuthPolicy and
+# Subscriptions). Each resource sets its own metadata.namespace explicitly.
+resources:
+  - maas-model.yaml
+  - maas-auth-policy.yaml
+  - maas-subscription-free.yaml
+  - maas-subscription-premium.yaml

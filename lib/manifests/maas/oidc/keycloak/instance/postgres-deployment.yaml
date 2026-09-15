@@ -1,0 +1,65 @@
+# PostgreSQL backing store for the Keycloak demo instance. Credentials are
+# sourced from the imperatively-created "keycloak-db-secret" (see
+# scripts/setup-maas-oidc.sh) -- never commit real passwords to manifests.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-pgsql
+  namespace: maas-keycloak
+  labels:
+    app: keycloak-pgsql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-pgsql
+  template:
+    metadata:
+      labels:
+        app: keycloak-pgsql
+    spec:
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-secret
+                  key: username
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-secret
+                  key: password
+            - name: POSTGRESQL_DATABASE
+              value: keycloak
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: keycloak-pgsql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-pgsql
+  namespace: maas-keycloak
+spec:
+  selector:
+    app: keycloak-pgsql
+  ports:
+    - port: 5432
+      targetPort: 5432

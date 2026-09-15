@@ -1,0 +1,12 @@
+# Registers the qwen3-06b LLMInferenceService with the MaaS control plane.
+# Lives in the SAME namespace as the LLMInferenceService (llm), not models-as-a-service.
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: qwen3-06b
+  namespace: llm
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: qwen3-06b

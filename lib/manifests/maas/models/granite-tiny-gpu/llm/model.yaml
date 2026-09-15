@@ -1,0 +1,42 @@
+# Red Hat AI Granite 4.0-h-tiny FP8 Dynamic (~1B params) on Red Hat AI Inference
+# Server (vLLM CUDA). Suitable for clusters with modest GPU resources (~8 GiB VRAM).
+# Requires an NVIDIA GPU with compute capability >= 80 (Ampere+: L4, L40, L40S,
+# A100, H100). T4 and A10G are NOT supported for FP8 quantization.
+#
+# NOTE: verify the exact modelcar image tag against the current Red Hat registry
+# catalog (registry.redhat.io) before production use -- tags are updated over time.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: granite-tiny-gpu
+  # Namespace set by kustomization.yaml `namespace:` transformer (default: llm).
+spec:
+  model:
+    name: RedHatAI/granite-4.0-h-tiny-FP8-dynamic
+    uri: oci://registry.redhat.io/rhelai1/modelcar-granite-4-0-h-tiny-fp8-dynamic:1.5
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    containers:
+      - name: main
+        image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3.0
+        args:
+          - "--max-model-len=8192"
+        resources:
+          requests:
+            cpu: "2"
+            memory: 8Gi
+          limits:
+            cpu: "4"
+            memory: 24Gi
+            nvidia.com/gpu: "1"

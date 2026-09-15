@@ -1,0 +1,22 @@
+# Premium tier subscription for the simulator model (100,000 tokens/min, priority 20).
+#
+# NOTE: spec.modelRefs (plural array) + spec.owner.groups is the correct schema --
+# verified against a live RHOAI 3.5 cluster and matching
+# lib/functions/model-deployment.sh::publish_model_to_maas.
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: simulator-premium
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+      tokenRateLimits:
+        - limit: 100000
+          window: 1m
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 20

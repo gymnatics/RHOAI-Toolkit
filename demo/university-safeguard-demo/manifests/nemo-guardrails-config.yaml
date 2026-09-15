@@ -1,0 +1,202 @@
+# NeMo Guardrails Configuration — University Safeguard Demo
+#
+# Layers:
+#   1. Presidio PII redaction on input (mask sensitive data on input)
+#   2. Generic regex/keyword detection on input (secrets, API keys, SSNs)
+#   3. HAP (hate/abuse/profanity) detection on input AND output via
+#      granite-guardian-hap-38m — implemented with a custom Colang flow +
+#      Python action (not the built-in hf_classifier rail) so every detection
+#      generates a structured log entry (see actions.py).
+#   4. Presidio PII detection on output (blocks if PII leaks into the response)
+#
+# The HAP detector is called directly against its /api/v1/text/contents API
+# (the IBM/FMS-compatible detector contract implemented by the
+# guardrails-detector-huggingface-runtime), so we get the raw score/label back
+# and can log a "hap_alert" entry on every detection, in addition to blocking.
+#
+# Usage:
+#   export NAMESPACE=acme-university-demo
+#   export GUARDRAILS_NAME=university-safeguard
+#   export MAIN_MODEL_URL="https://maas-rhdp.apps.maas.redhatworkshops.io/v1"
+#   export MAIN_MODEL_NAME="qwen36-35b-a3b"
+#   envsubst < nemo-guardrails-config.yaml | oc apply -f -
+#
+# The main model is an EXTERNAL LiteMaaS/LiteLLM-proxied endpoint (not deployed
+# on this cluster). Auth is via a real API key, sourced from a Secret (see
+# nemo-guardrails-cr.yaml + lib/functions/university-safeguard.sh
+# ensure_main_model_api_key_secret) and templated into models[main].parameters.api_key
+# below at deploy time. The raw key is never written into a git-tracked file
+# (see the api_key field's inline comment for why it's set explicitly here
+# rather than relying only on the OPENAI_API_KEY container env var).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GUARDRAILS_NAME}-config
+  namespace: ${NAMESPACE}
+data:
+  config.yaml: |
+    models:
+      - type: main
+        engine: openai
+        parameters:
+          base_url: "${MAIN_MODEL_URL}"
+          model_name: "${MAIN_MODEL_NAME}"
+          api_key: "${MAIN_MODEL_API_KEY}"
+          # Qwen3 "thinking mode" produces a verbose <think>...</think> preamble
+          # before the actual answer. Disable it via chat_template_kwargs so
+          # responses are direct (same flag used by the in-cluster
+          # redhataiqwen3-8b-fp8-dynamic model's VLLM_ADDITIONAL_ARGS).
+          extra_body:
+            chat_template_kwargs:
+              enable_thinking: false
+          # NOTE: omitting api_key here and relying on the OPENAI_API_KEY
+          # container env var (sourced from a Secret) did NOT work against
+          # this LiteMaaS/LiteLLM endpoint -- verified on cluster-v5zjc
+          # 2026-09-03 (got a 401 "LiteLLM Virtual Key expected" from the
+          # upstream proxy). Explicitly setting api_key here, templated via
+          # envsubst at deploy time from the same value stored in the
+          # ${GUARDRAILS_NAME}-model-key Secret, is what actually works. The
+          # raw key is still never committed to git -- only the ConfigMap
+          # object in-cluster ends up holding it (readable via `oc get
+          # configmap -o yaml`), which is a known demo-grade limitation.
+    rails:
+      config:
+        sensitive_data_detection:
+          output:
+            entities:
+              - EMAIL_ADDRESS
+              - PERSON
+        regex_detection:
+          input:
+            patterns:
+              - "\\b(password|secret|api[_-]?key|token)\\b"
+              - "\\d{3}-\\d{2}-\\d{4}"
+            case_insensitive: true
+      input:
+        flows:
+          - mask sensitive data on input
+          - regex check input
+          - hap alert check input
+      output:
+        flows:
+          - detect sensitive data on output
+          - hap alert check output
+  rails.co: |
+    # University Safeguard Demo — HAP (hate/abuse/profanity) detection flow.
+    #
+    # check_hap_input / check_hap_output call the granite-guardian-hap-38m
+    # detector directly (see actions.py) and, on ANY detection above threshold,
+    # log a structured "hap_alert" entry (currently: pod stdout only — see
+    # actions.py for how to wire a real notification channel later) before
+    # blocking the message.
+    define flow hap alert check input
+      $hap_flagged = execute check_hap_input(text=$user_message)
+      if $hap_flagged
+        bot inform hap violation
+        stop
+
+    define flow hap alert check output
+      $hap_flagged_output = execute check_hap_output(text=$bot_message)
+      if $hap_flagged_output
+        bot inform hap violation
+        stop
+
+    define bot inform hap violation
+      "I'm sorry, but I can't continue with that request. This message has been flagged and logged for staff review."
+  actions.py: |
+    """Custom NeMo Guardrails actions for the University Safeguard Demo.
+
+    check_hap_input / check_hap_output: call the granite-guardian-hap-38m
+    detector directly via its /api/v1/text/contents API (the IBM/FMS-compatible
+    contract implemented by guardrails-detector-huggingface-runtime) and log a
+    structured "hap_alert" entry on every detection above HAP_THRESHOLD.
+
+    The alert is currently logged to stdout only (captured by `oc logs`). This
+    is the integration point for a real alert channel later — e.g. POST to a
+    webhook (Slack/Teams/PagerDuty), send an email via SMTP, or push to an
+    incident-management API. Swap the body of _log_hap_alert when that
+    decision is made; the Colang flow does not need to change.
+    """
+    import json
+    import logging
+    import os
+    from datetime import datetime, timezone
+    from typing import Optional
+
+    import httpx
+    from nemoguardrails.actions import action
+
+    logger = logging.getLogger("university_safeguard.hap_alert")
+
+    HAP_DETECTOR_URL = os.environ.get(
+        "HAP_DETECTOR_URL", "http://hap-detector-predictor.acme-university-demo.svc.cluster.local"
+    )
+    HAP_THRESHOLD = float(os.environ.get("HAP_THRESHOLD", "0.5"))
+    HAP_DETECTOR_ID = os.environ.get("HAP_DETECTOR_ID", "hap-detector")
+
+
+    async def _call_hap_detector(text: str) -> dict:
+        """POST to the detector's /api/v1/text/contents endpoint and return the
+        top-scoring detection, if any."""
+        if not text:
+            return {"flagged": False, "score": None, "label": None}
+
+        url = f"{HAP_DETECTOR_URL}/api/v1/text/contents"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    url,
+                    json={"contents": [text], "detector_params": {}},
+                    headers={"detector-id": HAP_DETECTOR_ID},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:  # noqa: BLE001 - fail open, log, don't crash the pipeline
+            logger.warning(json.dumps({"event": "hap_detector_error", "error": str(exc)}))
+            return {"flagged": False, "score": None, "label": None}
+
+        detections = data[0] if data else []
+        if not detections:
+            return {"flagged": False, "score": None, "label": None}
+
+        top = max(detections, key=lambda d: d.get("score", 0))
+        score = top.get("score", 0)
+        # For this runtime, the actual class label (e.g. "LABEL_1") is in
+        # detection_type; "detection" is just the algorithm name (e.g.
+        # "single_label_classification"). Verified against a live
+        # granite-guardian-hap-38m response on cluster-v5zjc (2026-09-03).
+        return {
+            "flagged": score >= HAP_THRESHOLD,
+            "score": score,
+            "label": top.get("detection_type") or top.get("detection"),
+        }
+
+
+    def _log_hap_alert(guardrail: str, text: str, result: dict) -> None:
+        payload = {
+            "event": "hap_alert",
+            "guardrail": guardrail,
+            "severity": "high",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "score": result.get("score"),
+            "label": result.get("label"),
+            "message_excerpt": text[:200],
+        }
+        logger.warning(json.dumps(payload))
+
+
+    @action(is_system_action=True)
+    async def check_hap_input(text: str = "") -> bool:
+        result = await _call_hap_detector(text)
+        if result["flagged"]:
+            _log_hap_alert("input", text, result)
+        return result["flagged"]
+
+
+    @action(is_system_action=True)
+    async def check_hap_output(text: str = "") -> bool:
+        result = await _call_hap_detector(text)
+        if result["flagged"]:
+            _log_hap_alert("output", text, result)
+        return result["flagged"]

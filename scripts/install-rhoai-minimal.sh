@@ -1240,6 +1240,13 @@ create_dsc() {
     
     print_step "Creating DataScienceCluster..."
     print_info "This configuration includes vLLM serving but NOT llm-d"
+
+    # RHOAI 3.5+: llamastackoperator renamed to ogx
+    local genai_field="llamastackoperator"
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        genai_field="ogx"
+        print_info "RHOAI 3.5+ detected: using 'ogx' DSC field (replaces llamastackoperator)"
+    fi
     
     # Based on CAI guide Section 1, but without llm-d specific components
     cat <<EOF | oc apply -f -
@@ -1274,7 +1281,7 @@ spec:
       managementState: Managed
     feastoperator:
       managementState: Managed
-    llamastackoperator:
+    ${genai_field}:
       managementState: Managed
     kueue:
       defaultClusterQueueName: default

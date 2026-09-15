@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# RHOAI 3.5+ only (uses model/kustomization.yaml which includes ExternalProvider).
+# For RHOAI 3.4, apply model/external-model-34.yaml standalone, then apply maas/:
+#   oc apply -f model/external-model-34.yaml
+#   oc apply -k maas/
+resources:
+  - model
+  - maas

@@ -1,0 +1,43 @@
+# NeMo Guardrails Custom Resource — University Safeguard Demo
+#
+# Usage:
+#   export NAMESPACE=acme-university-demo
+#   export GUARDRAILS_NAME=university-safeguard
+#   export MAIN_MODEL_URL="https://maas-rhdp.apps.maas.redhatworkshops.io/v1"
+#   envsubst < nemo-guardrails-cr.yaml | oc apply -f -
+#
+# NOTE: OPENAI_API_KEY is sourced from ${GUARDRAILS_NAME}-model-key, a Secret
+# created imperatively by ensure_main_model_api_key_secret() (see
+# lib/functions/university-safeguard.sh) — the real key is never committed to
+# git. This env var is set for redundancy; the value NeMo Guardrails actually
+# uses to auth against the main model is models[main].parameters.api_key in
+# the ConfigMap (see nemo-guardrails-config.yaml for why).
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: NemoGuardrails
+metadata:
+  name: ${GUARDRAILS_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    security.opendatahub.io/enable-auth: "false"
+spec:
+  nemoConfigs:
+    - name: ${GUARDRAILS_NAME}-config
+      configMaps:
+        - ${GUARDRAILS_NAME}-config
+  env:
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: ${GUARDRAILS_NAME}-model-key
+          key: api-key
+    - name: MAIN_MODEL_BASE_URL
+      value: "${MAIN_MODEL_URL}"
+    - name: MAIN_MODEL_ENGINE
+      value: "openai"
+    - name: HAP_DETECTOR_URL
+      value: "${HAP_DETECTOR_URL}"
+    - name: HAP_DETECTOR_ID
+      value: "hap-detector"
+    - name: HAP_THRESHOLD
+      value: "0.5"

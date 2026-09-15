@@ -1,6 +1,24 @@
 # MaaS Demo Verification Against CAI Guide
 
-This document verifies our MaaS demo against the official [CAI's guide to RHOAI 3.0](https://opendatahub-io.github.io/maas-billing/latest/quickstart/).
+> ## ⚠️ Historical Document -- Describes RHOAI 3.0 Legacy MaaS
+>
+> This document verifies `demo/setup-demo-model.sh`/`test-maas-api.sh` against the
+> **RHOAI 3.0** CAI guide's legacy, standalone `maas-api` namespace setup (not the
+> integrated MaaS shipped in RHOAI 3.3+). It is kept for historical reference only.
+>
+> The MaaS architecture changed substantially in 3.3 (Tech Preview, tier-based),
+> 3.4 (GA, subscription CRDs + `sk-oai-*` API keys), and 3.5 (body-based routing).
+> None of the `maas-api` namespace / `/maas-api/v1/tokens` / `maas.opendatahub.io/enabled`
+> patterns described below exist on RHOAI 3.3+ -- they were replaced entirely.
+>
+> For current verification, use:
+> - `../scripts/verify-maas.sh` -- 6-phase E2E check (RHOAI 3.4/3.5, subscription-based)
+> - `../scripts/diagnose-maas.sh --fix` -- post-upgrade issue diagnosis (RHOAI 3.5)
+> - `../scripts/check-maas-security.sh` -- ungoverned-model audit (RHOAI 3.3+)
+> - `.cursor/rules/rhoai-versions.mdc` ("MaaS Version Differences") for the full
+>   3.3 vs 3.4 vs 3.5 comparison table
+>
+> This document verifies our MaaS demo against the official [CAI's guide to RHOAI 3.0](https://opendatahub-io.github.io/maas-billing/latest/quickstart/).
 
 ## ✅ Verification Results
 

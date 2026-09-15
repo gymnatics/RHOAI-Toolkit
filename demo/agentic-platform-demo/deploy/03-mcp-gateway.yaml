@@ -1,0 +1,68 @@
+###############################################################################
+# 03-mcp-gateway.yaml
+# MCP Gateway v0.8.0 — Post-Helm resources (Gateway, MCPGatewayExtension)
+#
+# The MCP Gateway itself is installed via Helm in deploy-all.sh:
+#   helm install mcp-gateway oci://ghcr.io/kuadrant/charts/mcp-gateway \
+#     --version 0.8.0 -n mcp-system --create-namespace
+#
+# This file contains only the supplemental resources that Helm does not create:
+#   - Namespace (idempotent)
+#   - Gateway resource (Kubernetes Gateway API, with correct listener name "mcp")
+#   - MCPGatewayExtension (binds to the Gateway listener)
+#
+# After Helm install + this file, the MCP Gateway serves at:
+#   http://mcp-gateway-istio.mcp-system.svc.cluster.local:8080/mcp
+###############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-system
+
+---
+# Gateway resource (Kubernetes Gateway API)
+# Two listeners: "mcp" for direct access (with hostname), "mcps" for wildcard tool routes
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mcp-gateway
+  namespace: mcp-system
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: mcp
+    port: 8080
+    protocol: HTTP
+    hostname: "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__"
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: mcps
+    port: 8080
+    protocol: HTTP
+    hostname: "*.mcp.local"
+    allowedRoutes:
+      namespaces:
+        from: All
+
+---
+# MCPGatewayExtension — binds to the Gateway listener named "mcp"
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPGatewayExtension
+metadata:
+  name: mcp-gateway
+  namespace: mcp-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: mcp-system
+    sectionName: mcp
+  privateHost: mcp-gateway-istio.mcp-system.svc.cluster.local:8080
+  publicHost: "mcp-gateway-mcp-system.__CLUSTER_DOMAIN__"
+  httpRouteManagement: Enabled
+  backendPingIntervalSeconds: 60
+  urlElicitation: Disabled

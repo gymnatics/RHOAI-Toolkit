@@ -1,23 +1,46 @@
 #!/bin/bash
 ################################################################################
-# llamastack.sh — LlamaStack distribution deployment and provider configuration
+# llamastack.sh — LlamaStack/OGX distribution deployment and provider configuration
 ################################################################################
-# Provides:
-#   deploy_llamastack_demo_interactive    — Deploy LlamaStack Demo UI (interactive)
-#   deploy_llamastack_distribution_generic — Deploy LlamaStack (standalone, no demo)
+# RHOAI 3.5 renamed the Llama Stack Operator to OGX (DSC field: llamastackoperator ->
+# ogx; CRD: llamastackdistributions.llamastack.io -> ogxservers.ogx.io). This file is
+# version-aware: on RHOAI 3.5+ the entry points below transparently deploy an
+# OGXServer instead of a LlamaStackDistribution. See:
+#   docs/reference/RHAIE 3.5 Guide/..-Working_with_OGX-en-US.pdf.md (§1.1 Migrating
+#   from Llama Stack to OGX) for the authoritative field mapping, and
+#   docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md for the deployment-relevant summary.
+#
+# Confirmed on a live RHOAI 3.5.0 cluster (oc explain ogxserver.spec --recursive):
+#   apiVersion: ogx.io/v1beta1, kind: OGXServer
+#   spec.distribution.name (required)   — e.g. "starter", "remote-vllm"
+#   spec.workload.replicas / .storage / .overrides.env / .resources / .workers
+#   spec.network.externalAccess.enabled/.hostname, spec.network.policy.*
+#   spec.providers.inference.remote.{vllm,azure,openai,bedrock,vertexai,watsonx,custom}
+#   ConfigMap watch label: ogx.io/watch: "true" (was llamastack.io/watch: "true")
+#
+# Provides (version-agnostic entry points — route internally by RHOAI version):
+#   deploy_llamastack_demo_interactive    — Deploy Demo UI (interactive)
+#   deploy_llamastack_distribution_generic — Deploy distribution (standalone, no demo)
 #   show_llm_provider_menu                — Display LLM provider selection menu
-#   configure_vllm_provider               — Configure vLLM as LLM provider
-#   configure_azure_provider              — Configure Azure OpenAI as LLM provider
-#   configure_openai_provider             — Configure OpenAI as LLM provider
-#   configure_ollama_provider             — Configure Ollama as LLM provider
-#   configure_bedrock_provider            — Configure AWS Bedrock as LLM provider
-#   deploy_llamastack_distribution        — Deploy LlamaStack distribution (for demo)
-#   deploy_full_stack_with_llamastack     — Deploy LlamaStack + MCP + UI full stack
-#   deploy_complete_llamastack_demo       — Deploy demo stack (existing LlamaStack)
+#   configure_vllm_provider               — Configure vLLM as LLM provider (3.4-)
+#   configure_azure_provider              — Configure Azure OpenAI as LLM provider (3.4-)
+#   configure_openai_provider             — Configure OpenAI as LLM provider (3.4-)
+#   configure_ollama_provider             — Configure Ollama as LLM provider (3.4-)
+#   configure_bedrock_provider            — Configure AWS Bedrock as LLM provider (3.4-)
+#   deploy_llamastack_distribution        — Deploy distribution (routes to OGX on 3.5+)
+#   deploy_full_stack_with_llamastack     — Deploy distribution + MCP + UI full stack
+#   deploy_complete_llamastack_demo       — Deploy demo stack (existing distribution)
+#
+# OGX-specific (RHOAI 3.5+, called internally by the entry points above):
+#   configure_vllm_provider_ogx / configure_azure_provider_ogx /
+#   configure_openai_provider_ogx / configure_ollama_provider_ogx /
+#   configure_bedrock_provider_ogx        — Build spec.providers.inference.remote.* blocks
+#   deploy_ogxserver_distribution         — Create the OGXServer CR
 ################################################################################
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
 deploy_llamastack_demo_interactive() {
     print_header "Deploy LlamaStack Demo UI"
@@ -78,7 +101,7 @@ deploy_llamastack_demo_interactive() {
     echo ""
     
     local detected_llamastack=""
-    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd" | head -1)
+    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd|ogx" | head -1)
     
     if [ -n "$detected_llamastack" ]; then
         local default_llamastack_url="http://${detected_llamastack}.${target_ns}.svc.cluster.local:8321"
@@ -465,12 +488,307 @@ ENVEOF
 }
 
 ################################################################################
+# OGX Provider Configuration (RHOAI 3.5+)
+################################################################################
+# These build a spec.providers.inference.remote.<type> block (as a YAML fragment
+# in $OGX_PROVIDER_YAML) instead of the LlamaStack-style env-var injection used
+# above. Secrets are still created the same way (envsubst + oc apply).
+################################################################################
+
+configure_vllm_provider_ogx() {
+    local target_ns="$1"
+
+    echo ""
+    print_step "Configuring vLLM provider (OGX)..."
+    echo ""
+
+    local detected_is=""
+    detected_is=$(oc get inferenceservice -n "$target_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "$detected_is" ]; then
+        local detected_url=$(oc get inferenceservice "$detected_is" -n "$target_ns" -o jsonpath='{.status.url}' 2>/dev/null || true)
+        print_info "Detected InferenceService: $detected_is"
+        [ -n "$detected_url" ] && print_info "URL: $detected_url"
+        echo ""
+    fi
+
+    read -p "vLLM Base URL (e.g., https://model-name.apps.cluster.example.com/v1): " VLLM_BASE_URL
+    if [ -z "$VLLM_BASE_URL" ]; then
+        print_error "vLLM Base URL is required"
+        return 1
+    fi
+
+    read -p "Model ID (e.g., qwen3-8b, llama-3-8b): " MODEL_ID
+    MODEL_ID="${MODEL_ID:-qwen3-8b}"
+
+    read -p "API Token (leave empty if not required): " VLLM_API_TOKEN
+
+    print_step "Creating vLLM secret (ogx-vllm-secret)..."
+    oc create secret generic ogx-vllm-secret \
+        --from-literal=api-token="${VLLM_API_TOKEN:-}" \
+        -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
+
+    OGX_PROVIDER_YAML=$(cat <<EOF
+    inference:
+      remote:
+        vllm:
+          - id: vllm
+            endpoint: "$VLLM_BASE_URL"
+            maxTokens: 4096
+            apiToken:
+              name: ogx-vllm-secret
+              key: api-token
+EOF
+    )
+    LLM_PROVIDER="vllm"
+}
+
+configure_azure_provider_ogx() {
+    local target_ns="$1"
+
+    echo ""
+    print_step "Configuring Azure OpenAI provider (OGX)..."
+    echo ""
+
+    read -p "Azure OpenAI Endpoint (e.g., https://your-resource.openai.azure.com): " AZURE_ENDPOINT
+    if [ -z "$AZURE_ENDPOINT" ]; then
+        print_error "Azure endpoint is required"
+        return 1
+    fi
+
+    read -p "Deployment Name (e.g., gpt-4o): " AZURE_DEPLOYMENT
+    AZURE_DEPLOYMENT="${AZURE_DEPLOYMENT:-gpt-4o}"
+    MODEL_ID="$AZURE_DEPLOYMENT"
+
+    read -p "API Key: " AZURE_API_KEY
+    if [ -z "$AZURE_API_KEY" ]; then
+        print_error "API key is required"
+        return 1
+    fi
+
+    read -p "API Version [2024-08-01-preview]: " AZURE_API_VERSION
+    AZURE_API_VERSION="${AZURE_API_VERSION:-2024-08-01-preview}"
+
+    print_step "Creating Azure OpenAI secret (ogx-azure-secret)..."
+    oc create secret generic ogx-azure-secret \
+        --from-literal=api-key="$AZURE_API_KEY" \
+        -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
+
+    OGX_PROVIDER_YAML=$(cat <<EOF
+    inference:
+      remote:
+        azure:
+          - id: azure
+            endpoint: "$AZURE_ENDPOINT"
+            apiVersion: "$AZURE_API_VERSION"
+            apiKey:
+              name: ogx-azure-secret
+              key: api-key
+EOF
+    )
+    LLM_PROVIDER="azure"
+}
+
+configure_openai_provider_ogx() {
+    local target_ns="$1"
+
+    echo ""
+    print_step "Configuring OpenAI provider (OGX)..."
+    echo ""
+
+    read -p "OpenAI API Key: " OPENAI_API_KEY
+    if [ -z "$OPENAI_API_KEY" ]; then
+        print_error "API key is required"
+        return 1
+    fi
+
+    read -p "Model ID [gpt-4o]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-gpt-4o}"
+
+    print_step "Creating OpenAI secret (ogx-openai-secret)..."
+    oc create secret generic ogx-openai-secret \
+        --from-literal=api-key="$OPENAI_API_KEY" \
+        -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
+
+    OGX_PROVIDER_YAML=$(cat <<EOF
+    inference:
+      remote:
+        openai:
+          - id: openai
+            apiKey:
+              name: ogx-openai-secret
+              key: api-key
+EOF
+    )
+    LLM_PROVIDER="openai"
+}
+
+configure_ollama_provider_ogx() {
+    local target_ns="$1"
+
+    echo ""
+    print_step "Configuring Ollama provider (OGX)..."
+    echo ""
+
+    read -p "Ollama URL [http://ollama.${target_ns}.svc.cluster.local:11434]: " OLLAMA_URL
+    OLLAMA_URL="${OLLAMA_URL:-http://ollama.${target_ns}.svc.cluster.local:11434}"
+
+    read -p "Model ID [llama3.2]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-llama3.2}"
+
+    # OGX has no native "ollama" remote provider field (confirmed via
+    # `oc explain ogxserver.spec.providers.inference.remote` on RHOAI 3.5.0);
+    # configure it via the generic "custom" provider type instead.
+    OGX_PROVIDER_YAML=$(cat <<EOF
+    inference:
+      remote:
+        custom:
+          - id: ollama
+            type: remote::ollama
+            settings:
+              url: "$OLLAMA_URL"
+EOF
+    )
+    LLM_PROVIDER="ollama"
+}
+
+configure_bedrock_provider_ogx() {
+    local target_ns="$1"
+
+    echo ""
+    print_step "Configuring AWS Bedrock provider (OGX)..."
+    echo ""
+
+    read -p "AWS Access Key ID: " AWS_ACCESS_KEY_ID
+    if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+        print_error "AWS Access Key ID is required"
+        return 1
+    fi
+
+    read -p "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        print_error "AWS Secret Access Key is required"
+        return 1
+    fi
+
+    read -p "AWS Region [us-east-1]: " AWS_REGION
+    AWS_REGION="${AWS_REGION:-us-east-1}"
+
+    read -p "Model ID [anthropic.claude-3-sonnet-20240229-v1:0]: " MODEL_ID
+    MODEL_ID="${MODEL_ID:-anthropic.claude-3-sonnet-20240229-v1:0}"
+
+    print_step "Creating Bedrock secret (ogx-bedrock-secret)..."
+    oc create secret generic ogx-bedrock-secret \
+        --from-literal=aws-access-key-id="$AWS_ACCESS_KEY_ID" \
+        --from-literal=aws-secret-access-key="$AWS_SECRET_ACCESS_KEY" \
+        -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
+
+    # region is required (verified via server-side dry-run against RHOAI 3.5.0 CRD)
+    OGX_PROVIDER_YAML=$(cat <<EOF
+    inference:
+      remote:
+        bedrock:
+          - id: bedrock
+            region: $AWS_REGION
+            awsAccessKeyId:
+              name: ogx-bedrock-secret
+              key: aws-access-key-id
+            awsSecretAccessKey:
+              name: ogx-bedrock-secret
+              key: aws-secret-access-key
+EOF
+    )
+    LLM_PROVIDER="bedrock"
+}
+
+################################################################################
+# OGXServer Distribution Deployment (RHOAI 3.5+)
+################################################################################
+
+deploy_ogxserver_distribution() {
+    local target_ns="$1"
+
+    echo ""
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${MAGENTA} Deploying OGXServer Distribution (RHOAI 3.5+)${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
+
+    if ! oc get crd ogxservers.ogx.io &>/dev/null; then
+        print_error "OGXServer CRD (ogxservers.ogx.io) not found!"
+        echo ""
+        echo "Please ensure:"
+        echo "  1. Red Hat OpenShift AI 3.5+ is installed"
+        echo "  2. The OGX Operator is enabled in DataScienceCluster"
+        echo ""
+        echo "To enable OGX in your DSC:"
+        echo "  oc patch datasciencecluster default-dsc --type merge \\"
+        echo "    -p '{\"spec\":{\"components\":{\"ogx\":{\"managementState\":\"Managed\"}}}}'"
+        echo ""
+        return 1
+    fi
+
+    print_success "OGXServer CRD found"
+
+    show_llm_provider_menu
+    read -p "Enter your choice [1]: " provider_choice
+    provider_choice="${provider_choice:-1}"
+
+    case $provider_choice in
+        1) configure_vllm_provider_ogx "$target_ns" || return 1 ;;
+        2) configure_azure_provider_ogx "$target_ns" || return 1 ;;
+        3) configure_openai_provider_ogx "$target_ns" || return 1 ;;
+        4) configure_ollama_provider_ogx "$target_ns" || return 1 ;;
+        5) configure_bedrock_provider_ogx "$target_ns" || return 1 ;;
+        *) print_error "Invalid choice"; return 1 ;;
+    esac
+
+    print_step "Creating OGXServer 'ogx-demo' in $target_ns..."
+    # distribution "rh" verified valid via server-side dry-run against RHOAI 3.5.0
+    # (the CRD godoc examples "starter"/"remote-vllm" are NOT valid on GA; "rh-dev"
+    # is valid but deprecated in favor of "rh")
+    cat <<EOF | oc apply -n "$target_ns" -f -
+apiVersion: ogx.io/v1beta1
+kind: OGXServer
+metadata:
+  name: ogx-demo
+spec:
+  distribution:
+    name: rh
+  workload:
+    replicas: 1
+  providers:
+$OGX_PROVIDER_YAML
+EOF
+
+    print_step "Waiting for OGXServer to be ready..."
+    sleep 5
+    if oc wait --for=jsonpath='{.status.phase}'=Ready ogxserver/ogx-demo -n "$target_ns" --timeout=180s 2>/dev/null; then
+        print_success "OGXServer is ready"
+    else
+        print_warning "OGXServer may still be starting. Check with: oc get ogxserver -n $target_ns"
+    fi
+
+    # Set LLAMASTACK_URL for downstream callers (deploy_full_stack_with_llamastack, etc.)
+    # OGX retains an API surface compatible with the LlamaStack-style clients used by
+    # the demo UI, so the same env var name is reused for the caller's convenience.
+    LLAMASTACK_URL="http://ogx-demo-service.${target_ns}.svc.cluster.local:8321"
+
+    return 0
+}
+
+################################################################################
 # LlamaStack Distribution Deployment
 ################################################################################
 
 deploy_llamastack_distribution_generic() {
     local target_ns="$1"
-    
+
+    # RHOAI 3.5+: route to OGX (see deploy_llamastack_distribution for details)
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        print_info "RHOAI 3.5+ detected: OGX replaces Llama Stack — using OGXServer"
+        deploy_ogxserver_distribution "$target_ns"
+        return $?
+    fi
+
     echo ""
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${MAGENTA} Deploying LlamaStack Distribution${NC}"
@@ -557,7 +875,17 @@ deploy_llamastack_distribution_generic() {
 
 deploy_llamastack_distribution() {
     local target_ns="$1"
-    
+
+    # RHOAI 3.5 renamed the Llama Stack Operator to OGX (llamastackoperator -> ogx,
+    # LlamaStackDistribution -> OGXServer). Route transparently so all callers of
+    # this function (deploy_full_stack_with_llamastack, deploy_complete_llamastack_demo)
+    # work unchanged on either version.
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        print_info "RHOAI 3.5+ detected: OGX replaces Llama Stack — using OGXServer"
+        deploy_ogxserver_distribution "$target_ns"
+        return $?
+    fi
+
     echo ""
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${MAGENTA} Deploying LlamaStack Distribution${NC}"
@@ -658,7 +986,8 @@ deploy_full_stack_with_llamastack() {
     echo "  • Demo UI (Streamlit chatbot)"
     echo ""
     echo -e "${YELLOW}Requirements:${NC}"
-    echo "  • RHOAI 3.0+ with LlamaStack operator enabled"
+    echo "  • RHOAI 3.0-3.4 with LlamaStack operator enabled, OR"
+    echo "  • RHOAI 3.5+ with OGX Operator enabled (replaces LlamaStack)"
     echo "  • Access to your chosen LLM provider"
     echo ""
     
@@ -789,7 +1118,7 @@ deploy_complete_llamastack_demo() {
     echo ""
     
     local detected_llamastack=""
-    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd" | head -1)
+    detected_llamastack=$(oc get svc -n "$target_ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "llama|lsd|ogx" | head -1)
     
     if [ -n "$detected_llamastack" ]; then
         local default_llamastack_url="http://${detected_llamastack}.${target_ns}.svc.cluster.local:8321"

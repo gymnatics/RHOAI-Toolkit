@@ -1,0 +1,120 @@
+---
+# OGX Secret - Connection details for LLM, embedding (kept for parity/reference;
+# OGX's native providers.inference.remote.vllm fields are used directly below
+# instead of env-var injection, but PostgreSQL creds still flow through a secret)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ogx-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  INFERENCE_MODEL: "${INFERENCE_MODEL}"
+  VLLM_URL: "${VLLM_URL}"
+  VLLM_API_TOKEN: "${VLLM_API_TOKEN}"
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
+  VLLM_EMBEDDING_URL: "${VLLM_EMBEDDING_URL}"
+  VLLM_EMBEDDING_API_TOKEN: "${VLLM_EMBEDDING_API_TOKEN}"
+---
+# Milvus connection secret (token optional -- Milvus standalone here has no auth)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: milvus-connection-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  MILVUS_ENDPOINT: "${MILVUS_ENDPOINT}"
+  MILVUS_TOKEN: "${MILVUS_TOKEN}"
+---
+# OGXServer - Remote Milvus + Remote Embeddings (bge-m3) - RHOAI 3.5+
+# REPLACES manifests/llamastack.yaml (LlamaStackDistribution) for 3.5+.
+# Field mapping confirmed via `oc explain ogxserver.spec --recursive` on a live
+# RHOAI 3.5.0 cluster and cross-checked against:
+#   docs/reference/RHAIE 3.5 Guide/..-Working_with_OGX-en-US.pdf.md (SS1.1)
+#
+# Key differences from llamastack.yaml:
+#   - apiVersion/kind: llamastack.io/v1alpha1 LlamaStackDistribution -> ogx.io/v1beta1 OGXServer
+#   - spec.replicas -> spec.workload.replicas
+#   - spec.server.containerSpec.{resources,env} -> spec.workload.{resources,overrides.env}
+#   - spec.server.distribution.name -> spec.distribution.name (top-level; "rh" is the
+#     current non-deprecated value -- "rh-dev" is deprecated, "starter"/"remote-vllm"
+#     from the CRD godoc comment are NOT valid on GA and are rejected by the webhook)
+#   - spec.network.exposeRoute / allowedFrom -> spec.network.externalAccess.enabled /
+#     spec.network.policy.ingress (same-namespace + operator-namespace access is
+#     already allowed by default, so no custom policy is required for this demo)
+#   - LLM/embedding vLLM connections are now native typed fields under
+#     spec.providers.inference.remote.vllm[] (endpoint/apiToken) instead of generic
+#     env-var injection referencing a Secret
+#   - Milvus is now a native typed field under spec.providers.vectorIo.remote.milvus[]
+#     (uri/token/consistencyLevel) instead of generic env-var injection
+#   - PostgreSQL metadata store env vars (POSTGRES_*, FMS_ORCHESTRATOR_URL) have no
+#     native field and still go through spec.workload.overrides.env
+apiVersion: ogx.io/v1beta1
+kind: OGXServer
+metadata:
+  name: autorag-ogx
+  namespace: ${NAMESPACE}
+  annotations:
+    openshift.io/display-name: AutoRAG OGX
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  distribution:
+    name: rh
+  workload:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "500Mi"
+      limits:
+        cpu: "4"
+        memory: "12Gi"
+    storage:
+      size: 5Gi
+    overrides:
+      env:
+        # PostgreSQL metadata store (required since RHOAI 3.4; no native OGX field)
+        - name: POSTGRES_HOST
+          value: "llamastack-postgres.${NAMESPACE}.svc.cluster.local"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "llamastack"
+        - name: POSTGRES_USER
+          value: "llamastack"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llamastack-postgres-secret
+              key: password
+        - name: FMS_ORCHESTRATOR_URL
+          value: "http://localhost"
+  network:
+    externalAccess:
+      enabled: true
+  providers:
+    inference:
+      remote:
+        vllm:
+          # Remote LLM (direct vLLM InferenceService -- not MaaS)
+          - id: vllm
+            endpoint: "${VLLM_URL}"
+            maxTokens: 4096
+            apiToken:
+              name: ogx-secret
+              key: VLLM_API_TOKEN
+          # Remote embeddings (bge-m3 via vLLM)
+          - id: vllm-embedding
+            endpoint: "${VLLM_EMBEDDING_URL}"
+            maxTokens: 8192
+            apiToken:
+              name: ogx-secret
+              key: VLLM_EMBEDDING_API_TOKEN
+    vectorIo:
+      remote:
+        milvus:
+          - id: milvus
+            uri: "${MILVUS_ENDPOINT}"
+            consistencyLevel: Bounded

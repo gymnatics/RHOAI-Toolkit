@@ -1,0 +1,248 @@
+###############################################################################
+# 11-istio-mesh.yaml
+# Istio Service Mesh (Ambient Mode) + Waypoint Proxy + Kiali
+###############################################################################
+
+---
+# Istio namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+
+---
+# Istio ControlPlane (ambient mode)
+# NOTE: On OpenShift, use the ServiceMeshControlPlane CR from the operator
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  version: v1.22
+  namespace: istio-system
+  values:
+    global:
+      platform: openshift
+    pilot:
+      env:
+        PILOT_ENABLE_AMBIENT: "true"
+
+---
+# Waypoint Proxy in team1 (enables L7 observability for ambient mesh)
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: team1
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+
+---
+# PeerAuthentication: STRICT mTLS for team1
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: team1
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Kiali Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kiali
+  template:
+    metadata:
+      labels:
+        app: kiali
+    spec:
+      serviceAccountName: kiali-service-account
+      containers:
+      - name: kiali
+        image: quay.io/kiali/kiali:v1.86
+        ports:
+        - containerPort: 20001
+        env:
+        - name: AUTH_STRATEGY
+          value: anonymous
+        - name: SERVER_WEB_ROOT
+          value: /
+        volumeMounts:
+        - name: config
+          mountPath: /kiali-configuration
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      volumes:
+      - name: config
+        configMap:
+          name: kiali-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kiali-config
+  namespace: istio-system
+data:
+  config.yaml: |
+    auth:
+      strategy: anonymous
+    deployment:
+      accessible_namespaces:
+      - "**"
+    external_services:
+      prometheus:
+        url: http://prometheus.istio-system.svc:9090
+      grafana:
+        enabled: false
+    server:
+      port: 20001
+      web_root: /
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kiali-service-account
+  namespace: istio-system
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  selector:
+    app: kiali
+  ports:
+  - port: 20001
+    targetPort: 20001
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  to:
+    kind: Service
+    name: kiali
+  port:
+    targetPort: 20001
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Prometheus for Istio metrics (required for Kiali traffic graph)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.51.0
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.retention.time=7d
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: istio-system
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+    - job_name: 'istiod'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['istio-system']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: istiod
+        action: keep
+    - job_name: 'istio-mesh'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['team1']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)
+        replacement: ${1}:15020
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: istio-system
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: istio-system
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - port: 9090
+    targetPort: 9090

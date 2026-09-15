@@ -2,7 +2,7 @@
 
 ## Summary
 
-Two bugs in the MaaS platform on RHOAI 3.4.0 affect the Gen AI Studio experience. Bug 1 causes the API Keys page to break every time the Tenant controller reconciles. Bug 2 causes the Observability Usage dashboard to show zero data despite active traffic, due to a CEL expression parsing failure in Authorino.
+Three bugs in the MaaS platform on RHOAI 3.4.x affect the Gen AI Studio experience. Bug 1 causes the API Keys page to break every time the Tenant controller reconciles (via a wrong `HTTPRoute` gateway). Bug 2 causes the Observability Usage dashboard to show zero data despite active traffic, due to a CEL expression parsing failure in Authorino. Bug 3, observed separately on RHOAI 3.4.4, causes the same API Keys page symptom via a different mechanism — a `NetworkPolicy` blocking the `payload-processing` ext_proc service from the correct gateway.
 
 ## Environment
 
@@ -182,9 +182,123 @@ The entire Usage tab of the Observability Dashboard is non-functional. Administr
 
 ---
 
+## Bug 3: `payload-processing` NetworkPolicy hardcodes `data-science-gateway`, blocking `maas-default-gateway` — API Keys page times out after ~10s
+
+### Severity: High
+
+### Description
+
+Same user-visible symptom as Bug 1 (Gen AI Studio > API Keys page fails), but a **different root cause** observed on RHOAI 3.4.4 with the Tenant `gatewayRef` already correctly set to `maas-default-gateway`. Instead of an instant 404, requests hang for ~10 seconds and then return a 500. This affects *every* authenticated MaaS API call (models list, API key search/create), not just `/maas-api/*` — unauthenticated requests still fail fast with 401, which is what makes this look "intermittent" if only spot-checked.
+
+### Root Cause
+
+The operator-managed `NetworkPolicy/payload-processing` in `openshift-ingress` restricts ingress on port 9004 (the ext_proc gRPC service backing `EnvoyFilter/payload-processing`, which does model-provider-resolver, API translation, and API-key injection for `maas-default-gateway`) to pods labeled:
+
+```yaml
+gateway.networking.k8s.io/gateway-name: data-science-gateway
+```
+
+But the actual gateway pod that needs to reach `payload-processing` is `maas-default-gateway-openshift-gateway-controller`, labeled `gateway.networking.k8s.io/gateway-name: maas-default-gateway` — a completely different Gateway. The `EnvoyFilter` has `failure_mode_allow: false`, so when the NetworkPolicy silently drops the connection, Envoy blocks until its connect timeout expires and returns 500:
+
+```
+"POST /maas-api/v1/api-keys/search HTTP/2" 500 - ext_proc_error_gRPC_error_14{upstream_connect_error_or_disconnect/reset_before_headers._reset_reason:_connection_timeout} ...
+```
+
+This is the same underlying pattern as Bug 1 — an RHOAI-generated resource hardcodes `data-science-gateway` as "the" gateway instead of reading the Tenant's actual `gatewayRef` (`maas-default-gateway`) — but it hits a `NetworkPolicy` instead of an `HTTPRoute`.
+
+### Evidence
+
+```bash
+$ oc get networkpolicy payload-processing -n openshift-ingress \
+    -o jsonpath='{.spec.ingress[0].from[0].podSelector.matchLabels}'
+{"gateway.networking.k8s.io/gateway-name":"data-science-gateway"}
+
+$ oc get tenant default-tenant -n models-as-a-service -o jsonpath='{.spec.gatewayRef.name}'
+maas-default-gateway
+
+$ oc get pod maas-default-gateway-openshift-gateway-controller-xxxxx -n openshift-ingress --show-labels
+...  gateway.networking.k8s.io/gateway-name=maas-default-gateway  ...
+```
+
+The `payload-processing` pod itself is healthy (`Running`, `Ready`, low CPU/memory, 0 recent restarts) — `oc describe` and its own logs show nothing wrong. The failure is purely at the NetworkPolicy layer, which is easy to miss because pod/deployment health checks all look green.
+
+### Important: direct edits to the NetworkPolicy get reverted
+
+Patching `NetworkPolicy/payload-processing` directly (e.g. `oc patch ... --type=json`) appears to succeed, but the operator reconciles it back within seconds — confirmed by `resourceVersion`/`generation` jumping (1 → 3) almost immediately after the patch. Don't fight the reconciler.
+
+### Steps to Reproduce
+
+1. Install RHOAI 3.4.x with MaaS, with `Tenant.spec.gatewayRef` already correctly pointing to `maas-default-gateway` (i.e., Bug 1 is not present / already fixed)
+2. Navigate to Gen AI Studio > API Keys — page hangs ~10s then errors
+3. Check the gateway controller logs:
+   ```bash
+   oc logs deployment/maas-default-gateway-openshift-gateway-controller -n openshift-ingress --tail=50 | grep ext_proc_error
+   ```
+4. Observe `ext_proc_error_gRPC_error_14{...connection_timeout}` on `/maas-api/v1/api-keys/search` and even `/maas-api/v1/models`
+
+### Expected Behavior
+
+The `payload-processing` NetworkPolicy should allow ingress from whichever gateway the `Tenant.spec.gatewayRef` actually points to, not a hardcoded `data-science-gateway` label.
+
+### Workaround (persistent — survives operator reconciliation)
+
+Add a **second, additive** NetworkPolicy targeting the same pods. NetworkPolicy ingress rules are OR'd across all policies selecting a pod, so this doesn't conflict with (or get reverted by) the operator's management of the original policy:
+
+```bash
+cat <<'EOF' | oc apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payload-processing-maas-gateway-allow
+  namespace: openshift-ingress
+  labels:
+    app.kubernetes.io/part-of: modelsasservice
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  podSelector:
+    matchLabels:
+      app: payload-processing
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: maas-default-gateway
+      ports:
+        - port: 9004
+          protocol: TCP
+EOF
+```
+
+Verify:
+```bash
+TOKEN=$(oc whoami -t)
+curl -sk -m 15 -H "Authorization: Bearer $TOKEN" -o /dev/null \
+  -w "HTTP_CODE:%{http_code} TIME:%{time_total}\n" \
+  "https://maas.apps.<cluster>/maas-api/v1/models"
+# HTTP_CODE:200, well under 1s
+```
+
+### Impact
+
+Identical to Bug 1: the API Keys page (and any other UI flow calling `/maas-api/*` with a bearer token) is unusable until this NetworkPolicy gap is fixed, blocking API key creation/management for MaaS subscriptions.
+
+### Component
+
+- **Affected:** RHOAI platform operator's generated `NetworkPolicy/payload-processing` (annotated `platform.opendatahub.io/instance.name: default-dsc`)
+- **Observed on:** RHOAI 3.4.4
+- **Fix needed in:** RHOAI platform operator — the `payload-processing` NetworkPolicy template should derive its allowed gateway label from the Tenant's `gatewayRef` (same fix class needed for Bug 1's HTTPRoute reconciliation)
+
+---
+
 ## Summary Table
 
 | Bug | Component | Severity | Workaround Available | Fix Level |
 |-----|-----------|----------|---------------------|-----------|
 | 1. Tenant `gatewayRef` → wrong gateway | maas-controller (Tenant reconciler) | High | Yes — patch Tenant CR | MaaS controller / RHOAI |
 | 2. Authorino CEL parsing → empty metric labels | Authorino (RHCL v1.3.2) | High | No | RHCL / Authorino |
+| 3. `payload-processing` NetworkPolicy → wrong gateway label | RHOAI platform operator (NetworkPolicy template) | High | Yes — additive NetworkPolicy | RHOAI platform operator |

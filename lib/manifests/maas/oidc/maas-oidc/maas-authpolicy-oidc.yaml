@@ -1,0 +1,29 @@
+# Grants the OIDC groups access to the simulator model. Group names must match
+# EXACTLY the "groups" claim in the OIDC token (see realm-import.yaml). Edit the
+# modelRefs below to target your own model(s) instead of/in addition to simulator.
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: oidc-data-scientists-access
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+  subjects:
+    groups:
+      - name: data-scientists
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: oidc-ml-engineers-access
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+  subjects:
+    groups:
+      - name: ml-engineers

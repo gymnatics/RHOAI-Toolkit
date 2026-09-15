@@ -2,7 +2,7 @@
 ################################################################################
 # Deploy NeMo Guardrails Demo
 ################################################################################
-# Deploys NeMo Guardrails (RHOAI 3.4) with built-in detectors.
+# Deploys NeMo Guardrails (RHOAI 3.4+) with built-in detectors.
 # Optionally connects to a deployed model for LLM self-check rails.
 #
 # Usage:
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-print_header "NeMo Guardrails Demo (RHOAI 3.4)"
+print_header "NeMo Guardrails Demo (RHOAI 3.4+)"
 
 if [ "$DELETE_MODE" = true ]; then
     print_step "Removing NeMo Guardrails from $NAMESPACE..."

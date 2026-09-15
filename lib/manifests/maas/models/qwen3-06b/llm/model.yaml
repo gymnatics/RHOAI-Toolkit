@@ -1,0 +1,41 @@
+# Qwen3-0.6B on Red Hat AI Inference Server (vLLM CPU). A small but capable
+# 0.6B parameter model that runs entirely on CPU -- no GPU required. Good for
+# clusters without GPU infrastructure that still need a real (non-simulated)
+# LLM endpoint, as opposed to the `simulator` model which echoes requests.
+#
+# Per the BU MaaS guide: this model downloads weights from HuggingFace
+# (hf://), so it is subject to the same HuggingFace Xet download hang as the
+# simulator. If the pod is stuck in Init:0/1 for more than 5 minutes, apply:
+#   oc patch deployment qwen3-06b-predictor -n llm --type=json \
+#     -p '[{"op":"add","path":"/spec/template/spec/initContainers/0/env/-","value":{"name":"HF_HUB_DISABLE_XET","value":"1"}}]'
+# (deploy-maas-model.sh applies this automatically for hf:// models.)
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen3-06b
+  # Namespace is set by the kustomization.yaml `namespace:` transformer (default: llm).
+spec:
+  model:
+    name: Qwen/Qwen3-0.6B
+    uri: hf://Qwen/Qwen3-0.6B
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    containers:
+      - name: main
+        image: registry.redhat.io/rhaiis/vllm-cpu-rhel9:latest
+        args:
+          - "--max-model-len=2048"
+        resources:
+          requests:
+            cpu: "4"
+            memory: 16Gi
+          limits:
+            cpu: "8"
+            memory: 16Gi

@@ -1,5 +1,20 @@
-# PersesDatasource for RHOAI Observability Dashboard
+# PersesDatasource for RHOAI Observability Dashboard (FALLBACK ONLY)
 # Connects Perses to the OpenShift Thanos Querier for Prometheus metrics.
+#
+# IMPORTANT: This is only a fallback for clusters where RHOAI's own DSC-managed
+# Monitoring component hasn't created its native "cluster-prometheus-datasource"
+# PersesDatasource (e.g. RHOAI 3.4, or DSCI monitoring.metrics not yet configured
+# on 3.5+). The install scripts (install-rhoai-34.sh / install-rhoai-35.sh) check
+# for "cluster-prometheus-datasource" first and SKIP applying this manifest if it
+# already exists.
+#
+# DO NOT apply this manually on a cluster that already has a default
+# "cluster-prometheus-datasource" — Perses only allows ONE default datasource per
+# kind. Having both set `config.default: true` causes whichever is created SECOND
+# to be rejected by the Perses API (400: "cannot be a default PrometheusDatasource
+# because there is already one defined") and stay permanently Degraded, breaking
+# the RHOAI dashboard's Observe & monitor page with:
+#   "No datasource found for kind 'PrometheusDatasource'"
 #
 # IMPORTANT: The proxy.spec.secret MUST follow the {datasource-name}-secret naming convention.
 # The COO Perses operator auto-creates a Perses internal secret named {datasource-name}-secret.

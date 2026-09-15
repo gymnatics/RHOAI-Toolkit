@@ -1,0 +1,107 @@
+{
+  "editable": true,
+  "panels": [
+    {
+      "title": "Guardrails System Overview",
+      "type": "text",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "# FMS Guardrails Orchestrator - DBS Loan Agent\n\n| Component | Model | Purpose | Status |\n|-----------|-------|---------|--------|\n| **HAP Detector** | IBM Granite Guardian HAP 38M | Hate, Abuse & Profanity detection | Active |\n| **LLM Judge** | LLM Chat | Banking compliance, Prompt injection, Financial advice | Active |\n| **Orchestrator** | FMS Guardrails v0.8 | Request routing & detection pipeline | Active |\n| **Gateway** | Guardrails Gateway | Route-based detection chains (strict/passthrough) | Active |"
+      }
+    },
+    {
+      "title": "Total Guardrails Requests",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 4},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"request\" [$__range])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "blue", "value": null}]}}}
+    },
+    {
+      "title": "Requests Blocked",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 4},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"status=blocked\" [$__range])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": null}]}}}
+    },
+    {
+      "title": "Requests Passed",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 4},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"status=pass\" [$__range])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "title": "HAP Detections",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 4},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "count_over_time({job=\"guardrails\", component=\"hap-detector\"} |= \"action=block\" [$__range])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "orange", "value": null}]}}}
+    },
+    {
+      "title": "Guardrails Pass vs Block Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 9},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"status=pass\" [5m])", "legendFormat": "Passed", "refId": "A"},
+        {"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"status=blocked\" [5m])", "legendFormat": "Blocked", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed"}, "custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "normal"}}}, "overrides": [{"matcher": {"id": "byName", "options": "Passed"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]}, {"matcher": {"id": "byName", "options": "Blocked"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}]}
+    },
+    {
+      "title": "Detection by Detector Type",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 9},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [
+        {"expr": "count_over_time({job=\"guardrails\", component=\"hap-detector\"} |= \"action=block\" [5m])", "legendFormat": "HAP (Toxicity)", "refId": "A"},
+        {"expr": "count_over_time({job=\"guardrails\", component=\"llm-judge\"} |= \"action=block\" [5m])", "legendFormat": "LLM Judge (Compliance)", "refId": "B"},
+        {"expr": "count_over_time({job=\"guardrails\", component=\"orchestrator\"} |= \"detector=banking_compliance\" [5m])", "legendFormat": "Banking Compliance", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 70}}}
+    },
+    {
+      "title": "HAP Detector Activity",
+      "type": "logs",
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 17},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{job=\"guardrails\", component=\"hap-detector\"}", "refId": "A"}],
+      "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+    },
+    {
+      "title": "LLM Judge (Banking Compliance) Activity",
+      "type": "logs",
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 17},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{job=\"guardrails\", component=\"llm-judge\"}", "refId": "A"}],
+      "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+    },
+    {
+      "title": "Blocked Requests (All Detectors)",
+      "type": "logs",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 24},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{job=\"guardrails\"} |= \"blocked\" or {job=\"guardrails\"} |= \"action=block\"", "refId": "A"}],
+      "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+    },
+    {
+      "title": "All Guardrails Orchestrator Events",
+      "type": "logs",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 31},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{job=\"guardrails\", component=\"orchestrator\"}", "refId": "A"}],
+      "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["guardrails", "trustyai", "safety", "hap", "compliance"],
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "4. Guardrails Monitoring",
+  "uid": "guardrails-monitoring-dashboard",
+  "refresh": "30s"
+}

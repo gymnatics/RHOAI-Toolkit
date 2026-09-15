@@ -1,23 +1,32 @@
 #!/bin/bash
-
 ################################################################################
-# Check MaaS Security Configuration
+# Check MaaS Security Configuration (RHOAI 3.3+ integrated MaaS)
 ################################################################################
-# This script checks for models with MaaS enabled but no authentication.
-# This is a security risk because the direct route bypasses MaaS policies.
+# Checks for LLMInferenceService/InferenceService models that are exposed
+# through the MaaS gateway (maas-default-gateway) but have NO corresponding
+# MaaSAuthPolicy -- meaning they are reachable via the gateway with no access
+# control governance. This is the current (3.3+) integrated MaaS security
+# model; it replaces the old legacy `maas-api` namespace + `enable-auth`
+# annotation checks from the pre-3.3 kustomize-based setup, which no longer
+# apply once MaaS moved to DSC-integrated subscription CRDs.
+#
+# See also: scripts/diagnose-maas.sh, which covers the BU guide's 10
+# documented post-upgrade MaaS issues (gateway namespace labels, OOM, rate
+# limiting defaults, etc.) -- a different, complementary set of checks.
 #
 # Usage: ./scripts/check-maas-security.sh
 ################################################################################
 
-set -e
+set -uo pipefail
 
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || {
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+}
+source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 
 print_header() {
     echo ""
@@ -26,172 +35,140 @@ print_header() {
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
-
-print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}✗ $1${NC}"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
-
-print_info() {
-    echo -e "${CYAN}ℹ $1${NC}"
-}
-
-################################################################################
-# Main Check
-################################################################################
+print_success() { echo -e "${GREEN}✓ $1${NC}"; }
+print_error() { echo -e "${RED}✗ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+print_info() { echo -e "${CYAN}ℹ $1${NC}"; }
 
 print_header "MaaS Security Configuration Check"
 
-# Check if logged in
 if ! oc whoami &>/dev/null; then
     print_error "Not logged in to OpenShift"
     echo "Please login first: oc login <cluster-url>"
     exit 1
 fi
-
 print_success "Connected to: $(oc whoami --show-server)"
 echo ""
 
-# Get cluster domain
-CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
-
-if [ -z "$CLUSTER_DOMAIN" ]; then
-    print_error "Failed to get cluster domain"
-    exit 1
-fi
-
-print_info "Cluster domain: $CLUSTER_DOMAIN"
-echo ""
-
-# Check for MaaS installation
-if ! oc get namespace maas-api &>/dev/null; then
-    print_warning "MaaS not installed (maas-api namespace not found)"
-    echo "Run: ./scripts/setup-maas.sh"
+detect_rhoai_version 2>/dev/null || true
+if ! is_rhoai_33_or_higher 2>/dev/null; then
+    print_warning "This check targets RHOAI 3.3+ integrated MaaS (subscription CRDs)."
+    print_info "Detected version: ${RHOAI_VERSION:-unknown}. For legacy (<=3.2) MaaS, this"
+    print_info "check does not apply -- the legacy kustomize deployment had no equivalent"
+    print_info "governance CRDs to audit."
     exit 0
 fi
 
-print_success "MaaS installed"
-echo ""
-
-# Check for insecure models
-print_header "Checking for Security Issues"
-
-insecure_models=0
-secure_models=0
-total_maas_models=0
-
-# Get all namespaces (excluding system namespaces)
-namespaces=$(oc get ns -o name | grep -v "openshift\|kube\|default\|maas-api\|kuadrant" | sed 's/namespace\///')
-
-echo "Scanning namespaces for models with MaaS enabled..."
-echo ""
-
-for ns in $namespaces; do
-    # Check for LLMInferenceServices
-    models=$(oc get llmisvc -n "$ns" -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null || echo "")
-    
-    if [ -n "$models" ]; then
-        for model in $models; do
-            # Check if model has MaaS enabled (has HTTPRoute to maas gateway)
-            has_maas=$(oc get httproute -n "$ns" -o json 2>/dev/null | \
-                       jq -r --arg model "$model" '.items[] | select(.metadata.labels."serving.kserve.io/inferenceservice" == $model and (.spec.parentRefs[]?.name == "maas-default-gateway")) | .metadata.name' 2>/dev/null || echo "")
-            
-            if [ -n "$has_maas" ]; then
-                total_maas_models=$((total_maas_models + 1))
-                
-                # Check if authentication is enabled
-                auth_enabled=$(oc get llmisvc "$model" -n "$ns" -o jsonpath='{.metadata.annotations.security\.opendatahub\.io/enable-auth}' 2>/dev/null || echo "")
-                
-                if [ "$auth_enabled" == "false" ] || [ -z "$auth_enabled" ]; then
-                    print_error "INSECURE: $ns/$model"
-                    echo "   MaaS enabled: ✓"
-                    echo "   Authentication: ✗ DISABLED"
-                    echo "   Direct route (UNPROTECTED): https://maas.${CLUSTER_DOMAIN}/${ns}/${model}/v1/..."
-                    echo "   MaaS route (protected): https://maas.${CLUSTER_DOMAIN}/maas-api/v1/models/${ns}/${model}"
-                    echo ""
-                    echo "   ${YELLOW}Fix:${NC}"
-                    echo "   oc annotate llmisvc/$model -n $ns security.opendatahub.io/enable-auth=true --overwrite"
-                    echo ""
-                    insecure_models=$((insecure_models + 1))
-                else
-                    print_success "SECURE: $ns/$model"
-                    echo "   MaaS enabled: ✓"
-                    echo "   Authentication: ✓ ENABLED"
-                    echo ""
-                    secure_models=$((secure_models + 1))
-                fi
-            fi
-        done
-    fi
-done
-
-# Summary
-print_header "Security Check Summary"
-
-echo "Total models with MaaS: $total_maas_models"
-echo "Secure models: ${GREEN}$secure_models${NC}"
-echo "Insecure models: ${RED}$insecure_models${NC}"
-echo ""
-
-if [ $insecure_models -eq 0 ] && [ $total_maas_models -gt 0 ]; then
-    print_success "All MaaS-enabled models have authentication enabled!"
-    echo ""
-    print_info "Your MaaS deployment is secure."
-elif [ $insecure_models -gt 0 ]; then
-    print_error "Found $insecure_models insecure model(s)!"
-    echo ""
-    print_warning "SECURITY RISK:"
-    echo "Models with MaaS enabled but no authentication have TWO routes:"
-    echo "  1. MaaS Gateway route (protected by MaaS AuthPolicy)"
-    echo "  2. Direct route (UNPROTECTED - anyone can access!)"
-    echo ""
-    print_warning "The direct route bypasses all MaaS policies including:"
-    echo "  - Authentication"
-    echo "  - Rate limiting"
-    echo "  - Billing/usage tracking"
-    echo ""
-    print_info "To fix, enable authentication on each insecure model using the commands above."
-elif [ $total_maas_models -eq 0 ]; then
-    print_info "No models with MaaS enabled found."
-    echo ""
-    echo "To deploy a model with MaaS:"
-    echo "  1. Go to RHOAI Dashboard → Deploy Model"
-    echo "  2. Select 'llm-d' as serving runtime"
-    echo "  3. ✅ Check 'Enable Model as a Service'"
-    echo "  4. ✅ Check 'Require authentication' (CRITICAL!)"
+if ! oc get gateway maas-default-gateway -n openshift-ingress &>/dev/null; then
+    print_warning "MaaS gateway (maas-default-gateway) not found. Run: ./scripts/setup-maas.sh"
+    exit 0
 fi
-
-echo ""
-print_header "Additional Security Recommendations"
-
-echo "1. Always enable BOTH checkboxes when deploying with MaaS:"
-echo "   ✅ Enable Model as a Service"
-echo "   ✅ Require authentication"
-echo ""
-echo "2. Use short token expiration times:"
-echo "   - 10 minutes for testing"
-echo "   - 1 hour for development"
-echo "   - 24 hours maximum for production"
-echo ""
-echo "3. Monitor token usage:"
-echo "   - Tokens cannot be revoked (known limitation)"
-echo "   - Short expiration is your only protection"
-echo ""
-echo "4. Regularly audit model deployments:"
-echo "   Run this script periodically: ./scripts/check-maas-security.sh"
+print_success "MaaS gateway found"
 echo ""
 
-# Exit with error code if insecure models found
-if [ $insecure_models -gt 0 ]; then
-    exit 1
+print_header "Checking Model Governance"
+
+total_models=0
+governed_models=0
+ungoverned_models=0
+
+# All namespaces with an LLMInferenceService or InferenceService that has a
+# MaaSModelRef pointing at it are considered "MaaS-exposed" models.
+model_refs=$(oc get maasmodelref -A -o json 2>/dev/null | \
+    python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+for item in data.get('items', []):
+    ns = item['metadata']['namespace']
+    name = item['metadata']['name']
+    ref = item.get('spec', {}).get('modelRef', {})
+    ref_name = ref.get('name', name)
+    ref_kind = ref.get('kind', 'LLMInferenceService')
+    print(f'{ns}|{name}|{ref_name}|{ref_kind}')
+" 2>/dev/null)
+
+if [ -z "$model_refs" ]; then
+    print_info "No MaaSModelRef resources found. No models are currently exposed via MaaS."
 else
-    exit 0
+    while IFS='|' read -r ns modelref_name ref_name ref_kind; do
+        [ -z "$ns" ] && continue
+        total_models=$((total_models + 1))
+
+        # Does a MaaSAuthPolicy exist that references this model?
+        has_policy=$(oc get maasauthpolicy -n models-as-a-service -o json 2>/dev/null | \
+            python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+for item in data.get('items', []):
+    for ref in item.get('spec', {}).get('modelRefs', []):
+        if ref.get('name') == '$ref_name' and ref.get('namespace') == '$ns':
+            print(item['metadata']['name'])
+            sys.exit()
+" 2>/dev/null)
+
+        has_subscription=$(oc get maassubscription -n models-as-a-service -o json 2>/dev/null | \
+            python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+for item in data.get('items', []):
+    for ref in item.get('spec', {}).get('modelRefs', []):
+        if ref.get('name') == '$ref_name' and ref.get('namespace') == '$ns':
+            print(item['metadata']['name'])
+            sys.exit()
+" 2>/dev/null)
+
+        if [ -n "$has_policy" ] && [ -n "$has_subscription" ]; then
+            print_success "GOVERNED: $ns/$ref_name ($ref_kind)"
+            echo "   MaaSAuthPolicy: $has_policy | MaaSSubscription: $has_subscription"
+            governed_models=$((governed_models + 1))
+        else
+            print_error "UNGOVERNED: $ns/$ref_name ($ref_kind)"
+            [ -z "$has_policy" ] && echo "   Missing: MaaSAuthPolicy (no access control -- reachable by anyone through the gateway)"
+            [ -z "$has_subscription" ] && echo "   Missing: MaaSSubscription (no rate limiting)"
+            echo ""
+            echo -e "   ${YELLOW}Fix:${NC} deploy governance with scripts/deploy-maas-model.sh, or manually:"
+            echo "   oc apply -f - <<EOF"
+            echo "   apiVersion: maas.opendatahub.io/v1alpha1"
+            echo "   kind: MaaSAuthPolicy"
+            echo "   metadata: {name: ${ref_name}-access, namespace: models-as-a-service}"
+            echo "   spec: {modelRefs: [{name: ${ref_name}, namespace: ${ns}}], subjects: {groups: [{name: system:authenticated}]}}"
+            echo "   EOF"
+            ungoverned_models=$((ungoverned_models + 1))
+        fi
+        echo ""
+    done <<< "$model_refs"
 fi
 
+print_header "Security Check Summary"
+echo "Total MaaS-exposed models: $total_models"
+echo -e "Governed:                   ${GREEN}$governed_models${NC}"
+echo -e "Ungoverned:                 ${RED}$ungoverned_models${NC}"
+echo ""
+
+if [ "$ungoverned_models" -eq 0 ] && [ "$total_models" -gt 0 ]; then
+    print_success "All MaaS-exposed models have both AuthPolicy and Subscription governance."
+elif [ "$ungoverned_models" -gt 0 ]; then
+    print_error "Found $ungoverned_models ungoverned model(s)."
+    print_warning "Models with a MaaSModelRef but no MaaSAuthPolicy are reachable through the"
+    print_warning "gateway's HTTPRoute with NO access control -- effectively public."
+fi
+
+print_header "Additional Recommendations"
+echo "1. Run ./scripts/diagnose-maas.sh --fix for known post-upgrade issue checks"
+echo "   (gateway namespace labels, OOM prevention, rate limit defaults, etc.)"
+echo "2. Use ./scripts/deploy-maas-model.sh for new models -- it always creates"
+echo "   MaaSAuthPolicy + MaaSSubscription alongside the LLMInferenceService."
+echo "3. Regularly audit: ./scripts/check-maas-security.sh"
+echo ""
+
+[ "$ungoverned_models" -gt 0 ] && exit 1
+exit 0

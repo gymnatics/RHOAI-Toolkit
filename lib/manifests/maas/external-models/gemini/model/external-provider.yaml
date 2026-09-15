@@ -1,0 +1,18 @@
+# RHOAI 3.5+ only.
+#   oc create secret generic gemini-api-key -n external-models \
+#     --from-literal=api-key="$GEMINI_API_KEY"
+#   oc label secret gemini-api-key -n external-models \
+#     inference.llm-d.ai/ipp-managed=true --overwrite
+---
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalProvider
+metadata:
+  name: gemini
+  namespace: external-models
+spec:
+  provider: gemini
+  endpoint: generativelanguage.googleapis.com
+  auth:
+    type: apikey
+    secretRef:
+      name: gemini-api-key

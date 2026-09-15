@@ -1,0 +1,128 @@
+# DataScienceCluster for RHOAI 3.5
+# This configuration enables all major components for a full RHOAI 3.5 installation
+# Requires: NFD, GPU Operator, Kueue, cert-manager, RHCL v1.4.1+ (for MaaS), LWS (for llm-d)
+# Optional: JobSet operator (required if trainer.managementState: Managed)
+#
+# Changes from 3.4:
+#   - llamastackoperator is GONE. Replaced by the OGX Operator (DSC field: ogx).
+#     OGX component requirements: Service Mesh 3.x, cert-manager, GPU nodes, NFD,
+#     NVIDIA GPU Operator, S3-compatible storage. Responses API is GA on OGX.
+#   - mcplifecycleoperator is now a first-class DSC component (Technology Preview).
+#     Automatically deployed during standard install; enables the MCP Catalog.
+#   - External OIDC authentication for MaaS is now GA.
+#   - EvalHub is GA (managed via TrustyAI Operator); LM-Eval is deprecated.
+#   - Flow control for llm-d is GA (BREAKING: API group inference.networking.x-k8s.io -> llm-d.ai)
+#   - RHCL v1.4.1+ required (1.4.0 is deprecated due to auth/gateway issues)
+#   - API version: datasciencecluster.opendatahub.io/v2 (unchanged)
+#
+# Reference: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    # Dashboard - OpenShift AI web interface
+    dashboard:
+      managementState: Managed
+
+    # Workbenches - Jupyter notebooks and IDEs
+    # RStudio Server / CUDA-RStudio images removed in 3.5 (licensing compliance)
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+
+    # AI Pipelines - ML workflow automation (required for AutoML/AutoRAG)
+    aipipelines:
+      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
+
+    # KServe - Model serving platform (required for vLLM, llm-d)
+    kserve:
+      managementState: Managed
+      # RawDeployment with Headed config (required for Guardrails + TrustyAI)
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
+      # NVIDIA NIM support
+      nim:
+        managementState: Managed
+      # Optional in 3.5: customize OAuth proxy sidecar resources directly here instead of
+      # editing inferenceservice-config ConfigMap, e.g.:
+      # oauthProxy:
+      #   resources:
+      #     requests: { memory: "256Mi", cpu: "200m" }
+      #     limits: { memory: "512Mi", cpu: "500m" }
+
+    # AI Gateway - MaaS and Batch Gateway (NEW in 3.5)
+    # REPLACES kserve.modelsAsService (deprecated; still respected through 3.6 but should
+    # be migrated to aigateway.modelsAsAService). Note the spelling: "modelsAsAService".
+    # Requires: RHCL operator, Gateway API
+    # Conditions: AIGatewayReady, ModelsAsAServiceReady
+    aigateway:
+      managementState: Managed
+      # MaaS - Models as a Service (core GA since 3.4; external OIDC now GA in 3.5)
+      # GA: subscriptions, API keys, llm-d serving, external OIDC auth, body-based routing
+      # TP: vLLM runtime, observability dashboard, external model egress
+      # maas-controller runs in redhat-ods-applications; maas-api in redhat-ai-gateway-infra
+      modelsAsAService:
+        managementState: Managed
+
+    # Kueue - Workload scheduling
+    # Set to Unmanaged when using Red Hat Build of Kueue Operator (standalone)
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+      # New in 3.5: autoCreateQueues (only takes effect when managementState is Unmanaged)
+      # Defaults to false. Set to true to let the Operator auto-create default queues.
+      # autoCreateQueues: false
+
+    # Ray - Distributed computing framework (KubeRay upgraded to 1.6.x in 3.5)
+    ray:
+      managementState: Managed
+
+    # Trainer - Kubeflow Trainer v2 (GA)
+    # IMPORTANT: Requires JobSet operator to be installed first!
+    # Set to Removed if JobSet is not installed
+    trainer:
+      managementState: Removed
+
+    # Training Operator - Legacy distributed training (deprecated, images removed in 3.5)
+    trainingoperator:
+      managementState: Removed
+
+    # Model Registry - Model versioning and tracking
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+
+    # TrustyAI - Model explainability, fairness, NeMo Guardrails, and EvalHub (GA)
+    # NeMo Guardrails is the single recommended framework; FMS Guardrails Orchestrator
+    # is deprecated in 3.5 (still functional, plan migration for existing deployments)
+    trustyai:
+      managementState: Managed
+
+    # Feast Operator - Feature Store (Technology Preview)
+    # New in 3.5: SparkApplication batch engine support
+    feastoperator:
+      managementState: Managed
+
+    # OGX Operator - GenAI orchestration, RAG, agentic workflows
+    # REPLACES llamastackoperator in 3.5. Formerly "Llama Stack".
+    # Requires: Service Mesh 3.x, cert-manager, GPU nodes, NFD, NVIDIA GPU Operator,
+    # S3-compatible object storage for model artifacts.
+    ogx:
+      managementState: Managed
+
+    # MCP Lifecycle Operator - runtime infrastructure for MCP servers (Technology Preview)
+    # New first-class DSC component in 3.5. Automatically deployed during standard
+    # install; enables the MCP Catalog to deploy/serve MCP servers end-to-end.
+    mcplifecycleoperator:
+      managementState: Managed
+
+    # MLflow Operator - Experiment tracking, model versioning
+    mlflowoperator:
+      managementState: Managed

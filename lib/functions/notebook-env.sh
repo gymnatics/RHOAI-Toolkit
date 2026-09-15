@@ -96,7 +96,8 @@ detect_llm_endpoint() {
 }
 
 # Detect a standard vLLM InferenceService for direct access (non-MaaS, non-embedding).
-# Use this for consumers like LlamaStack that need a standard vLLM /v1 endpoint.
+# Use this for consumers like LlamaStack (RHOAI 3.4-) / OGX (RHOAI 3.5+) that need
+# a standard vLLM /v1 endpoint.
 # Excludes predictive models, embedding models, and guardrails-detector safety
 # classifiers (not chat LLMs). Prefers a match in the given namespace.
 # Args: $1 = preferred namespace (optional)
@@ -240,7 +241,7 @@ inject_notebook_env() {
         detect_llm_endpoint "$ns" || true
     fi
 
-    # Detect direct vLLM endpoint (non-MaaS, for LlamaStack etc.)
+    # Detect direct vLLM endpoint (non-MaaS, for LlamaStack/OGX etc.)
     if [ -z "${DIRECT_MODEL_NAME:-}" ]; then
         detect_direct_llm_endpoint "$ns" || true
     fi

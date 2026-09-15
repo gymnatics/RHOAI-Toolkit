@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-data
+  namespace: team1
+data:
+  jwt-authentication.json: |-
+    {
+      "editable": true,
+      "panels": [
+        {
+          "title": "OIDC Token Acquisition",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |= \"oidc\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        },
+        {
+          "title": "User Authentication Events",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |= \"auth\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        },
+        {
+          "title": "Auth Events Over Time",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {"expr": "count_over_time({job=\"loan-agent\"} |= \"Token acquired\" [5m])", "legendFormat": "Token Acquired", "refId": "A"},
+            {"expr": "count_over_time({job=\"loan-agent\"} |= \"User authenticated\" [5m])", "legendFormat": "User Login", "refId": "B"}
+          ],
+          "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 80}}}
+        },
+        {
+          "title": "All Agent Activity (Full Log Stream)",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"}", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["authentication", "jwt", "keycloak"],
+      "time": {"from": "now-2h", "to": "now"},
+      "title": "1. JWT Authentication",
+      "uid": "jwt-auth-dashboard"
+    }
+  opa-policy-logs.json: |-
+    {
+      "editable": true,
+      "panels": [
+        {
+          "title": "OPA Policy Decisions (Live)",
+          "type": "logs",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |= \"Policy decision\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        },
+        {
+          "title": "Policy Decisions Over Time (Allow vs Deny)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {"expr": "count_over_time({job=\"loan-agent\"} |= \"\\\"allow\\\": true\" [5m])", "legendFormat": "Allow", "refId": "A"},
+            {"expr": "count_over_time({job=\"loan-agent\"} |= \"\\\"allow\\\": false\" [5m])", "legendFormat": "Deny", "refId": "B"}
+          ],
+          "fieldConfig": {"defaults": {"color": {"mode": "fixed"}, "custom": {"drawStyle": "bars", "fillOpacity": 80}}, "overrides": [{"matcher": {"id": "byName", "options": "Allow"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]}, {"matcher": {"id": "byName", "options": "Deny"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}]}
+        },
+        {
+          "title": "Tool Calls (Success/Blocked)",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |= \"Tool call\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        },
+        {
+          "title": "All OPA + Tool Activity",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 18},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |~ \"opa|Tool call\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["opa", "policy", "governance"],
+      "time": {"from": "now-2h", "to": "now"},
+      "title": "2. OPA Policy Logs",
+      "uid": "opa-policy-dashboard"
+    }
+  spire-identity.json: |-
+    {
+      "editable": true,
+      "panels": [
+        {
+          "title": "SPIRE Infrastructure Status",
+          "type": "text",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "options": {"mode": "markdown", "content": "## Zero-Trust Workload Identity Manager\n\n| Component | Count | Status |\n|-----------|-------|--------|\n| **SPIRE Server** | 1 (StatefulSet) | ✅ Running |\n| **SPIRE Agents** | 5 (DaemonSet) | ✅ Running |\n| **SPIFFE CSI Drivers** | 5 (DaemonSet) | ✅ Running |\n| **OIDC Discovery Provider** | 1 | ✅ Running |\n| **Controller Manager** | 1 (sidecar) | ✅ Running |\n\n### Trust Domain\n```\nspiffe://__CLUSTER_DOMAIN__\n```\n\n### SVID TTL\n**1 hour** — auto-rotating, no manual intervention"}
+        },
+        {
+          "title": "Registered SPIFFE Identities",
+          "type": "text",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "options": {"mode": "markdown", "content": "## Workload Identity Map\n\n| Workload | SPIFFE ID Path | Role |\n|----------|---------------|------|\n| **loan-agent** | `/sa/loan-agent/agent/loan-agent` | Agent |\n| **loan-tools-credit** | `/sa/loan-tools-credit/tool/credit` | Tool |\n| **loan-tools-kyc** | `/sa/loan-tools-kyc/tool/kyc` | Tool |\n| **loan-tools-calc** | `/sa/loan-tools-calc/tool/calc` | Tool |\n| **loan-tools-notify** | `/sa/loan-tools-notify/tool/notify` | Tool |\n| **grafana** | `/sa/default/observability/grafana` | Observability |\n| **loki** | `/sa/default/observability/loki` | Observability |\n\n**Total SPIRE entries:** 84 cluster-wide\n\n**All paths prefixed with:**\n`spiffe://__CLUSTER_DOMAIN__/ns/team1`"}
+        },
+        {
+          "title": "SPIRE X.509 SVID Logs (Live)",
+          "type": "logs",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{job=\"loan-agent\"} |= \"spire\"", "refId": "A"}],
+          "options": {"showTime": true, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending"}
+        },
+        {
+          "title": "SVID Delivery Architecture",
+          "type": "text",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 16},
+          "options": {"mode": "markdown", "content": "## How SVIDs Reach Workloads\n\n```\nClusterSPIFFEID CRD\n       │ (identity template)\n       ▼\nSPIRE Controller Manager\n       │ (creates registration entry)\n       ▼\nSPIRE Server (CA)\n       │ (signs X.509 SVID)\n       ▼\nSPIRE Agent (DaemonSet)\n       │ (node attestation)\n       ▼\nCSI Volume Driver\n       │ (mounts socket into pod)\n       ▼\n/run/spiffe/workload-api/spire-agent.sock\n       │ (gRPC Workload API)\n       ▼\nPod fetches SVID → mTLS ready\n```\n\n### Key Properties\n- **No static secrets** — identity is attestation-based\n- **Auto-rotating** — new SVID before expiry\n- **Hardware-rooted** — tied to node identity\n- **Namespace-scoped** — cannot impersonate other teams"}
+        },
+        {
+          "title": "Live Verification",
+          "type": "text",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 16},
+          "options": {"mode": "markdown", "content": "## ClusterSPIFFEID Status\n\n| Name | Pods | Entries | Failures |\n|------|------|---------|----------|\n| loan-agent | 1 | 1 | 0 |\n| loan-tools-credit | 1 | 1 | 0 |\n| loan-tools-kyc | 1 | 1 | 0 |\n| loan-tools-calc | 1 | 1 | 0 |\n| loan-tools-notify | 1 | 1 | 0 |\n| grafana-observability | 1 | 1 | 0 |\n| loki-observability | 1 | 1 | 0 |\n\n## SVID Verified Inside Pod\n```\n$ oc exec loan-agent -c agent -- python3 ...\nSVID Response: 5449 bytes\nSPIFFE ID: spiffe://apps.rosa.rosa-zk6s2\n  .xtob.p3.openshiftapps.com\n  /ns/team1/sa/loan-agent/agent/loan-agent\nStatus: SVID ACTIVE ✅\n```\n\n## CSI Volume Mount\n```yaml\nvolumes:\n- name: spiffe-workload-api\n  csi:\n    driver: csi.spiffe.io\n    readOnly: true\ncontainers:\n- volumeMounts:\n  - name: spiffe-workload-api\n    mountPath: /run/spiffe/workload-api\n```"}
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["spire", "spiffe", "zero-trust"],
+      "time": {"from": "now-2h", "to": "now"},
+      "title": "3. SPIRE Workload Identity",
+      "uid": "spire-identity-dashboard"
+    }

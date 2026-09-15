@@ -1,0 +1,30 @@
+# Red Hat Build of Keycloak (RHBK) operator -- used as a demo/reference OIDC
+# provider for MaaS external authentication. If you already have an external
+# OIDC provider (Okta, Azure AD, etc.), skip this and go straight to
+# maas-oidc/ with your provider's clientId + issuerUrl.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maas-keycloak
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: maas-keycloak
+  namespace: maas-keycloak
+spec:
+  targetNamespaces:
+    - maas-keycloak
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhbk-operator
+  namespace: maas-keycloak
+spec:
+  channel: stable-v26
+  installPlanApproval: Automatic
+  name: rhbk-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

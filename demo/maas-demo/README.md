@@ -2,6 +2,29 @@
 
 Interactive demos showcasing MaaS (Model as a Service) capabilities on Red Hat OpenShift AI.
 
+> ## ⚠️ RHOAI 3.3 ONLY -- Not Compatible with RHOAI 3.4+/3.5
+>
+> This demo targets **RHOAI 3.3's tier-based MaaS** (hand-rolled `auth.identity.tier`
+> predicates in Kuadrant policies, `inference-gateway.*` hostname, `oc create token`
+> auth). RHOAI 3.4 replaced this with subscription CRDs (`MaaSSubscription`,
+> `sk-oai-*` API keys, `maas.*` hostname) and RHOAI 3.5 additionally introduced
+> body-based routing (single shared `/v1/chat/completions` endpoint, model id in
+> the request body). All entry scripts in this directory detect your RHOAI version
+> and **exit with an error on 3.4+/3.5** rather than run against the wrong system.
+>
+> ### For RHOAI 3.4+/3.5, use instead:
+>
+> | Task | Use |
+> |------|-----|
+> | Rate limiting demo (API keys, token budgets, 429s) | [`../maas-ratelimit-demo/`](../maas-ratelimit-demo/) |
+> | Deploy a model published to MaaS | `../../scripts/deploy-maas-model.sh --model auto` |
+> | Full 6-phase E2E verification | `../../scripts/verify-maas.sh` |
+> | Diagnose/fix a broken MaaS install | `../../scripts/diagnose-maas.sh --fix` |
+> | Quick token/API test | [`../generate-maas-token.sh`](../generate-maas-token.sh) + [`../test-maas-api.sh`](../test-maas-api.sh) (version-aware) |
+>
+> See `.cursor/rules/rhoai-versions.mdc` ("MaaS Version Differences") for the full
+> 3.3 vs 3.4 vs 3.5 comparison.
+
 ## Quick Start - One Command Setup
 
 ```bash

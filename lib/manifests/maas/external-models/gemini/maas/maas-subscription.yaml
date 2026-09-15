@@ -1,0 +1,17 @@
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: gemini-2.5-flash-free
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: gemini-2.5-flash
+      namespace: external-models
+      tokenRateLimits:
+        - limit: 10000
+          window: 1h
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 10

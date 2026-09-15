@@ -1,0 +1,40 @@
+# Keycloak instance connected to the PostgreSQL deployment above. Exposed via
+# an OpenShift Route (edge TLS) so the OIDC discovery endpoint and token
+# endpoint are reachable from outside the cluster.
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: maas-keycloak
+spec:
+  instances: 1
+  db:
+    vendor: postgres
+    host: keycloak-pgsql
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+  http:
+    tlsSecret: ""
+  hostname:
+    strict: false
+  ingress:
+    enabled: false
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: keycloak
+  namespace: maas-keycloak
+spec:
+  to:
+    kind: Service
+    name: keycloak-service
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough

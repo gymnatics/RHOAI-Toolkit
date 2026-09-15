@@ -1,0 +1,11 @@
+# All-namespaces OperatorGroup (empty spec) -- Loki Operator needs to watch
+# LokiStack CRs across namespaces (the usage-logging LokiStack is created in
+# redhat-ods-monitoring, not here), matching the conventional use of the
+# openshift-operators-redhat namespace for cluster-wide Red Hat operators.
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-operators-redhat
+  namespace: openshift-operators-redhat
+spec: {}

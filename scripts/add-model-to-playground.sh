@@ -3,7 +3,9 @@
 # Add Model to GenAI Playground
 ################################################################################
 # This script adds a deployed InferenceService to the GenAI Playground
-# by creating a LlamaStackDistribution CR
+# by creating a LlamaStackDistribution CR (RHOAI 3.4 and earlier) or an
+# OGXServer CR (RHOAI 3.5+ -- OGX replaces Llama Stack; DSC field
+# llamastackoperator -> ogx). Version detected automatically.
 ################################################################################
 
 # Get script directory
@@ -12,6 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source utilities
 source "$SCRIPT_DIR/../lib/utils/colors.sh"
 source "$SCRIPT_DIR/../lib/utils/common.sh"
+source "$SCRIPT_DIR/../lib/utils/rhoai-version.sh" 2>/dev/null || true
+
+USE_OGX=false
+if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+    USE_OGX=true
+fi
 
 ################################################################################
 # Default Configuration Values
@@ -413,11 +421,102 @@ EOF
     fi
 }
 
+# RHOAI 3.5+: OGXServer equivalent of create_llamastack_distribution().
+# Uses OGX's native typed provider fields (spec.providers.inference.*) instead
+# of a hand-authored run.yaml ConfigMap, since OGX generates its config
+# declaratively from these fields. Confirmed via `oc explain ogxserver.spec
+# --recursive` and a server-side dry-run against a live RHOAI 3.5.0 cluster.
+create_ogxserver() {
+    local model_name=$1
+    local namespace=$2
+    local endpoint=$3
+    local model_type=$4
+
+    print_step "Creating OGXServer for model: $model_name"
+
+    if oc get ogxserver ogx-genai-playground -n "$namespace" &>/dev/null; then
+        print_info "OGXServer 'ogx-genai-playground' already exists"
+        print_info "Adding model to existing playground..."
+        print_warning "To add a model to an existing playground:"
+        print_info "1. Edit the OGXServer CR: oc edit ogxserver ogx-genai-playground -n $namespace"
+        print_info "2. Add your model under spec.providers.inference.remote.vllm[]"
+        print_info "3. The operator will roll out the change automatically"
+        return 0
+    fi
+
+    print_step "Creating ogx-playground-secret (API token)..."
+    oc create secret generic ogx-playground-secret \
+        --from-literal=api-token="${API_TOKEN}" \
+        -n "$namespace" --dry-run=client -o yaml | oc apply -f -
+
+    print_step "Creating OGXServer..."
+    cat <<EOF | oc apply -f -
+---
+apiVersion: ogx.io/v1beta1
+kind: OGXServer
+metadata:
+  name: ogx-genai-playground
+  namespace: $namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: ogx-genai-playground
+spec:
+  distribution:
+    name: rh
+  workload:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 500Mi
+      limits:
+        cpu: "2"
+        memory: 12Gi
+    overrides:
+      env:
+        - name: FMS_ORCHESTRATOR_URL
+          value: http://localhost
+  providers:
+    inference:
+      inline:
+        custom:
+          - id: sentence-transformers
+            type: inline::sentence-transformers
+      remote:
+        vllm:
+          - id: vllm-inference-1
+            endpoint: "${endpoint}/v1"
+            maxTokens: ${MAX_TOKENS}
+            apiToken:
+              name: ogx-playground-secret
+              key: api-token
+    toolRuntime:
+      remote:
+        modelContextProtocol:
+          - id: model-context-protocol
+EOF
+
+    if [ $? -eq 0 ]; then
+        print_success "OGXServer 'ogx-genai-playground' created"
+        return 0
+    else
+        print_error "Failed to create OGXServer"
+        return 1
+    fi
+}
+
 create_llamastack_distribution() {
     local model_name=$1
     local namespace=$2
     local endpoint=$3
     local model_type=$4
+
+    # RHOAI 3.5+: OGX replaces Llama Stack
+    if [ "$USE_OGX" = true ]; then
+        create_ogxserver "$model_name" "$namespace" "$endpoint" "$model_type"
+        return $?
+    fi
     
     print_step "Creating LlamaStackDistribution for model: $model_name"
     
@@ -507,15 +606,26 @@ wait_for_playground_pod() {
     while [ $elapsed -lt $timeout ]; do
         # Try multiple label selectors - the operator uses different labels
         local pod_status=""
-        
-        # Try app.kubernetes.io/instance label first (most reliable)
-        pod_status=$(oc get pods -n "$namespace" -l app.kubernetes.io/instance=lsd-genai-playground \
-            -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
-        
-        # Fallback to app=llama-stack label
-        if [ -z "$pod_status" ]; then
-            pod_status=$(oc get pods -n "$namespace" -l app=llama-stack \
+
+        if [ "$USE_OGX" = true ]; then
+            # OGX operator names the deployment/pods after the CR (ogx-genai-playground);
+            # confirmed via a live test OGXServer on RHOAI 3.5.0.
+            pod_status=$(oc get pods -n "$namespace" -l app.kubernetes.io/instance=ogx-genai-playground \
                 -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+            if [ -z "$pod_status" ]; then
+                pod_status=$(oc get pods -n "$namespace" -l app=ogx \
+                    -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+            fi
+        else
+            # Try app.kubernetes.io/instance label first (most reliable)
+            pod_status=$(oc get pods -n "$namespace" -l app.kubernetes.io/instance=lsd-genai-playground \
+                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+
+            # Fallback to app=llama-stack label
+            if [ -z "$pod_status" ]; then
+                pod_status=$(oc get pods -n "$namespace" -l app=llama-stack \
+                    -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+            fi
         fi
         
         if [ "$pod_status" = "Running" ]; then

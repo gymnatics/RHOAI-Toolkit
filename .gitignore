@@ -72,6 +72,12 @@ docs/guides/*.pptx
 demo/**/notebooks/.env
 demo/**/.env
 
+# Agentic platform demo PRD (cluster-specific documentation)
+docs/PRD-AGENTIC-PLATFORM-DEMO.md
+
+# University safeguard demo PRD (cluster-specific documentation)
+docs/PRD-UNIVERSITY-SAFEGUARD-DEMO.md
+
 # Python cache
 __pycache__/
 *.pyc
@@ -89,3 +95,4 @@ dify-debug/
 
 # Session TODOs (not for repo)
 docs/TODO-next-session.md
+docs/TODO-e2e-install-test.md

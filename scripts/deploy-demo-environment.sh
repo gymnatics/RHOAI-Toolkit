@@ -2,7 +2,7 @@
 ################################################################################
 # Deploy Full RHOAI Demo Environment
 ################################################################################
-# Orchestrates deployment of all demo components onto a RHOAI 3.4 cluster.
+# Orchestrates deployment of all demo components onto a RHOAI 3.4+ cluster.
 # Each component is independently deployable via its own demo/*/deploy.sh.
 #
 # Usage:
@@ -32,7 +32,7 @@ COMPONENTS=(
     "open-webui|deploy_open_webui_demo|Open WebUI Chat Interface|yes"
     "n8n|deploy_n8n|n8n Workflow Automation|yes"
     "model-catalog|deploy_model_catalog|Custom Model Catalog|yes"
-    "nemo-guardrails|deploy_nemo_guardrails_demo|NeMo Guardrails (RHOAI 3.4)|yes"
+    "nemo-guardrails|deploy_nemo_guardrails_demo|NeMo Guardrails (RHOAI 3.4+)|yes"
     "lemonade-stand|deploy_lemonade_stand|Lemonade Stand Chat (NeMo Guardrails Edition)|yes"
     "lmeval|deploy_lmeval|LMEval + EvalHub (TP) Evaluation Stack|yes"
     "maas-ratelimit|deploy_maas_ratelimit|MaaS Rate Limiting Demo (API Key + 429)|yes"
@@ -274,7 +274,7 @@ deploy_mcp() {
 }
 
 deploy_maas() {
-    print_info "MaaS should be configured during RHOAI 3.4 installation."
+    print_info "MaaS should be configured during RHOAI 3.4+ installation."
     print_info "Use: scripts/deploy-llmd-model.sh to deploy a model to MaaS"
 }
 

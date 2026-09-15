@@ -1,0 +1,25 @@
+# RHOAI 3.5+ only. Uses the OpenAI-compatible Mantle endpoint, NOT
+# bedrock-runtime.<region>.amazonaws.com (the BBR translator only supports
+# /v1/chat/completions, which is only available on Mantle). Replace us-east-2
+# with your AWS region.
+#
+# Bedrock requires a Bedrock API Key (ABSK), not standard AWS access keys:
+#   aws iam create-service-specific-credential --user-name bedrock-api-user \
+#     --service-name bedrock.amazonaws.com --credential-age-days 90
+#   oc create secret generic bedrock-api-key -n external-models \
+#     --from-literal=api-key="$BEDROCK_API_KEY"
+#   oc label secret bedrock-api-key -n external-models \
+#     inference.llm-d.ai/ipp-managed=true --overwrite
+---
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalProvider
+metadata:
+  name: bedrock
+  namespace: external-models
+spec:
+  provider: bedrock-openai
+  endpoint: bedrock-mantle.us-east-2.api.aws
+  auth:
+    type: apikey
+    secretRef:
+      name: bedrock-api-key

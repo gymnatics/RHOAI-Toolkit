@@ -1,0 +1,52 @@
+# Gateway proxy resource overrides for MaaS -- proxy-aware variant.
+#
+# On OCP < 4.22, the OpenShift Gateway controller does not propagate the
+# cluster-wide proxy settings (config.openshift.io/v1 Proxy) into the gateway
+# pod. If the cluster sits behind a corporate HTTP proxy, the istio-proxy
+# container cannot reach external endpoints -- this breaks ExternalModel
+# provider calls and WASM plugin OCI image pulls. Tracked as OCPBUGS-77457,
+# fixed in OCP 4.22+. On earlier versions, inject the proxy env vars manually
+# through this ConfigMap.
+#
+# This produces the SAME maas-gateway-options ConfigMap as gateway-resources.yaml
+# (same 2Gi memory limit, same Gateway spec.infrastructure.parametersRef target)
+# but adds HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars to the istio-proxy container.
+# Applying this OVERWRITES gateway-resources.yaml's ConfigMap -- the ConfigMap
+# name and the Gateway's parametersRef are unchanged, so no other resource needs
+# to be touched.
+#
+# Usage (only when OCP < 4.22 AND a cluster-wide proxy is configured):
+#   export HTTP_PROXY=$(oc get proxy/cluster -o jsonpath='{.spec.httpProxy}')
+#   export HTTPS_PROXY=$(oc get proxy/cluster -o jsonpath='{.spec.httpsProxy}')
+#   export NO_PROXY=$(oc get proxy/cluster -o jsonpath='{.spec.noProxy}')
+#   envsubst '${HTTP_PROXY} ${HTTPS_PROXY} ${NO_PROXY}' \
+#     < lib/manifests/rhcl/gateway-resources-proxy.yaml.tmpl | oc apply -f -
+#   oc rollout status deployment/maas-default-gateway-openshift-gateway-controller \
+#     -n openshift-ingress --timeout=120s
+#
+# Uses "deployment" overlay key (Istio v1.27+); the old "resources" key is unsupported.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maas-gateway-options
+  namespace: openshift-ingress
+data:
+  deployment: |
+    spec:
+      template:
+        spec:
+          containers:
+          - name: istio-proxy
+            resources:
+              limits:
+                memory: 2Gi
+              requests:
+                memory: 512Mi
+            env:
+            - name: HTTP_PROXY
+              value: "${HTTP_PROXY}"
+            - name: HTTPS_PROXY
+              value: "${HTTPS_PROXY}"
+            - name: NO_PROXY
+              value: "${NO_PROXY}"

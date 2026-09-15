@@ -1,0 +1,381 @@
+###############################################################################
+# 04-kagenti.yaml
+# KAgenti (Rossoctl) Platform — Backend, UI, Controller, OTel Collector
+# Apply with: sed "s|__CLUSTER_DOMAIN__|${CLUSTER_DOMAIN}|g" 04-kagenti.yaml | oc apply -f -
+#
+# NOTE: KAgenti was renamed to Rossoctl (Jul 2026). All images are now at
+#       ghcr.io/rossoctl/rossoctl/ — the old quay.io/kagenti/ org is deleted.
+###############################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagenti-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagenti
+  namespace: kagenti-system
+
+---
+# Grant anyuid SCC to default SA (nginx needs /var/cache/nginx write access)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-system-anyuid
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: system:openshift:scc:anyuid
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Grant cluster-reader to kagenti SA (backend needs to list resources)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: kagenti
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kagenti-controller
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["*"]
+- apiGroups: ["route.openshift.io"]
+  resources: ["routes"]
+  verbs: ["*"]
+- apiGroups: ["kagenti.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["*"]
+- apiGroups: ["mcp.kagenti.io"]
+  resources: ["mcpserverregistrations"]
+  verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-controller
+subjects:
+- kind: ServiceAccount
+  name: kagenti
+  namespace: kagenti-system
+roleRef:
+  kind: ClusterRole
+  name: kagenti-controller
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# PostgreSQL for OTel Collector
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-otel
+  namespace: kagenti-system
+spec:
+  serviceName: postgres-otel
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-otel
+  template:
+    metadata:
+      labels:
+        app: postgres-otel
+    spec:
+      containers:
+      - name: postgres
+        image: image-registry.openshift-image-registry.svc:5000/openshift/postgresql:15-el9
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRESQL_USER
+          value: otel
+        - name: POSTGRESQL_PASSWORD
+          value: otel123
+        - name: POSTGRESQL_DATABASE
+          value: otel
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/pgsql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: pgdata
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-otel
+  namespace: kagenti-system
+spec:
+  selector:
+    app: postgres-otel
+  ports:
+  - port: 5432
+
+---
+# OTel Collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel
+        image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.96.0
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: kagenti-system
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - port: 4317
+    name: otlp-grpc
+  - port: 4318
+    name: otlp-http
+
+---
+# KAgenti/Rossoctl Backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-backend
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-backend
+  template:
+    metadata:
+      labels:
+        app: kagenti-backend
+    spec:
+      serviceAccountName: kagenti
+      containers:
+      - name: backend
+        image: ghcr.io/rossoctl/rossoctl/backend:v0.7.0-rc.5
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_COLLECTOR_URL
+          value: "http://otel-collector:4317"
+        - name: DATABASE_URL
+          value: "postgresql://otel:otel123@postgres-otel:5432/otel"
+        - name: ENABLE_AUTH
+          value: "true"
+        - name: DOMAIN
+          value: "__CLUSTER_DOMAIN__"
+        - name: DOMAIN_NAME
+          value: "__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_PUBLIC_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__"
+        - name: KEYCLOAK_REALM
+          value: "kagenti"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "kagenti"
+        - name: KEYCLOAK_CONSOLE_URL
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/admin/master/console/"
+        - name: AUTH_ENDPOINT
+          value: "https://keycloak-keycloak.__CLUSTER_DOMAIN__/realms/kagenti/protocol/openid-connect/auth"
+        - name: REDIRECT_URI
+          value: "https://kagenti-ui-kagenti-system.__CLUSTER_DOMAIN__/oauth2/callback"
+        - name: CORS_ORIGINS
+          value: "[\"https://kagenti-ui-kagenti-system.__CLUSTER_DOMAIN__\"]"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+---
+# kagenti-backend Service (port 8080 -> targetPort 8000, backend app listens on 8000)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagenti-backend
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-backend
+  ports:
+  - port: 8080
+    targetPort: 8000
+
+---
+# rossoctl-backend Service (port 8000 -> 8000, used by nginx UI proxy_pass)
+apiVersion: v1
+kind: Service
+metadata:
+  name: rossoctl-backend
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-backend
+  ports:
+  - port: 8000
+    targetPort: 8000
+
+---
+# KAgenti Controller Manager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-controller-manager
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-controller-manager
+  template:
+    metadata:
+      labels:
+        app: kagenti-controller-manager
+    spec:
+      serviceAccountName: kagenti
+      containers:
+      - name: manager
+        image: ghcr.io/rossoctl/operator:latest
+        env:
+        - name: WATCH_NAMESPACES
+          value: "team1"
+        - name: REGISTRY_URL
+          value: "http://kagenti-backend:8080"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# KAgenti/Rossoctl UI (nginx on port 8080, NOT 3000)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kagenti-ui
+  template:
+    metadata:
+      labels:
+        app: kagenti-ui
+    spec:
+      containers:
+      - name: ui
+        image: ghcr.io/rossoctl/rossoctl/ui-v2:v0.7.0-rc.5
+        ports:
+        - containerPort: 8080
+        env:
+        - name: BACKEND_URL
+          value: "http://rossoctl-backend:8000"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  selector:
+    app: kagenti-ui
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Main UI route
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kagenti-ui
+  namespace: kagenti-system
+spec:
+  to:
+    kind: Service
+    name: kagenti-ui
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Separate /api route pointing directly to backend (bypasses nginx proxy timeout)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kagenti-api
+  namespace: kagenti-system
+spec:
+  path: /api
+  to:
+    kind: Service
+    name: kagenti-backend
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

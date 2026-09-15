@@ -1,0 +1,17 @@
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: simulator-free
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+      tokenRateLimits:
+        - limit: 100
+          window: 1m
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 10

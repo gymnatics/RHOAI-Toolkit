@@ -12,6 +12,7 @@ show_commands_help() {
     echo -e "${CYAN}Available commands:${NC}"
     echo ""
     echo -e "${MAGENTA}Installation:${NC}"
+    echo "  install rhoai-35              Full RHOAI 3.5 install [Recommended]"
     echo "  install rhoai-34              Full RHOAI 3.4 install"
     echo "  install rhoai-33              Full RHOAI 3.3 install"
     echo "  install minimal               Minimal RHOAI (choose operators)"
@@ -42,6 +43,10 @@ show_commands_help() {
     echo "  setup pipeline-server         Deploy Pipeline Server"
     echo "  setup feast                   Feature Store management"
     echo ""
+    echo -e "${MAGENTA}User Management:${NC}"
+    echo "  setup users                   Create users + assign ClusterRoles"
+    echo "  setup users --roles-only      Add roles to existing users"
+    echo ""
     echo -e "${MAGENTA}GPU & Hardware:${NC}"
     echo "  create gpu-machineset         Create GPU MachineSet on AWS"
     echo "  create hardware-profile       Create GPU Hardware Profile"
@@ -62,7 +67,7 @@ show_commands_help() {
     echo ""
     echo -e "${CYAN}Examples:${NC}"
     echo "  ./rhoai-toolkit.sh deploy demo webui"
-    echo "  ./rhoai-toolkit.sh install rhoai-34 --skip-prerequisites"
+    echo "  ./rhoai-toolkit.sh install rhoai-35 --skip-prerequisites"
     echo "  ./rhoai-toolkit.sh setup maas"
     echo ""
 }
@@ -83,6 +88,9 @@ route_command() {
             ;;
         install)
             case "$subcmd" in
+                rhoai-35|rhoai35|35)
+                    exec "$_COMMANDS_DIR/scripts/install-rhoai-35.sh" "$@"
+                    ;;
                 rhoai-34|rhoai34|34)
                     exec "$_COMMANDS_DIR/scripts/install-rhoai-34.sh" "$@"
                     ;;
@@ -94,7 +102,7 @@ route_command() {
                     ;;
                 *)
                     print_error "Unknown install target: $subcmd"
-                    echo "Available: rhoai-34, rhoai-33, minimal"
+                    echo "Available: rhoai-35, rhoai-34, rhoai-33, minimal"
                     return 1
                     ;;
             esac
@@ -138,9 +146,16 @@ route_command() {
                 feast|feature-store)
                     feast_submenu
                     ;;
+                users|user)
+                    if [ "$1" = "--roles-only" ]; then
+                        add_roles_interactive
+                    else
+                        manage_users_interactive
+                    fi
+                    ;;
                 *)
                     print_error "Unknown setup target: $subcmd"
-                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast"
+                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast, users"
                     return 1
                     ;;
             esac

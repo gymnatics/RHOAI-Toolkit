@@ -1,0 +1,57 @@
+# HAP (Hate/Abuse/Profanity) Detector ServingRuntime
+# Copied from the RHOAI 3.5 built-in template
+# `guardrails-detector-huggingface-serving-template` (namespace redhat-ods-applications)
+# so the image digest is pinned as a manifest, not fetched via `oc process` at deploy time.
+#
+# Usage:
+#   export NAMESPACE=acme-university-demo
+#   envsubst < hap-detector-servingruntime.yaml | oc apply -f -
+#
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: guardrails-detector-huggingface-runtime
+  namespace: ${NAMESPACE}
+  annotations:
+    openshift.io/display-name: Hugging Face Detector ServingRuntime for KServe
+  labels:
+    opendatahub.io/dashboard: "true"
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8000"
+  containers:
+    - name: kserve-container
+      image: registry.redhat.io/rhoai/odh-guardrails-detector-huggingface-runtime-rhel9@sha256:34bba52812806a995ded33ccb21fd774ec70c8d84db167cc4de454a1f2b27831
+      command:
+        - uvicorn
+        - app:app
+      args:
+        - --workers=1
+        - --host=0.0.0.0
+        - --port=8000
+        - --log-config=/common/log_conf.yaml
+      env:
+        - name: MODEL_DIR
+          value: /mnt/models
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: DETECTOR_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      ports:
+        - containerPort: 8000
+          protocol: TCP
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+  multiModel: false
+  supportedModelFormats:
+    - name: guardrails-detector-hf-runtime
+      autoSelect: true

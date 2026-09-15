@@ -8,6 +8,9 @@
 
 set -e
 
+_GENAI_MAAS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_GENAI_MAAS_SCRIPT_DIR/../lib/utils/rhoai-version.sh" 2>/dev/null || true
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,17 +56,82 @@ update_datasciencecluster() {
         exit 1
     fi
     
+    # RHOAI 3.5+: llamastackoperator -> ogx, kserve.modelsAsService -> aigateway.modelsAsAService
+    local use_ogx=false
+    if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+        use_ogx=true
+    fi
+
     print_step "Patching DataScienceCluster to enable:"
-    echo "  - llamastackoperator (for GenAI Playground)"
+    if [ "$use_ogx" = true ]; then
+        echo "  - ogx (for GenAI Playground -- replaces llamastackoperator on RHOAI 3.5+)"
+    else
+        echo "  - llamastackoperator (for GenAI Playground)"
+    fi
     echo "  - feastoperator (for Feature Store)"
     echo "  - kueue (Unmanaged, uses standalone RHBOK)"
     echo "  - trustyai (for model monitoring)"
     echo "  - modelregistry (for model catalog)"
     echo "  - mlflowoperator (for experiment tracking)"
     echo "  - aipipelines (for AI pipelines)"
-    echo "  - kserve + MaaS + NIM"
-    
-    cat <<EOF | oc apply -f -
+    if [ "$use_ogx" = true ]; then
+        echo "  - kserve + NIM; aigateway (MaaS -- RHOAI 3.5+ replaces kserve.modelsAsService)"
+    else
+        echo "  - kserve + MaaS + NIM"
+    fi
+
+    if [ "$use_ogx" = true ]; then
+        cat <<EOF | oc apply -f -
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    dashboard:
+      managementState: Managed
+    workbenches:
+      managementState: Managed
+    aipipelines:
+      managementState: Managed
+      argoWorkflowsControllers:
+        managementState: Managed
+    kserve:
+      managementState: Managed
+      defaultDeploymentMode: RawDeployment
+      rawDeploymentServiceConfig: Headed
+      nim:
+        managementState: Managed
+    aigateway:
+      managementState: Managed
+      modelsAsAService:
+        managementState: Managed
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Unmanaged
+    ray:
+      managementState: Managed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    trustyai:
+      managementState: Managed
+    feastoperator:
+      managementState: Managed
+    ogx:
+      managementState: Managed
+    mlflowoperator:
+      managementState: Managed
+EOF
+    else
+        cat <<EOF | oc apply -f -
 apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
@@ -110,6 +178,7 @@ spec:
     mlflowoperator:
       managementState: Managed
 EOF
+    fi
     
     print_success "DataScienceCluster updated"
     

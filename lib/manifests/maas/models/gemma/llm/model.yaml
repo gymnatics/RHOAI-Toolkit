@@ -1,0 +1,42 @@
+# Google Gemma 2 9B IT FP8 on Red Hat AI Inference Server (vLLM CUDA). Fits on a
+# single L4 GPU (24GB VRAM). Gemma is a US-origin model, suitable for deployments
+# with export control requirements. Works in both connected and disconnected
+# (air-gapped) environments since the OCI modelcar is served from registry.redhat.io.
+#
+# NOTE: verify the exact modelcar image tag against the current Red Hat registry
+# catalog (registry.redhat.io) before production use -- tags are updated over time.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: gemma
+  # Namespace set by kustomization.yaml `namespace:` transformer (default: llm).
+spec:
+  model:
+    name: RedHatAI/gemma-2-9b-it-FP8
+    uri: oci://registry.redhat.io/rhelai1/modelcar-gemma-2-9b-it-fp8:1.5
+  replicas: 1
+  router:
+    route: {}
+    gateway:
+      refs:
+        - name: maas-default-gateway
+          namespace: openshift-ingress
+  template:
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    containers:
+      - name: main
+        image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3.0
+        args:
+          - "--max-model-len=4096"
+        resources:
+          requests:
+            cpu: "2"
+            memory: 8Gi
+          limits:
+            cpu: "4"
+            memory: 24Gi
+            nvidia.com/gpu: "1"

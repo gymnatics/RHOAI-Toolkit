@@ -16,6 +16,21 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 
+################################################################################
+# Version Gate: this demo targets RHOAI 3.3's tier-based MaaS (hand-rolled
+# auth.identity.tier predicates) and is NOT compatible with the subscription-
+# based MaaS (RHOAI 3.4+) or body-based routing (RHOAI 3.5+).
+################################################################################
+if source "$PARENT_DIR/../lib/rhoai-detect.sh" 2>/dev/null && is_rhoai_34_or_higher 2>/dev/null; then
+    echo "✗ This demo (maas-demo/) targets RHOAI 3.3's tier-based MaaS and is NOT compatible with RHOAI 3.4+/3.5."
+    echo ""
+    echo "  For RHOAI 3.4+/3.5, use instead:"
+    echo "    Rate limiting demo:  ../../maas-ratelimit-demo/deploy.sh"
+    echo "    Model deployment:    ../../../scripts/deploy-maas-model.sh --model auto"
+    echo "    Full E2E verify:     ../../../scripts/verify-maas.sh"
+    exit 1
+fi
+
 # Source common functions if available
 if [ -f "$PARENT_DIR/lib/common.sh" ]; then
     source "$PARENT_DIR/lib/common.sh"

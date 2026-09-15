@@ -3,6 +3,12 @@
 #   opendatahub.io/managed: "false" — lets MaaS controller manage auth policies
 #   security.opendatahub.io/authorino-tls-bootstrap: "true" — enables TLS to Authorino
 # Requires: GatewayClass, default-gateway-tls Secret, gateway-resources ConfigMap
+#
+# Route binding is restricted to namespaces labeled
+# maas.opendatahub.io/gateway-access=true (least-privilege, matches the BU MaaS
+# guide's Selector pattern). Every namespace that serves models or consumes this
+# gateway must carry that label -- scripts/setup-maas.sh, scripts/deploy-maas-model.sh,
+# and scripts/diagnose-maas.sh --fix all apply/verify it automatically.
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -22,7 +28,10 @@ spec:
   listeners:
     - allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              maas.opendatahub.io/gateway-access: "true"
       hostname: maas.apps.${CLUSTER_DOMAIN}
       name: https
       port: 443

@@ -27,6 +27,7 @@ The toolkit automatically:
 - Detects your RHOAI version (3.2 vs 3.3+)
 - Applies correct labels for dashboard visibility
 - Enables restAPI for the registry
+- Patches the Feast RBAC `permissions.py` namespace mismatch (see [RBAC Gotcha](#rbac-gotcha-permissionspy-namespace-mismatch) below) - no fork needed
 - Runs `feast apply` and `feast materialize`
 
 ### Option 2: Deploy via Manifest
@@ -106,11 +107,19 @@ spec:
           restAPI: true                    # Required for RHOAI 3.3+ dashboard
 ```
 
-### Step 4: Apply Feature Definitions
+### Step 4: Fix the RBAC Namespace Mismatch, Then Apply Feature Definitions
 
 ```bash
 # Get the feast pod
 FEAST_POD=$(oc get pods -n feast-demo -l feast.dev/name=banking -o jsonpath='{.items[0].metadata.name}')
+
+# Patch permissions.py so its NamespaceBasedPolicy matches your actual
+# namespace instead of the upstream repo's hardcoded "banking" project name
+# (see "RBAC Gotcha" below for why this is necessary). Skip this if you
+# deployed via the toolkit - it does this automatically.
+oc exec -n feast-demo $FEAST_POD -c registry -- \
+  sed -i 's/prod_namespaces = \[.*\]/prod_namespaces = ["feast-demo"]/' \
+  /feast-data/banking/feature_repo/permissions.py
 
 # Apply feature definitions from the git repo
 oc exec -n feast-demo $FEAST_POD -c registry -- feast apply
@@ -163,6 +172,35 @@ Or use the toolkit's diagnose feature:
 ./rhoai-toolkit.sh
 # → RHOAI Management → AI Services & Infrastructure → Feature Store Management → Diagnose Feature Store
 ```
+
+### RBAC Gotcha: permissions.py Namespace Mismatch
+
+**Symptom:** All the checks above pass (labels correct, `restAPI: true`, namespace labeled, `registry` and `registry-rest` services exist, pod `Running`) but the FeatureStore *still* doesn't show up in the dashboard.
+
+**Root cause:** `feature_repo/permissions.py` in the upstream repo (`RHRolun/banking-feature-store`, branch `rbac`) defines:
+
+```python
+prod_namespaces = ["banking"]
+
+all_resources = Permission(
+    name="all_resources",
+    types=ALL_RESOURCE_TYPES,
+    policy=NamespaceBasedPolicy(namespaces=prod_namespaces),
+    actions=[AuthzedAction.DESCRIBE] + READ
+)
+```
+
+`NamespaceBasedPolicy` checks `prod_namespaces` against the **OpenShift namespace** you're deployed into - but `"banking"` here is actually the **Feast project name**, not a namespace. Unless you deploy into a namespace literally named `banking`, every registry `DESCRIBE`/list call gets denied with `Permission all_resources denied ... User is not added into the permitted namespaces`, and the dashboard's feature-store discovery (which calls the registry's REST API) silently returns an empty list.
+
+You can confirm this is the cause by checking the `registry` container's logs for that exact error, or by querying the registry directly:
+```bash
+FEAST_POD=$(oc get pods -n <namespace> -l feast.dev/name=banking -o jsonpath='{.items[0].metadata.name}')
+oc logs -n <namespace> $FEAST_POD -c registry --tail=50 | grep "permitted namespaces"
+```
+
+**Fix:** Deploying via the toolkit (`rhoai-toolkit.sh` → `deploy_banking_demo`) or running `Diagnose Feature Store` → automatic fixes now handles this automatically (`check_featurestore_rbac_namespace` / `fix_featurestore_rbac_namespace` in `lib/utils/rhoai-version.sh`) by patching the already-cloned repo checkout on the `feast-data` PVC in place and re-running `feast apply` - no git fork/push required. If you're applying the manifest manually (Option 2), see Step 4 above.
+
+This in-place patch persists across normal pod restarts (it lives on the PVC), but will be reverted if the PVC is ever wiped and `feast-init` re-clones from the upstream repo (it only clones if `feature_repo` doesn't already exist). For a permanent fix that survives that case too, fork the repo, apply the same one-line change to `permissions.py`, and point `spec.feastProjectDir.git.url` at your fork.
 
 ---
 

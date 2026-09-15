@@ -9,10 +9,21 @@
 # - Call center analytics
 # - Risk scoring (on-demand)
 #
-# Prerequisites:
-# 1. Fork https://github.com/RHRolun/banking-feature-store
-# 2. Update feature_repo/permissions.py line 47 with your namespace
-# 3. Push changes to your fork
+# RBAC gotcha (auto-fixed by the toolkit, manual if applying this YAML directly):
+# feature_repo/permissions.py hardcodes `prod_namespaces = ["banking"]`, which
+# is meant to be an OpenShift *namespace* but is actually the Feast *project*
+# name. Unless you deploy into a namespace literally called "banking", every
+# registry DESCRIBE/list call is denied ("User is not added into the permitted
+# namespaces") and the FeatureStore silently vanishes from the dashboard even
+# though every pod is Running. Deploying via `rhoai-toolkit.sh` (deploy_banking_demo)
+# now patches this automatically on the feast-data PVC after the pod comes up -
+# no fork/push needed. If applying this manifest directly (Option 2), patch it
+# yourself after the pod is running:
+#   FEAST_POD=$(oc get pods -n <namespace> -o name | grep feast-banking | sed 's|pod/||')
+#   oc exec -n <namespace> $FEAST_POD -c registry -- \
+#     sed -i 's/prod_namespaces = \[.*\]/prod_namespaces = ["<namespace>"]/' \
+#     /feast-data/banking/feature_repo/permissions.py
+#   oc exec -n <namespace> $FEAST_POD -c registry -- sh -c "cd /feast-data/banking/feature_repo && feast apply"
 #
 # After applying (two-step approach from CAI guide):
 # 1. Apply this YAML (restAPI starts as false)

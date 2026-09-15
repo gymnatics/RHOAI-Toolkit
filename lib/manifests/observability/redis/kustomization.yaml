@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Redis for Limitador persistence + supporting EnvoyFilters. Apply with:
+#   oc apply -k lib/manifests/observability/redis/
+# Or via the orchestrating function: setup_redis_limitador (lib/functions/redis-limitador.sh)
+# which also creates the Redis connection Secret and patches the Limitador CR
+# (imperative steps that can't live in a static manifest).
+resources:
+  - redis-limitador.yaml
+  - healthcheck-filter.yaml
+  - ratelimit-timeout-filter.yaml

@@ -7,14 +7,20 @@
 #   - Milvus vector database (remote -- required by AutoRAG)
 #   - Pipeline Server (DSPA) for Kubeflow Pipelines
 #   - S3 data connection and sample documents
-#   - Activates Llama Stack Operator if not already enabled
+#   - Activates the Llama Stack Operator (RHOAI 3.4-) or OGX Operator (RHOAI 3.5+)
+#     if not already enabled
 #
 # AutoRAG itself is a dashboard-native feature -- after infrastructure is ready,
 # use the RHOAI dashboard: Develop and train > AutoRAG
 #
-# Prerequisites:
+# Prerequisites (RHOAI 3.4 and earlier):
 #   - Llama Stack Operator activated (llamastackoperator: Managed in DSC)
 #   - Llama Stack instance with foundation + embedding models
+#   - Gen AI Studio enabled in dashboard
+#
+# Prerequisites (RHOAI 3.5+):
+#   - OGX Operator activated (ogx: Managed in DSC -- replaces llamastackoperator)
+#   - OGXServer instance with foundation + embedding models
 #   - Gen AI Studio enabled in dashboard
 #
 # Usage:
@@ -30,7 +36,15 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
+
+# RHOAI 3.5+ renamed Llama Stack to OGX (llamastackoperator -> ogx,
+# LlamaStackDistribution -> OGXServer). Detect once and use throughout.
+USE_OGX=false
+if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; then
+    USE_OGX=true
+fi
 
 NAMESPACE="${1:-autorag-demo}"
 DELETE_MODE=false
@@ -51,10 +65,16 @@ print_header "AutoRAG Demo (Technology Preview)"
 
 if [ "$DELETE_MODE" = true ]; then
     print_step "Removing AutoRAG infrastructure from $NAMESPACE..."
-    oc delete llamastackdistribution autorag-llamastack -n "$NAMESPACE" --ignore-not-found 2>/dev/null
     export NAMESPACE
+    if [ "$USE_OGX" = true ]; then
+        oc delete ogxserver autorag-ogx -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+        oc delete secret ogx-secret -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    else
+        oc delete llamastackdistribution autorag-llamastack -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+        oc delete secret llama-stack-secret -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    fi
     envsubst < "$SCRIPT_DIR/manifests/llamastack-postgresql.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
-    oc delete secret llama-stack-secret milvus-connection-secret -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    oc delete secret milvus-connection-secret -n "$NAMESPACE" --ignore-not-found 2>/dev/null
     oc delete datasciencepipelineapplication pipelines-definition -n "$NAMESPACE" --ignore-not-found 2>/dev/null
     envsubst < "$SCRIPT_DIR/manifests/milvus.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     envsubst < "$SCRIPT_DIR/manifests/minio.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
@@ -70,14 +90,25 @@ fi
 # --- Step 0: Verify prerequisites ---
 print_step "Checking prerequisites..."
 
-# Check Llama Stack Operator
-LLAMASTACK_STATE=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null)
-if [ "$LLAMASTACK_STATE" != "Managed" ]; then
-    print_warning "Llama Stack Operator is not enabled (current: ${LLAMASTACK_STATE:-not set})"
-    print_info "Activating Llama Stack Operator in DSC..."
-    oc patch datasciencecluster default-dsc --type=merge \
-        -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}' 2>/dev/null || \
-        print_warning "Could not patch DSC -- enable llamastackoperator manually"
+# Check Llama Stack Operator (3.4-) or OGX Operator (3.5+; DSC field: ogx, was llamastackoperator)
+if [ "$USE_OGX" = true ]; then
+    OGX_STATE=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.ogx.managementState}' 2>/dev/null)
+    if [ "$OGX_STATE" != "Managed" ]; then
+        print_warning "OGX Operator is not enabled (current: ${OGX_STATE:-not set})"
+        print_info "Activating OGX Operator in DSC..."
+        oc patch datasciencecluster default-dsc --type=merge \
+            -p '{"spec":{"components":{"ogx":{"managementState":"Managed"}}}}' 2>/dev/null || \
+            print_warning "Could not patch DSC -- enable ogx manually"
+    fi
+else
+    LLAMASTACK_STATE=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.llamastackoperator.managementState}' 2>/dev/null)
+    if [ "$LLAMASTACK_STATE" != "Managed" ]; then
+        print_warning "Llama Stack Operator is not enabled (current: ${LLAMASTACK_STATE:-not set})"
+        print_info "Activating Llama Stack Operator in DSC..."
+        oc patch datasciencecluster default-dsc --type=merge \
+            -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}' 2>/dev/null || \
+            print_warning "Could not patch DSC -- enable llamastackoperator manually"
+    fi
 fi
 
 # Check AI Pipelines
@@ -193,14 +224,18 @@ else
         print_warning "PostgreSQL not ready yet -- check: oc get pods -l app=llamastack-postgres -n $NAMESPACE"
 fi
 
-# --- Step 6: LlamaStack (auto-configured with direct vLLM + embedding endpoints) ---
-print_step "Deploying LlamaStack..."
+# --- Step 6: LlamaStack/OGX (auto-configured with direct vLLM + embedding endpoints) ---
+if [ "$USE_OGX" = true ]; then
+    print_step "Deploying OGX (replaces Llama Stack on RHOAI 3.5+)..."
+else
+    print_step "Deploying LlamaStack..."
+fi
 
 # Detect direct vLLM LLM endpoint (standard InferenceService, not MaaS)
 if detect_direct_llm_endpoint; then
     print_info "Found direct vLLM LLM: $DIRECT_MODEL_NAME (ns: $DIRECT_MODEL_NS)"
 else
-    print_warning "No direct vLLM LLM endpoint found -- LlamaStack will need manual VLLM_URL configuration"
+    print_warning "No direct vLLM LLM endpoint found -- LlamaStack/OGX will need manual VLLM_URL configuration"
 fi
 
 # Detect embedding model in this namespace
@@ -243,15 +278,27 @@ export VLLM_EMBEDDING_MAX_TOKENS="8192"
 export MILVUS_ENDPOINT
 export MILVUS_TOKEN=""
 
-envsubst < "$SCRIPT_DIR/manifests/llamastack.yaml" | oc apply -f -
-print_info "LlamaStack deploying (takes 1-2 minutes)..."
+if [ "$USE_OGX" = true ]; then
+    envsubst < "$SCRIPT_DIR/manifests/ogxserver.yaml" | oc apply -f -
+    print_info "OGX deploying (takes 1-2 minutes)..."
 
-# Wait briefly for LlamaStack pod to start
-sleep 5
-oc rollout status deployment/autorag-llamastack -n "$NAMESPACE" --timeout=180s 2>/dev/null || \
-    print_warning "LlamaStack not ready yet -- check: oc get pods -l app.kubernetes.io/name=autorag-llamastack -n $NAMESPACE"
+    # Wait briefly for OGX pod to start (deployment/service named after the CR: autorag-ogx)
+    sleep 5
+    oc rollout status deployment/autorag-ogx -n "$NAMESPACE" --timeout=180s 2>/dev/null || \
+        print_warning "OGX not ready yet -- check: oc get pods -l app.kubernetes.io/instance=autorag-ogx -n $NAMESPACE"
 
-LLAMASTACK_URL="http://autorag-llamastack-service.${NAMESPACE}.svc.cluster.local:8321"
+    LLAMASTACK_URL="http://autorag-ogx-service.${NAMESPACE}.svc.cluster.local:8321"
+else
+    envsubst < "$SCRIPT_DIR/manifests/llamastack.yaml" | oc apply -f -
+    print_info "LlamaStack deploying (takes 1-2 minutes)..."
+
+    # Wait briefly for LlamaStack pod to start
+    sleep 5
+    oc rollout status deployment/autorag-llamastack -n "$NAMESPACE" --timeout=180s 2>/dev/null || \
+        print_warning "LlamaStack not ready yet -- check: oc get pods -l app.kubernetes.io/name=autorag-llamastack -n $NAMESPACE"
+
+    LLAMASTACK_URL="http://autorag-llamastack-service.${NAMESPACE}.svc.cluster.local:8321"
+fi
 
 echo ""
 print_success "AutoRAG Demo infrastructure deployed"
@@ -263,13 +310,23 @@ fi
 if [ -n "${EMBEDDING_ISVC:-}" ]; then
     print_info "Embedding: $EMBEDDING_ISVC → $VLLM_EMBEDDING_URL"
 fi
-print_info "LlamaStack: $LLAMASTACK_URL"
+if [ "$USE_OGX" = true ]; then
+    print_info "OGX: $LLAMASTACK_URL"
+else
+    print_info "LlamaStack: $LLAMASTACK_URL"
+fi
 echo ""
 echo "  Remaining manual steps:"
 echo ""
-echo "  1. CREATE LLAMA STACK CONNECTION IN PROJECT:"
-echo "     - Dashboard > $NAMESPACE > Connections"
-echo "     - Add connection: Llama Stack"
+if [ "$USE_OGX" = true ]; then
+    echo "  1. CREATE OGX CONNECTION IN PROJECT:"
+    echo "     - Dashboard > $NAMESPACE > Connections"
+    echo "     - Add connection: Llama Stack / OGX (naming may vary by dashboard build)"
+else
+    echo "  1. CREATE LLAMA STACK CONNECTION IN PROJECT:"
+    echo "     - Dashboard > $NAMESPACE > Connections"
+    echo "     - Add connection: Llama Stack"
+fi
 echo "       Base URL: $LLAMASTACK_URL"
 echo "       API Key: (leave empty or use any value)"
 echo ""
@@ -277,7 +334,11 @@ echo "  2. RUN AUTORAG:"
 echo "     - Dashboard > Develop and train > AutoRAG"
 echo "     - Click 'Create run'"
 echo "     - S3 Connection: 'AutoRAG Documents'"
-echo "     - Llama Stack Connection: (created in step 1)"
+if [ "$USE_OGX" = true ]; then
+    echo "     - Llama Stack / OGX Connection: (created in step 1)"
+else
+    echo "     - Llama Stack Connection: (created in step 1)"
+fi
 echo "     - Select optimization metric (e.g. Answer correctness)"
 echo "     - Upload test data: sample-data/test-data.json"
 echo "     - Click 'Create run'"

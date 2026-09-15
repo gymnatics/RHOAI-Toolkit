@@ -1,0 +1,24 @@
+# Free tier subscription for the simulator model (100 tokens/min, priority 10).
+# Avoids the problematic MaaS default of 1000 tokens/hour (see BU Issue 9:
+# https://rh-aiservices-bu.github.io/rhoai-maas-guide -- Post-Upgrade Troubleshooting).
+#
+# NOTE: spec.modelRefs (plural array) + spec.owner.groups is the correct schema --
+# verified against a live RHOAI 3.5 cluster and matching
+# lib/functions/model-deployment.sh::publish_model_to_maas.
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: simulator-free
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: simulator
+      namespace: llm
+      tokenRateLimits:
+        - limit: 100
+          window: 1m
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 10

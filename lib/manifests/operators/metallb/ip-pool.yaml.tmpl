@@ -1,0 +1,27 @@
+# IPAddressPool + L2Advertisement for the MaaS Gateway's LoadBalancer Service on
+# non-cloud platforms (BareMetal, OpenStack, None/SNO). Requires METALLB_IP_RANGE
+# to be set (a single unused IP on the same L2 subnet as the cluster nodes --
+# do NOT reuse a node's own IP, or kube-proxy iptables rules will intercept
+# traffic meant for the OpenShift router on the same IP:port).
+#
+# Usage (see lib/functions/metallb.sh::setup_metallb for the full derivation logic):
+#   export METALLB_IP_RANGE="10.0.1.50-10.0.1.50"
+#   envsubst '${METALLB_IP_RANGE}' < ip-pool.yaml.tmpl | oc apply -f -
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: maas-gateway-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - ${METALLB_IP_RANGE}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: maas-gateway-l2adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - maas-gateway-pool

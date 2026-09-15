@@ -1,0 +1,17 @@
+# RHOAI 3.4 only. Standalone ExternalModel (maas.opendatahub.io API group).
+#   oc create secret generic bedrock-api-key -n external-models \
+#     --from-literal=api-key="$BEDROCK_API_KEY"
+#   oc label secret bedrock-api-key -n external-models \
+#     inference.networking.k8s.io/bbr-managed=true --overwrite
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: aws-gpt-oss-20b
+  namespace: external-models
+spec:
+  provider: bedrock-openai
+  targetModel: openai.gpt-oss-20b
+  endpoint: bedrock-mantle.us-east-2.api.aws
+  credentialRef:
+    name: bedrock-api-key

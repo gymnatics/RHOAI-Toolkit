@@ -1,0 +1,10 @@
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: aws-gpt-oss-20b
+  namespace: external-models
+spec:
+  modelRef:
+    kind: ExternalModel
+    name: aws-gpt-oss-20b
