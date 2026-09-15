@@ -585,15 +585,18 @@ oc run debug-sim --image=<image>:<tag> --restart=Never --command -- /app/llm-d-i
 oc logs debug-sim; oc delete pod debug-sim
 ```
 
-**Bug 4 (not a bug — a routing model change) — RHOAI 3.5 uses body-based routing, not per-model URLs:**
+**Bug 4 (not a bug — RHOAI 3.5 supports BOTH routing modes, correcting an earlier assumption in this doc):**
 
-`GET /v1/models` on RHOAI 3.5+ returns `{"data":[{"id": "publishers/<ns>/models/<name>", "url": "https://maas.<domain>/"}], ...}` — the `url` field is just the **gateway base URL**, not a per-model path. The model is selected via the `"model"` field in the **request body**, sent to the single shared `${MAAS_HOST}/v1/chat/completions` endpoint:
+`GET /v1/models` on RHOAI 3.5+ returns `{"data":[{"id": "publishers/<ns>/models/<name>", "url": "https://maas.<domain>/"}], ...}` — the `url` field is just the **gateway base URL**, not a per-model path. This enables **body-based routing**: send the model via the `"model"` field in the request body to the single shared `${MAAS_HOST}/v1/chat/completions` endpoint, using the FULL id from `/v1/models` (e.g. `publishers/<ns>/models/<name>`):
 ```bash
 MODEL_ID=$(curl -sk -H "Authorization: Bearer $API_KEY" "$MAAS_HOST/v1/models" | jq -r '.data[0].id')
 curl -sk "$MAAS_HOST/v1/chat/completions" -H "Authorization: Bearer $API_KEY" \
   -d "{\"model\":\"$MODEL_ID\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}"
 ```
-Constructing a per-model URL manually (e.g. `${MAAS_HOST}/${ns}/${model}/v1/chat/completions`, the 3.4-era pattern) returns HTTP 404 on 3.5+.
+
+**Per-model URL routing (the 3.4-era pattern, `${MAAS_HOST}/${ns}/${model}/v1/chat/completions`) is ALSO fully supported on 3.5+ and does NOT 404** — confirmed HTTP 200 on multiple live RHOAI 3.5.0 clusters (including a fresh bare-cluster install, 2026-09-10). This is what the official [BU MaaS guide](https://rh-aiservices-bu.github.io/rhoai-maas-guide) exclusively uses, and it's `demo/lib/rhoai-detect.sh`'s default (`MAAS_ROUTING=path`). Body-based is documented as "recommended" and available as an opt-in (`export MAAS_ROUTING=body`).
+
+**Important**: the `"model"` field format differs by mode — per-model URL mode uses the bare `spec.model.name` (e.g. `facebook/opt-125m`); body-based mode requires the full `publishers/<ns>/models/<name>` id. Mixing them up 404s either way. `demo/lib/rhoai-detect.sh`'s `get_maas_model_id()` builds the correct format automatically for the active mode.
 
 ---
 

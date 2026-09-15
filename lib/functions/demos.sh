@@ -101,8 +101,7 @@ deploy_open_webui() {
     
     if [ -f "$manifest_file" ]; then
         export MODEL_URL="$model_urls"
-        sed -e "s|\${MODEL_URL:-http://localhost:8080/v1}|$model_urls|g" \
-            "$manifest_file" | oc apply -n "$target_ns" -f -
+        envsubst < "$manifest_file" | oc apply -n "$target_ns" -f -
         unset MODEL_URL
     else
         print_info "Using external Open WebUI manifest..."
