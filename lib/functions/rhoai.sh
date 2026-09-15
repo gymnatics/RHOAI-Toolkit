@@ -1294,7 +1294,26 @@ deploy_llminferenceservice() {
     
     read -p "Memory limit [16Gi]: " memory_limit
     memory_limit=${memory_limit:-16Gi}
-    
+
+    # Tool-call parser: hermes/llama3_json/mistral are NOT interchangeable --
+    # each is tied to a specific model family's tool-call output format.
+    # Guess a default from the model name/URI, but always let the user
+    # confirm/override rather than silently forcing one family's parser
+    # onto a different model.
+    local detected_parser="hermes"
+    local name_and_uri_lower
+    name_and_uri_lower=$(echo "${model_name} ${model_uri}" | tr '[:upper:]' '[:lower:]')
+    case "$name_and_uri_lower" in
+        *llama*) detected_parser="llama3_json" ;;
+        *mistral*) detected_parser="mistral" ;;
+        *qwen*|*granite*) detected_parser="hermes" ;;
+        *) detected_parser="hermes" ;;  # most common in this toolkit's catalog, but just a guess
+    esac
+    echo ""
+    echo -e "${CYAN}Tool-call parser (must match the model family -- hermes: Qwen, llama3_json: Llama, mistral: Mistral):${NC}"
+    read -p "Tool parser [$detected_parser]: " tool_parser
+    tool_parser=${tool_parser:-$detected_parser}
+
     print_step "Creating LLMInferenceService '$model_name' in namespace '$namespace'..."
     
     export MODEL_NAME="$model_name"
@@ -1302,7 +1321,7 @@ deploy_llminferenceservice() {
     export AUTH_ANNOTATION="$auth_annotation"
     export DISPLAY_NAME="$model_name"
     export MODEL_URI="$model_uri"
-    export TOOL_PARSER="hermes"
+    export TOOL_PARSER="$tool_parser"
     export GPU_COUNT="$gpu_count"
     export MEMORY_LIMIT="$memory_limit"
     export MEMORY_REQUEST="8Gi"
