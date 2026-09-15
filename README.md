@@ -91,7 +91,7 @@ This single command provides an interactive menu to:
 ├── scripts/                      # 50+ utility scripts
 │   ├── install-rhoai-35.sh       # RHOAI 3.5 full installation (recommended)
 │   ├── install-rhoai-34.sh       # RHOAI 3.4 full installation
-│   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation
+│   ├── install-rhoai-33.sh       # RHOAI 3.3 full installation [legacy/deprecated]
 │   ├── install-rhoai-minimal.sh  # Minimal RHOAI install
 │   ├── create-gpu-machineset.sh  # GPU node creation (AWS)
 │   ├── setup-maas.sh             # MaaS API gateway (version-aware)
@@ -216,7 +216,7 @@ Need RHOAI 3.4 instead? Use `./scripts/install-rhoai-34.sh` with the same flags 
 
 # Previous versions
 ./scripts/install-rhoai-34.sh --channel stable-3.4
-./scripts/install-rhoai-33.sh
+./scripts/install-rhoai-33.sh  # legacy/deprecated -- existing 3.3 clusters only
 
 # Add GPU nodes
 ./scripts/create-gpu-machineset.sh

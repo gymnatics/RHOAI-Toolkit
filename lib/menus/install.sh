@@ -54,6 +54,9 @@ install_rhoai_menu() {
         if [ "$ch" = "$default_channel" ]; then
             label=" ${GREEN}[default]${NC}"
         fi
+        if [[ "$ver" == 3.3* || "$ch" == *3.3* ]]; then
+            label="$label ${YELLOW}[legacy/deprecated]${NC}"
+        fi
         printf "  ${YELLOW}%d)${NC} %-16s — v%s%b\n" "$i" "$ch" "$ver" "$label"
         i=$((i + 1))
     done
@@ -97,10 +100,12 @@ install_rhoai_menu() {
             fi
             ;;
         *3.3*)
+            echo -e "${YELLOW}⚠ RHOAI 3.3 is legacy/deprecated in this toolkit -- kept for existing 3.3${NC}"
+            echo -e "${YELLOW}  clusters only, not receiving new features. Prefer 3.4 or 3.5 for new installs.${NC}"
             echo -e "${CYAN}Launching RHOAI 3.3 installer (channel: $selected_channel)...${NC}"
             echo ""
-            read -p "Proceed? (Y/n): " confirm
-            if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+            read -p "Proceed with legacy 3.3 install anyway? (y/N): " confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 "$SCRIPT_DIR/scripts/install-rhoai-33.sh" --channel "$selected_channel"
             fi
             ;;
