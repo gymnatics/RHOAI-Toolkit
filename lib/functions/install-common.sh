@@ -986,3 +986,216 @@ setup_demo_users() {
     echo -e "  ${YELLOW}Note:${NC} Users may take 1-2 minutes to be available after OAuth restart"
 }
 
+
+################################################################################
+# Tier 2 -- required a small parameterization pass to become identical
+# (RHOAI_VERSION_LABEL / RHOAI_MAX_VALIDATED_OCP / MAAS_INFRA_NS variables,
+# set per-version at the top of install-rhoai-{34,35}.sh) before extraction.
+################################################################################
+
+check_prerequisites() {
+    print_step "Checking prerequisites..."
+
+    if ! command -v oc &> /dev/null; then
+        print_error "oc CLI not found. Please install OpenShift CLI."
+        exit 1
+    fi
+
+    if ! oc whoami &> /dev/null; then
+        print_error "Not logged in to OpenShift cluster. Please run 'oc login' first."
+        exit 1
+    fi
+
+    if ! oc auth can-i create clusterrole &> /dev/null; then
+        print_error "You need cluster-admin privileges to install RHOAI."
+        exit 1
+    fi
+
+    local ocp_version=$(oc version -o json 2>/dev/null | jq -r '.openshiftVersion' | cut -d. -f1,2)
+    print_info "OpenShift version: $ocp_version"
+
+    if [[ "$ocp_version" < "4.19" ]]; then
+        print_error "RHOAI ${RHOAI_VERSION_LABEL} requires OpenShift 4.19 or later. Current: $ocp_version"
+        exit 1
+    fi
+
+    if [ -n "$RHOAI_MAX_VALIDATED_OCP" ] && [[ "$ocp_version" > "$RHOAI_MAX_VALIDATED_OCP" ]]; then
+        print_warning "RHOAI ${RHOAI_VERSION_LABEL} is validated up to OCP ${RHOAI_MAX_VALIDATED_OCP}. Current: $ocp_version (proceeding anyway)"
+    fi
+
+    if [ "$ENABLE_LLMD" = true ] && [[ "$ocp_version" < "4.20" ]]; then
+        print_warning "Distributed inference with llm-d requires OCP 4.20+. Current: $ocp_version"
+        print_warning "llm-d will be installed but multi-node inference may not work correctly."
+    fi
+
+    print_success "Prerequisites check passed"
+}
+
+create_thanos_proxy_secret() {
+    local dash_ns="redhat-ods-applications"
+
+    if ! oc get namespace "$dash_ns" &>/dev/null; then
+        return 0
+    fi
+
+    # Always create the secret — it's harmless when observabilityDashboard is off,
+    # and required immediately when someone enables it later via the menu.
+    # Previously this was gated on observabilityDashboard=true, which caused the
+    # secret to be missing when the flag was enabled post-install.
+    print_step "Creating Thanos proxy secret for observability dashboard..."
+
+    if oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null; then
+        local existing_token thanos_host http_code
+        existing_token=$(oc get secret monitoring-thanos-proxy-secret -n "$dash_ns" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$existing_token" ] && [ -n "$thanos_host" ]; then
+            http_code=$(curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer ${existing_token}" \
+                "https://${thanos_host}/api/v1/query?query=up" 2>/dev/null || echo "000")
+            if [ "$http_code" -eq 200 ] 2>/dev/null; then
+                print_success "Thanos proxy secret valid (HTTP 200)"
+                return 0
+            fi
+        fi
+        oc delete secret monitoring-thanos-proxy-secret -n "$dash_ns" &>/dev/null || true
+    fi
+
+    local new_token thanos_host
+    new_token=$(oc create token rhods-dashboard -n "$dash_ns" --duration=87600h 2>/dev/null || echo "")
+    thanos_host=$(oc get route thanos-querier -n openshift-monitoring \
+        -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+    if [ -z "$new_token" ] || [ -z "$thanos_host" ]; then
+        print_warning "Could not generate token or find Thanos route"
+        return 0
+    fi
+
+    oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-thanos-proxy-secret
+  namespace: ${dash_ns}
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    opendatahub.io/dashboard: "true"
+type: Opaque
+stringData:
+  token: "${new_token}"
+  url: "https://${thanos_host}"
+EOF
+
+    print_success "Thanos proxy secret created (10-year token)"
+}
+
+create_inference_gateway() {
+    print_step "Creating openshift-ai-inference Gateway (direct model access, outside MaaS)..."
+
+    get_cluster_domain
+
+    print_step "Creating openshift-ai-inference gateway..."
+    if ! oc get gatewayclass openshift-ai-inference &>/dev/null; then
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
+    fi
+
+    export CERT_NAME="default-gateway-tls"
+    envsubst '${CLUSTER_DOMAIN} ${CERT_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference.yaml" | oc_apply_retry
+
+    # Create passthrough Routes so *.apps.<cluster> wildcard DNS reaches both
+    # gateways (each gets its own LoadBalancer ELB, but *.apps.<cluster> DNS
+    # points to the default OpenShift Router).
+    create_gateway_passthrough_routes
+
+    print_step "Waiting for GatewayClass and Gateway readiness..."
+    oc wait --for=condition=Accepted gatewayclass/openshift-default --timeout=120s 2>/dev/null || \
+        print_warning "openshift-default GatewayClass not yet Accepted"
+    oc wait --for=condition=Programmed gateway/openshift-ai-inference -n openshift-ingress --timeout=120s 2>/dev/null || \
+        print_warning "openshift-ai-inference gateway not yet Programmed"
+
+    print_success "Gateways created"
+    print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
+    print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"
+}
+
+create_mlflow_server() {
+    print_step "Creating MLflow server instance..."
+
+    if oc get mlflow mlflow &>/dev/null 2>&1; then
+        local mlflow_ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$mlflow_ready" = "True" ]; then
+            print_success "MLflow server already exists and is ready"
+            return 0
+        fi
+        print_info "MLflow server exists but not yet ready"
+        return 0
+    fi
+
+    if ! oc get crd mlflows.mlflow.opendatahub.io &>/dev/null 2>&1; then
+        print_warning "MLflow CRD not found — MLflow operator may not be ready yet"
+        print_info "You can create it later: oc apply -f <mlflow-cr.yaml>"
+        return 0
+    fi
+
+    if oc get deployment postgres -n "$MAAS_INFRA_NS" &>/dev/null; then
+        print_info "Using existing PostgreSQL (in $MAAS_INFRA_NS) for MLflow backend..."
+        local pg_pod
+        pg_pod=$(oc get pods -n "$MAAS_INFRA_NS" -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$pg_pod" ]; then
+            oc exec "$pg_pod" -n "$MAAS_INFRA_NS" -- bash -c \
+                'PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='"'"'mlflow'"'"'" | grep -q 1 || \
+                 PGPASSWORD=$POSTGRES_PASSWORD psql -U postgres -c "CREATE DATABASE mlflow OWNER maas;"' 2>/dev/null || true
+        fi
+
+        local pg_url
+        pg_url=$(oc get secret maas-db-config -n "$MAAS_INFRA_NS" \
+            -o jsonpath='{.data.DB_CONNECTION_URL}' 2>/dev/null | base64 -d 2>/dev/null | sed 's|/maas|/mlflow|')
+
+        if [ -n "$pg_url" ]; then
+            oc create secret generic mlflow-db-credentials \
+                --from-literal=database-url="$pg_url" \
+                -n redhat-ods-applications \
+                --dry-run=client -o yaml | oc apply -f - 2>/dev/null
+
+            oc apply -f - <<'EOF'
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  replicas: 1
+  backendStoreUriFrom:
+    name: mlflow-db-credentials
+    key: database-url
+  serveArtifacts: true
+  artifactsDestination: "file:///mlflow/artifacts"
+  storage:
+    size: 10Gi
+EOF
+            print_info "MLflow configured with PostgreSQL backend"
+        else
+            print_warning "Could not read PostgreSQL URL, falling back to SQLite"
+            oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        fi
+    else
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+        print_info "MLflow configured with SQLite backend (PVC)"
+    fi
+
+    print_step "Waiting for MLflow server to be ready..."
+    local wait=0
+    while [ $wait -lt 180 ]; do
+        local ready=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+        if [ "$ready" = "True" ]; then
+            local url=$(oc get mlflow mlflow -o jsonpath='{.status.url}' 2>/dev/null)
+            print_success "MLflow server is ready: ${url}"
+            return 0
+        fi
+        sleep 10
+        wait=$((wait + 10))
+    done
+
+    print_warning "MLflow server not ready yet (may still be starting) — check: oc get mlflow mlflow"
+}
+
