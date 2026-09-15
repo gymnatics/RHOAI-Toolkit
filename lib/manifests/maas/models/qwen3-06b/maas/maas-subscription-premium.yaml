@@ -1,0 +1,18 @@
+# Premium tier subscription for the qwen3-06b model (100,000 tokens/min, priority 20).
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: qwen3-06b-premium
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: qwen3-06b
+      namespace: llm
+      tokenRateLimits:
+        - limit: 100000
+          window: 1m
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 20

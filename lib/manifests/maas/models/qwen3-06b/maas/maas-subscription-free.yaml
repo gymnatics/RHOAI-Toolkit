@@ -1,0 +1,18 @@
+# Free tier subscription for the qwen3-06b model (100 tokens/min, priority 10).
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: qwen3-06b-free
+  namespace: models-as-a-service
+spec:
+  modelRefs:
+    - name: qwen3-06b
+      namespace: llm
+      tokenRateLimits:
+        - limit: 100
+          window: 1m
+  owner:
+    groups:
+      - name: system:authenticated
+  priority: 10

@@ -10,6 +10,7 @@
 # Models:
 #   simulator              CPU-only, no GPU required (~30s startup)
 #   simulator-disconnected CPU-only, air-gapped variant (oci:// URI)
+#   qwen3-06b              CPU-only, real (non-simulated) inference, no GPU required
 #   granite-tiny-gpu       ~1B params, ~8 GiB VRAM
 #   gemma                  Gemma 2 9B IT FP8, ~12 GiB VRAM
 #   gpt-oss-20b            ~16+ GiB VRAM
@@ -47,12 +48,12 @@ MODEL="auto"
 MODEL_NAMESPACE="llm"
 DELETE_MODE=false
 DISCONNECTED_REGISTRY=""
-VALID_MODELS=(simulator simulator-disconnected granite-tiny-gpu gemma gpt-oss-20b)
+VALID_MODELS=(simulator simulator-disconnected qwen3-06b granite-tiny-gpu gemma gpt-oss-20b)
 
 usage() {
     echo "Usage: $0 --model <name> [-n namespace] [--delete] [--disconnected-registry <host>]"
     echo ""
-    echo "Models: simulator | simulator-disconnected | granite-tiny-gpu | gemma | gpt-oss-20b | auto"
+    echo "Models: simulator | simulator-disconnected | qwen3-06b | granite-tiny-gpu | gemma | gpt-oss-20b | auto"
     echo ""
     echo "  --model auto   Auto-detects based on GPU VRAM on cluster nodes:"
     echo "                   no GPU        -> simulator"
@@ -215,9 +216,10 @@ print_success "Manifests applied"
 ################################################################################
 # HuggingFace has migrated model storage to the Xet protocol, which can cause
 # the KServe storage-initializer init container to hang indefinitely when
-# downloading hf:// URIs (affects 'simulator' only -- OCI modelcar models are
-# unaffected). If the pod is stuck in Init for >120s, patch HF_HUB_DISABLE_XET=1
-# on the init container to fall back to standard HTTP downloads.
+# downloading hf:// URIs (affects 'simulator' and 'qwen3-06b' only -- OCI
+# modelcar models are unaffected). If the pod is stuck in Init for >120s,
+# patch HF_HUB_DISABLE_XET=1 on the init container to fall back to standard
+# HTTP downloads.
 ################################################################################
 
 apply_hf_xet_workaround_if_needed() {
@@ -225,8 +227,9 @@ apply_hf_xet_workaround_if_needed() {
     local model="$2"
     local elapsed="$3"
 
-    # Only relevant for hf:// URI models (simulator); OCI modelcar models are unaffected.
-    if [ "$model" != "simulator" ]; then
+    # Only relevant for hf:// URI models (simulator, qwen3-06b); OCI modelcar
+    # models are unaffected.
+    if [ "$model" != "simulator" ] && [ "$model" != "qwen3-06b" ]; then
         return 0
     fi
     if [ "$elapsed" -lt 120 ]; then

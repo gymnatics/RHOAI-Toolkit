@@ -1950,6 +1950,17 @@ create_inference_gateway() {
     # default OpenShift Router. A passthrough Route bridges the two.
     create_gateway_passthrough_routes
 
+    # maas-default-gateway restricts route binding to namespaces labeled
+    # maas.opendatahub.io/gateway-access=true (from: Selector) -- label every
+    # namespace known to host a route/model that attaches to this gateway.
+    # Without this, maas-api's own HTTPRoute (in redhat-ods-applications on
+    # 3.4) would be unreachable after Selector hardening.
+    print_step "Labeling namespaces for MaaS gateway route access..."
+    for ns in redhat-ods-applications models-as-a-service; do
+        oc get namespace "$ns" &>/dev/null && \
+            oc label namespace "$ns" maas.opendatahub.io/gateway-access=true --overwrite &>/dev/null
+    done
+
     print_success "Gateways created"
     print_info "MaaS endpoint: https://maas.apps.${CLUSTER_DOMAIN}"
     print_info "Inference endpoint: https://inference-gateway.apps.${CLUSTER_DOMAIN}"

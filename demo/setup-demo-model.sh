@@ -337,6 +337,9 @@ fi
 
 # Label namespace for RHOAI dashboard visibility
 oc label namespace "$PROJECT_NAME" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+# Required for the model's route to bind to maas-default-gateway, which restricts
+# route binding to labeled namespaces (from: Selector) -- see lib/manifests/rhcl/gateway-maas.yaml.
+oc label namespace "$PROJECT_NAME" maas.opendatahub.io/gateway-access=true --overwrite 2>/dev/null || true
 echo ""
 
 ################################################################################

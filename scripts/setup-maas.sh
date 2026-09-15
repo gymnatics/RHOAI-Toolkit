@@ -311,10 +311,12 @@ phase2_gateway() {
         print_success "Gateway created"
     fi
 
-    # Preventive fix (BU Issue 3): label required namespaces for gateway access,
-    # even though the default gateway config uses `from: All`. This prepares for
-    # future hardening to `from: Selector` without breaking existing routes.
-    print_step "Labeling namespaces for gateway access (prevents BU Issue 3)..."
+    # REQUIRED (not just preventive): lib/manifests/rhcl/gateway-maas.yaml uses
+    # `from: Selector` to restrict route binding to labeled namespaces (BU Issue 3
+    # hardening, matches the BU MaaS guide). Without this label, HTTPRoutes in
+    # these namespaces -- including maas-api's own route -- are rejected with
+    # "namespace is not allowed by the parent".
+    print_step "Labeling namespaces for gateway access (required for Selector-based routing)..."
     local infra_ns
     infra_ns=$(get_maas_infra_namespace 2>/dev/null || echo "redhat-ods-applications")
     for ns in redhat-ods-applications "$infra_ns" models-as-a-service; do

@@ -2281,6 +2281,17 @@ create_inference_gateway() {
     # default OpenShift Router. A passthrough Route bridges the two.
     create_gateway_passthrough_routes
 
+    # maas-default-gateway restricts route binding to namespaces labeled
+    # maas.opendatahub.io/gateway-access=true (from: Selector) -- label every
+    # namespace known to host a route/model that attaches to this gateway.
+    # Without this, maas-api's own HTTPRoute (in $MAAS_INFRA_NS) would be
+    # unreachable after Selector hardening.
+    print_step "Labeling namespaces for MaaS gateway route access..."
+    for ns in redhat-ods-applications "$MAAS_INFRA_NS" models-as-a-service; do
+        oc get namespace "$ns" &>/dev/null && \
+            oc label namespace "$ns" maas.opendatahub.io/gateway-access=true --overwrite &>/dev/null
+    done
+
     # RHOAI 3.5: Use proper oc wait conditions for gateway readiness
     print_step "Waiting for GatewayClass and Gateway readiness..."
     oc wait --for=condition=Accepted gatewayclass/openshift-default --timeout=120s 2>/dev/null || \
