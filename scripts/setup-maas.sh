@@ -275,6 +275,38 @@ for item in data.get('items', []):
     print_success "Phase 1 complete: RHCL + Kuadrant + Authorino TLS"
 }
 
+# Apply the gateway-resources ConfigMap (2Gi memory override, prevents BU
+# Issue 5/6 OOM). On OCP < 4.22 behind a corporate proxy, the Gateway
+# controller does not propagate cluster-wide proxy settings into the gateway
+# pod (OCPBUGS-77457) -- use the proxy-aware variant instead so ExternalModel
+# provider calls and WASM plugin image pulls can reach the internet.
+apply_gateway_resources_configmap() {
+    local ocp_version http_proxy_val https_proxy_val no_proxy_val
+
+    ocp_version=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null)
+    http_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpProxy}' 2>/dev/null)
+
+    # Only relevant on OCP < 4.22 with a cluster-wide proxy configured.
+    local major minor
+    major=$(echo "$ocp_version" | cut -d. -f1)
+    minor=$(echo "$ocp_version" | cut -d. -f2)
+
+    if [ -n "$http_proxy_val" ] && [ -n "$major" ] && [ -n "$minor" ] && \
+       { [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 22 ]; }; }; then
+        print_step "Detected OCP $ocp_version behind a corporate proxy -- applying proxy-aware gateway-resources ConfigMap..."
+        https_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpsProxy}' 2>/dev/null)
+        no_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.noProxy}' 2>/dev/null)
+        export HTTP_PROXY="$http_proxy_val" HTTPS_PROXY="$https_proxy_val" NO_PROXY="$no_proxy_val"
+        envsubst '${HTTP_PROXY} ${HTTPS_PROXY} ${NO_PROXY}' \
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-resources-proxy.yaml.tmpl" | oc apply -f -
+        unset HTTP_PROXY HTTPS_PROXY NO_PROXY
+        print_success "Proxy-aware gateway-resources ConfigMap applied (OCPBUGS-77457 workaround)"
+    else
+        print_step "Applying gateway-resources ConfigMap (2Gi memory, prevents BU Issue 5/6 OOM)..."
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    fi
+}
+
 # Phase 2: GatewayClass + Gateway + gateway-resources ConfigMap + namespace labels
 phase2_gateway() {
     print_header "Phase 2: Gateway + Namespace Labels"
@@ -285,8 +317,7 @@ phase2_gateway() {
         print_step "Creating GatewayClass..."
         oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
 
-        print_step "Applying gateway-resources ConfigMap (2Gi memory, prevents BU Issue 5/6 OOM)..."
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+        apply_gateway_resources_configmap
 
         print_step "Creating MaaS Gateway..."
         local cert_name

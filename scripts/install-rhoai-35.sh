@@ -2242,6 +2242,33 @@ EOF
     fi
 }
 
+# Apply the gateway-resources ConfigMap, choosing the proxy-aware variant when
+# running on OCP < 4.22 behind a corporate proxy (OCPBUGS-77457 workaround,
+# fixed natively in OCP 4.22+).
+apply_gateway_resources_configmap() {
+    local ocp_version http_proxy_val https_proxy_val no_proxy_val major minor
+
+    ocp_version=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null)
+    http_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpProxy}' 2>/dev/null)
+    major=$(echo "$ocp_version" | cut -d. -f1)
+    minor=$(echo "$ocp_version" | cut -d. -f2)
+
+    if [ -n "$http_proxy_val" ] && [ -n "$major" ] && [ -n "$minor" ] && \
+       { [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 22 ]; }; }; then
+        print_step "Detected OCP $ocp_version behind a corporate proxy -- applying proxy-aware gateway-resources ConfigMap..."
+        https_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.httpsProxy}' 2>/dev/null)
+        no_proxy_val=$(oc get proxy/cluster -o jsonpath='{.spec.noProxy}' 2>/dev/null)
+        export HTTP_PROXY="$http_proxy_val" HTTPS_PROXY="$https_proxy_val" NO_PROXY="$no_proxy_val"
+        envsubst '${HTTP_PROXY} ${HTTPS_PROXY} ${NO_PROXY}' \
+            < "$ROOT_DIR/lib/manifests/rhcl/gateway-resources-proxy.yaml.tmpl" | oc_apply_retry
+        unset HTTP_PROXY HTTPS_PROXY NO_PROXY
+        print_success "Proxy-aware gateway-resources ConfigMap applied"
+    else
+        print_step "Applying gateway resource overrides (2Gi memory limit)..."
+        oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    fi
+}
+
 create_inference_gateway() {
     print_step "Creating inference Gateways for llm-d/MaaS..."
 
@@ -2253,9 +2280,10 @@ create_inference_gateway() {
         oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-gateway-controller.yaml"
     fi
 
-    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins)
-    print_step "Applying gateway resource overrides (2Gi memory limit)..."
-    oc_apply_retry -f "$ROOT_DIR/lib/manifests/rhcl/gateway-resources.yaml"
+    # Gateway resource overrides (2Gi memory to prevent OOMKill from WASM plugins).
+    # On OCP < 4.22 behind a corporate proxy, use the proxy-aware variant so the
+    # istio-proxy container gets HTTP_PROXY/HTTPS_PROXY/NO_PROXY (OCPBUGS-77457).
+    apply_gateway_resources_configmap
 
     # MaaS Gateway - MUST have both annotations for MaaS controller to work (unchanged from 3.4):
     #   opendatahub.io/managed: "false" - lets MaaS controller manage auth policies
