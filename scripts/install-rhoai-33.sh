@@ -41,6 +41,10 @@ print_banner() {
     echo -e "${MAGENTA}║          RHOAI 3.3 Installation Script                         ║${NC}"
     echo -e "${MAGENTA}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
+    echo -e "${YELLOW}⚠ RHOAI 3.3 is legacy/deprecated in this toolkit.${NC}"
+    echo -e "${YELLOW}  Kept for existing 3.3 clusters only -- not receiving new features.${NC}"
+    echo -e "${YELLOW}  Prefer install-rhoai-34.sh or install-rhoai-35.sh for new installs.${NC}"
+    echo ""
 }
 
 print_step() {

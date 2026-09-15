@@ -31,7 +31,7 @@ help:
 	@echo "  make setup-rhoai-34        Install RHOAI 3.4 with all prerequisites"
 	@echo "  make setup-users           Create demo users with htpasswd + groups"
 	@echo "  make manage-users          Create users + assign ClusterRoles (interactive)"
-	@echo "  make setup-rhoai-33        Install RHOAI 3.3 with all prerequisites"
+	@echo "  make setup-rhoai-33        Install RHOAI 3.3 with all prerequisites [Legacy/deprecated]"
 	@echo "  make setup-rhoai           Install RHOAI 3.0 with all operators"
 	@echo "  make setup-operators       Install only operators (NFD, GPU, Kueue, LWS)"
 	@echo "  make setup-llmd            Setup llm-d infrastructure (Gateway, LWS, Kuadrant)"
@@ -115,6 +115,8 @@ manage-users:
 
 .PHONY: setup-rhoai-33
 setup-rhoai-33:
+	@echo -e "$(YELLOW)⚠ RHOAI 3.3 is legacy/deprecated -- kept for existing 3.3 clusters only.$(NC)"
+	@echo -e "$(YELLOW)  Prefer 'make setup-rhoai-34' or 'make setup-rhoai-35' for new installs.$(NC)"
 	@echo -e "$(GREEN)▶ Installing RHOAI 3.3...$(NC)"
 	@$(BASE)/scripts/install-rhoai-33.sh
 	@echo -e "$(GREEN)✓ RHOAI 3.3 installation complete$(NC)"
