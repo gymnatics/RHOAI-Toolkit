@@ -84,21 +84,9 @@ catalog_add() {
     fi
 
     local new_entry
-    new_entry=$(cat <<ENTRY
-    - name: ${model_name}
-      description: ${description}
-      readme: |-
-        # ${model_name}
-
-        ${description}
-      provider: ${provider}
-      license: ${license}
-      licenseLink: https://www.apache.org/licenses/LICENSE-2.0.txt
-      libraryName: transformers
-      artifacts:
-        - uri: ${artifact_uri}
-ENTRY
-)
+    export model_name description provider license artifact_uri
+    new_entry=$(envsubst '${model_name} ${description} ${provider} ${license} ${artifact_uri}' \
+        < "$_CATALOG_LIB_DIR/lib/manifests/model-catalog/catalog-entry.yaml.tmpl")
 
     local updated_yaml
     updated_yaml="${current_yaml}

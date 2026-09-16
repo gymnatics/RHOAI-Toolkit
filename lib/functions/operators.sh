@@ -335,37 +335,10 @@ configure_authorino_tls() {
     # Authorino's service to exist first (which requires Authorino to be running).
     if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
         print_step "Creating Authorino TLS certificate via cert-manager..."
-        cat <<'CERTEOF' | oc apply -f -
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: authorino-selfsigned
-  namespace: kuadrant-system
-spec:
-  selfSigned: {}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: authorino-server-cert
-  namespace: kuadrant-system
-spec:
-  secretName: authorino-server-cert
-  isCA: false
-  duration: 8760h
-  renewBefore: 720h
-  issuerRef:
-    name: authorino-selfsigned
-    kind: Issuer
-  commonName: authorino-authorino
-  dnsNames:
-    - authorino-authorino
-    - authorino-authorino.kuadrant-system
-    - authorino-authorino.kuadrant-system.svc
-    - authorino-authorino.kuadrant-system.svc.cluster.local
-  usages:
-    - server auth
-CERTEOF
+        # Reuses the same manifest as setup-maas.sh's RHOAI 3.3 fallback path
+        # (byte-identical content -- this is the same generic Kuadrant/Authorino
+        # self-signed cert bootstrap, not actually 3.3-specific despite the name).
+        apply_manifest "$_OPERATORS_LIB_DIR/lib/manifests/rhcl/authorino-server-cert-33.yaml" "Authorino TLS certificate"
         
         # Wait for cert-manager to issue the certificate
         local cert_wait=0

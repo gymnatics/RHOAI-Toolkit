@@ -76,42 +76,9 @@ fi
 echo -e "${BLUE}Creating GPU hardware profile in $CURRENT_NS...${NC}"
 echo ""
 
-cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: gpu-profile
-  namespace: $CURRENT_NS
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '16'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 16Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 64Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-EOF
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CURRENT_NS
+envsubst '${CURRENT_NS}' < "$SCRIPT_DIR/../lib/manifests/hardware-profile-fix/gpu-profile-fix.yaml.tmpl" | oc apply -f -
 
 echo ""
 echo -e "${GREEN}✓ GPU hardware profile created/updated${NC}"

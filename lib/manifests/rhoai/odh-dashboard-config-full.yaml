@@ -1,0 +1,22 @@
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+spec:
+  dashboardConfig:
+    disableTracking: false
+    disableModelRegistry: false      # ✓ Enable Model Registry
+    disableModelCatalog: false       # ✓ Enable Model Catalog
+    disableKServeMetrics: false      # ✓ Enable KServe Metrics
+    genAiStudio: true                # ✓ Enable GenAI Studio/Playground
+    modelAsService: true             # ✓ Enable Model as a Service (MaaS)
+    disableLMEval: false             # ✓ Enable LM Eval
+    mcpCatalog: true                 # ✓ Enable MCP Catalog (AI Hub > MCP Servers)
+  hardwareProfileOrder: []
+  notebookController:
+    enabled: true
+    notebookNamespace: rhods-notebooks
+    pvcSize: 20Gi
+  templateDisablement: []
+  templateOrder: []

@@ -1,0 +1,35 @@
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: ${PROFILE_NAME}
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: '${DISPLAY_NAME}'
+    opendatahub.io/description: 'GPU hardware profile with ${DEFAULT_GPU} GPU(s), ${DEFAULT_CPU} CPU(s), ${DEFAULT_MEMORY} Memory'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
+spec:
+  identifiers:
+    - defaultCount: '${DEFAULT_CPU}'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '${MAX_CPU}'
+      minCount: 1
+      resourceType: CPU
+    - defaultCount: ${DEFAULT_MEMORY}
+      displayName: Memory
+      identifier: memory
+      maxCount: ${MAX_MEMORY}
+      minCount: 1Gi
+      resourceType: Memory
+    - defaultCount: ${DEFAULT_GPU}
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: ${MAX_GPU}
+      minCount: 1
+      resourceType: Accelerator
+${SCHEDULING_SPEC}

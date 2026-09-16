@@ -580,19 +580,9 @@ configure_rhoai_dashboard() {
     print_header "Configuring RHOAI Dashboard"
     
     print_step "Enabling GenAI Studio and Model as a Service..."
-    
-    cat <<EOF | oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type=merge --patch-file=/dev/stdin
-spec:
-  dashboardConfig:
-    genAiStudio: true
-    modelAsService: true
-    disableModelRegistry: false
-    disableModelCatalog: false
-    disableKServeMetrics: false
-    disableLMEval: false
-    disableKueue: false
-    mcpCatalog: true
-EOF
+
+    oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type=merge \
+        --patch-file="$_RHOAI_LIB_DIR/lib/manifests/rhoai/odh-dashboard-config-patch.yaml"
     
     print_success "Dashboard configured"
 }

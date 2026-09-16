@@ -1,0 +1,10 @@
+spec:
+  dashboardConfig:
+    genAiStudio: true
+    modelAsService: true
+    disableModelRegistry: false
+    disableModelCatalog: false
+    disableKServeMetrics: false
+    disableLMEval: false
+    disableKueue: false
+    mcpCatalog: true

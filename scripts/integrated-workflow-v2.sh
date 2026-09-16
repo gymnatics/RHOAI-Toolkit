@@ -390,26 +390,7 @@ install_rhoai() {
         print_warning "Dashboard route not found (common on fresh RHOAI 3.0 installs)"
         print_step "Creating dashboard route..."
         
-        cat <<'EOF' | oc apply -f -
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: rhods-dashboard
-  namespace: redhat-ods-applications
-  labels:
-    app: rhods-dashboard
-spec:
-  port:
-    targetPort: https
-  tls:
-    insecureEdgeTerminationPolicy: Redirect
-    termination: reencrypt
-  to:
-    kind: Service
-    name: rhods-dashboard
-    weight: 100
-  wildcardPolicy: None
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhoai/rhods-dashboard-route.yaml"
         
         if oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
             print_success "Dashboard route created successfully"

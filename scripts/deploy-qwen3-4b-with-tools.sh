@@ -101,45 +101,9 @@ echo "  Memory: 16Gi"
 echo ""
 
 # Create the deployment
-cat <<EOF | oc apply -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: LLMInferenceService
-metadata:
-  name: qwen3-4b
-  namespace: $NAMESPACE
-  labels:
-    kueue.x-k8s.io/queue-name: default
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/genai-asset: "true"
-spec:
-  replicas: 1
-  model:
-    uri: oci://registry.redhat.io/rhelai1/modelcar-qwen3-4b-fp8-dynamic:latest
-    name: qwen3-4b
-  router:
-    route: {}
-    gateway: {}
-    scheduler: {}
-  template:
-    tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    containers:
-    - name: main
-      env:
-        - name: VLLM_ADDITIONAL_ARGS
-          value: "--enable-auto-tool-choice --tool-call-parser=hermes"
-      resources:
-        limits:
-          cpu: '4'
-          memory: 16Gi
-          nvidia.com/gpu: "1"
-        requests:
-          cpu: '2'
-          memory: 8Gi
-          nvidia.com/gpu: "1"
-EOF
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export NAMESPACE
+envsubst '${NAMESPACE}' < "$SCRIPT_DIR/../lib/manifests/model-deploy-tools/qwen3-4b-tools-llmisvc.yaml.tmpl" | oc apply -f -
 
 if [ $? -eq 0 ]; then
     print_success "Deployment created!"
