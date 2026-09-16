@@ -28,103 +28,25 @@ oc create namespace openshift-serverless 2>/dev/null || true
 # --- Red Hat Build of Keycloak (RHBK) Operator ---
 # Must install in OwnNamespace mode in the 'keycloak' namespace
 echo "[1/6] Installing Red Hat Build of Keycloak operator (keycloak ns)..."
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: keycloak-og
-  namespace: keycloak
-spec:
-  targetNamespaces:
-  - keycloak
-EOF
-
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhbk-operator
-  namespace: keycloak
-spec:
-  channel: stable-v26
-  installPlanApproval: Automatic
-  name: rhbk-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/keycloak-operatorgroup.yaml"
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/keycloak-subscription.yaml"
 
 # --- Red Hat OpenShift Service Mesh (Istio) ---
 echo "[2/6] Installing OpenShift Service Mesh operator..."
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: servicemeshoperator
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: servicemeshoperator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/rhoai-2x/servicemesh.yaml"
 
 # --- Red Hat OpenShift Serverless (for Knative / KServe) ---
 echo "[3/6] Installing OpenShift Serverless operator..."
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: serverless-og
-  namespace: openshift-serverless
-spec: {}
-EOF
-
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: serverless-operator
-  namespace: openshift-serverless
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: serverless-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/serverless-operatorgroup.yaml"
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/serverless-subscription.yaml"
 
 # --- Red Hat OpenShift AI (RHOAI) ---
 echo "[4/6] Installing Red Hat OpenShift AI operator..."
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhods-operator
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: rhods-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/rhods-subscription.yaml"
 
 # --- OpenShift Pipelines (Tekton) ---
 echo "[5/6] Installing OpenShift Pipelines operator..."
-cat <<'EOF' | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: openshift-pipelines-operator
-  namespace: openshift-operators
-spec:
-  channel: latest
-  installPlanApproval: Automatic
-  name: openshift-pipelines-operator-rh
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/pipelines-subscription.yaml"
 
 # --- Gateway API CRDs (for MCP Gateway / Kuadrant) ---
 echo "[6/6] Installing Gateway API CRDs..."
