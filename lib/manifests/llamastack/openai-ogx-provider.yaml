@@ -1,0 +1,7 @@
+    inference:
+      remote:
+        openai:
+          - id: openai
+            apiKey:
+              name: ogx-openai-secret
+              key: api-key

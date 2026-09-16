@@ -1,0 +1,12 @@
+      - name: VLLM_URL
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: base-url
+      - name: VLLM_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: vllm-secret
+            key: api-token
+      - name: VLLM_MAX_TOKENS
+        value: "4096"

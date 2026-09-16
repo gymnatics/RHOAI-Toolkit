@@ -1,0 +1,9 @@
+    inference:
+      remote:
+        vllm:
+          - id: vllm
+            endpoint: "${VLLM_BASE_URL}"
+            maxTokens: 4096
+            apiToken:
+              name: ogx-vllm-secret
+              key: api-token

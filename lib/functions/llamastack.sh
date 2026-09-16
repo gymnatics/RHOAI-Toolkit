@@ -295,21 +295,7 @@ configure_vllm_provider() {
     envsubst < "$ROOT_DIR/lib/manifests/llamastack/vllm-secret.yaml" | oc apply -f -
     unset NAMESPACE
     
-    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
-      - name: VLLM_URL
-        valueFrom:
-          secretKeyRef:
-            name: vllm-secret
-            key: base-url
-      - name: VLLM_API_TOKEN
-        valueFrom:
-          secretKeyRef:
-            name: vllm-secret
-            key: api-token
-      - name: VLLM_MAX_TOKENS
-        value: "4096"
-ENVEOF
-    )
+    DISTRIBUTION_ENV_VARS=$(cat "$ROOT_DIR/lib/manifests/llamastack/vllm-env-vars.yaml")
     
     LLM_PROVIDER="vllm"
     CONFIG_FILE="$ROOT_DIR/demo/llamastack-demo/llamastack/llamastack-config-vllm.yaml"
@@ -347,29 +333,7 @@ configure_azure_provider() {
     envsubst < "$ROOT_DIR/lib/manifests/llamastack/azure-openai-secret.yaml" | oc apply -f -
     unset NAMESPACE
     
-    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
-      - name: AZURE_OPENAI_ENDPOINT
-        valueFrom:
-          secretKeyRef:
-            name: azure-openai-secret
-            key: endpoint
-      - name: AZURE_OPENAI_API_KEY
-        valueFrom:
-          secretKeyRef:
-            name: azure-openai-secret
-            key: api-key
-      - name: AZURE_OPENAI_DEPLOYMENT
-        valueFrom:
-          secretKeyRef:
-            name: azure-openai-secret
-            key: deployment
-      - name: AZURE_OPENAI_API_VERSION
-        valueFrom:
-          secretKeyRef:
-            name: azure-openai-secret
-            key: api-version
-ENVEOF
-    )
+    DISTRIBUTION_ENV_VARS=$(cat "$ROOT_DIR/lib/manifests/llamastack/azure-env-vars.yaml")
     
     LLM_PROVIDER="azure"
     CONFIG_FILE="$ROOT_DIR/demo/llamastack-demo/llamastack/llamastack-config-azure.yaml"
@@ -397,14 +361,7 @@ configure_openai_provider() {
     envsubst < "$ROOT_DIR/lib/manifests/llamastack/openai-secret.yaml" | oc apply -f -
     unset NAMESPACE
     
-    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
-      - name: OPENAI_API_KEY
-        valueFrom:
-          secretKeyRef:
-            name: openai-secret
-            key: api-key
-ENVEOF
-    )
+    DISTRIBUTION_ENV_VARS=$(cat "$ROOT_DIR/lib/manifests/llamastack/openai-env-vars.yaml")
     
     LLM_PROVIDER="openai"
     CONFIG_FILE="$ROOT_DIR/demo/llamastack-demo/llamastack/llamastack-config-openai.yaml"
@@ -423,11 +380,8 @@ configure_ollama_provider() {
     read -p "Model ID [llama3.2]: " MODEL_ID
     MODEL_ID="${MODEL_ID:-llama3.2}"
     
-    DISTRIBUTION_ENV_VARS=$(cat <<ENVEOF
-      - name: OLLAMA_URL
-        value: "$OLLAMA_URL"
-ENVEOF
-    )
+    export OLLAMA_URL
+    DISTRIBUTION_ENV_VARS=$(envsubst '${OLLAMA_URL}' < "$ROOT_DIR/lib/manifests/llamastack/ollama-env-vars.yaml")
     
     LLM_PROVIDER="ollama"
     CONFIG_FILE="$ROOT_DIR/demo/llamastack-demo/llamastack/llamastack-config-ollama.yaml"
@@ -464,24 +418,7 @@ configure_bedrock_provider() {
     envsubst < "$ROOT_DIR/lib/manifests/llamastack/bedrock-secret.yaml" | oc apply -f -
     unset NAMESPACE
     
-    DISTRIBUTION_ENV_VARS=$(cat <<'ENVEOF'
-      - name: AWS_ACCESS_KEY_ID
-        valueFrom:
-          secretKeyRef:
-            name: bedrock-secret
-            key: aws-access-key-id
-      - name: AWS_SECRET_ACCESS_KEY
-        valueFrom:
-          secretKeyRef:
-            name: bedrock-secret
-            key: aws-secret-access-key
-      - name: AWS_REGION
-        valueFrom:
-          secretKeyRef:
-            name: bedrock-secret
-            key: aws-region
-ENVEOF
-    )
+    DISTRIBUTION_ENV_VARS=$(cat "$ROOT_DIR/lib/manifests/llamastack/bedrock-env-vars.yaml")
     
     LLM_PROVIDER="bedrock"
     CONFIG_FILE="$ROOT_DIR/demo/llamastack-demo/llamastack/llamastack-config-bedrock.yaml"
@@ -527,18 +464,8 @@ configure_vllm_provider_ogx() {
         --from-literal=api-token="${VLLM_API_TOKEN:-}" \
         -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
 
-    OGX_PROVIDER_YAML=$(cat <<EOF
-    inference:
-      remote:
-        vllm:
-          - id: vllm
-            endpoint: "$VLLM_BASE_URL"
-            maxTokens: 4096
-            apiToken:
-              name: ogx-vllm-secret
-              key: api-token
-EOF
-    )
+    export VLLM_BASE_URL
+    OGX_PROVIDER_YAML=$(envsubst '${VLLM_BASE_URL}' < "$ROOT_DIR/lib/manifests/llamastack/vllm-ogx-provider.yaml")
     LLM_PROVIDER="vllm"
 }
 
@@ -573,18 +500,8 @@ configure_azure_provider_ogx() {
         --from-literal=api-key="$AZURE_API_KEY" \
         -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
 
-    OGX_PROVIDER_YAML=$(cat <<EOF
-    inference:
-      remote:
-        azure:
-          - id: azure
-            endpoint: "$AZURE_ENDPOINT"
-            apiVersion: "$AZURE_API_VERSION"
-            apiKey:
-              name: ogx-azure-secret
-              key: api-key
-EOF
-    )
+    export AZURE_ENDPOINT AZURE_API_VERSION
+    OGX_PROVIDER_YAML=$(envsubst '${AZURE_ENDPOINT} ${AZURE_API_VERSION}' < "$ROOT_DIR/lib/manifests/llamastack/azure-ogx-provider.yaml")
     LLM_PROVIDER="azure"
 }
 
@@ -609,16 +526,7 @@ configure_openai_provider_ogx() {
         --from-literal=api-key="$OPENAI_API_KEY" \
         -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
 
-    OGX_PROVIDER_YAML=$(cat <<EOF
-    inference:
-      remote:
-        openai:
-          - id: openai
-            apiKey:
-              name: ogx-openai-secret
-              key: api-key
-EOF
-    )
+    OGX_PROVIDER_YAML=$(cat "$ROOT_DIR/lib/manifests/llamastack/openai-ogx-provider.yaml")
     LLM_PROVIDER="openai"
 }
 
@@ -638,16 +546,8 @@ configure_ollama_provider_ogx() {
     # OGX has no native "ollama" remote provider field (confirmed via
     # `oc explain ogxserver.spec.providers.inference.remote` on RHOAI 3.5.0);
     # configure it via the generic "custom" provider type instead.
-    OGX_PROVIDER_YAML=$(cat <<EOF
-    inference:
-      remote:
-        custom:
-          - id: ollama
-            type: remote::ollama
-            settings:
-              url: "$OLLAMA_URL"
-EOF
-    )
+    export OLLAMA_URL
+    OGX_PROVIDER_YAML=$(envsubst '${OLLAMA_URL}' < "$ROOT_DIR/lib/manifests/llamastack/ollama-ogx-provider.yaml")
     LLM_PROVIDER="ollama"
 }
 
@@ -683,20 +583,8 @@ configure_bedrock_provider_ogx() {
         -n "$target_ns" --dry-run=client -o yaml | oc apply -f -
 
     # region is required (verified via server-side dry-run against RHOAI 3.5.0 CRD)
-    OGX_PROVIDER_YAML=$(cat <<EOF
-    inference:
-      remote:
-        bedrock:
-          - id: bedrock
-            region: $AWS_REGION
-            awsAccessKeyId:
-              name: ogx-bedrock-secret
-              key: aws-access-key-id
-            awsSecretAccessKey:
-              name: ogx-bedrock-secret
-              key: aws-secret-access-key
-EOF
-    )
+    export AWS_REGION
+    OGX_PROVIDER_YAML=$(envsubst '${AWS_REGION}' < "$ROOT_DIR/lib/manifests/llamastack/bedrock-ogx-provider.yaml")
     LLM_PROVIDER="bedrock"
 }
 
@@ -745,19 +633,8 @@ deploy_ogxserver_distribution() {
     # distribution "rh" verified valid via server-side dry-run against RHOAI 3.5.0
     # (the CRD godoc examples "starter"/"remote-vllm" are NOT valid on GA; "rh-dev"
     # is valid but deprecated in favor of "rh")
-    cat <<EOF | oc apply -n "$target_ns" -f -
-apiVersion: ogx.io/v1beta1
-kind: OGXServer
-metadata:
-  name: ogx-demo
-spec:
-  distribution:
-    name: rh
-  workload:
-    replicas: 1
-  providers:
-$OGX_PROVIDER_YAML
-EOF
+    export OGX_PROVIDER_YAML
+    envsubst '${OGX_PROVIDER_YAML}' < "$ROOT_DIR/lib/manifests/llamastack/ogxserver.yaml" | oc apply -n "$target_ns" -f -
 
     print_step "Waiting for OGXServer to be ready..."
     sleep 5

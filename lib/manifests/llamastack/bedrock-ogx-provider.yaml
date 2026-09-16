@@ -1,0 +1,11 @@
+    inference:
+      remote:
+        bedrock:
+          - id: bedrock
+            region: ${AWS_REGION}
+            awsAccessKeyId:
+              name: ogx-bedrock-secret
+              key: aws-access-key-id
+            awsSecretAccessKey:
+              name: ogx-bedrock-secret
+              key: aws-secret-access-key
