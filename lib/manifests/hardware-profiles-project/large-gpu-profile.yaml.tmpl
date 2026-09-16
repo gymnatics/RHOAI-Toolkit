@@ -1,0 +1,34 @@
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: large-gpu-profile
+  namespace: ${NAMESPACE}
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: '[]'
+    opendatahub.io/disabled: 'false'
+    opendatahub.io/display-name: Large GPU Profile
+    opendatahub.io/description: 'Large GPU profile for demanding workloads'
+    opendatahub.io/managed: 'false'
+  labels:
+    app.opendatahub.io/hardwareprofile: 'true'
+    app.kubernetes.io/part-of: hardwareprofile
+spec:
+  identifiers:
+    - defaultCount: '4'
+      displayName: CPU
+      identifier: cpu
+      maxCount: '32'
+      minCount: 2
+      resourceType: CPU
+    - defaultCount: 32Gi
+      displayName: Memory
+      identifier: memory
+      maxCount: 128Gi
+      minCount: 8Gi
+      resourceType: Memory
+    - defaultCount: 2
+      displayName: GPU
+      identifier: nvidia.com/gpu
+      maxCount: 8
+      minCount: 1
+      resourceType: Accelerator

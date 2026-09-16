@@ -9,6 +9,9 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST_DIR="$SCRIPT_DIR/../lib/manifests/hardware-profiles-project"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -67,120 +70,16 @@ echo ""
 
 # Create GPU Profile
 echo -e "${GREEN}▶${NC} Creating gpu-profile..."
-cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: gpu-profile
-  namespace: $NAMESPACE
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: GPU Profile
-    opendatahub.io/description: 'Standard GPU hardware profile for NVIDIA GPU workloads'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '16'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 16Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 64Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-EOF
+export NAMESPACE
+envsubst '${NAMESPACE}' < "$MANIFEST_DIR/gpu-profile.yaml.tmpl" | oc apply -f -
 
 # Create Small GPU Profile
 echo -e "${GREEN}▶${NC} Creating small-gpu-profile..."
-cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: small-gpu-profile
-  namespace: $NAMESPACE
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: Small GPU Profile
-    opendatahub.io/description: 'Small GPU profile for testing and development'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-    - defaultCount: '2'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '8'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 8Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 32Gi
-      minCount: 4Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 2
-      minCount: 1
-      resourceType: Accelerator
-EOF
+envsubst '${NAMESPACE}' < "$MANIFEST_DIR/small-gpu-profile.yaml.tmpl" | oc apply -f -
 
 # Create Large GPU Profile
 echo -e "${GREEN}▶${NC} Creating large-gpu-profile..."
-cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: large-gpu-profile
-  namespace: $NAMESPACE
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: Large GPU Profile
-    opendatahub.io/description: 'Large GPU profile for demanding workloads'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-    - defaultCount: '4'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '32'
-      minCount: 2
-      resourceType: CPU
-    - defaultCount: 32Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 128Gi
-      minCount: 8Gi
-      resourceType: Memory
-    - defaultCount: 2
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 8
-      minCount: 1
-      resourceType: Accelerator
-EOF
+envsubst '${NAMESPACE}' < "$MANIFEST_DIR/large-gpu-profile.yaml.tmpl" | oc apply -f -
 
 echo ""
 echo -e "${GREEN}✓ Hardware profiles created in $NAMESPACE${NC}"

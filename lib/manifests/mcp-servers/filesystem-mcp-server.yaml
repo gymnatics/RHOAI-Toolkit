@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filesystem-mcp-server
+  namespace: mcp-servers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filesystem-mcp
+  template:
+    metadata:
+      labels:
+        app: filesystem-mcp
+    spec:
+      containers:
+      - name: mcp-server
+        image: quay.io/opendatahub/filesystem-mcp:latest
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filesystem-mcp-server
+  namespace: mcp-servers
+spec:
+  selector:
+    app: filesystem-mcp
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080

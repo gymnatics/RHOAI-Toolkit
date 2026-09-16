@@ -85,16 +85,14 @@ setup_workshop_users() {
     fi
     print_success "OAuth configured"
     
-    # Group requires dynamic user list — generated inline
+    # Group requires dynamic user list -- precomputed into a variable before
+    # envsubst, since envsubst can't execute the embedded command substitution.
     print_step "Creating workshop-users group..."
-    cat <<EOF | oc apply -f -
-apiVersion: user.openshift.io/v1
-kind: Group
-metadata:
-  name: workshop-users
-users:
-$(for i in $(seq 1 $user_count); do echo "- user$i"; done)
-EOF
+    local user_list
+    user_list=$(for i in $(seq 1 $user_count); do echo "- user$i"; done)
+    export user_list
+    envsubst '${user_list}' < "$ROOT_DIR/lib/manifests/workshop/workshop-users-group.yaml.tmpl" | oc apply -f -
+    unset user_list
     print_success "Workshop users group created"
     
     print_step "Creating admin-workshop namespace..."
@@ -563,198 +561,16 @@ deploy_admin_openwebui() {
     fi
 
     print_step "Deploying Open WebUI (v0.9.0)..."
-    cat <<EOF | oc apply -n "$ns" -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openwebui-config
-  namespace: $ns
-data:
-  ENABLE_OLLAMA_API: "False"
-  OPENAI_API_BASE_URLS: "$model_url"
-  OPENAI_API_KEYS: ""
-  WEBUI_AUTH: "False"
-  WEBUI_SECRET_KEY: "rhoai-workshop-admin"
-  MCP_ENABLE: "true"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: open-webui-data
-  namespace: $ns
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: open-webui
-  namespace: $ns
-  labels:
-    app: open-webui
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: open-webui
-  template:
-    metadata:
-      labels:
-        app: open-webui
-    spec:
-      containers:
-        - name: open-webui
-          image: ghcr.io/open-webui/open-webui:v0.9.0
-          ports:
-            - containerPort: 8080
-              name: http
-          envFrom:
-            - configMapRef:
-                name: openwebui-config
-          env:
-            - name: ENABLE_PERSISTENT_CONFIG
-              value: "False"
-          volumeMounts:
-            - name: data
-              mountPath: /app/backend/data
-          resources:
-            requests:
-              cpu: 100m
-              memory: 512Mi
-            limits:
-              cpu: 1000m
-              memory: 2Gi
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: open-webui-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: open-webui
-  namespace: $ns
-  labels:
-    app: open-webui
-spec:
-  selector:
-    app: open-webui
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
-  type: ClusterIP
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: open-webui
-  namespace: $ns
-  labels:
-    app: open-webui
-spec:
-  to:
-    kind: Service
-    name: open-webui
-  port:
-    targetPort: http
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
-EOF
+    export ns model_url
+    envsubst '${ns} ${model_url}' < "$ROOT_DIR/lib/manifests/workshop/open-webui-admin.yaml.tmpl" | oc apply -n "$ns" -f -
 
     print_step "Waiting for Open WebUI..."
     oc rollout status deployment/open-webui -n "$ns" --timeout=180s 2>/dev/null || print_warning "Still starting"
 
     print_step "Deploying mcpo proxy (MCP-to-OpenAPI)..."
     local mcp_svc="kubernetes-mcp-server.$ns.svc.cluster.local:8080"
-    cat <<MCPOEOF | oc apply -n "$ns" -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mcpo-config
-  namespace: $ns
-data:
-  config.json: |
-    {
-      "mcpServers": {
-        "kubernetes": {
-          "type": "streamable-http",
-          "url": "http://$mcp_svc/mcp"
-        }
-      }
-    }
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mcpo
-  namespace: $ns
-  labels:
-    app: mcpo
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mcpo
-  template:
-    metadata:
-      labels:
-        app: mcpo
-    spec:
-      containers:
-      - name: mcpo
-        image: ghcr.io/open-webui/mcpo:main
-        args: ["--config", "/app/config.json"]
-        ports:
-        - containerPort: 8000
-        volumeMounts:
-        - name: config
-          mountPath: /app/config.json
-          subPath: config.json
-        resources:
-          requests:
-            cpu: 50m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 256Mi
-      volumes:
-      - name: config
-        configMap:
-          name: mcpo-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mcpo
-  namespace: $ns
-  labels:
-    app: mcpo
-spec:
-  selector:
-    app: mcpo
-  ports:
-  - port: 8000
-    targetPort: 8000
-  type: ClusterIP
-MCPOEOF
+    export ns mcp_svc
+    envsubst '${ns} ${mcp_svc}' < "$ROOT_DIR/lib/manifests/workshop/mcpo-proxy.yaml.tmpl" | oc apply -n "$ns" -f -
     oc rollout status deployment/mcpo -n "$ns" --timeout=60s 2>/dev/null || print_warning "mcpo still starting"
     print_success "mcpo proxy deployed"
 

@@ -1,0 +1,44 @@
+---
+apiVersion: ogx.io/v1beta1
+kind: OGXServer
+metadata:
+  name: ogx-genai-playground
+  namespace: $namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: ogx-genai-playground
+spec:
+  distribution:
+    name: rh
+  workload:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 500Mi
+      limits:
+        cpu: "2"
+        memory: 12Gi
+    overrides:
+      env:
+        - name: FMS_ORCHESTRATOR_URL
+          value: http://localhost
+  providers:
+    inference:
+      inline:
+        custom:
+          - id: sentence-transformers
+            type: inline::sentence-transformers
+      remote:
+        vllm:
+          - id: vllm-inference-1
+            endpoint: "${endpoint}/v1"
+            maxTokens: ${MAX_TOKENS}
+            apiToken:
+              name: ogx-playground-secret
+              key: api-token
+    toolRuntime:
+      remote:
+        modelContextProtocol:
+          - id: model-context-protocol

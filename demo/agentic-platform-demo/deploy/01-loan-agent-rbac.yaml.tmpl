@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: loan-agent-role
+  namespace: ${NS_AGENT}
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: loan-agent-binding
+  namespace: ${NS_AGENT}
+subjects:
+- kind: ServiceAccount
+  name: loan-agent
+  namespace: ${NS_AGENT}
+roleRef:
+  kind: Role
+  name: loan-agent-role
+  apiGroup: rbac.authorization.k8s.io

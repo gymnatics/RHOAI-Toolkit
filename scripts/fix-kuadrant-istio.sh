@@ -236,16 +236,8 @@ setup_istio_for_kuadrant() {
     # Create IstioCNI if not exists
     if ! oc get istiocni default -n istio-cni &>/dev/null && ! oc get istiocni default -n istio-system &>/dev/null; then
         print_step "Creating IstioCNI..."
-        cat <<EOF | oc apply -f -
-apiVersion: sailoperator.io/v1
-kind: IstioCNI
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-cni
-  version: $istio_version
-EOF
+        export ISTIO_VERSION="$istio_version"
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istiocni.yaml" | oc apply -f -
         
         # Wait for IstioCNI to be ready
         print_step "Waiting for IstioCNI to be ready..."
@@ -271,16 +263,8 @@ EOF
     # Create Istio if not exists
     if ! oc get istio default -n istio-system &>/dev/null; then
         print_step "Creating Istio instance in istio-system..."
-        cat <<EOF | oc apply -f -
-apiVersion: sailoperator.io/v1
-kind: Istio
-metadata:
-  name: default
-  namespace: istio-system
-spec:
-  namespace: istio-system
-  version: $istio_version
-EOF
+        export ISTIO_VERSION="$istio_version"
+        envsubst '${ISTIO_VERSION}' < "$ROOT_DIR/lib/manifests/rhcl/istio.yaml" | oc apply -f -
         
         # Wait for Istio to be healthy
         print_step "Waiting for Istio to be healthy..."
@@ -301,14 +285,7 @@ EOF
     # Create openshift-default GatewayClass if not exists
     if ! oc get gatewayclass openshift-default &>/dev/null; then
         print_step "Creating openshift-default GatewayClass..."
-        cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-default
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-default.yaml"
     fi
     
     print_success "Istio setup complete"

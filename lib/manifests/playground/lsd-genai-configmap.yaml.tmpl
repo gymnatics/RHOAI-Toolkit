@@ -1,0 +1,58 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lsd-genai-playground-config
+  namespace: $namespace
+  labels:
+    llamastack.io/distribution: lsd-genai-playground
+    opendatahub.io/dashboard: "true"
+data:
+  run.yaml: |
+    version: "2"
+    image_name: rh
+    apis:
+    - inference
+    - tool_runtime
+    providers:
+      inference:
+      - provider_id: sentence-transformers
+        provider_type: inline::sentence-transformers
+        config: {}
+      - provider_id: vllm-inference-1
+        provider_type: remote::vllm
+        config:
+          api_token: ${API_TOKEN}
+          max_tokens: ${MAX_TOKENS}
+          base_url: ${endpoint}/v1
+      tool_runtime:
+      - provider_id: rag-runtime
+        provider_type: inline::rag-runtime
+        config: {}
+      - provider_id: model-context-protocol
+        provider_type: remote::model-context-protocol
+        config: {}
+    metadata_store:
+      type: sqlite
+      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
+    models:
+    - provider_id: sentence-transformers
+      model_id: granite-embedding-125m
+      provider_model_id: ibm-granite/granite-embedding-125m-english
+      model_type: embedding
+      metadata:
+        embedding_dimension: 768
+    - provider_id: vllm-inference-1
+      model_id: ${model_name}
+      model_type: llm
+      metadata:
+        description: ""
+        display_name: ${model_name}
+    shields: []
+    vector_dbs: []
+    datasets: []
+    scoring_fns: []
+    benchmarks: []
+    connectors: []
+    server:
+      port: 8321

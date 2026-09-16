@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+spec:
+  template:
+    metadata:
+      name: ${JOB_NAME}
+    spec:
+      volumes:
+        - name: models-storage
+          persistentVolumeClaim:
+            claimName: models-pvc
+      containers:
+      - name: download
+        image: registry.redhat.io/ubi9/python-312
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            
+            pip3 install -q --upgrade huggingface_hub
+            
+            for model in ${MODEL_LIST}; do
+              local_dir="/mnt/models/$model"
+              
+              if [ -d "$local_dir" ] && [ "$(ls -A $local_dir 2>/dev/null)" ]; then
+                echo "Model '$model' already exists. Skipping."
+                continue
+              fi
+              
+              echo "Downloading $model from HuggingFace..."
+              mkdir -p "$local_dir"
+              huggingface-cli download "$model" --local-dir "$local_dir"
+              rm -rf "$local_dir/.cache"
+              echo "✓ $model downloaded to /mnt/models/$model"
+            done
+            
+            echo ""
+            echo "All downloads complete!"
+            echo "Models available at PVC path: /mnt/models/<model-name>/"
+        env:
+          - name: HF_TOKEN
+            value: "${HF_TOKEN_VALUE}"
+        volumeMounts:
+          - name: models-storage
+            mountPath: "/mnt/models"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 2
+            memory: 16Gi
+      restartPolicy: Never
+  backoffLimit: 3

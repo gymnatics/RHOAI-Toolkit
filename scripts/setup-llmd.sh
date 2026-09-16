@@ -77,16 +77,9 @@ create_gatewayclass() {
     fi
     
     print_step "Creating GatewayClass..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
-    
+
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/rhcl/gatewayclass-ai-inference.yaml"
+
     print_success "GatewayClass 'openshift-ai-inference' created"
 }
 
@@ -149,33 +142,11 @@ $values_yaml"
     fi
     
     print_step "Creating Gateway..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          $allowed_namespaces_yaml
-      hostname: inference-gateway.apps.$cluster_domain
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
-    
+
+    export allowed_namespaces_yaml cluster_domain
+    envsubst '${allowed_namespaces_yaml} ${cluster_domain}' \
+        < "$SCRIPT_DIR/../lib/manifests/rhcl/gateway-inference-llmd.yaml.tmpl" | oc apply -f -
+
     print_success "Gateway 'openshift-ai-inference' created"
     echo ""
     print_info "Gateway hostname: inference-gateway.apps.$cluster_domain"
@@ -206,19 +177,9 @@ create_lws_instance() {
     fi
     
     print_step "Creating LeaderWorkerSetOperator instance..."
-    
-    cat <<EOF | oc apply -f -
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-  logLevel: Normal
-  operatorLogLevel: Normal
-EOF
-    
+
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/operators/lws-operator-cr.yaml"
+
     print_success "LeaderWorkerSetOperator instance created"
     
     # Wait for it to be ready
