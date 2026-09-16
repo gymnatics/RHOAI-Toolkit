@@ -1,0 +1,2 @@
+      - name: OLLAMA_URL
+        value: "${OLLAMA_URL}"

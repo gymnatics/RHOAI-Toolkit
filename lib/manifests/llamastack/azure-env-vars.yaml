@@ -1,0 +1,20 @@
+      - name: AZURE_OPENAI_ENDPOINT
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: endpoint
+      - name: AZURE_OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: api-key
+      - name: AZURE_OPENAI_DEPLOYMENT
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: deployment
+      - name: AZURE_OPENAI_API_VERSION
+        valueFrom:
+          secretKeyRef:
+            name: azure-openai-secret
+            key: api-version

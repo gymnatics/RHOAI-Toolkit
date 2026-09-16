@@ -1,0 +1,9 @@
+    inference:
+      remote:
+        azure:
+          - id: azure
+            endpoint: "${AZURE_ENDPOINT}"
+            apiVersion: "${AZURE_API_VERSION}"
+            apiKey:
+              name: ogx-azure-secret
+              key: api-key

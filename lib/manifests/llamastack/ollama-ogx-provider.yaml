@@ -1,0 +1,7 @@
+    inference:
+      remote:
+        custom:
+          - id: ollama
+            type: remote::ollama
+            settings:
+              url: "${OLLAMA_URL}"
