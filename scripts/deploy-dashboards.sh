@@ -161,20 +161,9 @@ deploy_grafana() {
         --from-file="$DASHBOARD_DIR/$file" \
         --dry-run=client -o yaml | oc apply -f -
 
-    cat <<EOF | oc apply -f -
-apiVersion: grafana.integreatly.org/v1beta1
-kind: GrafanaDashboard
-metadata:
-  name: $cm_name
-  namespace: $grafana_ns
-spec:
-  instanceSelector:
-    matchLabels:
-      dashboards: grafana
-  configMapRef:
-    name: $cm_name
-    key: $file
-EOF
+    export cm_name grafana_ns file
+    envsubst '${cm_name} ${grafana_ns} ${file}' \
+        < "$ROOT_DIR/lib/manifests/dashboards-deploy/grafana-dashboard-cr.yaml.tmpl" | oc apply -f -
 
     print_success "$display_name deployed to Grafana"
 }

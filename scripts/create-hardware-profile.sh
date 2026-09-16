@@ -241,43 +241,10 @@ DISPLAY_NAME="${DISPLAY_NAME:-GPU Profile}"
 # Create the hardware profile
 print_header "Creating Hardware Profile"
 
-cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: $PROFILE_NAME
-  namespace: $NAMESPACE
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: '$DISPLAY_NAME'
-    opendatahub.io/description: 'GPU hardware profile with ${DEFAULT_GPU} GPU(s), ${DEFAULT_CPU} CPU(s), ${DEFAULT_MEMORY} Memory'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-    - defaultCount: '$DEFAULT_CPU'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '$MAX_CPU'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: $DEFAULT_MEMORY
-      displayName: Memory
-      identifier: memory
-      maxCount: $MAX_MEMORY
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: $DEFAULT_GPU
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: $MAX_GPU
-      minCount: 1
-      resourceType: Accelerator
-$SCHEDULING_SPEC
-EOF
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROFILE_NAME NAMESPACE DISPLAY_NAME DEFAULT_GPU DEFAULT_CPU DEFAULT_MEMORY MAX_CPU MAX_MEMORY MAX_GPU SCHEDULING_SPEC
+envsubst '${PROFILE_NAME} ${NAMESPACE} ${DISPLAY_NAME} ${DEFAULT_GPU} ${DEFAULT_CPU} ${DEFAULT_MEMORY} ${MAX_CPU} ${MAX_MEMORY} ${MAX_GPU} ${SCHEDULING_SPEC}' \
+    < "$SCRIPT_DIR/../lib/manifests/hardware-profile-fix/gpu-profile-configurable.yaml.tmpl" | oc apply -f -
 
 if [ $? -eq 0 ]; then
     echo ""

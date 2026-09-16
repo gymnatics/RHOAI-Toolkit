@@ -53,30 +53,7 @@ enable_dashboard_features() {
     
     # NOTE: In RHOAI 3.0, disableKueue and disableHardwareProfiles are DEPRECATED
     # and must NOT be included in the spec. See CAI's guide to RHOAI 3.0.
-    cat <<EOF | oc apply -f -
-apiVersion: opendatahub.io/v1alpha
-kind: OdhDashboardConfig
-metadata:
-  name: odh-dashboard-config
-  namespace: redhat-ods-applications
-spec:
-  dashboardConfig:
-    disableTracking: false
-    disableModelRegistry: false      # ✓ Enable Model Registry
-    disableModelCatalog: false       # ✓ Enable Model Catalog
-    disableKServeMetrics: false      # ✓ Enable KServe Metrics
-    genAiStudio: true                # ✓ Enable GenAI Studio/Playground
-    modelAsService: true             # ✓ Enable Model as a Service (MaaS)
-    disableLMEval: false             # ✓ Enable LM Eval
-    mcpCatalog: true                 # ✓ Enable MCP Catalog (AI Hub > MCP Servers)
-  hardwareProfileOrder: []
-  notebookController:
-    enabled: true
-    notebookNamespace: rhods-notebooks
-    pvcSize: 20Gi
-  templateDisablement: []
-  templateOrder: []
-EOF
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/rhoai/odh-dashboard-config-full.yaml"
     
     if [ $? -eq 0 ]; then
         print_success "Dashboard configuration updated"
