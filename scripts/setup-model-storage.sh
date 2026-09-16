@@ -152,160 +152,21 @@ if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
     print_info "MinIO deployment already exists"
 else
     # Create MinIO secret
-    cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: minio
-  labels:
-    app.kubernetes.io/name: minio
-    app.kubernetes.io/component: storage
-stringData:
-  MINIO_ROOT_USER: "${MINIO_USER}"
-  MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD}"
-EOF
+    export MINIO_USER MINIO_PASSWORD
+    envsubst '${MINIO_USER} ${MINIO_PASSWORD}' < "$BASE_DIR/lib/manifests/model-storage/minio-secret.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
 
     # Create PVC
-    cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: models-pvc
-  labels:
-    app.kubernetes.io/name: minio
-    app.kubernetes.io/component: storage
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: ${STORAGE_SIZE}
-EOF
+    export STORAGE_SIZE
+    envsubst '${STORAGE_SIZE}' < "$BASE_DIR/lib/manifests/model-storage/minio-pvc.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
 
     # Create Deployment
-    cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: minio
-  labels:
-    app.kubernetes.io/name: minio
-    app.kubernetes.io/component: storage
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: minio
-  strategy:
-    type: Recreate
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: minio
-    spec:
-      containers:
-      - name: minio
-        image: quay.io/minio/minio:latest
-        imagePullPolicy: IfNotPresent
-        command:
-        - /usr/bin/docker-entrypoint.sh
-        - server
-        - /data
-        - "--console-address"
-        - ":9001"
-        envFrom:
-        - secretRef:
-            name: minio
-        ports:
-        - name: api
-          containerPort: 9000
-          protocol: TCP
-        - name: console
-          containerPort: 9001
-          protocol: TCP
-        resources:
-          requests:
-            cpu: 100m
-            memory: 512Mi
-          limits:
-            cpu: 1000m
-            memory: 2Gi
-        volumeMounts:
-        - name: data
-          mountPath: /data
-        livenessProbe:
-          httpGet:
-            path: /minio/health/live
-            port: api
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /minio/health/ready
-            port: api
-          initialDelaySeconds: 10
-          periodSeconds: 5
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: models-pvc
-EOF
+    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-deployment.yaml"
 
     # Create Service
-    cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: v1
-kind: Service
-metadata:
-  name: minio
-  labels:
-    app.kubernetes.io/name: minio
-spec:
-  type: ClusterIP
-  ports:
-  - name: api
-    port: 9000
-    targetPort: api
-  - name: console
-    port: 9001
-    targetPort: console
-  selector:
-    app.kubernetes.io/name: minio
-EOF
+    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-service.yaml"
 
     # Create Routes
-    cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: minio
-  labels:
-    app.kubernetes.io/name: minio
-spec:
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
-  port:
-    targetPort: api
-  to:
-    kind: Service
-    name: minio
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: minio-console
-  labels:
-    app.kubernetes.io/name: minio
-spec:
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
-  port:
-    targetPort: console
-  to:
-    kind: Service
-    name: minio
-EOF
+    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-routes.yaml"
 
     print_success "MinIO deployed"
 fi
@@ -345,45 +206,8 @@ MINIO_INTERNAL_URL="http://minio.${NAMESPACE}.svc:9000"
 oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # Create a job to create the bucket
-cat <<EOF | oc apply -n "$NAMESPACE" -f -
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: create-bucket
-  labels:
-    app.kubernetes.io/name: minio-setup
-spec:
-  ttlSecondsAfterFinished: 60
-  template:
-    spec:
-      containers:
-      - name: mc
-        image: quay.io/minio/mc:latest
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            set -e
-            
-            export MC_CONFIG_DIR=/tmp/.mc
-
-            # Wait for MinIO
-            echo "Waiting for MinIO..."
-            until mc alias set myminio http://minio:9000 "${MINIO_USER}" "${MINIO_PASSWORD}" 2>/dev/null; do
-              sleep 2
-            done
-            
-            # Create bucket if not exists
-            if mc ls myminio/${BUCKET_NAME} 2>/dev/null; then
-              echo "Bucket '${BUCKET_NAME}' already exists"
-            else
-              mc mb myminio/${BUCKET_NAME}
-              echo "Bucket '${BUCKET_NAME}' created"
-            fi
-            
-            echo "Done!"
-      restartPolicy: Never
-  backoffLimit: 3
-EOF
+export MINIO_USER MINIO_PASSWORD BUCKET_NAME
+envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${BUCKET_NAME}' < "$BASE_DIR/lib/manifests/model-storage/minio-bucket-job.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
 
 # Wait for job completion
 print_info "Waiting for bucket creation..."
@@ -413,46 +237,13 @@ if [ "$SKIP_DATA_CONNECTION" = false ]; then
     
     # Create data connection secret (RHOAI format)
     # This secret format is recognized by RHOAI dashboard and workbenches
-    cat <<EOF | oc apply -n "$DATA_CONNECTION_NS" -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-minio
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "MinIO Model Storage"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: "${MINIO_USER}"
-  AWS_SECRET_ACCESS_KEY: "${MINIO_PASSWORD}"
-  AWS_S3_ENDPOINT: "http://minio.${NAMESPACE}.svc:9000"
-  AWS_S3_BUCKET: "${BUCKET_NAME}"
-  AWS_DEFAULT_REGION: "us-east-1"
-EOF
+    export MINIO_USER MINIO_PASSWORD NAMESPACE BUCKET_NAME
+    envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${NAMESPACE} ${BUCKET_NAME}' \
+        < "$BASE_DIR/lib/manifests/model-storage/data-connection-minio-secret.yaml.tmpl" | oc apply -n "$DATA_CONNECTION_NS" -f -
 
     # Also create the aws-connection-my-storage secret for compatibility with existing scripts
-    cat <<EOF | oc apply -n "$DATA_CONNECTION_NS" -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-my-storage
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "Model Storage - MinIO"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: "${MINIO_USER}"
-  AWS_SECRET_ACCESS_KEY: "${MINIO_PASSWORD}"
-  AWS_S3_ENDPOINT: "http://minio.${NAMESPACE}.svc:9000"
-  AWS_S3_BUCKET: "${BUCKET_NAME}"
-  AWS_DEFAULT_REGION: "us-east-1"
-EOF
+    envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${NAMESPACE} ${BUCKET_NAME}' \
+        < "$BASE_DIR/lib/manifests/model-storage/data-connection-my-storage-secret.yaml.tmpl" | oc apply -n "$DATA_CONNECTION_NS" -f -
 
     print_success "Data connection created"
 fi
