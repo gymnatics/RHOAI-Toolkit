@@ -1,0 +1,59 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
+    openshift.io/display-name: ${NAME}
+  name: ${NAME}
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - serve
+        - /mnt/models
+        - '--omni'
+        - '--port=8080'
+        - '--served-model-name={{.Name}}'
+        - '--host=0.0.0.0'
+        - '--trust-remote-code'
+      command:
+        - vllm
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/hf_home
+        - name: VLLM_ATTENTION_BACKEND
+          value: FLASH_ATTN
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: XDG_CACHE_HOME
+          value: /tmp/.cache
+        - name: FLASHINFER_WORKSPACE_DIR
+          value: /tmp/flashinfer
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+      image: 'vllm/vllm-omni:v0.18.0'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 12Gi
+      name: shm
