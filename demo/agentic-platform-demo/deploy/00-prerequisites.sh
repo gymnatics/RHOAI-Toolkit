@@ -28,8 +28,8 @@ oc create namespace openshift-serverless 2>/dev/null || true
 # --- Red Hat Build of Keycloak (RHBK) Operator ---
 # Must install in OwnNamespace mode in the 'keycloak' namespace
 echo "[1/6] Installing Red Hat Build of Keycloak operator (keycloak ns)..."
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/keycloak-operatorgroup.yaml"
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/keycloak-subscription.yaml"
+oc apply -f "${SCRIPT_DIR}/keycloak-operatorgroup.yaml"
+oc apply -f "${SCRIPT_DIR}/keycloak-subscription.yaml"
 
 # --- Red Hat OpenShift Service Mesh (Istio) ---
 echo "[2/6] Installing OpenShift Service Mesh operator..."
@@ -37,16 +37,16 @@ oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/rhoai-2x/servicemesh.yaml"
 
 # --- Red Hat OpenShift Serverless (for Knative / KServe) ---
 echo "[3/6] Installing OpenShift Serverless operator..."
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/serverless-operatorgroup.yaml"
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/serverless-subscription.yaml"
+oc apply -f "${SCRIPT_DIR}/serverless-operatorgroup.yaml"
+oc apply -f "${SCRIPT_DIR}/serverless-subscription.yaml"
 
 # --- Red Hat OpenShift AI (RHOAI) ---
 echo "[4/6] Installing Red Hat OpenShift AI operator..."
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/rhods-subscription.yaml"
+oc apply -f "${SCRIPT_DIR}/rhods-subscription.yaml"
 
 # --- OpenShift Pipelines (Tekton) ---
 echo "[5/6] Installing OpenShift Pipelines operator..."
-oc apply -f "${SCRIPT_DIR}/../../../lib/manifests/agentic-platform/pipelines-subscription.yaml"
+oc apply -f "${SCRIPT_DIR}/pipelines-subscription.yaml"
 
 # --- Gateway API CRDs (for MCP Gateway / Kuadrant) ---
 echo "[6/6] Installing Gateway API CRDs..."
