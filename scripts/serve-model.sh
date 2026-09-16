@@ -142,260 +142,32 @@ print_step "Cleaning up existing resources..."
 oc delete isvc/$NAME -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
 oc delete servingruntime/$NAME -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
 
+# Manifests are the source of truth -- see lib/manifests/serve-model/
+MANIFEST_DIR="$BASE_DIR/lib/manifests/serve-model"
+export NAME NAMESPACE HW_PROFILE_NAME HW_PROFILE_NS HW_PROFILE_RV MODEL_PATH DEFAULT_ARGS VLLM_ARGS
+
 # Create ServingRuntime
 print_step "Creating ServingRuntime (${RUNTIME})..."
 
 if [ "$RUNTIME" = "omni" ]; then
-    cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  annotations:
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/serving-runtime-scope: global
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-display-name: vLLM Omni (Multimodal) NVIDIA ServingRuntime for KServe
-    openshift.io/display-name: ${NAME}
-  name: ${NAME}
-  labels:
-    opendatahub.io/dashboard: 'true'
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: '8080'
-  containers:
-    - args:
-        - serve
-        - /mnt/models
-        - '--omni'
-        - '--port=8080'
-        - '--served-model-name={{.Name}}'
-        - '--host=0.0.0.0'
-        - '--trust-remote-code'
-      command:
-        - vllm
-      env:
-        - name: HOME
-          value: /tmp
-        - name: HF_HOME
-          value: /tmp/hf_home
-        - name: VLLM_ATTENTION_BACKEND
-          value: FLASH_ATTN
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "expandable_segments:True"
-        - name: XDG_CACHE_HOME
-          value: /tmp/.cache
-        - name: FLASHINFER_WORKSPACE_DIR
-          value: /tmp/flashinfer
-        - name: TRITON_CACHE_DIR
-          value: /tmp/triton_cache
-      image: 'vllm/vllm-omni:v0.18.0'
-      name: kserve-container
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      volumeMounts:
-        - mountPath: /dev/shm
-          name: shm
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-  volumes:
-    - emptyDir:
-        medium: Memory
-        sizeLimit: 12Gi
-      name: shm
-EOF
+    envsubst '${NAME}' < "$MANIFEST_DIR/servingruntime-vllm-omni.yaml.tmpl" | oc apply -n ${NAMESPACE} -f -
 else
-    cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  annotations:
-    opendatahub.io/accelerator-name: ''
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/serving-runtime-scope: global
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    openshift.io/display-name: ${NAME}
-  name: ${NAME}
-  labels:
-    opendatahub.io/dashboard: 'true'
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: '8080'
-  containers:
-    - args:
-        - '--port=8080'
-        - '--model=/mnt/models'
-        - '--served-model-name={{.Name}}'
-      command:
-        - python
-        - '-m'
-        - vllm.entrypoints.openai.api_server
-      env:
-        - name: HF_HOME
-          value: /tmp/hf_home
-      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3'
-      name: kserve-container
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      volumeMounts:
-        - mountPath: /dev/shm
-          name: shm
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-  volumes:
-    - emptyDir:
-        medium: Memory
-        sizeLimit: 2Gi
-      name: shm
-EOF
+    envsubst '${NAME}' < "$MANIFEST_DIR/servingruntime-vllm-default.yaml.tmpl" | oc apply -n ${NAMESPACE} -f -
 fi
 
 # Create InferenceService based on mode
 print_step "Creating InferenceService ($MODE mode)..."
 
+ISVC_VARS='${HW_PROFILE_NAME} ${HW_PROFILE_NS} ${HW_PROFILE_RV} ${NAME} ${DEFAULT_ARGS} ${VLLM_ARGS} ${MODEL_PATH}'
+
 if [ "$MODE" = "s3" ]; then
-    cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  annotations:
-    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
-    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
-    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
-    openshift.io/display-name: ${NAME}
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/model-type: generative
-  name: ${NAME}
-  labels:
-    networking.kserve.io/visibility: exposed
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: "true"
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-    model:
-      args:
-${DEFAULT_ARGS}${VLLM_ARGS}
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '4'
-          memory: 32Gi
-          nvidia.com/gpu: '1'
-        requests:
-          cpu: '2'
-          memory: 8Gi
-          nvidia.com/gpu: '1'
-      runtime: ${NAME}
-      storage:
-        key: aws-connection-my-storage
-        path: ${MODEL_PATH}
-EOF
+    envsubst "$ISVC_VARS" < "$MANIFEST_DIR/inferenceservice-s3.yaml.tmpl" | oc apply -n ${NAMESPACE} -f -
 
 elif [ "$MODE" = "pvc" ]; then
-    cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  annotations:
-    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
-    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
-    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
-    openshift.io/display-name: ${NAME}
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/model-type: generative
-  name: ${NAME}
-  labels:
-    networking.kserve.io/visibility: exposed
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: "true"
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-    model:
-      args:
-${DEFAULT_ARGS}${VLLM_ARGS}
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '4'
-          memory: 32Gi
-          nvidia.com/gpu: '1'
-        requests:
-          cpu: '2'
-          memory: 8Gi
-          nvidia.com/gpu: '1'
-      runtime: ${NAME}
-      storageUri: "pvc://models-pvc/${MODEL_PATH}"
-EOF
+    envsubst "$ISVC_VARS" < "$MANIFEST_DIR/inferenceservice-pvc.yaml.tmpl" | oc apply -n ${NAMESPACE} -f -
 
 elif [ "$MODE" = "oci" ]; then
-    cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  annotations:
-    opendatahub.io/hardware-profile-name: ${HW_PROFILE_NAME}
-    opendatahub.io/hardware-profile-namespace: ${HW_PROFILE_NS}
-    opendatahub.io/hardware-profile-resource-version: "${HW_PROFILE_RV}"
-    openshift.io/display-name: ${NAME}
-    serving.kserve.io/deploymentMode: RawDeployment
-    opendatahub.io/model-type: generative
-  name: ${NAME}
-  labels:
-    networking.kserve.io/visibility: exposed
-    opendatahub.io/dashboard: 'true'
-    opendatahub.io/genai-asset: "true"
-spec:
-  predictor:
-    automountServiceAccountToken: false
-    maxReplicas: 1
-    minReplicas: 1
-    tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-    model:
-      args:
-${DEFAULT_ARGS}${VLLM_ARGS}
-      modelFormat:
-        name: vLLM
-      name: ''
-      resources:
-        limits:
-          cpu: '4'
-          memory: 32Gi
-          nvidia.com/gpu: '1'
-        requests:
-          cpu: '2'
-          memory: 8Gi
-          nvidia.com/gpu: '1'
-      runtime: ${NAME}
-      storageUri: "${MODEL_PATH}"
-EOF
+    envsubst "$ISVC_VARS" < "$MANIFEST_DIR/inferenceservice-oci.yaml.tmpl" | oc apply -n ${NAMESPACE} -f -
 
 else
     print_error "Invalid mode: $MODE (must be 's3', 'pvc', or 'oci')"
