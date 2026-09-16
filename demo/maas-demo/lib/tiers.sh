@@ -204,39 +204,8 @@ fix_tier_to_group_mapping() {
     print_step "Fixing tier-to-group-mapping ConfigMap..."
     
     # Create ConfigMap with SA usernames as groups
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: tier-to-group-mapping
-  namespace: redhat-ods-applications
-  labels:
-    app: maas-api
-    app.kubernetes.io/component: api
-    app.kubernetes.io/name: maas-api
-    app.kubernetes.io/part-of: models-as-a-service
-    app.opendatahub.io/modelsasservice: "true"
-    component: tier-mapping
-    platform.opendatahub.io/part-of: modelsasservice
-data:
-  tiers: |
-    - name: enterprise
-      displayName: Enterprise Tier
-      groups:
-        - system:serviceaccount:${namespace}:tier-enterprise-sa
-      level: 2
-    - name: premium
-      displayName: Premium Tier
-      groups:
-        - system:serviceaccount:${namespace}:tier-premium-sa
-      level: 1
-    - name: free
-      displayName: Free Tier
-      groups:
-        - system:serviceaccount:${namespace}:tier-free-sa
-        - system:authenticated
-      level: 0
-EOF
+    export namespace
+    envsubst '${namespace}' < "$SCRIPT_DIR/manifests/tiers/tier-to-group-mapping.yaml.tmpl" | oc apply -f -
     
     if [ $? -eq 0 ]; then
         print_success "tier-to-group-mapping ConfigMap updated"
@@ -546,17 +515,8 @@ create_tier_rbac() {
     print_step "Creating RBAC for tier ServiceAccounts..."
     
     # Create Role for model access
-    cat <<EOF | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: llminferenceservice-access
-  namespace: $namespace
-rules:
-- apiGroups: ["serving.kserve.io"]
-  resources: ["llminferenceservices"]
-  verbs: ["get"]
-EOF
+    export namespace
+    envsubst '${namespace}' < "$SCRIPT_DIR/manifests/tiers/tier-rbac-role.yaml.tmpl" | oc apply -f -
     
     # Create RoleBindings for each tier SA
     for tier in "${TIER_NAMES[@]}"; do
