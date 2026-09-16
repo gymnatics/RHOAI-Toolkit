@@ -948,26 +948,8 @@ install_rhcl_operator_33() {
     if oc get csv -n kuadrant-system 2>/dev/null | grep -q "rhcl-operator"; then
         print_success "RHCL Operator already installed"
     else
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator.yaml" 2>/dev/null || cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kuadrant-system
-  namespace: kuadrant-system
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhcl-operator
-  namespace: kuadrant-system
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: rhcl-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator.yaml" 2>/dev/null || \
+            oc apply -f "$ROOT_DIR/lib/manifests/rhcl/rhcl-operator-33-fallback.yaml"
         print_step "Waiting for RHCL operator to be ready..."
         local elapsed=0
         until oc get crd kuadrants.kuadrant.io &>/dev/null; do
@@ -993,37 +975,7 @@ EOF
 
     print_step "Creating Authorino TLS certificate (cert-manager, 3.3 method)..."
     if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
-        cat <<'CERTEOF' | oc apply -f -
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: authorino-selfsigned
-  namespace: kuadrant-system
-spec:
-  selfSigned: {}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: authorino-server-cert
-  namespace: kuadrant-system
-spec:
-  secretName: authorino-server-cert
-  isCA: false
-  duration: 8760h
-  renewBefore: 720h
-  issuerRef:
-    name: authorino-selfsigned
-    kind: Issuer
-  commonName: authorino-authorino
-  dnsNames:
-    - authorino-authorino
-    - authorino-authorino.kuadrant-system
-    - authorino-authorino.kuadrant-system.svc
-    - authorino-authorino.kuadrant-system.svc.cluster.local
-  usages:
-    - server auth
-CERTEOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-server-cert-33.yaml"
     fi
 
     oc apply -f "$ROOT_DIR/lib/manifests/rhcl/authorino-tls.yaml"
@@ -1058,45 +1010,16 @@ create_inference_gateway_33() {
     if oc get gatewayclass openshift-ai-inference &>/dev/null; then
         print_success "GatewayClass 'openshift-ai-inference' already exists"
     else
-        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml" 2>/dev/null || cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: openshift-ai-inference
-spec:
-  controllerName: openshift.io/gateway-controller/v1
-EOF
+        oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference.yaml" 2>/dev/null || \
+            oc apply -f "$ROOT_DIR/lib/manifests/rhcl/gatewayclass-ai-inference-33-fallback.yaml"
     fi
 
     local gateway_hostname="inference-gateway.${CLUSTER_DOMAIN}"
     if oc get gateway openshift-ai-inference -n openshift-ingress &>/dev/null; then
         print_success "Gateway 'openshift-ai-inference' already exists"
     else
-        cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  labels:
-    istio.io/rev: openshift-gateway
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-    - allowedRoutes:
-        namespaces:
-          from: All
-      hostname: ${gateway_hostname}
-      name: https
-      port: 443
-      protocol: HTTPS
-      tls:
-        certificateRefs:
-          - group: ''
-            kind: Secret
-            name: default-gateway-tls
-        mode: Terminate
-EOF
+        export gateway_hostname
+        envsubst '${gateway_hostname}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-inference-33.yaml.tmpl" | oc apply -f -
         print_success "Gateway 'openshift-ai-inference' created"
     fi
 }

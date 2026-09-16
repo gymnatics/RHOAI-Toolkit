@@ -81,45 +81,27 @@ register_ai_asset_endpoint() {
     
     # Create the new entry
     local entry_key=$(echo "$mcp_name" | sed 's/ /-/g')
-    local entry_value=$(cat <<EOF
-{
-  "url": "$mcp_url",
-  "description": "$description",
-  "transport": "$transport"
-}
-EOF
-)
-    
+    local entry_value
+    entry_value=$(mcp_url="$mcp_url" description="$description" transport="$transport" \
+        envsubst '$mcp_url $description $transport' \
+        < "$MANIFEST_DIR/mcp-servers/ai-asset-endpoint-entry.json.tmpl")
+
     # Merge with existing data
     if [ -n "$existing_data" ] && [ "$existing_data" != "{}" ]; then
         # Add to existing ConfigMap
         local new_data=$(echo "$existing_data" | jq --arg key "$entry_key" --arg val "$entry_value" '. + {($key): $val}')
-        
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-  labels:
-    app.kubernetes.io/part-of: rhoai-mcp-servers
-data:
-$(echo "$new_data" | jq -r 'to_entries | .[] | "  \(.key): |\n    \(.value | gsub("\n"; "\n    "))"')
-EOF
+
+        # Precompute the command substitution (embedded directly in the
+        # original heredoc) into a variable before envsubst -- envsubst
+        # cannot execute code, only substitute already-resolved values.
+        local data_block
+        data_block=$(echo "$new_data" | jq -r 'to_entries | .[] | "  \(.key): |\n    \(.value | gsub("\n"; "\n    "))"')
+        export data_block
+        envsubst '${data_block}' < "$MANIFEST_DIR/mcp-servers/ai-asset-configmap-merge.yaml.tmpl" | oc apply -f -
     else
         # Create new ConfigMap
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-  labels:
-    app.kubernetes.io/part-of: rhoai-mcp-servers
-data:
-  $entry_key: |
-    $entry_value
-EOF
+        export entry_key entry_value
+        envsubst '${entry_key} ${entry_value}' < "$MANIFEST_DIR/mcp-servers/ai-asset-configmap-new.yaml.tmpl" | oc apply -f -
     fi
     
     print_success "Registered '$mcp_name' in AI Asset endpoints"
@@ -145,22 +127,9 @@ register_ai_asset_simple() {
             -p "{\"data\":{\"$entry_key\":\"{\\\"url\\\": \\\"$mcp_url\\\", \\\"description\\\": \\\"$description\\\", \\\"transport\\\": \\\"$transport\\\"}\"}}"
     else
         # Create new ConfigMap
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-  labels:
-    app.kubernetes.io/part-of: rhoai-mcp-servers
-data:
-  $entry_key: |
-    {
-      "url": "$mcp_url",
-      "description": "$description",
-      "transport": "$transport"
-    }
-EOF
+        export entry_key mcp_url description transport
+        envsubst '${entry_key} ${mcp_url} ${description} ${transport}' \
+            < "$MANIFEST_DIR/mcp-servers/ai-asset-configmap-simple.yaml.tmpl" | oc apply -f -
     fi
     
     print_success "Registered '$mcp_name' in AI Asset endpoints"

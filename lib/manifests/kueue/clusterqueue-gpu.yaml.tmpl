@@ -1,0 +1,40 @@
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: default
+  labels:
+    platform.opendatahub.io/part-of: kueue
+spec:
+  flavorFungibility:
+    whenCanBorrow: Borrow
+    whenCanPreempt: TryNextFlavor
+  namespaceSelector:
+    matchLabels:
+      kueue.openshift.io/managed: "true"
+  preemption:
+    borrowWithinCohort:
+      policy: Never
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  # CPU and Memory resources
+  - coveredResources:
+    - cpu
+    - memory
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "${cpu_quota}"
+      - name: memory
+        nominalQuota: "${memory_quota}"
+  # GPU resources
+  - coveredResources:
+    - nvidia.com/gpu
+    flavors:
+    - name: ${RESOURCEFLAVOR_NAME}
+      resources:
+      - name: nvidia.com/gpu
+        nominalQuota: "${total_gpus}"
+  stopPolicy: None
