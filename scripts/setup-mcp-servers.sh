@@ -11,6 +11,9 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST_DIR="$SCRIPT_DIR/../lib/manifests"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -128,116 +131,7 @@ if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 2 ]]; then
 
         if ! oc get deployment kubernetes-mcp-server -n mcp-servers &>/dev/null 2>&1; then
             print_info "Deploying Kubernetes MCP Server natively..."
-            cat <<K8SMCPEOF | oc apply -f -
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: kubernetes-mcp-server
-  namespace: mcp-servers
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: kubernetes-mcp-server-view
-subjects:
-- kind: ServiceAccount
-  name: kubernetes-mcp-server
-  namespace: mcp-servers
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: view
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kubernetes-mcp-server
-  namespace: mcp-servers
-data:
-  config.toml: |
-    port = "8080"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kubernetes-mcp-server
-  namespace: mcp-servers
-  labels:
-    app: kubernetes-mcp-server
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: kubernetes-mcp-server
-  template:
-    metadata:
-      labels:
-        app: kubernetes-mcp-server
-    spec:
-      serviceAccountName: kubernetes-mcp-server
-      securityContext:
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-      - name: kubernetes-mcp-server
-        image: quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/openshift-mcp-server:latest
-        imagePullPolicy: IfNotPresent
-        args:
-        - "--config"
-        - "/etc/kubernetes-mcp-server/config.toml"
-        - "--read-only"
-        ports:
-        - name: http
-          containerPort: 8080
-          protocol: TCP
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
-          runAsNonRoot: true
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: http
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: http
-        volumeMounts:
-        - name: tmp
-          mountPath: /tmp
-        - name: config
-          mountPath: /etc/kubernetes-mcp-server
-      volumes:
-      - name: tmp
-        emptyDir: {}
-      - name: config
-        configMap:
-          name: kubernetes-mcp-server
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kubernetes-mcp-server
-  namespace: mcp-servers
-  labels:
-    app: kubernetes-mcp-server
-spec:
-  selector:
-    app: kubernetes-mcp-server
-  ports:
-  - protocol: TCP
-    port: 8080
-    targetPort: 8080
-K8SMCPEOF
+            oc apply -f "$MANIFEST_DIR/mcp-servers/kubernetes-mcp-server-standalone.yaml"
             print_success "Kubernetes MCP Server deployed"
         fi
     else
@@ -267,48 +161,8 @@ if [[ "$mcp_choice" == "all" ]] || [[ "$mcp_choice" =~ 3 ]]; then
         oc create namespace mcp-servers 2>/dev/null || true
         
         # Deploy filesystem MCP server (placeholder - would need actual deployment)
-        cat <<FSEOF | oc apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: filesystem-mcp-server
-  namespace: mcp-servers
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: filesystem-mcp
-  template:
-    metadata:
-      labels:
-        app: filesystem-mcp
-    spec:
-      containers:
-      - name: mcp-server
-        image: quay.io/opendatahub/filesystem-mcp:latest
-        ports:
-        - containerPort: 8080
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: filesystem-mcp-server
-  namespace: mcp-servers
-spec:
-  selector:
-    app: filesystem-mcp
-  ports:
-  - protocol: TCP
-    port: 8080
-    targetPort: 8080
-FSEOF
-        
+        oc apply -f "$MANIFEST_DIR/mcp-servers/filesystem-mcp-server.yaml"
+
         print_success "Filesystem MCP Server deployed"
     else
         read -p "Enter Filesystem MCP Server URL (or press Enter for default): " fs_url_input
@@ -409,15 +263,8 @@ echo ""
 print_header "Creating MCP Server ConfigMap"
 
 # Create the ConfigMap
-cat <<EOF | oc apply -f -
-kind: ConfigMap
-apiVersion: v1
-metadata:
-  name: gen-ai-aa-mcp-servers
-  namespace: redhat-ods-applications
-data:
-$MCP_DATA
-EOF
+export MCP_DATA
+envsubst '${MCP_DATA}' < "$MANIFEST_DIR/mcp-servers/ai-asset-configmap-bulk.yaml.tmpl" | oc apply -f -
 
 if [ $? -eq 0 ]; then
     echo ""

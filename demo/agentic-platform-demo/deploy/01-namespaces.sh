@@ -24,56 +24,12 @@ oc label namespace "$NS_AGENT" istio.io/dataplane-mode=ambient --overwrite
 echo "  ✓ Istio ambient label on $NS_AGENT"
 
 # --- ServiceAccounts in team1 ---
-cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: loan-agent
-  namespace: ${NS_AGENT}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: grafana
-  namespace: ${NS_AGENT}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: loki
-  namespace: ${NS_AGENT}
-EOF
+export NS_AGENT
+envsubst '${NS_AGENT}' < "${SCRIPT_DIR}/01-serviceaccounts.yaml.tmpl" | oc apply -f -
 echo "  ✓ ServiceAccounts created"
 
 # --- RBAC for loan-agent (needs to read ConfigMaps, Secrets) ---
-cat <<EOF | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: loan-agent-role
-  namespace: ${NS_AGENT}
-rules:
-- apiGroups: [""]
-  resources: ["configmaps", "secrets"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: loan-agent-binding
-  namespace: ${NS_AGENT}
-subjects:
-- kind: ServiceAccount
-  name: loan-agent
-  namespace: ${NS_AGENT}
-roleRef:
-  kind: Role
-  name: loan-agent-role
-  apiGroup: rbac.authorization.k8s.io
-EOF
+envsubst '${NS_AGENT}' < "${SCRIPT_DIR}/01-loan-agent-rbac.yaml.tmpl" | oc apply -f -
 echo "  ✓ RBAC for loan-agent"
 
 # --- RBAC for Kiali (cluster-reader for service mesh visibility) ---
@@ -87,22 +43,7 @@ oc adm policy add-scc-to-user anyuid -z default -n "${NS_AGENT}" 2>/dev/null || 
 echo "  ✓ SCC policies"
 
 # --- NetworkPolicy: allow all within team1 (demo purposes) ---
-cat <<EOF | oc apply -f -
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-all-team1
-  namespace: ${NS_AGENT}
-spec:
-  podSelector: {}
-  ingress:
-  - {}
-  egress:
-  - {}
-  policyTypes:
-  - Ingress
-  - Egress
-EOF
+envsubst '${NS_AGENT}' < "${SCRIPT_DIR}/01-networkpolicy.yaml.tmpl" | oc apply -f -
 echo "  ✓ NetworkPolicy (allow-all for demo)"
 
 echo ""

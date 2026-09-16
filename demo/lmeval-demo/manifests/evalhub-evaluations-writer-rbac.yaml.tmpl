@@ -1,0 +1,35 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluations-writer
+  namespace: ${NAMESPACE}
+rules:
+- apiGroups:
+  - trustyai.opendatahub.io
+  resources:
+  - evaluations
+  - status-events
+  verbs:
+  - get
+  - create
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-evaluations-writer-rb
+  namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-evaluations-writer
+subjects:
+- kind: ServiceAccount
+  name: evalhub-service
+  namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${EVALHUB_NAMESPACE}-job
+  namespace: ${NAMESPACE}
+- kind: ServiceAccount
+  name: evalhub-${NAMESPACE}-job
+  namespace: ${NAMESPACE}

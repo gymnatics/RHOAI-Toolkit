@@ -107,109 +107,18 @@ if [ "$EVALHUB_CRD_AVAILABLE" = true ]; then
 
     # Grant the central EvalHub SA access to this project's MLflow workspace
     print_info "Granting EvalHub access to MLflow workspace in $NAMESPACE..."
-    cat <<EORBAC | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: evalhub-central-mlflow-access
-  namespace: ${NAMESPACE}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: trustyai-service-operator-evalhub-mlflow-access
-subjects:
-- kind: ServiceAccount
-  name: evalhub-service
-  namespace: ${EVALHUB_NAMESPACE}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: evalhub-central-jobs-writer
-  namespace: ${NAMESPACE}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: trustyai-service-operator-evalhub-jobs-writer
-subjects:
-- kind: ServiceAccount
-  name: evalhub-service
-  namespace: ${EVALHUB_NAMESPACE}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: evalhub-central-job-config
-  namespace: ${NAMESPACE}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: trustyai-service-operator-evalhub-job-config
-subjects:
-- kind: ServiceAccount
-  name: evalhub-service
-  namespace: ${EVALHUB_NAMESPACE}
-EORBAC
+    export NAMESPACE EVALHUB_NAMESPACE
+    envsubst '${NAMESPACE} ${EVALHUB_NAMESPACE}' < "$SCRIPT_DIR/manifests/evalhub-central-rbac.yaml.tmpl" | oc apply -f -
 
     # Create the SA that EvalHub uses to run eval jobs in this namespace
     oc create sa evalhub-${EVALHUB_NAMESPACE}-job -n "$NAMESPACE" 2>/dev/null || true
     oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:evalhub-${EVALHUB_NAMESPACE}-job" -n "$NAMESPACE" 2>/dev/null || true
 
     # Grant job SA access to MLflow experiments (required for results to appear in MLflow UI)
-    cat <<EOMLFLOW | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: evalhub-job-mlflow-access
-  namespace: ${NAMESPACE}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: trustyai-service-operator-evalhub-mlflow-access
-subjects:
-- kind: ServiceAccount
-  name: evalhub-${EVALHUB_NAMESPACE}-job
-  namespace: ${NAMESPACE}
-EOMLFLOW
+    envsubst '${NAMESPACE} ${EVALHUB_NAMESPACE}' < "$SCRIPT_DIR/manifests/evalhub-job-mlflow-rbac.yaml.tmpl" | oc apply -f -
 
     # Grant evalhub-service SA permission to submit evaluations via SDK
-    cat <<EOROLE | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: evalhub-evaluations-writer
-  namespace: ${NAMESPACE}
-rules:
-- apiGroups:
-  - trustyai.opendatahub.io
-  resources:
-  - evaluations
-  - status-events
-  verbs:
-  - get
-  - create
-  - list
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: evalhub-evaluations-writer-rb
-  namespace: ${NAMESPACE}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: evalhub-evaluations-writer
-subjects:
-- kind: ServiceAccount
-  name: evalhub-service
-  namespace: ${NAMESPACE}
-- kind: ServiceAccount
-  name: evalhub-${EVALHUB_NAMESPACE}-job
-  namespace: ${NAMESPACE}
-- kind: ServiceAccount
-  name: evalhub-${NAMESPACE}-job
-  namespace: ${NAMESPACE}
-EOROLE
+    envsubst '${NAMESPACE} ${EVALHUB_NAMESPACE}' < "$SCRIPT_DIR/manifests/evalhub-evaluations-writer-rbac.yaml.tmpl" | oc apply -f -
 
     EVALHUB_URL="https://$(oc get routes -l app=eval-hub -n "$EVALHUB_NAMESPACE" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)"
     if [ -z "$EVALHUB_URL" ] || [ "$EVALHUB_URL" = "https://" ]; then

@@ -140,113 +140,14 @@ if [ "$MODE" = "s3" ]; then
     
     # MinIO service URL (cross-namespace)
     MINIO_URL="http://minio.${MINIO_NAMESPACE}.svc:9000"
-    
-    cat <<EOF | oc create -n ${NAMESPACE} -f -
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: ${JOB_NAME}
-spec:
-  template:
-    metadata:
-      name: ${JOB_NAME}
-    spec:
-      containers:
-      - name: download
-        image: registry.redhat.io/ubi9/python-312
-        command: ["/bin/bash", "-c"]
-        args:
-          - |
-            set -e
-            
-            # Install AWS CLI
-            echo "Installing AWS CLI..."
-            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip -q awscliv2.zip
-            mkdir -p aws-cli bin
-            ./aws/install -i \$PWD/aws-cli -b \$PWD/bin
-            
-            # Configure AWS CLI alias with endpoint
-            # AWS CLI needs --endpoint-url for MinIO
-            S3_ENDPOINT="\${AWS_S3_ENDPOINT:-${MINIO_URL}}"
-            echo "Using S3 endpoint: \$S3_ENDPOINT"
-            
-            # Create wrapper function for aws s3 commands
-            s3() {
-              bin/aws --endpoint-url "\$S3_ENDPOINT" s3 "\$@"
-            }
-            
-            # Wait for MinIO
-            echo "Waiting for MinIO at ${MINIO_URL}..."
-            until curl --silent --head --fail ${MINIO_URL}/minio/health/live; do
-                echo "  MinIO not ready, retrying..."
-                sleep 5
-            done
-            echo "MinIO is ready!"
-            
-            # Create bucket if needed
-            if ! s3 ls s3://${BUCKET_NAME} 2>/dev/null; then
-              echo "Creating bucket '${BUCKET_NAME}'..."
-              s3 mb s3://${BUCKET_NAME}
-            fi
-            
-            # Install huggingface_hub
-            echo "Installing huggingface_hub..."
-            pip3 install -q --upgrade huggingface_hub
-            
-            # Add pip bin to PATH
-            export PATH="\$PATH:/opt/app-root/src/.local/bin"
-            
-            # Download function
-            download_model() {
-              local repo="\$1"
-              local local_dir="/tmp/models/\$repo"
-              local s3_path="s3://${BUCKET_NAME}/\$repo/"
-              
-              # Check if already in S3
-              if s3 ls "\$s3_path" >/dev/null 2>&1; then
-                echo "Model '\$repo' already exists in S3. Skipping."
-                return 0
-              fi
-              
-              echo "Downloading \$repo from HuggingFace..."
-              mkdir -p "\$local_dir"
-              python3 -c "from huggingface_hub import snapshot_download; snapshot_download('\$repo', local_dir='\$local_dir')" || exit 1
-              rm -rf "\$local_dir/.cache"
-              
-              echo "Syncing to S3..."
-              s3 sync "\$local_dir" "\$s3_path"
-              
-              # Cleanup local copy to save space
-              rm -rf "\$local_dir"
-              
-              echo "✓ \$repo downloaded and synced to s3://${BUCKET_NAME}/\$repo/"
-            }
-            
-            # Download each model
-            for model in ${MODEL_LIST}; do
-              download_model "\$model"
-            done
-            
-            echo ""
-            echo "All downloads complete!"
-            echo "Models available at: s3://${BUCKET_NAME}/<model-name>/"
-        env:
-          - name: HF_TOKEN
-            value: "${HF_TOKEN:-}"
-        envFrom: 
-          - secretRef:
-              name: ${DATA_CONNECTION_SECRET}
-        resources:
-          requests:
-            cpu: 500m
-            memory: 2Gi
-          limits:
-            cpu: 2
-            memory: 16Gi
-      restartPolicy: Never
-  backoffLimit: 3
-EOF
+
+    # Precompute the ${HF_TOKEN:-} default-value expansion into a plain
+    # variable before envsubst -- envsubst only does literal ${VAR}
+    # substitution, it doesn't support bash's ":-" default-value operator.
+    HF_TOKEN_VALUE="${HF_TOKEN:-}"
+    export JOB_NAME MINIO_URL BUCKET_NAME MODEL_LIST DATA_CONNECTION_SECRET HF_TOKEN_VALUE
+    envsubst '${JOB_NAME} ${MINIO_URL} ${BUCKET_NAME} ${MODEL_LIST} ${DATA_CONNECTION_SECRET} ${HF_TOKEN_VALUE}' \
+        < "$BASE_DIR/lib/manifests/download-model/download-job-s3.yaml.tmpl" | oc create -n ${NAMESPACE} -f -
 
 else
     print_step "Creating PVC download job..."
@@ -254,78 +155,13 @@ else
     # Check if PVC exists
     if ! oc get pvc models-pvc -n "$NAMESPACE" &>/dev/null; then
         print_info "Creating models-pvc (200Gi)..."
-        cat <<EOF | oc apply -n ${NAMESPACE} -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: models-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 200Gi
-EOF
+        oc apply -n ${NAMESPACE} -f "$BASE_DIR/lib/manifests/download-model/models-pvc.yaml"
     fi
-    
-    cat <<EOF | oc create -n ${NAMESPACE} -f -
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: ${JOB_NAME}
-spec:
-  template:
-    metadata:
-      name: ${JOB_NAME}
-    spec:
-      volumes:
-        - name: models-storage
-          persistentVolumeClaim:
-            claimName: models-pvc
-      containers:
-      - name: download
-        image: registry.redhat.io/ubi9/python-312
-        command: ["/bin/bash", "-c"]
-        args:
-          - |
-            set -e
-            
-            pip3 install -q --upgrade huggingface_hub
-            
-            for model in ${MODEL_LIST}; do
-              local_dir="/mnt/models/\$model"
-              
-              if [ -d "\$local_dir" ] && [ "\$(ls -A \$local_dir 2>/dev/null)" ]; then
-                echo "Model '\$model' already exists. Skipping."
-                continue
-              fi
-              
-              echo "Downloading \$model from HuggingFace..."
-              mkdir -p "\$local_dir"
-              huggingface-cli download "\$model" --local-dir "\$local_dir"
-              rm -rf "\$local_dir/.cache"
-              echo "✓ \$model downloaded to /mnt/models/\$model"
-            done
-            
-            echo ""
-            echo "All downloads complete!"
-            echo "Models available at PVC path: /mnt/models/<model-name>/"
-        env:
-          - name: HF_TOKEN
-            value: "${HF_TOKEN:-}"
-        volumeMounts:
-          - name: models-storage
-            mountPath: "/mnt/models"
-        resources:
-          requests:
-            cpu: 500m
-            memory: 2Gi
-          limits:
-            cpu: 2
-            memory: 16Gi
-      restartPolicy: Never
-  backoffLimit: 3
-EOF
+
+    HF_TOKEN_VALUE="${HF_TOKEN:-}"
+    export JOB_NAME MODEL_LIST HF_TOKEN_VALUE
+    envsubst '${JOB_NAME} ${MODEL_LIST} ${HF_TOKEN_VALUE}' \
+        < "$BASE_DIR/lib/manifests/download-model/download-job-pvc.yaml.tmpl" | oc create -n ${NAMESPACE} -f -
 fi
 
 print_step "Waiting for job to complete (this may take a while for large models)..."

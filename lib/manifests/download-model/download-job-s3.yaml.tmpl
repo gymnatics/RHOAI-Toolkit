@@ -1,0 +1,104 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+spec:
+  template:
+    metadata:
+      name: ${JOB_NAME}
+    spec:
+      containers:
+      - name: download
+        image: registry.redhat.io/ubi9/python-312
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            
+            # Install AWS CLI
+            echo "Installing AWS CLI..."
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            mkdir -p aws-cli bin
+            ./aws/install -i $PWD/aws-cli -b $PWD/bin
+            
+            # Configure AWS CLI alias with endpoint
+            # AWS CLI needs --endpoint-url for MinIO
+            S3_ENDPOINT="${AWS_S3_ENDPOINT:-${MINIO_URL}}"
+            echo "Using S3 endpoint: $S3_ENDPOINT"
+            
+            # Create wrapper function for aws s3 commands
+            s3() {
+              bin/aws --endpoint-url "$S3_ENDPOINT" s3 "$@"
+            }
+            
+            # Wait for MinIO
+            echo "Waiting for MinIO at ${MINIO_URL}..."
+            until curl --silent --head --fail ${MINIO_URL}/minio/health/live; do
+                echo "  MinIO not ready, retrying..."
+                sleep 5
+            done
+            echo "MinIO is ready!"
+            
+            # Create bucket if needed
+            if ! s3 ls s3://${BUCKET_NAME} 2>/dev/null; then
+              echo "Creating bucket '${BUCKET_NAME}'..."
+              s3 mb s3://${BUCKET_NAME}
+            fi
+            
+            # Install huggingface_hub
+            echo "Installing huggingface_hub..."
+            pip3 install -q --upgrade huggingface_hub
+            
+            # Add pip bin to PATH
+            export PATH="$PATH:/opt/app-root/src/.local/bin"
+            
+            # Download function
+            download_model() {
+              local repo="$1"
+              local local_dir="/tmp/models/$repo"
+              local s3_path="s3://${BUCKET_NAME}/$repo/"
+              
+              # Check if already in S3
+              if s3 ls "$s3_path" >/dev/null 2>&1; then
+                echo "Model '$repo' already exists in S3. Skipping."
+                return 0
+              fi
+              
+              echo "Downloading $repo from HuggingFace..."
+              mkdir -p "$local_dir"
+              python3 -c "from huggingface_hub import snapshot_download; snapshot_download('$repo', local_dir='$local_dir')" || exit 1
+              rm -rf "$local_dir/.cache"
+              
+              echo "Syncing to S3..."
+              s3 sync "$local_dir" "$s3_path"
+              
+              # Cleanup local copy to save space
+              rm -rf "$local_dir"
+              
+              echo "✓ $repo downloaded and synced to s3://${BUCKET_NAME}/$repo/"
+            }
+            
+            # Download each model
+            for model in ${MODEL_LIST}; do
+              download_model "$model"
+            done
+            
+            echo ""
+            echo "All downloads complete!"
+            echo "Models available at: s3://${BUCKET_NAME}/<model-name>/"
+        env:
+          - name: HF_TOKEN
+            value: "${HF_TOKEN_VALUE}"
+        envFrom: 
+          - secretRef:
+              name: ${DATA_CONNECTION_SECRET}
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 2
+            memory: 16Gi
+      restartPolicy: Never
+  backoffLimit: 3

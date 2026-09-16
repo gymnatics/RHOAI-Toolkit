@@ -1,0 +1,42 @@
+---
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: lsd-genai-playground
+  namespace: $namespace
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: lsd-genai-playground
+spec:
+  replicas: 1
+  server:
+    distribution:
+      name: rh-dev
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      command:
+        - /bin/sh
+        - -c
+        - llama stack run /etc/llama-stack/run.yaml
+      env:
+        - name: MILVUS_DB_PATH
+          value: ~/.llama/milvus.db
+        - name: FMS_ORCHESTRATOR_URL
+          value: http://localhost
+        - name: VLLM_MAX_TOKENS
+          value: "${MAX_TOKENS}"
+        - name: VLLM_API_TOKEN_1
+          value: "${API_TOKEN}"
+        - name: LLAMA_STACK_CONFIG_DIR
+          value: /opt/app-root/src/.llama/distributions/rh/
+      resources:
+        requests:
+          cpu: 250m
+          memory: 500Mi
+        limits:
+          cpu: "2"
+          memory: 12Gi
+    userConfig:
+      configMapName: lsd-genai-playground-config

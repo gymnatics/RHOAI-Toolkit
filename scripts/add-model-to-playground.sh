@@ -21,6 +21,8 @@ if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; 
     USE_OGX=true
 fi
 
+MANIFEST_DIR="$SCRIPT_DIR/../lib/manifests/playground"
+
 ################################################################################
 # Default Configuration Values
 ################################################################################
@@ -350,68 +352,11 @@ create_llamastack_configmap() {
     local endpoint=$3
     
     print_step "Creating ConfigMap with LlamaStack configuration..."
-    
-    cat <<EOF | oc apply -f -
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: lsd-genai-playground-config
-  namespace: $namespace
-  labels:
-    llamastack.io/distribution: lsd-genai-playground
-    opendatahub.io/dashboard: "true"
-data:
-  run.yaml: |
-    version: "2"
-    image_name: rh
-    apis:
-    - inference
-    - tool_runtime
-    providers:
-      inference:
-      - provider_id: sentence-transformers
-        provider_type: inline::sentence-transformers
-        config: {}
-      - provider_id: vllm-inference-1
-        provider_type: remote::vllm
-        config:
-          api_token: ${API_TOKEN}
-          max_tokens: ${MAX_TOKENS}
-          base_url: ${endpoint}/v1
-      tool_runtime:
-      - provider_id: rag-runtime
-        provider_type: inline::rag-runtime
-        config: {}
-      - provider_id: model-context-protocol
-        provider_type: remote::model-context-protocol
-        config: {}
-    metadata_store:
-      type: sqlite
-      db_path: /opt/app-root/src/.llama/distributions/rh/inference_store.db
-    models:
-    - provider_id: sentence-transformers
-      model_id: granite-embedding-125m
-      provider_model_id: ibm-granite/granite-embedding-125m-english
-      model_type: embedding
-      metadata:
-        embedding_dimension: 768
-    - provider_id: vllm-inference-1
-      model_id: ${model_name}
-      model_type: llm
-      metadata:
-        description: ""
-        display_name: ${model_name}
-    shields: []
-    vector_dbs: []
-    datasets: []
-    scoring_fns: []
-    benchmarks: []
-    connectors: []
-    server:
-      port: 8321
-EOF
-    
+
+    export namespace endpoint model_name API_TOKEN MAX_TOKENS
+    envsubst '${namespace} ${API_TOKEN} ${MAX_TOKENS} ${endpoint} ${model_name}' \
+        < "$MANIFEST_DIR/lsd-genai-configmap.yaml.tmpl" | oc apply -f -
+
     if [ $? -eq 0 ]; then
         print_success "ConfigMap 'lsd-genai-playground-config' created"
         return 0
@@ -450,52 +395,9 @@ create_ogxserver() {
         -n "$namespace" --dry-run=client -o yaml | oc apply -f -
 
     print_step "Creating OGXServer..."
-    cat <<EOF | oc apply -f -
----
-apiVersion: ogx.io/v1beta1
-kind: OGXServer
-metadata:
-  name: ogx-genai-playground
-  namespace: $namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-  annotations:
-    openshift.io/display-name: ogx-genai-playground
-spec:
-  distribution:
-    name: rh
-  workload:
-    replicas: 1
-    resources:
-      requests:
-        cpu: 250m
-        memory: 500Mi
-      limits:
-        cpu: "2"
-        memory: 12Gi
-    overrides:
-      env:
-        - name: FMS_ORCHESTRATOR_URL
-          value: http://localhost
-  providers:
-    inference:
-      inline:
-        custom:
-          - id: sentence-transformers
-            type: inline::sentence-transformers
-      remote:
-        vllm:
-          - id: vllm-inference-1
-            endpoint: "${endpoint}/v1"
-            maxTokens: ${MAX_TOKENS}
-            apiToken:
-              name: ogx-playground-secret
-              key: api-token
-    toolRuntime:
-      remote:
-        modelContextProtocol:
-          - id: model-context-protocol
-EOF
+    export namespace endpoint MAX_TOKENS
+    envsubst '${namespace} ${endpoint} ${MAX_TOKENS}' \
+        < "$MANIFEST_DIR/ogx-genai-playground.yaml.tmpl" | oc apply -f -
 
     if [ $? -eq 0 ]; then
         print_success "OGXServer 'ogx-genai-playground' created"
@@ -539,53 +441,12 @@ create_llamastack_distribution() {
     fi
     
     print_step "Creating LlamaStackDistribution..."
-    
+
     # Now create the LlamaStackDistribution referencing the ConfigMap
-    cat <<EOF | oc apply -f -
----
-apiVersion: llamastack.io/v1alpha1
-kind: LlamaStackDistribution
-metadata:
-  name: lsd-genai-playground
-  namespace: $namespace
-  labels:
-    opendatahub.io/dashboard: "true"
-  annotations:
-    openshift.io/display-name: lsd-genai-playground
-spec:
-  replicas: 1
-  server:
-    distribution:
-      name: rh-dev
-    containerSpec:
-      name: llama-stack
-      port: 8321
-      command:
-        - /bin/sh
-        - -c
-        - llama stack run /etc/llama-stack/run.yaml
-      env:
-        - name: MILVUS_DB_PATH
-          value: ~/.llama/milvus.db
-        - name: FMS_ORCHESTRATOR_URL
-          value: http://localhost
-        - name: VLLM_MAX_TOKENS
-          value: "${MAX_TOKENS}"
-        - name: VLLM_API_TOKEN_1
-          value: "${API_TOKEN}"
-        - name: LLAMA_STACK_CONFIG_DIR
-          value: /opt/app-root/src/.llama/distributions/rh/
-      resources:
-        requests:
-          cpu: 250m
-          memory: 500Mi
-        limits:
-          cpu: "2"
-          memory: 12Gi
-    userConfig:
-      configMapName: lsd-genai-playground-config
-EOF
-    
+    export namespace MAX_TOKENS API_TOKEN
+    envsubst '${namespace} ${MAX_TOKENS} ${API_TOKEN}' \
+        < "$MANIFEST_DIR/lsd-genai-distribution.yaml.tmpl" | oc apply -f -
+
     if [ $? -eq 0 ]; then
         print_success "LlamaStackDistribution created"
         return 0
