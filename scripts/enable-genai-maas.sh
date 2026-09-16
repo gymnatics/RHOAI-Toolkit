@@ -81,103 +81,9 @@ update_datasciencecluster() {
     fi
 
     if [ "$use_ogx" = true ]; then
-        cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-  labels:
-    app.kubernetes.io/name: datasciencecluster
-spec:
-  components:
-    dashboard:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    aipipelines:
-      managementState: Managed
-      argoWorkflowsControllers:
-        managementState: Managed
-    kserve:
-      managementState: Managed
-      defaultDeploymentMode: RawDeployment
-      rawDeploymentServiceConfig: Headed
-      nim:
-        managementState: Managed
-    aigateway:
-      managementState: Managed
-      modelsAsAService:
-        managementState: Managed
-    kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
-    ray:
-      managementState: Managed
-    trainer:
-      managementState: Removed
-    trainingoperator:
-      managementState: Removed
-    modelregistry:
-      managementState: Managed
-      registriesNamespace: rhoai-model-registries
-    trustyai:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
-    ogx:
-      managementState: Managed
-    mlflowoperator:
-      managementState: Managed
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/datasciencecluster-ogx.yaml"
     else
-        cat <<EOF | oc apply -f -
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-  labels:
-    app.kubernetes.io/name: datasciencecluster
-spec:
-  components:
-    dashboard:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-    aipipelines:
-      managementState: Managed
-      argoWorkflowsControllers:
-        managementState: Managed
-    kserve:
-      managementState: Managed
-      defaultDeploymentMode: RawDeployment
-      rawDeploymentServiceConfig: Headed
-      nim:
-        managementState: Managed
-      modelsAsService:
-        managementState: Managed
-    kueue:
-      defaultClusterQueueName: default
-      defaultLocalQueueName: default
-      managementState: Unmanaged
-    ray:
-      managementState: Managed
-    trainer:
-      managementState: Removed
-    trainingoperator:
-      managementState: Removed
-    modelregistry:
-      managementState: Managed
-      registriesNamespace: rhoai-model-registries
-    trustyai:
-      managementState: Managed
-    feastoperator:
-      managementState: Managed
-    llamastackoperator:
-      managementState: Managed
-    mlflowoperator:
-      managementState: Managed
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/datasciencecluster-legacy.yaml"
     fi
     
     print_success "DataScienceCluster updated"
@@ -230,49 +136,7 @@ create_gpu_hardware_profile() {
     
     print_step "Creating GPU Hardware Profile..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: gpu-profile
-    opendatahub.io/description: 'GPU hardware profile for NVIDIA GPU workloads with tolerations'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-  name: gpu-profile
-  namespace: redhat-ods-applications
-spec:
-  identifiers:
-    - defaultCount: '1'
-      displayName: CPU
-      identifier: cpu
-      maxCount: '8'
-      minCount: 1
-      resourceType: CPU
-    - defaultCount: 12Gi
-      displayName: Memory
-      identifier: memory
-      maxCount: 24Gi
-      minCount: 1Gi
-      resourceType: Memory
-    - defaultCount: 1
-      displayName: GPU
-      identifier: nvidia.com/gpu
-      maxCount: 4
-      minCount: 1
-      resourceType: Accelerator
-  scheduling:
-    type: Node
-    node:
-      nodeSelector:
-        nvidia.com/gpu.present: 'true'
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-EOF
+    oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/rhoai/hardware-profile-gpu.yaml"
     
     print_success "GPU Hardware Profile created"
 }
@@ -305,26 +169,7 @@ install_rhcl_operator() {
     else
         print_step "Installing RHCL Operator (provides Kuadrant for llm-d)..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kuadrant-system
-  namespace: kuadrant-system
-spec: {}
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: rhcl-operator
-  namespace: kuadrant-system
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: rhcl-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/rhcl-operatorgroup-subscription.yaml"
         
         print_success "RHCL Operator subscription created"
         
@@ -353,13 +198,7 @@ EOF
     else
         print_step "Creating Kuadrant instance..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: kuadrant.io/v1beta1
-kind: Kuadrant
-metadata:
-  name: kuadrant
-  namespace: kuadrant-system
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/kuadrant-instance.yaml"
         
         print_success "Kuadrant instance created"
     fi
@@ -383,37 +222,7 @@ EOF
     # Create TLS certificate BEFORE Authorino CR to avoid deadlock
     print_step "Creating Authorino TLS certificate..."
     if ! oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
-        cat <<'CERTEOF' | oc apply -f -
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: authorino-selfsigned
-  namespace: kuadrant-system
-spec:
-  selfSigned: {}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: authorino-server-cert
-  namespace: kuadrant-system
-spec:
-  secretName: authorino-server-cert
-  isCA: false
-  duration: 8760h
-  renewBefore: 720h
-  issuerRef:
-    name: authorino-selfsigned
-    kind: Issuer
-  commonName: authorino-authorino
-  dnsNames:
-    - authorino-authorino
-    - authorino-authorino.kuadrant-system
-    - authorino-authorino.kuadrant-system.svc
-    - authorino-authorino.kuadrant-system.svc.cluster.local
-  usages:
-    - server auth
-CERTEOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/authorino-selfsigned-issuer-cert.yaml"
         local cert_wait=0
         while [ $cert_wait -lt 30 ]; do
             if oc get secret authorino-server-cert -n kuadrant-system &>/dev/null; then
@@ -429,24 +238,7 @@ CERTEOF
     
     # Configure Authorino with TLS
     print_step "Configuring Authorino with TLS..."
-    cat <<EOF | oc apply -f -
-apiVersion: operator.authorino.kuadrant.io/v1beta1
-kind: Authorino
-metadata:
-  name: authorino
-  namespace: kuadrant-system
-spec:
-  replicas: 1
-  clusterWide: true
-  listener:
-    tls:
-      enabled: true
-      certSecretRef:
-        name: authorino-server-cert
-  oidcServer:
-    tls:
-      enabled: false
-EOF
+    oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/rhcl/authorino-tls.yaml"
     
     # Annotate service if it exists (for cert rotation)
     oc annotate svc/authorino-authorino-authorization \
@@ -470,33 +262,7 @@ install_prerequisites() {
     if ! oc get subscription leader-worker-set-operator -n openshift-lws-operator &>/dev/null; then
         print_warning "Leader Worker Set Operator not found. Installing..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: leader-worker-set-operator
-  namespace: openshift-lws-operator
-spec:
-  targetNamespaces:
-  - openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: leader-worker-set-operator
-  namespace: openshift-lws-operator
-spec:
-  channel: stable-v1.0
-  installPlanApproval: Automatic
-  name: leader-worker-set-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/lws-operator.yaml"
         
         sleep 10
         print_success "Leader Worker Set Operator installed"
@@ -509,33 +275,7 @@ EOF
     if ! oc get subscription kueue-operator -n openshift-kueue-system &>/dev/null; then
         print_warning "Kueue Operator not found. Installing..."
         
-        cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-kueue-system
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kueue-operator
-  namespace: openshift-kueue-system
-spec:
-  targetNamespaces:
-  - openshift-kueue-system
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: kueue-operator
-  namespace: openshift-kueue-system
-spec:
-  channel: stable-v1.2
-  installPlanApproval: Automatic
-  name: kueue-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+        oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/genai-maas/kueue-operator.yaml"
         
         sleep 10
         print_success "Kueue Operator installed"
@@ -546,18 +286,7 @@ EOF
     # Enable UserWorkloadMonitoring
     print_step "Enabling UserWorkloadMonitoring for KServe metrics..."
     
-    cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-monitoring-config
-  namespace: openshift-monitoring
-data:
-  config.yaml: |
-    enableUserWorkload: true
-    alertmanagerMain:
-      enableUserAlertmanagerConfig: true
-EOF
+    oc apply -f "$_GENAI_MAAS_SCRIPT_DIR/../lib/manifests/monitoring/cluster-monitoring-config.yaml"
     
     print_success "UserWorkloadMonitoring enabled"
 }
