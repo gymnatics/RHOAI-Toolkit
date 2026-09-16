@@ -244,49 +244,8 @@ generate_yaml() {
 }
 
 generate_custom_yaml() {
-    cat <<EOF
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  name: ${RUNTIME_NAME}
-  annotations:
-    opendatahub.io/apiProtocol: REST
-    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
-    opendatahub.io/template-display-name: "${DISPLAY_NAME}"
-    openshift.io/display-name: "${DISPLAY_NAME}"
-  labels:
-    opendatahub.io/dashboard: "true"
-spec:
-  annotations:
-    prometheus.io/path: /metrics
-    prometheus.io/port: "8080"
-  containers:
-    - name: kserve-container
-      image: ${CUSTOM_IMAGE}
-      args:
-        - --model
-        - /mnt/models
-        - --port
-        - "8080"
-      env:
-        - name: HF_HOME
-          value: /tmp/hf_home
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      volumeMounts:
-        - name: shm
-          mountPath: /dev/shm
-  multiModel: false
-  supportedModelFormats:
-    - autoSelect: true
-      name: vLLM
-  volumes:
-    - name: shm
-      emptyDir:
-        medium: Memory
-        sizeLimit: ${SHM_SIZE}
-EOF
+    RUNTIME_NAME="$RUNTIME_NAME" DISPLAY_NAME="$DISPLAY_NAME" CUSTOM_IMAGE="$CUSTOM_IMAGE" SHM_SIZE="$SHM_SIZE" \
+        envsubst '${RUNTIME_NAME} ${DISPLAY_NAME} ${CUSTOM_IMAGE} ${SHM_SIZE}' < "$TEMPLATES_DIR/servingruntime-custom.yaml.tmpl"
 }
 
 # ── Actions ──────────────────────────────────────────────────────────────────
