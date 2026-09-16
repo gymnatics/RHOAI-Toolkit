@@ -149,36 +149,6 @@ cat scripts/CLEANUP-USAGE.md
 
 ---
 
-### enable-genai-maas.sh
-**Purpose**: Enable GenAI Playground and Dashboard features (Model Registry, GenAI Studio, etc.)
-
-**Usage**:
-```bash
-./scripts/enable-genai-maas.sh
-```
-
-**What it does**:
-- Installs RHCL/Kuadrant operators
-- Installs Leader Worker Set (LWS) operator
-- Installs Kueue operator
-- Updates DataScienceCluster to v2 API
-- Enables GenAI Studio in dashboard
-- Enables Model as a Service UI
-- Creates GPU hardware profile
-- Enables user workload monitoring
-
-**When to use**:
-- On existing RHOAI installations
-- When you want GenAI Playground
-- When you want Model as a Service
-- To enable llm-d serving runtime
-
-**Prerequisites**:
-- RHOAI must already be installed
-- Cluster must have GPU nodes (or plan to add them)
-
----
-
 ### setup-maas.sh
 **Purpose**: Set up Model as a Service (MaaS) API infrastructure
 
@@ -281,13 +251,10 @@ cat scripts/CLEANUP-USAGE.md
 
 ### Existing RHOAI Installation
 ```bash
-# 1. Enable GenAI and MaaS features
-./scripts/enable-genai-maas.sh
-
-# 2. Set up MaaS API
+# 1. Set up MaaS platform (RHCL, Gateway, PostgreSQL, DSC flags)
 ./scripts/setup-maas.sh
 
-# 3. Create GPU nodes if needed
+# 2. Create GPU nodes if needed
 ./scripts/create-gpu-machineset.sh
 ```
 
