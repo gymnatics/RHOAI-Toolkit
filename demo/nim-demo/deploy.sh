@@ -326,32 +326,8 @@ if [ "$ENABLE_GUARDRAILS" = true ]; then
             -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 
         print_step "Creating NemoGuardrails CR..."
-        cat <<EOF | oc apply -f -
-apiVersion: trustyai.opendatahub.io/v1alpha1
-kind: NemoGuardrails
-metadata:
-  name: nim-guardrails
-  namespace: ${NAMESPACE}
-  annotations:
-    security.opendatahub.io/enable-auth: "true"
-spec:
-  replicas: 1
-  env:
-    - name: OPENAI_API_KEY
-      valueFrom:
-        secretKeyRef:
-          key: token
-          name: api-token-secret
-          optional: true
-    - name: MAIN_MODEL_BASE_URL
-      value: "http://${MODEL_NAME}-predictor.${NAMESPACE}.svc/v1"
-    - name: MAIN_MODEL_ENGINE
-      value: openai
-  nemoConfigs:
-    - name: nim-guardrails-config
-      configMaps:
-        - nim-guardrails-config
-EOF
+        export NAMESPACE MODEL_NAME
+        envsubst < "$SCRIPT_DIR/manifests/nemoguardrails-cr.yaml.tmpl" | oc apply -f -
         print_success "NeMo Guardrails deployed"
         print_info "Guardrails pod will take 1-2 minutes to initialize"
     fi

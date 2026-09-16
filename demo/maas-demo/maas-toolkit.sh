@@ -261,17 +261,8 @@ cmd_tiers() {
     
     # Create RBAC
     print_step "Creating RBAC for model access..."
-    cat <<EOF | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: llminferenceservice-access
-  namespace: $NAMESPACE
-rules:
-- apiGroups: ["serving.kserve.io"]
-  resources: ["llminferenceservices"]
-  verbs: ["get", "post"]
-EOF
+    export NAMESPACE
+    envsubst '${NAMESPACE}' < "$SCRIPT_DIR/manifests/tiers/llminferenceservice-access-role.yaml.tmpl" | oc apply -f -
     
     for tier in free premium enterprise; do
         local sa_name="tier-${tier}-sa"
@@ -384,44 +375,8 @@ cmd_ratelimit() {
     else
         print_warning "TokenRateLimitPolicy manifest not found at $SCRIPT_DIR/manifests/tiers/tokenratelimitpolicy.yaml"
         print_info "Creating default policy..."
-        
-        cat <<EOF | oc apply -f -
-apiVersion: kuadrant.io/v1alpha1
-kind: TokenRateLimitPolicy
-metadata:
-  name: maas-tier-token-rate-limits
-  namespace: openshift-ingress
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: maas-default-gateway
-  limits:
-    free-tokens:
-      counters:
-        - expression: auth.identity.userid
-      rates:
-        - limit: 1000
-          window: 1m0s
-      when:
-        - predicate: auth.identity.tier == "free" && !request.path.endsWith("/v1/models")
-    premium-tokens:
-      counters:
-        - expression: auth.identity.userid
-      rates:
-        - limit: 5000
-          window: 1m0s
-      when:
-        - predicate: auth.identity.tier == "premium" && !request.path.endsWith("/v1/models")
-    enterprise-tokens:
-      counters:
-        - expression: auth.identity.userid
-      rates:
-        - limit: 10000
-          window: 1m0s
-      when:
-        - predicate: auth.identity.tier == "enterprise" && !request.path.endsWith("/v1/models")
-EOF
+
+        oc apply -f "$SCRIPT_DIR/manifests/tiers/tokenratelimitpolicy-fallback.yaml"
         print_success "Default TokenRateLimitPolicy created"
     fi
 }
