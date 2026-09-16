@@ -85,18 +85,8 @@ if [ -z "$gpu_nodes" ]; then
     echo "Configuring ResourceFlavor with node selector only..."
     echo ""
     
-    cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
-    
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
+
     if [ $? -eq 0 ]; then
         print_success "ResourceFlavor configured with node selector"
         echo ""
@@ -136,22 +126,8 @@ if [ -n "$has_taint" ]; then
     echo "Updating nvidia-gpu-flavor ResourceFlavor with toleration..."
     echo ""
     
-    cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
-    
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
+
     if [ $? -eq 0 ]; then
         print_success "ResourceFlavor configured with GPU toleration"
         echo ""
@@ -186,22 +162,8 @@ else
             echo "Now updating ResourceFlavor with toleration..."
             echo ""
             
-            cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
-            
+            oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
+
             if [ $? -eq 0 ]; then
                 print_success "ResourceFlavor configured with GPU toleration"
                 echo ""
@@ -229,18 +191,8 @@ EOF
     echo "Updating nvidia-gpu-flavor ResourceFlavor with node selector only..."
     echo ""
     
-    cat <<'EOF' | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: nvidia-gpu-flavor
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    nvidia.com/gpu.present: "true"
-EOF
-    
+    oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
+
     if [ $? -eq 0 ]; then
         print_success "ResourceFlavor configured with node selector"
         echo ""

@@ -158,25 +158,14 @@ configure_resourceflavor() {
     fi
     
     # Build ResourceFlavor spec based on taint status
+    # NOTE: these manifests hardcode name=nvidia-gpu-flavor / nodeLabels
+    # key=nvidia.com/gpu.present, matching this script's RESOURCEFLAVOR_NAME
+    # and GPU_NODE_LABEL constants exactly -- safe to apply directly.
     if [ "$GPU_NODES_TAINTED" = "true" ]; then
         print_step "Adding GPU toleration to ResourceFlavor..."
-        
-        cat <<EOF | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: ${RESOURCEFLAVOR_NAME}
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    ${GPU_NODE_LABEL}: "true"
-  tolerations:
-  - key: ${GPU_TAINT_KEY}
-    operator: Exists
-    effect: NoSchedule
-EOF
-        
+
+        oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-toleration.yaml"
+
         if [ $? -eq 0 ]; then
             print_success "ResourceFlavor configured with:"
             echo "    - Node selector: ${GPU_NODE_LABEL}=true"
@@ -186,18 +175,8 @@ EOF
             return 1
         fi
     else
-        cat <<EOF | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: ${RESOURCEFLAVOR_NAME}
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  nodeLabels:
-    ${GPU_NODE_LABEL}: "true"
-EOF
-        
+        oc apply -f "$SCRIPT_DIR/../lib/manifests/kueue/resourceflavor-gpu-selector.yaml"
+
         if [ $? -eq 0 ]; then
             print_success "ResourceFlavor configured with:"
             echo "    - Node selector: ${GPU_NODE_LABEL}=true"
@@ -247,50 +226,11 @@ configure_clusterqueue() {
     total_gpus="${total_gpus:-8}"
     
     print_info "Detected $total_gpus total GPU(s) across GPU nodes"
-    
-    cat <<EOF | oc apply -f -
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ClusterQueue
-metadata:
-  name: default
-  labels:
-    platform.opendatahub.io/part-of: kueue
-spec:
-  flavorFungibility:
-    whenCanBorrow: Borrow
-    whenCanPreempt: TryNextFlavor
-  namespaceSelector:
-    matchLabels:
-      kueue.openshift.io/managed: "true"
-  preemption:
-    borrowWithinCohort:
-      policy: Never
-    reclaimWithinCohort: Never
-    withinClusterQueue: Never
-  queueingStrategy: BestEffortFIFO
-  resourceGroups:
-  # CPU and Memory resources
-  - coveredResources:
-    - cpu
-    - memory
-    flavors:
-    - name: default-flavor
-      resources:
-      - name: cpu
-        nominalQuota: "${cpu_quota}"
-      - name: memory
-        nominalQuota: "${memory_quota}"
-  # GPU resources
-  - coveredResources:
-    - nvidia.com/gpu
-    flavors:
-    - name: ${RESOURCEFLAVOR_NAME}
-      resources:
-      - name: nvidia.com/gpu
-        nominalQuota: "${total_gpus}"
-  stopPolicy: None
-EOF
-    
+
+    export cpu_quota memory_quota RESOURCEFLAVOR_NAME total_gpus
+    envsubst '${cpu_quota} ${memory_quota} ${RESOURCEFLAVOR_NAME} ${total_gpus}' \
+        < "$SCRIPT_DIR/../lib/manifests/kueue/clusterqueue-gpu.yaml.tmpl" | oc apply -f -
+
     if [ $? -eq 0 ]; then
         print_success "ClusterQueue updated with GPU resources"
         echo "    - GPU flavor: ${RESOURCEFLAVOR_NAME}"
@@ -343,49 +283,10 @@ configure_hardware_profile() {
         effect: NoSchedule"
     fi
     
-    cat <<EOF | oc apply -f -
-apiVersion: infrastructure.opendatahub.io/v1
-kind: HardwareProfile
-metadata:
-  name: ${PROFILE_NAME}
-  namespace: ${NAMESPACE}
-  annotations:
-    opendatahub.io/dashboard-feature-visibility: '[]'
-    opendatahub.io/disabled: 'false'
-    opendatahub.io/display-name: 'GPU Profile'
-    opendatahub.io/description: 'GPU hardware profile with tolerations for tainted nodes'
-    opendatahub.io/managed: 'false'
-  labels:
-    app.opendatahub.io/hardwareprofile: 'true'
-    app.kubernetes.io/part-of: hardwareprofile
-spec:
-  identifiers:
-  - defaultCount: '4'
-    displayName: CPU
-    identifier: cpu
-    maxCount: '16'
-    minCount: 1
-    resourceType: CPU
-  - defaultCount: 16Gi
-    displayName: Memory
-    identifier: memory
-    maxCount: 64Gi
-    minCount: 1Gi
-    resourceType: Memory
-  - defaultCount: 1
-    displayName: GPU
-    identifier: nvidia.com/gpu
-    maxCount: 8
-    minCount: 1
-    resourceType: Accelerator
-  scheduling:
-    type: Node
-    node:
-      nodeSelector:
-        ${GPU_NODE_LABEL}: "true"
-${toleration_spec}
-EOF
-    
+    export PROFILE_NAME NAMESPACE GPU_NODE_LABEL toleration_spec
+    envsubst '${PROFILE_NAME} ${NAMESPACE} ${GPU_NODE_LABEL} ${toleration_spec}' \
+        < "$SCRIPT_DIR/../lib/manifests/kueue/hardwareprofile-gpu-scheduling.yaml.tmpl" | oc apply -f -
+
     if [ $? -eq 0 ]; then
         print_success "Hardware Profile configured with:"
         echo "    - Node selector: ${GPU_NODE_LABEL}=true"

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: rhoai-mcp-servers
+data:
+  ${entry_key}: |
+    ${entry_value}
