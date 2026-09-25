@@ -23,8 +23,7 @@ spec:
             ./aws/install -i $PWD/aws-cli -b $PWD/bin
             
             # Configure AWS CLI alias with endpoint
-            # AWS CLI needs --endpoint-url for MinIO
-            S3_ENDPOINT="${AWS_S3_ENDPOINT:-${MINIO_URL}}"
+            S3_ENDPOINT="${AWS_S3_ENDPOINT:-${MINIO_URL:-}}"
             echo "Using S3 endpoint: $S3_ENDPOINT"
             
             # Create wrapper function for aws s3 commands
@@ -32,13 +31,19 @@ spec:
               bin/aws --endpoint-url "$S3_ENDPOINT" s3 "$@"
             }
             
-            # Wait for MinIO
-            echo "Waiting for MinIO at ${MINIO_URL}..."
-            until curl --silent --head --fail ${MINIO_URL}/minio/health/live; do
-                echo "  MinIO not ready, retrying..."
+            # Wait for S3 endpoint to be ready (backend-agnostic)
+            echo "Waiting for S3 endpoint at $S3_ENDPOINT..."
+            RETRIES=0
+            until bin/aws --endpoint-url "$S3_ENDPOINT" s3 ls 2>/dev/null; do
+                RETRIES=$((RETRIES + 1))
+                if [ $RETRIES -ge 60 ]; then
+                    echo "Timeout waiting for S3 endpoint"
+                    exit 1
+                fi
+                echo "  S3 not ready, retrying... ($RETRIES)"
                 sleep 5
             done
-            echo "MinIO is ready!"
+            echo "S3 endpoint is ready!"
             
             # Create bucket if needed
             if ! s3 ls s3://${BUCKET_NAME} 2>/dev/null; then

@@ -90,10 +90,21 @@ if [ "$MODE" != "s3" ] && [ "$MODE" != "pvc" ]; then
     exit 1
 fi
 
-# For S3 mode, verify MinIO exists
+# For S3 mode, verify storage backend exists
 if [ "$MODE" = "s3" ]; then
-    if ! oc get deployment minio -n "$MINIO_NAMESPACE" &>/dev/null; then
-        print_error "MinIO not found in namespace '$MINIO_NAMESPACE'"
+    _storage_found=false
+    for _deploy in seaweedfs minio; do
+        if oc get deployment "$_deploy" -n "$MINIO_NAMESPACE" &>/dev/null; then
+            _storage_found=true
+            break
+        fi
+    done
+    # Also check for ODF ObjectBucketClaim
+    if [ "$_storage_found" = false ] && oc get objectbucketclaim -n "$MINIO_NAMESPACE" --no-headers 2>/dev/null | grep -q .; then
+        _storage_found=true
+    fi
+    if [ "$_storage_found" = false ]; then
+        print_error "No S3 storage backend found in namespace '$MINIO_NAMESPACE'"
         echo ""
         echo "Please run setup-model-storage.sh first:"
         echo "  ./scripts/setup-model-storage.sh -n $MINIO_NAMESPACE"
@@ -138,8 +149,14 @@ oc delete job/${JOB_NAME} -n ${NAMESPACE} --ignore-not-found 2>/dev/null
 if [ "$MODE" = "s3" ]; then
     print_step "Creating S3 download job..."
     
-    # MinIO service URL (cross-namespace)
-    MINIO_URL="http://minio.${MINIO_NAMESPACE}.svc:9000"
+    # Detect S3 endpoint (supports SeaweedFS, MinIO, or Ceph RGW)
+    MINIO_URL=""
+    if oc get svc seaweedfs-s3 -n "$MINIO_NAMESPACE" &>/dev/null; then
+        local _port=$(oc get svc seaweedfs-s3 -n "$MINIO_NAMESPACE" -o jsonpath='{.spec.ports[?(@.name=="s3")].port}' 2>/dev/null || echo "8333")
+        MINIO_URL="http://seaweedfs-s3.${MINIO_NAMESPACE}.svc:${_port}"
+    elif oc get svc minio -n "$MINIO_NAMESPACE" &>/dev/null; then
+        MINIO_URL="http://minio.${MINIO_NAMESPACE}.svc:9000"
+    fi
 
     # Precompute the ${HF_TOKEN:-} default-value expansion into a plain
     # variable before envsubst -- envsubst only does literal ${VAR}

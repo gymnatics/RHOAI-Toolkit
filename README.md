@@ -67,7 +67,7 @@ This single command provides an interactive menu to:
 | **Observability** | Auto-configured COO + Perses + Observe tab dashboards (DCGM, vLLM) |
 | **Let's Encrypt TLS** | Automated wildcard certificates via Route53 DNS-01 |
 | **MCP Servers** | 8 deployable MCP servers with Gateway API routing |
-| **HuggingFace to S3** | Download models from HuggingFace to MinIO for deployment |
+| **HuggingFace to S3** | Download models from HuggingFace to S3 storage (SeaweedFS/Ceph RGW/MinIO) |
 | **GenAI Playground** | Interactive model testing interface |
 | **20 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, NIM, Pipelines, and more |
 | **Cross-Platform** | Works on macOS and Linux |
@@ -182,8 +182,9 @@ Need RHOAI 3.4 instead? Use `./scripts/install-rhoai-34.sh` with the same flags 
 # Deploy a model
 ./scripts/serve-model.sh
 
-# Setup model storage (MinIO) and download from HuggingFace
-./scripts/setup-model-storage.sh
+# Setup S3 model storage (SeaweedFS by default) and download from HuggingFace
+./scripts/setup-model-storage.sh                          # SeaweedFS (default)
+./scripts/setup-model-storage.sh --backend=ceph-rgw       # Or Ceph/ODF
 ./scripts/download-model.sh s3 Qwen/Qwen3-8B-Instruct
 
 # Clean up resources

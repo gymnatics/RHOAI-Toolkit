@@ -1,27 +1,39 @@
 #!/bin/bash
 ################################################################################
-# Setup Model Storage (MinIO + RHOAI Data Connection)
+# Setup Model Storage (S3-Compatible Backend + RHOAI Data Connection)
 #
-# Deploys MinIO S3-compatible storage and creates RHOAI data connection for
-# storing and serving models downloaded from HuggingFace.
+# Deploys an S3-compatible storage backend and creates RHOAI data connections
+# for storing and serving models downloaded from HuggingFace.
+#
+# Supported backends:
+#   seaweedfs  — Default. Lightweight, self-contained S3-compatible store.
+#   ceph-rgw   — Uses ODF ObjectBucketClaim. Requires OpenShift Data Foundation.
+#   minio      — Deprecated legacy backend. Will be removed in a future release.
 #
 # Usage:
 #   ./setup-model-storage.sh [OPTIONS]
 #
 # Options:
-#   -n, --namespace NAME    Namespace for MinIO (default: model-storage)
+#   --backend BACKEND       Storage backend: seaweedfs|ceph-rgw|minio (default: seaweedfs)
+#   -n, --namespace NAME    Namespace for storage (default: model-storage)
 #   -b, --bucket NAME       Bucket name (default: models)
 #   --storage-size SIZE     PVC size (default: 200Gi)
-#   --minio-user USER       MinIO username (default: minio)
-#   --minio-password PASS   MinIO password (default: minio123)
+#   --access-key KEY        S3 access key (default: admin)
+#   --secret-key KEY        S3 secret key (default: admin123)
 #   --skip-data-connection  Skip creating RHOAI data connection
-#   --data-connection-ns NS Namespace for data connection (default: same as MinIO)
+#   --data-connection-ns NS Namespace for data connection (default: same as storage)
 #   -h, --help              Show this help
 #
+# Legacy flags (deprecated, only with --backend=minio):
+#   --minio-user USER       Alias for --access-key
+#   --minio-password PASS   Alias for --secret-key
+#
 # Examples:
-#   ./setup-model-storage.sh                           # Default setup
-#   ./setup-model-storage.sh -n demo -b my-models      # Custom namespace/bucket
-#   ./setup-model-storage.sh --storage-size 500Gi     # Larger storage
+#   ./setup-model-storage.sh                                    # SeaweedFS (default)
+#   ./setup-model-storage.sh --backend=ceph-rgw                 # Ceph/ODF
+#   ./setup-model-storage.sh --backend=minio                    # MinIO (deprecated)
+#   ./setup-model-storage.sh -n demo -b my-models               # Custom ns/bucket
+#   ./setup-model-storage.sh --storage-size 500Gi               # Larger storage
 #
 ################################################################################
 
@@ -43,6 +55,8 @@ else
     BOLD='\033[1m'
 fi
 
+source "$BASE_DIR/lib/functions/storage-backend.sh"
+
 print_step() { echo -e "${YELLOW}▶ $1${NC}"; }
 print_success() { echo -e "${GREEN}✓ $1${NC}"; }
 print_error() { echo -e "${RED}✗ $1${NC}"; }
@@ -52,15 +66,21 @@ print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 # Defaults
 NAMESPACE="model-storage"
 BUCKET_NAME="models"
-STORAGE_SIZE="200Gi"
-MINIO_USER="minio"
-MINIO_PASSWORD="minio123"
 SKIP_DATA_CONNECTION=false
 DATA_CONNECTION_NS=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --backend|--backend=*)
+            if [[ "$1" == *=* ]]; then
+                S3_BACKEND="${1#*=}"
+            else
+                S3_BACKEND="$2"
+                shift
+            fi
+            shift
+            ;;
         -n|--namespace)
             NAMESPACE="$2"
             shift 2
@@ -70,15 +90,25 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --storage-size)
-            STORAGE_SIZE="$2"
+            S3_STORAGE_SIZE="$2"
+            shift 2
+            ;;
+        --access-key)
+            S3_ACCESS_KEY="$2"
+            shift 2
+            ;;
+        --secret-key)
+            S3_SECRET_KEY="$2"
             shift 2
             ;;
         --minio-user)
-            MINIO_USER="$2"
+            print_warning "--minio-user is deprecated. Use --access-key instead."
+            S3_ACCESS_KEY="$2"
             shift 2
             ;;
         --minio-password)
-            MINIO_PASSWORD="$2"
+            print_warning "--minio-password is deprecated. Use --secret-key instead."
+            S3_SECRET_KEY="$2"
             shift 2
             ;;
         --skip-data-connection)
@@ -90,7 +120,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            head -40 "$0" | tail -35
+            head -45 "$0" | tail -40
             exit 0
             ;;
         *)
@@ -100,17 +130,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Default data connection namespace to MinIO namespace
+export S3_BACKEND="${S3_BACKEND:-}"
+export S3_ACCESS_KEY="${S3_ACCESS_KEY:-}"
+export S3_SECRET_KEY="${S3_SECRET_KEY:-}"
+export S3_STORAGE_SIZE="${S3_STORAGE_SIZE:-}"
 DATA_CONNECTION_NS="${DATA_CONNECTION_NS:-$NAMESPACE}"
+
+# Resolve backend (auto-detect or use default)
+detect_or_select_storage_backend "$NAMESPACE"
 
 echo ""
 echo -e "${BOLD}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║           Model Storage Setup (MinIO + RHOAI)                  ║${NC}"
+echo -e "${BOLD}║           Model Storage Setup (${S3_BACKEND})${NC}"
 echo -e "${BOLD}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
+print_info "Backend:        $S3_BACKEND"
 print_info "Namespace:      $NAMESPACE"
 print_info "Bucket:         $BUCKET_NAME"
-print_info "Storage Size:   $STORAGE_SIZE"
+print_info "Storage Size:   ${S3_STORAGE_SIZE:-200Gi}"
 print_info "Data Connection: ${DATA_CONNECTION_NS}"
 echo ""
 
@@ -128,142 +165,53 @@ if [ -z "$CLUSTER_DOMAIN" ]; then
 fi
 
 ################################################################################
-# Step 1: Create namespace
+# Step 1: Deploy storage backend
 ################################################################################
-print_step "Creating namespace: $NAMESPACE"
-
-if oc get namespace "$NAMESPACE" &>/dev/null; then
-    print_info "Namespace already exists"
-else
-    oc create namespace "$NAMESPACE"
-    print_success "Namespace created"
-fi
-
-# Label for RHOAI dashboard visibility
-oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+deploy_storage_backend "$NAMESPACE"
 
 ################################################################################
-# Step 2: Deploy MinIO
+# Step 2: Wait for readiness
 ################################################################################
-print_step "Deploying MinIO..."
-
-# Check if MinIO already exists
-if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
-    print_info "MinIO deployment already exists"
-else
-    # Create MinIO secret
-    export MINIO_USER MINIO_PASSWORD
-    envsubst '${MINIO_USER} ${MINIO_PASSWORD}' < "$BASE_DIR/lib/manifests/model-storage/minio-secret.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
-
-    # Create PVC
-    export STORAGE_SIZE
-    envsubst '${STORAGE_SIZE}' < "$BASE_DIR/lib/manifests/model-storage/minio-pvc.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
-
-    # Create Deployment
-    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-deployment.yaml"
-
-    # Create Service
-    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-service.yaml"
-
-    # Create Routes
-    oc apply -n "$NAMESPACE" -f "$BASE_DIR/lib/manifests/model-storage/minio-routes.yaml"
-
-    print_success "MinIO deployed"
-fi
+wait_for_storage "$NAMESPACE"
 
 ################################################################################
-# Step 3: Wait for MinIO to be ready
-################################################################################
-print_step "Waiting for MinIO to be ready..."
-
-TIMEOUT=120
-ELAPSED=0
-while [ $ELAPSED -lt $TIMEOUT ]; do
-    READY=$(oc get deployment minio -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-    if [ "$READY" = "1" ]; then
-        print_success "MinIO is ready"
-        break
-    fi
-    echo "  Waiting for MinIO pod... (${ELAPSED}s)"
-    sleep 5
-    ELAPSED=$((ELAPSED + 5))
-done
-
-if [ $ELAPSED -ge $TIMEOUT ]; then
-    print_error "Timeout waiting for MinIO"
-    exit 1
-fi
-
-################################################################################
-# Step 4: Create bucket
+# Step 3: Create bucket
 ################################################################################
 print_step "Creating bucket: $BUCKET_NAME"
-
-# Get MinIO internal URL
-MINIO_INTERNAL_URL="http://minio.${NAMESPACE}.svc:9000"
-
-# Delete previous job if it exists (Jobs are immutable)
-oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
-
-# Create a job to create the bucket
-export MINIO_USER MINIO_PASSWORD BUCKET_NAME
-envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${BUCKET_NAME}' < "$BASE_DIR/lib/manifests/model-storage/minio-bucket-job.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
-
-# Wait for job completion
-print_info "Waiting for bucket creation..."
-if oc wait --for=condition=complete job/create-bucket -n "$NAMESPACE" --timeout=120s 2>/dev/null; then
-    print_success "Bucket ready"
-else
-    print_warning "Bucket creation job did not complete in 120s"
-    oc logs job/create-bucket -n "$NAMESPACE" 2>/dev/null | tail -5
-    print_warning "Check MinIO health and retry: oc delete job create-bucket -n $NAMESPACE && re-run this script"
-fi
-oc delete job/create-bucket -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+create_storage_bucket "$NAMESPACE" "$BUCKET_NAME"
 
 ################################################################################
-# Step 5: Create RHOAI Data Connection
+# Step 4: Create RHOAI Data Connection
 ################################################################################
 if [ "$SKIP_DATA_CONNECTION" = false ]; then
-    print_step "Creating RHOAI data connection in namespace: $DATA_CONNECTION_NS"
-    
-    # Ensure target namespace exists
-    if ! oc get namespace "$DATA_CONNECTION_NS" &>/dev/null; then
-        oc create namespace "$DATA_CONNECTION_NS"
-        oc label namespace "$DATA_CONNECTION_NS" opendatahub.io/dashboard=true --overwrite
-    fi
-    
-    # Get MinIO route for external access (used by workbenches)
-    MINIO_ROUTE="https://$(oc get route minio -n "$NAMESPACE" -o jsonpath='{.spec.host}')"
-    
-    # Create data connection secret (RHOAI format)
-    # This secret format is recognized by RHOAI dashboard and workbenches
-    export MINIO_USER MINIO_PASSWORD NAMESPACE BUCKET_NAME
-    envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${NAMESPACE} ${BUCKET_NAME}' \
-        < "$BASE_DIR/lib/manifests/model-storage/data-connection-minio-secret.yaml.tmpl" | oc apply -n "$DATA_CONNECTION_NS" -f -
-
-    # Also create the aws-connection-my-storage secret for compatibility with existing scripts
-    envsubst '${MINIO_USER} ${MINIO_PASSWORD} ${NAMESPACE} ${BUCKET_NAME}' \
-        < "$BASE_DIR/lib/manifests/model-storage/data-connection-my-storage-secret.yaml.tmpl" | oc apply -n "$DATA_CONNECTION_NS" -f -
-
-    print_success "Data connection created"
+    create_data_connection "$NAMESPACE" "$BUCKET_NAME" "$DATA_CONNECTION_NS" "S3 Model Storage"
 fi
 
 ################################################################################
 # Summary
 ################################################################################
+ENDPOINT="$(get_storage_endpoint "$NAMESPACE")"
+SVC_NAME="$(get_storage_service_name)"
+
 echo ""
 echo -e "${BOLD}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║                    Setup Complete!                             ║${NC}"
 echo -e "${BOLD}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${CYAN}MinIO Details:${NC}"
+echo -e "${CYAN}Storage Details:${NC}"
+echo "  Backend:       $S3_BACKEND"
 echo "  Namespace:     $NAMESPACE"
-echo "  Internal URL:  http://minio.${NAMESPACE}.svc:9000"
-echo "  Console:       https://minio-console-${NAMESPACE}.${CLUSTER_DOMAIN}"
-echo "  API Route:     https://minio-${NAMESPACE}.${CLUSTER_DOMAIN}"
-echo "  Username:      $MINIO_USER"
-echo "  Password:      $MINIO_PASSWORD"
+echo "  Internal URL:  $ENDPOINT"
+echo "  Service:       $SVC_NAME"
 echo "  Bucket:        $BUCKET_NAME"
+
+if [ "$S3_BACKEND" != "ceph-rgw" ]; then
+    local_route=$(oc get route "${SVC_NAME}" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<none>")
+    echo "  External URL:  https://$local_route"
+    echo "  Access Key:    ${S3_ACCESS_KEY:-admin}"
+    echo "  Secret Key:    ${S3_SECRET_KEY:-admin123}"
+fi
+
 echo ""
 echo -e "${CYAN}RHOAI Data Connection:${NC}"
 echo "  Namespace:     $DATA_CONNECTION_NS"
@@ -278,5 +226,5 @@ echo "  2. Deploy model using storageUri:"
 echo "     storageUri: s3://${BUCKET_NAME}/<model-name>/"
 echo ""
 echo "  3. Or use the RHOAI dashboard to create a model server"
-echo "     with the 'MinIO Model Storage' data connection"
+echo "     with the 'S3 Model Storage' data connection"
 echo ""

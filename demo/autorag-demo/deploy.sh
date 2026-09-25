@@ -3,7 +3,8 @@
 # Deploy AutoRAG Demo
 ################################################################################
 # Sets up infrastructure for AutoRAG (Technology Preview):
-#   - MinIO for document storage and pipeline artifacts
+#   - S3-compatible storage for documents and pipeline artifacts
+#     (SeaweedFS by default; --backend=ceph-rgw or --backend=minio also supported)
 #   - Milvus vector database (remote -- required by AutoRAG)
 #   - Pipeline Server (DSPA) for Kubeflow Pipelines
 #   - S3 data connection and sample documents
@@ -38,6 +39,7 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
+source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
 # RHOAI 3.5+ renamed Llama Stack to OGX (llamastackoperator -> ogx,
 # LlamaStackDistribution -> OGXServer). Detect once and use throughout.
@@ -137,50 +139,53 @@ export NAMESPACE
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
     --type=merge -p '{"spec":{"dashboardConfig":{"autorag":true}}}' 2>/dev/null || true
 
-# --- Step 1: MinIO for document storage + pipeline artifacts ---
-print_step "Deploying MinIO for document storage..."
-if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
-    print_info "MinIO already deployed in $NAMESPACE"
-else
-    export NAMESPACE
-    envsubst < "$SCRIPT_DIR/manifests/minio.yaml" | oc apply -f -
-    oc rollout status deployment/minio -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
-fi
+# --- Step 1: S3 storage for document storage + pipeline artifacts ---
+print_step "Deploying S3 storage backend (${S3_BACKEND:-seaweedfs})..."
+detect_or_select_storage_backend "$NAMESPACE"
+deploy_storage_backend "$NAMESPACE" "20Gi"
+wait_for_storage "$NAMESPACE"
 
-# Create buckets and upload sample docs
-print_step "Creating S3 buckets and uploading sample documents..."
-MINIO_POD=$(oc get pod -l app=minio -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-if [ -n "$MINIO_POD" ]; then
-    oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
-        mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
-        mc mb --ignore-existing local/pipeline-artifacts 2>/dev/null
-        mc mb --ignore-existing local/autorag-docs 2>/dev/null
-    ' 2>/dev/null || print_warning "Could not create buckets -- MinIO may still be starting"
+# Create buckets
+print_step "Creating S3 buckets..."
+create_storage_bucket "$NAMESPACE" "pipeline-artifacts"
+create_storage_bucket "$NAMESPACE" "autorag-docs"
 
-    for doc in "$SCRIPT_DIR/sample-data/docs"/*; do
-        if [ -f "$doc" ]; then
-            BASENAME=$(basename "$doc")
-            oc exec -i "$MINIO_POD" -n "$NAMESPACE" -- sh -c "cat > /tmp/$BASENAME" \
-                < "$doc" 2>/dev/null
-            oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c \
-                "mc cp /tmp/$BASENAME local/autorag-docs/$BASENAME 2>/dev/null" 2>/dev/null || true
-        fi
-    done
-
-    # Upload test data for AutoRAG evaluation
-    if [ -f "$SCRIPT_DIR/sample-data/test-data.json" ]; then
-        oc exec -i "$MINIO_POD" -n "$NAMESPACE" -- sh -c "cat > /tmp/test-data.json" \
-            < "$SCRIPT_DIR/sample-data/test-data.json" 2>/dev/null
-        oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c \
-            "mc cp /tmp/test-data.json local/autorag-docs/test-data.json 2>/dev/null" 2>/dev/null || true
+# Upload sample documents via aws-cli one-shot pod
+print_step "Uploading sample documents..."
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
+_UPLOAD_OK=false
+for doc in "$SCRIPT_DIR/sample-data/docs"/*; do
+    if [ -f "$doc" ]; then
+        BASENAME=$(basename "$doc")
+        oc run s3-upload-"${BASENAME%%.*}" --rm -i --restart=Never \
+            --image=docker.io/amazon/aws-cli:latest \
+            -n "$NAMESPACE" \
+            --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+            --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+            --env="AWS_DEFAULT_REGION=us-east-1" \
+            -- s3 cp - "s3://autorag-docs/$BASENAME" --endpoint-url "$S3_EP" \
+            < "$doc" 2>/dev/null && _UPLOAD_OK=true || true
     fi
-    print_success "Sample documents and test data uploaded to s3://autorag-docs/"
+done
+if [ -f "$SCRIPT_DIR/sample-data/test-data.json" ]; then
+    oc run s3-upload-testdata --rm -i --restart=Never \
+        --image=docker.io/amazon/aws-cli:latest \
+        -n "$NAMESPACE" \
+        --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+        --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+        --env="AWS_DEFAULT_REGION=us-east-1" \
+        -- s3 cp - "s3://autorag-docs/test-data.json" --endpoint-url "$S3_EP" \
+        < "$SCRIPT_DIR/sample-data/test-data.json" 2>/dev/null || true
+fi
+if [ "$_UPLOAD_OK" = true ]; then
+    print_success "Sample documents uploaded to s3://autorag-docs/"
 else
-    print_warning "MinIO pod not found yet -- upload documents after MinIO is ready"
+    print_warning "Some uploads may have failed -- check: aws --endpoint-url $S3_EP s3 ls s3://autorag-docs/"
 fi
 
 # --- Step 2: S3 data connection ---
 print_step "Creating S3 data connection for AutoRAG documents..."
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
 oc apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -195,11 +200,11 @@ metadata:
     openshift.io/display-name: "AutoRAG Documents"
 type: Opaque
 stringData:
-  AWS_ACCESS_KEY_ID: minio
-  AWS_SECRET_ACCESS_KEY: minio123
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
   AWS_DEFAULT_REGION: us-east-1
   AWS_S3_BUCKET: autorag-docs
-  AWS_S3_ENDPOINT: http://minio.${NAMESPACE}.svc.cluster.local:9000
+  AWS_S3_ENDPOINT: ${S3_EP}
 EOF
 
 # --- Step 3: Milvus vector database ---

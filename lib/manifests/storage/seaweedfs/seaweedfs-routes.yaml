@@ -1,0 +1,32 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: seaweedfs-s3
+  labels:
+    app.kubernetes.io/name: seaweedfs
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  port:
+    targetPort: s3
+  to:
+    kind: Service
+    name: seaweedfs-s3
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: seaweedfs-admin
+  labels:
+    app.kubernetes.io/name: seaweedfs
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  port:
+    targetPort: master
+  to:
+    kind: Service
+    name: seaweedfs-s3

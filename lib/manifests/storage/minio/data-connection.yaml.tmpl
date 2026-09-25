@@ -1,0 +1,21 @@
+# DEPRECATED: MinIO data connection template
+# This backend is deprecated. Use SeaweedFS (--backend=seaweedfs) for new deployments.
+# See docs/guides/S3-BACKEND-MIGRATION.md for migration instructions.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-connection-minio
+  labels:
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/managed: "true"
+  annotations:
+    opendatahub.io/connection-type: s3
+    openshift.io/display-name: "${DISPLAY_NAME}"
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "${MINIO_USER}"
+  AWS_SECRET_ACCESS_KEY: "${MINIO_PASSWORD}"
+  AWS_S3_ENDPOINT: "http://minio.${NAMESPACE}.svc:9000"
+  AWS_S3_BUCKET: "${BUCKET_NAME}"
+  AWS_DEFAULT_REGION: "us-east-1"

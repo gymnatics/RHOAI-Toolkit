@@ -1,0 +1,10 @@
+# DEPRECATED: MinIO storage backend
+# Use SeaweedFS (--backend=seaweedfs) for new deployments.
+# See docs/guides/S3-BACKEND-MIGRATION.md for migration instructions.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - minio-deployment.yaml
+  - minio-service.yaml
+  - minio-routes.yaml

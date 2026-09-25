@@ -1,0 +1,27 @@
+# Ceph RGW / OpenShift Data Foundation (ODF) ObjectBucketClaim
+#
+# ODF auto-provisions:
+#   - An S3 bucket (name auto-generated or from generateBucketName)
+#   - A Secret with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+#   - A ConfigMap with BUCKET_HOST, BUCKET_PORT, BUCKET_NAME, BUCKET_REGION
+#
+# Prerequisites:
+#   - OpenShift Data Foundation (ODF) operator installed
+#   - A StorageCluster CR must exist (oc get storagecluster -n openshift-storage)
+#   - The noobaa-core S3 endpoint must be healthy
+#
+# Variables (envsubst):
+#   NAMESPACE          — target namespace
+#   OBC_STORAGECLASS   — StorageClass for OBC (default: openshift-storage.noobaa.io)
+---
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: model-storage-obc
+  labels:
+    app.kubernetes.io/name: model-storage
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: rhoai-toolkit
+spec:
+  generateBucketName: models
+  storageClassName: ${OBC_STORAGECLASS}

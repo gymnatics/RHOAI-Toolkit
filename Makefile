@@ -182,7 +182,7 @@ endif
 # =============================================================================
 
 .PHONY: setup-demo
-setup-demo: setup-namespace setup-minio
+setup-demo: setup-namespace setup-storage
 	@echo -e "$(GREEN)▶ Setting up demo tools...$(NC)"
 	@oc apply -f $(BASE)/lib/manifests/demo/guidellm.yaml -n $(NAMESPACE) 2>/dev/null || true
 	@oc apply -f $(BASE)/lib/manifests/demo/benchmark-arena.yaml -n $(NAMESPACE) 2>/dev/null || true
@@ -196,15 +196,16 @@ setup-namespace:
 		opendatahub.io/dashboard=true \
 		--overwrite 2>/dev/null || true
 
+.PHONY: setup-storage
+setup-storage:
+	@echo -e "$(GREEN)▶ Setting up S3 storage (SeaweedFS by default)...$(NC)"
+	@$(BASE)/scripts/setup-model-storage.sh -n $(NAMESPACE) 2>/dev/null || \
+		echo -e "$(YELLOW)⚠ Storage setup failed -- run ./scripts/setup-model-storage.sh manually$(NC)"
+	@echo -e "$(GREEN)✓ S3 storage ready$(NC)"
+
 .PHONY: setup-minio
-setup-minio:
-	@echo -e "$(GREEN)▶ Setting up MinIO...$(NC)"
-	@oc apply -f $(BASE)/lib/manifests/demo/minio.yaml -n $(NAMESPACE)
-	@echo "Waiting for MinIO to be ready..."
-	@until oc get statefulset minio -n $(NAMESPACE) -o jsonpath='{.status.readyReplicas}' 2>/dev/null | grep -q '1'; do \
-		sleep 5; \
-	done
-	@echo -e "$(GREEN)✓ MinIO ready$(NC)"
+setup-minio: setup-storage
+	@echo -e "$(YELLOW)⚠ setup-minio is deprecated. Use 'make setup-storage' instead.$(NC)"
 
 .PHONY: setup-mcp-kubernetes
 setup-mcp-kubernetes:

@@ -24,6 +24,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
 NAMESPACE="${1:-automl-demo}"
 DELETE_MODE=false
@@ -70,36 +71,29 @@ oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
     --type=merge -p '{"spec":{"dashboardConfig":{"automl":true}}}' 2>/dev/null || true
 
-# --- Step 1: MinIO for pipeline artifacts + sample data ---
-print_step "Deploying MinIO for pipeline artifacts and sample data..."
-if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
-    print_info "MinIO already deployed in $NAMESPACE"
-else
-    export NAMESPACE
-    envsubst < "$SCRIPT_DIR/manifests/minio.yaml" | oc apply -f -
-    oc rollout status deployment/minio -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
-fi
+# --- Step 1: S3 storage for pipeline artifacts + sample data ---
+print_step "Deploying S3 storage backend (${S3_BACKEND:-seaweedfs})..."
+detect_or_select_storage_backend "$NAMESPACE"
+deploy_storage_backend "$NAMESPACE" "20Gi"
+wait_for_storage "$NAMESPACE"
 
-# --- Step 2: Create pipeline-artifacts bucket and upload sample data ---
+# --- Step 2: Create buckets and upload sample data ---
 print_step "Creating S3 buckets and uploading sample data..."
-MINIO_POD=$(oc get pod -l app=minio -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-if [ -n "$MINIO_POD" ]; then
-    oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
-        mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
-        mc mb --ignore-existing local/pipeline-artifacts 2>/dev/null
-        mc mb --ignore-existing local/automl-data 2>/dev/null
-    ' 2>/dev/null || print_warning "Could not create buckets -- MinIO may still be starting"
+create_storage_bucket "$NAMESPACE" "pipeline-artifacts"
+create_storage_bucket "$NAMESPACE" "automl-data"
 
-    if [ -f "$SCRIPT_DIR/sample-data/loan-approval.csv" ]; then
-        oc exec -i "$MINIO_POD" -n "$NAMESPACE" -- sh -c 'cat > /tmp/loan-approval.csv' \
-            < "$SCRIPT_DIR/sample-data/loan-approval.csv" 2>/dev/null
-        oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
-            mc cp /tmp/loan-approval.csv local/automl-data/loan-approval.csv 2>/dev/null
-        ' 2>/dev/null || print_warning "Could not upload sample data"
-        print_success "Sample CSV uploaded to s3://automl-data/loan-approval.csv"
-    fi
-else
-    print_warning "MinIO pod not found yet -- upload sample data after MinIO is ready"
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
+if [ -f "$SCRIPT_DIR/sample-data/loan-approval.csv" ]; then
+    oc run s3-upload-csv --rm -i --restart=Never \
+        --image=docker.io/amazon/aws-cli:latest \
+        -n "$NAMESPACE" \
+        --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+        --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+        --env="AWS_DEFAULT_REGION=us-east-1" \
+        -- s3 cp - "s3://automl-data/loan-approval.csv" --endpoint-url "$S3_EP" \
+        < "$SCRIPT_DIR/sample-data/loan-approval.csv" 2>/dev/null \
+    && print_success "Sample CSV uploaded to s3://automl-data/loan-approval.csv" \
+    || print_warning "Could not upload sample data"
 fi
 
 # --- Step 3: Create S3 data connection ---
@@ -118,11 +112,11 @@ metadata:
     openshift.io/display-name: "AutoML Training Data"
 type: Opaque
 stringData:
-  AWS_ACCESS_KEY_ID: minio
-  AWS_SECRET_ACCESS_KEY: minio123
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
   AWS_DEFAULT_REGION: us-east-1
   AWS_S3_BUCKET: automl-data
-  AWS_S3_ENDPOINT: http://minio.${NAMESPACE}.svc.cluster.local:9000
+  AWS_S3_ENDPOINT: ${S3_EP}
 EOF
 
 # --- Step 4: Pipeline Server (DSPA) ---

@@ -1,4 +1,7 @@
-# MinIO S3-compatible object storage for the Loki usage-logging pipeline.
+# DEPRECATED: MinIO S3-compatible object storage for the Loki usage-logging pipeline.
+# Consider migrating to SeaweedFS or ODF ObjectBucketClaim for new deployments.
+# See docs/guides/S3-BACKEND-MIGRATION.md for migration instructions.
+#
 # NON-PRODUCTION: single replica, PVC-backed (not erasure-coded/HA). For
 # production, replace with an ObjectBucketClaim (NooBaa/ODF) or a cloud S3
 # bucket and update usage-logs-object-storage's endpoint/credentials instead.

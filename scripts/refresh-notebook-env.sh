@@ -91,8 +91,13 @@ refresh_namespace() {
     # Build extra args based on namespace-specific needs
     local extra_args=()
 
-    # Check for MinIO in this namespace
-    if oc get svc minio -n "$ns" &>/dev/null 2>&1; then
+    # Check for S3 storage backend in this namespace (SeaweedFS, MinIO, or Ceph RGW)
+    if oc get svc seaweedfs-s3 -n "$ns" &>/dev/null 2>&1; then
+        local _s3_port=$(oc get svc seaweedfs-s3 -n "$ns" -o jsonpath='{.spec.ports[?(@.name=="s3")].port}' 2>/dev/null || echo "8333")
+        extra_args+=("S3_ENDPOINT=http://seaweedfs-s3.${ns}.svc:${_s3_port}")
+        extra_args+=("AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}")
+        extra_args+=("AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}")
+    elif oc get svc minio -n "$ns" &>/dev/null 2>&1; then
         extra_args+=("S3_ENDPOINT=http://minio.${ns}.svc:9000")
         extra_args+=("AWS_ACCESS_KEY_ID=minio")
         extra_args+=("AWS_SECRET_ACCESS_KEY=minio123")

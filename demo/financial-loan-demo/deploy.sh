@@ -27,6 +27,7 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/functions/external-repos.sh"
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
+source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
 NAMESPACE="${1:-financial-loan-demo}"
 LLM_URL=""
@@ -73,31 +74,17 @@ REPO_PATH=$(get_repo_path "micro-financial-loan")
 ensure_namespace "$NAMESPACE"
 oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
 
-print_step "Setting up MinIO for model storage..."
-if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
-    print_info "MinIO already deployed in $NAMESPACE"
-else
-    if [ -f "$ROOT_DIR/lib/manifests/storage/minio.yaml" ]; then
-        export NAMESPACE
-        envsubst < "$ROOT_DIR/lib/manifests/storage/minio.yaml" | oc apply -n "$NAMESPACE" -f - 2>/dev/null || \
-            print_warning "MinIO setup failed -- set up storage manually"
-        oc rollout status deployment/minio -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
-    else
-        print_warning "MinIO manifest not found -- set up storage manually"
-    fi
-fi
+print_step "Setting up S3 storage for model storage (${S3_BACKEND:-seaweedfs})..."
+detect_or_select_storage_backend "$NAMESPACE"
+deploy_storage_backend "$NAMESPACE"
+wait_for_storage "$NAMESPACE"
 
-# Create S3 buckets and data connection
-MINIO_POD=$(oc get pod -l app.kubernetes.io/name=minio -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-if [ -n "$MINIO_POD" ]; then
-    oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
-        mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
-        mc mb --ignore-existing local/models 2>/dev/null
-        mc mb --ignore-existing local/datasets 2>/dev/null
-    ' &>/dev/null || true
-fi
+# Create S3 buckets
+create_storage_bucket "$NAMESPACE" "models"
+create_storage_bucket "$NAMESPACE" "datasets"
 
 # Data connection for RHOAI dashboard
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
 oc apply -n "$NAMESPACE" -f - <<DCEOF 2>/dev/null || true
 apiVersion: v1
 kind: Secret
@@ -108,14 +95,14 @@ metadata:
     opendatahub.io/managed: "true"
   annotations:
     opendatahub.io/connection-type: s3
-    openshift.io/display-name: "MinIO - Models & Datasets"
+    openshift.io/display-name: "S3 - Models & Datasets"
 type: Opaque
 stringData:
-  AWS_ACCESS_KEY_ID: minio
-  AWS_SECRET_ACCESS_KEY: minio123
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
   AWS_DEFAULT_REGION: us-east-1
   AWS_S3_BUCKET: models
-  AWS_S3_ENDPOINT: http://minio.${NAMESPACE}.svc.cluster.local:9000
+  AWS_S3_ENDPOINT: ${S3_EP}
 DCEOF
 
 # --- Upload training dataset to MinIO ---

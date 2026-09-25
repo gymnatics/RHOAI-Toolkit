@@ -20,6 +20,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
 NAMESPACE="${1:-pipeline-demo}"
 DELETE_MODE=false
@@ -59,19 +60,11 @@ for WB_SA in $(oc get sa -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}'
     oc adm policy add-role-to-user edit "system:serviceaccount:${NAMESPACE}:${WB_SA}" -n "$NAMESPACE" 2>/dev/null || true
 done
 
-# --- Step 1: MinIO for pipeline artifacts ---
-print_step "Setting up MinIO for pipeline artifacts..."
-if oc get deployment minio -n "$NAMESPACE" &>/dev/null; then
-    print_info "MinIO already deployed in $NAMESPACE"
-else
-    if [ -f "$ROOT_DIR/lib/manifests/storage/minio.yaml" ]; then
-        export NAMESPACE
-        envsubst < "$ROOT_DIR/lib/manifests/storage/minio.yaml" | oc apply -f - 2>/dev/null || \
-            print_warning "MinIO manifest not found -- pipeline artifacts may need manual S3 config"
-    else
-        print_warning "MinIO manifest not found -- set up storage manually"
-    fi
-fi
+# --- Step 1: S3 storage for pipeline artifacts ---
+print_step "Setting up S3 storage for pipeline artifacts (${S3_BACKEND:-seaweedfs})..."
+detect_or_select_storage_backend "$NAMESPACE"
+deploy_storage_backend "$NAMESPACE"
+wait_for_storage "$NAMESPACE"
 
 # --- Step 2: Pipeline Server (DSPA) ---
 if [ -f "$ROOT_DIR/lib/functions/rhoai.sh" ]; then
@@ -120,10 +113,11 @@ ensure_workbench "$NAMESPACE" "ai-pipelines"
 
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
 inject_notebook_env "$NAMESPACE" \
-    "S3_ENDPOINT=http://minio.${NAMESPACE}.svc:9000" \
-    "AWS_ACCESS_KEY_ID=minio" \
-    "AWS_SECRET_ACCESS_KEY=minio123" \
+    "S3_ENDPOINT=${S3_EP}" \
+    "AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+    "AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
     "S3_BUCKET=models" \
     "DATA_BUCKET=datasets" \
     "ARTIFACTS_BUCKET=artifacts"

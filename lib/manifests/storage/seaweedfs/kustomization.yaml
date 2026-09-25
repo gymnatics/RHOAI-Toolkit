@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Static resources only — secrets and PVC use envsubst templates
+# and are applied separately by storage-backend.sh / setup-model-storage.sh.
+resources:
+  - seaweedfs-deployment.yaml
+  - seaweedfs-service.yaml
+  - seaweedfs-routes.yaml

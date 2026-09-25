@@ -1,0 +1,64 @@
+# Generic S3 bucket creation job (works with any S3-compatible backend)
+# Uses aws-cli instead of MinIO's mc for portability.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-bucket
+  labels:
+    app.kubernetes.io/name: s3-bucket-setup
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: awscli
+        image: docker.io/amazon/aws-cli:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "${S3_ACCESS_KEY}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "${S3_SECRET_KEY}"
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -e
+            ENDPOINT="${S3_ENDPOINT}"
+            BUCKET="${BUCKET_NAME}"
+
+            echo "Waiting for S3 endpoint at $ENDPOINT..."
+            RETRIES=0
+            until aws --endpoint-url "$ENDPOINT" s3 ls 2>/dev/null; do
+              RETRIES=$((RETRIES + 1))
+              if [ $RETRIES -ge 30 ]; then
+                echo "Timeout waiting for S3 endpoint"
+                exit 1
+              fi
+              sleep 3
+            done
+
+            echo "S3 endpoint is ready"
+
+            if aws --endpoint-url "$ENDPOINT" s3 ls "s3://$BUCKET" 2>/dev/null; then
+              echo "Bucket '$BUCKET' already exists"
+            else
+              aws --endpoint-url "$ENDPOINT" s3 mb "s3://$BUCKET"
+              echo "Bucket '$BUCKET' created"
+            fi
+
+            echo "Done!"
+      restartPolicy: Never
+  backoffLimit: 3

@@ -9,6 +9,7 @@ _RHOAI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$_RHOAI_LIB_DIR/lib/utils/colors.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/common.sh"
 source "$_RHOAI_LIB_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
+source "$_RHOAI_LIB_DIR/lib/functions/storage-backend.sh" 2>/dev/null || true
 
 # Resolve RHOAI OLM channel for a given version by querying the cluster catalog.
 # Priority: stable-<version> > fast-<major>.x > cluster default > hardcoded fallback
@@ -3407,17 +3408,39 @@ setup_pipeline_server() {
         fi
 
         # Best-effort: ensure the bucket exists so the DSPA doesn't fail later.
-        # Non-fatal if we can't find an `mc`-capable pod (e.g. a non-MinIO S3).
+        # Uses a generic aws-cli Job via storage-backend.sh when available;
+        # falls back to exec'ing into a MinIO/SeaweedFS pod for legacy compat.
         if [ -n "$minio_ns" ]; then
-            local minio_pod=$(oc get pod -n "$minio_ns" -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-            [ -z "$minio_pod" ] && minio_pod=$(oc get pod -n "$minio_ns" --no-headers 2>/dev/null | grep -i minio | awk '{print $1}' | head -1)
-            if [ -n "$minio_pod" ]; then
-                if oc exec "$minio_pod" -n "$minio_ns" -- sh -c "mc alias set local ${s3_scheme}://localhost:${s3_port} '${s3_access_key}' '${s3_secret_key}' >/dev/null 2>&1 && mc mb --ignore-existing local/${s3_bucket} >/dev/null 2>&1" 2>/dev/null; then
-                    print_success "Bucket '$s3_bucket' ready"
-                else
-                    print_warning "Could not confirm/create bucket '$s3_bucket' automatically"
-                    print_info "Create it manually if the pipeline server fails to start: mc mb local/$s3_bucket"
+            local s3_ep="${s3_scheme}://${s3_host}:${s3_port}"
+            local _bucket_ok=false
+
+            # Try generic aws-cli Job approach first (works with any S3 backend)
+            if type create_storage_bucket &>/dev/null; then
+                export S3_ACCESS_KEY="$s3_access_key"
+                export S3_SECRET_KEY="$s3_secret_key"
+                export S3_ENDPOINT="$s3_ep"
+                export S3_BACKEND="${S3_BACKEND:-minio}"
+                if create_storage_bucket "$minio_ns" "$s3_bucket" 2>/dev/null; then
+                    _bucket_ok=true
                 fi
+            fi
+
+            # Fallback: exec mc inside a MinIO pod (deprecated, MinIO-only)
+            if [ "$_bucket_ok" = false ]; then
+                local minio_pod=$(oc get pod -n "$minio_ns" -l app=minio -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+                [ -z "$minio_pod" ] && minio_pod=$(oc get pod -n "$minio_ns" --no-headers 2>/dev/null | grep -iE "minio|seaweedfs" | awk '{print $1}' | head -1)
+                if [ -n "$minio_pod" ]; then
+                    if oc exec "$minio_pod" -n "$minio_ns" -- sh -c "mc alias set local ${s3_ep} '${s3_access_key}' '${s3_secret_key}' >/dev/null 2>&1 && mc mb --ignore-existing local/${s3_bucket} >/dev/null 2>&1" 2>/dev/null; then
+                        _bucket_ok=true
+                    fi
+                fi
+            fi
+
+            if [ "$_bucket_ok" = true ]; then
+                print_success "Bucket '$s3_bucket' ready"
+            else
+                print_warning "Could not confirm/create bucket '$s3_bucket' automatically"
+                print_info "Create it manually if the pipeline server fails to start: aws --endpoint-url ${s3_ep} s3 mb s3://$s3_bucket"
             fi
         fi
 
