@@ -3,14 +3,19 @@ kind: Kustomization
 
 namespace: redhat-ods-monitoring
 
-# MinIO (S3-compatible storage) + LokiStack for RHOAI 3.5+ MaaS usage-logging
-# dashboards. Requires the Loki Operator (lib/manifests/observability/loki/)
-# to be installed first. See lib/functions/usage-logging.sh for the
-# orchestrating function that also patches the Config CR to enable the
-# feature (usageLogging: true), which triggers the RHOAI operator to
-# auto-create the EnvoyFilter, OTEL Collector, Tenancy Proxy, and Perses
-# Dashboards.
+# LokiStack for RHOAI 3.5+ MaaS usage-logging dashboards. The S3-compatible
+# storage backend (SeaweedFS by default, or Ceph RGW/MinIO) is deployed
+# separately via lib/functions/storage-backend.sh -- see
+# lib/functions/usage-logging.sh for the orchestrating function, which also
+# generates the Loki-specific storage secret from loki-s3-secret.yaml.tmpl
+# and patches the Config CR to enable the feature (usageLogging: true),
+# which triggers the RHOAI operator to auto-create the EnvoyFilter, OTEL
+# Collector, Tenancy Proxy, and Perses Dashboards.
+#
+# Requires the Loki Operator (lib/manifests/observability/loki/) to be
+# installed first.
+#
+# minio.yaml / minio-secret.yaml are kept in this directory for reference /
+# --backend=minio compatibility but are no longer applied by default.
 resources:
-  - minio.yaml
-  - minio-secret.yaml
   - lokistack.yaml

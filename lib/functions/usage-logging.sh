@@ -9,15 +9,21 @@
 #
 # Manifests are the source of truth:
 #   lib/manifests/observability/loki/           -- Loki Operator subscription
-#   lib/manifests/observability/usage-logging/  -- MinIO (S3) + LokiStack
-# This function only orchestrates: install order, waiting for CSVs/LokiStack
-# readiness, and patching the Config CR (usageLogging: true), which triggers
-# the RHOAI operator to auto-create the EnvoyFilter, OTEL Collector, Tenancy
-# Proxy, and Perses Dashboards -- none of which should be applied manually.
+#   lib/manifests/observability/usage-logging/  -- LokiStack CR + Loki S3
+#                                                   secret template
+#   lib/manifests/storage/{seaweedfs,ceph-rgw,minio}/ -- S3 backend (via
+#                                                   lib/functions/storage-backend.sh)
+# This function only orchestrates: install order, deploying the S3 backend,
+# waiting for CSVs/LokiStack readiness, and patching the Config CR
+# (usageLogging: true), which triggers the RHOAI operator to auto-create the
+# EnvoyFilter, OTEL Collector, Tenancy Proxy, and Perses Dashboards -- none
+# of which should be applied manually.
 #
 # Usage: source this file, then call setup_maas_usage_logging
 # Requires: ROOT_DIR, print_step/print_success/print_info/print_warning (colors.sh)
 ################################################################################
+
+source "$ROOT_DIR/lib/functions/storage-backend.sh" 2>/dev/null || true
 
 setup_maas_usage_logging() {
     print_step "Setting up MaaS usage-logging dashboards (RHOAI 3.5+)..."
@@ -46,16 +52,40 @@ setup_maas_usage_logging() {
         print_success "Loki Operator installed"
     fi
 
-    # Step 2: MinIO (S3 storage) + LokiStack
+    # Step 2: S3 storage backend (SeaweedFS by default) + LokiStack
     if oc get lokistack usage -n redhat-ods-monitoring &>/dev/null; then
         print_success "LokiStack 'usage' already exists"
     else
-        print_step "Deploying MinIO + LokiStack for usage logging..."
-        oc apply -k "$ROOT_DIR/lib/manifests/observability/usage-logging/"
+        local usage_ns="redhat-ods-monitoring"
+        local usage_bucket="loki"
 
-        print_step "Waiting for MinIO to be ready..."
-        oc rollout status deployment/minio-usage-logs -n redhat-ods-monitoring --timeout=120s 2>/dev/null || \
-            print_warning "MinIO rollout did not complete in time -- continuing anyway"
+        print_step "Deploying S3 storage backend (${S3_BACKEND:-seaweedfs}) for usage logging..."
+        if type detect_or_select_storage_backend &>/dev/null; then
+            detect_or_select_storage_backend "$usage_ns"
+            deploy_storage_backend "$usage_ns" "20Gi"
+            wait_for_storage "$usage_ns"
+            create_storage_bucket "$usage_ns" "$usage_bucket"
+
+            # Generate the Loki-specific S3 secret (different schema than the
+            # RHOAI AWS_* data-connection format -- Loki uses its own
+            # access_key_id/access_key_secret/bucketnames/endpoint/region keys)
+            export S3_ACCESS_KEY="${S3_ACCESS_KEY:-admin}"
+            export S3_SECRET_KEY="${S3_SECRET_KEY:-admin123}"
+            export BUCKET_NAME="$usage_bucket"
+            export S3_ENDPOINT="$(get_storage_endpoint "$usage_ns")"
+            envsubst '${S3_ACCESS_KEY} ${S3_SECRET_KEY} ${BUCKET_NAME} ${S3_ENDPOINT}' \
+                < "$ROOT_DIR/lib/manifests/observability/usage-logging/loki-s3-secret.yaml.tmpl" \
+                | oc apply -n "$usage_ns" -f -
+        else
+            print_warning "storage-backend.sh not available -- falling back to legacy MinIO manifests"
+            oc apply -f "$ROOT_DIR/lib/manifests/observability/usage-logging/minio.yaml" -n "$usage_ns" 2>/dev/null
+            oc apply -f "$ROOT_DIR/lib/manifests/observability/usage-logging/minio-secret.yaml" -n "$usage_ns" 2>/dev/null
+            oc rollout status deployment/minio-usage-logs -n "$usage_ns" --timeout=120s 2>/dev/null || \
+                print_warning "MinIO rollout did not complete in time -- continuing anyway"
+        fi
+
+        print_step "Applying LokiStack CR..."
+        oc apply -k "$ROOT_DIR/lib/manifests/observability/usage-logging/"
 
         print_step "Waiting for LokiStack to be ready (this may take a few minutes)..."
         local lk_elapsed=0
@@ -68,7 +98,7 @@ setup_maas_usage_logging() {
             sleep 15
             lk_elapsed=$((lk_elapsed + 15))
         done
-        print_success "MinIO + LokiStack deployed"
+        print_success "S3 storage + LokiStack deployed"
     fi
 
     # Step 3: Enable usage logging on the MaaS Config CR. The RHOAI operator

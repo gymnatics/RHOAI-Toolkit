@@ -5,9 +5,33 @@
 ################################################################################
 
 _MODELS_MENU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$_MODELS_MENU_DIR/lib/functions/storage-backend.sh" 2>/dev/null || true
+
+# Detect an existing S3 storage deployment (any backend) in common namespaces.
+# Sets: _found_ns, _found_backend
+_detect_existing_storage() {
+    _found_ns=""
+    _found_backend=""
+    for ns in model-storage demo; do
+        if type detect_or_select_storage_backend &>/dev/null; then
+            detect_or_select_storage_backend "$ns" 2>/dev/null
+            if oc get deployment "$(get_storage_deploy_name)" -n "$ns" &>/dev/null 2>&1 || \
+               oc get objectbucketclaim -n "$ns" --no-headers 2>/dev/null | grep -q .; then
+                _found_ns="$ns"
+                _found_backend="$S3_BACKEND"
+                return 0
+            fi
+        elif oc get deployment minio -n "$ns" &>/dev/null 2>&1; then
+            _found_ns="$ns"
+            _found_backend="minio"
+            return 0
+        fi
+    done
+    return 1
+}
 
 setup_model_storage_interactive() {
-    print_header "Setup Model Storage (MinIO)"
+    print_header "Setup Model Storage (S3-Compatible)"
     
     if ! oc whoami &>/dev/null; then
         print_error "Not logged in to OpenShift cluster"
@@ -20,24 +44,17 @@ setup_model_storage_interactive() {
     print_success "Connected to cluster: $(oc whoami --show-server)"
     echo ""
     
-    local existing_ns=""
-    for ns in model-storage demo; do
-        if oc get deployment minio -n "$ns" &>/dev/null 2>&1; then
-            existing_ns="$ns"
-            break
-        fi
-    done
-    
-    if [ -n "$existing_ns" ]; then
-        print_info "MinIO already deployed in namespace: $existing_ns"
+    if _detect_existing_storage; then
+        print_info "S3 storage ($_found_backend) already deployed in namespace: $_found_ns"
         echo ""
-        local minio_route=$(oc get route minio-console -n "$existing_ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-        if [ -n "$minio_route" ]; then
-            echo -e "${CYAN}MinIO Console:${NC} https://$minio_route"
+        local storage_route
+        storage_route=$(oc get route "$(get_storage_service_name)" -n "$_found_ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [ -n "$storage_route" ]; then
+            echo -e "${CYAN}Storage Endpoint:${NC} https://$storage_route"
         fi
         echo ""
         echo -e "${YELLOW}1)${NC} Re-run setup (create bucket + data connection)"
-        echo -e "${YELLOW}2)${NC} Deploy MinIO in a different namespace"
+        echo -e "${YELLOW}2)${NC} Deploy a new backend in a different namespace"
         echo -e "${YELLOW}0)${NC} Back"
         echo ""
         read -p "Select option: " storage_choice
@@ -46,10 +63,11 @@ setup_model_storage_interactive() {
                 echo ""
                 read -p "Bucket name [models]: " bucket
                 bucket=${bucket:-models}
-                read -p "Data connection namespace [$existing_ns]: " dc_ns
-                dc_ns=${dc_ns:-$existing_ns}
+                read -p "Data connection namespace [$_found_ns]: " dc_ns
+                dc_ns=${dc_ns:-$_found_ns}
                 "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
-                    --namespace "$existing_ns" \
+                    --backend "$_found_backend" \
+                    --namespace "$_found_ns" \
                     --bucket "$bucket" \
                     --data-connection-ns "$dc_ns"
                 return $?
@@ -60,7 +78,20 @@ setup_model_storage_interactive() {
     fi
     
     echo ""
-    read -p "Namespace for MinIO [model-storage]: " namespace
+    echo -e "${CYAN}Storage backend:${NC}"
+    echo -e "${YELLOW}1)${NC} SeaweedFS ${GREEN}[Recommended, default]${NC}"
+    echo -e "${YELLOW}2)${NC} Ceph RGW ${CYAN}[Requires OpenShift Data Foundation]${NC}"
+    echo -e "${YELLOW}3)${NC} MinIO ${RED}[Deprecated]${NC}"
+    read -p "Select backend [1]: " backend_choice
+    local backend
+    case "${backend_choice:-1}" in
+        2) backend="ceph-rgw" ;;
+        3) backend="minio" ;;
+        *) backend="seaweedfs" ;;
+    esac
+    
+    echo ""
+    read -p "Namespace for storage [model-storage]: " namespace
     namespace=${namespace:-model-storage}
     
     read -p "Storage size [200Gi]: " storage_size
@@ -70,15 +101,16 @@ setup_model_storage_interactive() {
     bucket_name=${bucket_name:-models}
     
     echo ""
-    echo -e "${CYAN}Data connections allow RHOAI workbenches and model servers to access MinIO.${NC}"
+    echo -e "${CYAN}Data connections allow RHOAI workbenches and model servers to access S3 storage.${NC}"
     read -p "Create data connection in namespace [$namespace]: " dc_ns
     dc_ns=${dc_ns:-$namespace}
     
     echo ""
-    print_step "Running setup-model-storage.sh..."
+    print_step "Running setup-model-storage.sh --backend $backend..."
     echo ""
     
     "$SCRIPT_DIR/scripts/setup-model-storage.sh" \
+        --backend "$backend" \
         --namespace "$namespace" \
         --bucket "$bucket_name" \
         --storage-size "$storage_size" \
@@ -102,21 +134,18 @@ download_hf_model_interactive() {
     echo ""
     
     local minio_ns=""
-    for ns in model-storage demo; do
-        if oc get deployment minio -n "$ns" &>/dev/null 2>&1; then
-            minio_ns="$ns"
-            break
-        fi
-    done
+    if _detect_existing_storage; then
+        minio_ns="$_found_ns"
+    fi
     
     if [ -z "$minio_ns" ]; then
-        print_warning "MinIO not found. Please set up model storage first."
+        print_warning "No S3 storage backend found. Please set up model storage first."
         echo ""
-        echo "Run option 4 (Setup Model Storage) to deploy MinIO."
+        echo "Run option 4 (Setup Model Storage) to deploy one."
         return 1
     fi
     
-    print_info "Found MinIO in namespace: $minio_ns"
+    print_info "Found S3 storage ($_found_backend) in namespace: $minio_ns"
     echo ""
     
     echo -e "${CYAN}Popular models:${NC}"
@@ -183,7 +212,7 @@ download_hf_model_interactive() {
         echo "  1. Go to RHOAI Dashboard → Data Science Projects"
         echo "  2. Create/select a project"
         echo "  3. Deploy model with:"
-        echo "     - Data connection: MinIO Model Storage"
+        echo "     - Data connection: S3 Model Storage"
         echo "     - Path: $model_name"
         echo ""
         echo "  Or use CLI:"
@@ -277,17 +306,31 @@ deploy_predictive_model_interactive() {
     echo ""
     echo -e "${YELLOW}S3 path to model artifacts (e.g. s3://models/my-model/):${NC}"
 
-    local minio_pod
-    minio_pod=$(oc get pod -n "$target_ns" -l app=minio --no-headers 2>/dev/null | awk 'NR==1{print $1}')
-    if [ -n "$minio_pod" ]; then
-        echo -e "${CYAN}Available paths in MinIO:${NC}"
-        oc exec -n "$target_ns" "$minio_pod" -- sh -c 'ls /data/ 2>/dev/null' | while read -r bucket; do
-            echo "  s3://$bucket/"
-            oc exec -n "$target_ns" "$minio_pod" -- sh -c "ls /data/$bucket/ 2>/dev/null" | while read -r prefix; do
-                echo "    s3://$bucket/$prefix/"
-            done
-        done
-        echo ""
+    # List buckets/prefixes via a generic aws-cli pod against the target
+    # namespace's data-connection secret (works with any S3 backend --
+    # SeaweedFS, Ceph RGW, MinIO -- unlike execing into a storage pod's
+    # filesystem, which only worked for MinIO's flat /data/<bucket> layout).
+    local dc_secret=""
+    for cand in aws-connection-my-storage aws-connection-minio; do
+        if oc get secret "$cand" -n "$target_ns" &>/dev/null; then
+            dc_secret="$cand"
+            break
+        fi
+    done
+    if [ -n "$dc_secret" ]; then
+        local _ak _sk _ep
+        _ak=$(oc get secret "$dc_secret" -n "$target_ns" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d 2>/dev/null)
+        _sk=$(oc get secret "$dc_secret" -n "$target_ns" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d 2>/dev/null)
+        _ep=$(oc get secret "$dc_secret" -n "$target_ns" -o jsonpath='{.data.AWS_S3_ENDPOINT}' 2>/dev/null | base64 -d 2>/dev/null)
+        if [ -n "$_ep" ]; then
+            echo -e "${CYAN}Available paths in S3:${NC}"
+            oc run s3-list --rm -i --restart=Never -n "$target_ns" \
+                --image=docker.io/amazon/aws-cli:latest \
+                --env="AWS_ACCESS_KEY_ID=$_ak" --env="AWS_SECRET_ACCESS_KEY=$_sk" \
+                --env="AWS_DEFAULT_REGION=us-east-1" \
+                -- s3 ls --recursive --endpoint-url "$_ep" 2>/dev/null | awk '{print "  s3://" $NF}' || true
+            echo ""
+        fi
     fi
 
     read -rp "Storage URI: " storage_uri
