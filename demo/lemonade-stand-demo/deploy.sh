@@ -12,6 +12,16 @@ source "$REPO_ROOT/lib/utils/common.sh"
 NAMESPACE="${NAMESPACE:-nemo-guardrails-demo}"
 GUARDRAILS_NAMESPACE="${GUARDRAILS_NAMESPACE:-nemo-guardrails-demo}"
 GUARDRAILS_NAME="${GUARDRAILS_NAME:-nemo-quickstart}"
+# NAMESPACE is used by envsubst (an external process) further down when
+# rendering manifests/lemonade-stand.yaml -- unlike the other envsubst
+# variables below (GUARDRAILS_URL, MODEL_NAME, etc.), it was never exported,
+# so envsubst always saw an EMPTY ${NAMESPACE}. The standalone `kind:
+# Namespace` object at the top of the manifest failed loudly ("resource name
+# may not be empty"), but every other object in the same multi-doc apply
+# silently fell back to `oc`'s current context namespace instead of actually
+# respecting $NAMESPACE. Export it so envsubst renders correctly regardless
+# of the ambient oc context.
+export NAMESPACE
 
 print_header "Lemonade Stand Chat (NeMo Guardrails Edition)"
 

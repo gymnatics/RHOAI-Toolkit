@@ -75,6 +75,7 @@ if [ "$DELETE_MODE" = true ]; then
     fi
     envsubst < "$SCRIPT_DIR/manifests/llamastack-postgresql.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     oc delete secret milvus-connection-secret -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    envsubst < "$SCRIPT_DIR/manifests/bge-m3-embedding.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     oc delete datasciencepipelineapplication pipelines-definition -n "$NAMESPACE" --ignore-not-found 2>/dev/null
     envsubst < "$SCRIPT_DIR/manifests/milvus.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     envsubst < "$SCRIPT_DIR/manifests/minio.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
@@ -119,6 +120,18 @@ fi
 
 ensure_namespace "$NAMESPACE"
 oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
+
+# Export NAMESPACE once, unconditionally, for the lifetime of this script.
+# IMPORTANT: every subsequent `export NAMESPACE` call below lives inside an
+# "only if not already deployed" branch -- on an idempotent re-run where
+# earlier resources already exist, none of those branches fire, so without
+# this unconditional export here, envsubst calls later in the script (e.g.
+# the OGX/LlamaStack manifest at Step 6) would see an EMPTY ${NAMESPACE} and
+# `oc apply` would silently fall back to the "default" namespace instead of
+# failing loudly. (Root-caused 2026-09-21 after autorag-ogx landed in
+# `default` on a re-run where MinIO/Milvus/Postgres/bge-m3 were all already
+# deployed.)
+export NAMESPACE
 
 # Enable AutoRAG in dashboard
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
@@ -222,6 +235,21 @@ else
     envsubst < "$SCRIPT_DIR/manifests/llamastack-postgresql.yaml" | oc apply -f -
     oc rollout status deployment/llamastack-postgres -n "$NAMESPACE" --timeout=120s 2>/dev/null || \
         print_warning "PostgreSQL not ready yet -- check: oc get pods -l app=llamastack-postgres -n $NAMESPACE"
+fi
+
+# --- Step 5b: bge-m3 embedding model (CPU) if no embedding model exists yet ---
+# Check for an existing embedding-like InferenceService first (covers the case
+# where a user already deployed one, e.g. on a multi-GPU cluster).
+if ! oc get inferenceservice -n "$NAMESPACE" --no-headers 2>/dev/null \
+        | awk '{print $1}' | grep -qi -E 'bge|e5-|embed|nomic-embed'; then
+    print_step "Deploying bge-m3 embedding model (CPU-only, no GPU required)..."
+    export NAMESPACE
+    envsubst < "$SCRIPT_DIR/manifests/bge-m3-embedding.yaml" | oc apply -f -
+    print_info "bge-m3 deploying (CPU inference server startup can take a few minutes)..."
+    oc rollout status deployment/bge-m3-predictor -n "$NAMESPACE" --timeout=300s 2>/dev/null || \
+        print_warning "bge-m3 not ready yet -- check: oc get pods -n $NAMESPACE -l serving.kserve.io/inferenceservice=bge-m3"
+else
+    print_info "Embedding model already present in $NAMESPACE"
 fi
 
 # --- Step 6: LlamaStack/OGX (auto-configured with direct vLLM + embedding endpoints) ---

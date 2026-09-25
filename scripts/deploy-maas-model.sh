@@ -13,6 +13,8 @@
 #   qwen3-06b              CPU-only, real (non-simulated) inference, no GPU required
 #   granite-tiny-gpu       ~1B params, ~8 GiB VRAM
 #   gemma                  Gemma 2 9B IT FP8, ~12 GiB VRAM
+#   qwen3-8b               Qwen3-8B FP8 dynamic, tool-calling (hermes), ~9 GiB VRAM,
+#                          sized to fit a single g6e.xlarge (4 CPU/32Gi) node
 #   gpt-oss-20b            ~16+ GiB VRAM
 #   auto                   Auto-detect based on available GPU VRAM
 #
@@ -48,12 +50,12 @@ MODEL="auto"
 MODEL_NAMESPACE="llm"
 DELETE_MODE=false
 DISCONNECTED_REGISTRY=""
-VALID_MODELS=(simulator simulator-disconnected qwen3-06b granite-tiny-gpu gemma gpt-oss-20b)
+VALID_MODELS=(simulator simulator-disconnected qwen3-06b granite-tiny-gpu gemma qwen3-8b gpt-oss-20b)
 
 usage() {
     echo "Usage: $0 --model <name> [-n namespace] [--delete] [--disconnected-registry <host>]"
     echo ""
-    echo "Models: simulator | simulator-disconnected | qwen3-06b | granite-tiny-gpu | gemma | gpt-oss-20b | auto"
+    echo "Models: simulator | simulator-disconnected | qwen3-06b | granite-tiny-gpu | gemma | qwen3-8b | gpt-oss-20b | auto"
     echo ""
     echo "  --model auto   Auto-detects based on GPU VRAM on cluster nodes:"
     echo "                   no GPU        -> simulator"

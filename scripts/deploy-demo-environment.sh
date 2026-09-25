@@ -119,7 +119,7 @@ check_status() {
 
     echo -e "${CYAN}  Demo Components:${NC}"
     check_component "feast" "Feast Banking Demo" \
-        "oc get namespace a-rh-dept"
+        "oc get featurestore -A --no-headers 2>/dev/null | grep -q ."
     check_component "mcp" "MCP Servers" \
         "oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications"
     check_component "financial-loan" "Financial Loan Demo" \
@@ -131,7 +131,7 @@ check_status() {
     check_component "n8n" "n8n Workflow Automation" \
         "oc get deployment n8n -n n8n"
     check_component "model-catalog" "Custom Model Catalog" \
-        "oc get configmap model-catalog-sources -n redhat-ods-applications"
+        "oc get configmap model-catalog-sources -n rhoai-model-registries"
     check_component "nemo-guardrails" "NeMo Guardrails" \
         "oc get namespace nemo-guardrails-demo"
     check_component "lmeval" "LMEval + EvalHub" \
@@ -213,7 +213,7 @@ done
 is_deployed() {
     local name="$1"
     case "$name" in
-        feast)           oc get namespace a-rh-dept &>/dev/null 2>&1 ;;
+        feast)           oc get featurestore -A --no-headers 2>/dev/null | grep -q . ;;
         mcp)             oc get configmap gen-ai-aa-mcp-servers -n redhat-ods-applications &>/dev/null 2>&1 ;;
         maas)            oc get llminferenceservice -A --no-headers 2>/dev/null | grep -q . ;;
         financial-loan)  oc get namespace financial-loan-demo &>/dev/null 2>&1 && \
@@ -221,7 +221,7 @@ is_deployed() {
         pipeline)        oc get datasciencepipelinesapplication pipelines-definition -n pipeline-demo &>/dev/null 2>&1 ;;
         open-webui)      oc get deployment open-webui -n open-webui &>/dev/null 2>&1 ;;
         n8n)             oc get deployment n8n -n n8n &>/dev/null 2>&1 ;;
-        model-catalog)   oc get configmap model-catalog-sources -n redhat-ods-applications &>/dev/null 2>&1 ;;
+        model-catalog)   oc get configmap model-catalog-sources -n rhoai-model-registries &>/dev/null 2>&1 ;;
         nemo-guardrails) oc get namespace nemo-guardrails-demo &>/dev/null 2>&1 ;;
         lemonade-stand) oc get deployment lemonade-stand -n nemo-guardrails-demo &>/dev/null 2>&1 ;;
         lmeval)          oc get namespace lmeval-demo &>/dev/null 2>&1 && \

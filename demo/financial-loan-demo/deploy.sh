@@ -343,8 +343,14 @@ inject_notebook_env "$NAMESPACE" \
     "S3_BUCKET_DATA=datasets" \
     "S3_BUCKET_MODELS=models" \
     "HF_MODEL_ID=${HF_MODEL_ID:-RedHatAI/Qwen3-8B-FP8-dynamic}" \
-    "LLM_URL=${LLM_URL}" \
-    "SKLEARN_API_URL=${SKLEARN_API_URL}"
+    "LLM_URL=${LLM_URL}"
+# NOTE: do NOT also pass SKLEARN_API_URL here -- inject_notebook_env already
+# calls detect_predictive_endpoint internally and adds SKLEARN_MODEL_NAME +
+# SKLEARN_API_URL to the ConfigMap automatically when a predictive model is
+# found. Passing it again as an extra arg produced a duplicate
+# `--from-literal=SKLEARN_API_URL=...` in the same `oc create configmap`
+# invocation, which fails client-side with "cannot add key ..., another key
+# by that name already exists" (confirmed 2026-09-21 on cluster-sclg6).
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
 
 echo ""

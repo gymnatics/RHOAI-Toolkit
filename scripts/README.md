@@ -235,6 +235,36 @@ cat scripts/CLEANUP-USAGE.md
 
 ---
 
+### setup-node-scheduler.sh
+**Purpose**: Deploy CronJob-based worker node scheduling — scale workers/GPU up at 8 AM and down at 6 PM (Mon-Fri, Asia/Singapore) to save AWS costs. Control-plane nodes keep the cluster alive 24/7.
+
+**Usage**:
+```bash
+./scripts/setup-node-scheduler.sh                   # deploy CronJobs
+./scripts/setup-node-scheduler.sh --trigger down     # manually scale down now
+./scripts/setup-node-scheduler.sh --trigger up       # manually scale up now
+./scripts/setup-node-scheduler.sh --status           # show CronJob state + MachineSets
+./scripts/setup-node-scheduler.sh --remove           # tear down
+```
+
+**See**: `docs/guides/NODE-SCHEDULING.md`
+
+---
+
+### create-restricted-client-admin.sh
+**Purpose**: Give a client/customer a `cluster-admin` login that cannot change worker/control-plane node counts (MachineSet/Machine/ControlPlaneMachineSet/MachineHealthCheck/MachineAutoscaler/ClusterAutoscaler, or delete Nodes) — enforced via `ValidatingAdmissionPolicy`, not RBAC (RBAC can't subtract from `cluster-admin`'s wildcard rule)
+
+**Usage**:
+```bash
+./scripts/create-restricted-client-admin.sh --client-user client-admin --client-password '<pw>' --owner-user admin
+./scripts/create-restricted-client-admin.sh --test --client-user client-admin     # verify the deny policy works
+./scripts/create-restricted-client-admin.sh --remove --client-user client-admin   # revoke their cluster-admin binding
+```
+
+**See**: `docs/guides/RESTRICTED-CLIENT-ADMIN-ACCESS.md` for the full design/rationale
+
+---
+
 ## Typical Usage Flow
 
 ### Fresh Installation (Recommended)

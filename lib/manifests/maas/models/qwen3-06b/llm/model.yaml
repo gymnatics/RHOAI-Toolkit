@@ -29,7 +29,7 @@ spec:
   template:
     containers:
       - name: main
-        image: registry.redhat.io/rhaiis/vllm-cpu-rhel9:latest
+        image: registry.redhat.io/rhaiis/vllm-cpu-rhel9:3.3.0
         args:
           - "--max-model-len=2048"
         resources:

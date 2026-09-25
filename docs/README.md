@@ -62,6 +62,8 @@ Step-by-step instructions for common tasks.
 |-------|-------------|
 | [RHCL + NeMo Guardrails Architecture](guides/RHCL-GUARDRAILS-ARCHITECTURE.md) | RHCL (MaaS access control) + TrustyAI NeMo Guardrails |
 | [AI Agent Security & Governance](guides/AI-AGENT-SECURITY-GOVERNANCE.md) | Guardrails, access controls, data protection |
+| [Restricted Client Admin Access](guides/RESTRICTED-CLIENT-ADMIN-ACCESS.md) | Give a client cluster-admin without letting them resize worker/control-plane nodes (ValidatingAdmissionPolicy) |
+| [Worker Node Scheduling](guides/NODE-SCHEDULING.md) | CronJob-based scale-up/down of worker & GPU nodes (8 AM - 6 PM Mon-Fri) to save AWS costs |
 
 ### MCP & Tool Calling
 
@@ -118,6 +120,9 @@ Technical reference documentation.
 | [KServe Deployment Modes](reference/KSERVE-DEPLOYMENT-MODES.md) | RawDeployment vs Serverless |
 | [GPU ResourceFlavor Configuration](reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md) | Kueue ResourceFlavor setup for GPU tolerations |
 | [OS Compatibility](reference/OS-COMPATIBILITY.md) | macOS/Linux compatibility layer (`os-compat.sh`) |
+| [RHAIE vs SUSE AI Feature Comparison](<reference/RHAIE vs SUSE AI Feature Comparison.md>) | **Internal use only.** Detailed, advocacy-framed competitive analysis: features, hardware/accelerator support, and strategic/upstream differentiators |
+| [RHAIE vs SUSE AI Battle Card](<reference/RHAIE vs SUSE AI Battle Card.md>) | **Internal use only.** Sales/SE quick-reference: positioning, top differentiators, objection handling, discovery questions — written as a script for the rep, not for the customer |
+| [RHAIE vs SUSE AI Customer-Facing Comparison](<reference/RHAIE vs SUSE AI Customer-Facing Comparison.md>) | **Safe to share with customers/prospects.** Neutral, third-person, sourced side-by-side comparison with no verdicts — same topic coverage as the internal doc above, reframed for external use |
 
 ---
 

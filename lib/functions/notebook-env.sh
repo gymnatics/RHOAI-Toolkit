@@ -141,6 +141,53 @@ detect_direct_llm_endpoint() {
         detected="$fallback_name"
     fi
 
+    # Fallback: no v1beta1 InferenceService found anywhere (common on RHOAI 3.5+
+    # clusters that only deploy models via LLMInferenceService/llm-d). The
+    # LLMInferenceService's own workload Service (<name>-kserve-workload-svc)
+    # exposes a plain server-TLS (not mTLS) vLLM /v1 endpoint that does NOT go
+    # through the MaaS gateway's auth -- confirmed reachable in-cluster with a
+    # simple `curl -k` and no client cert. This makes it usable by consumers
+    # like LlamaStack/OGX's remote::vllm provider that need a standard vLLM
+    # endpoint but can't do MaaS gateway auth. See docs/TODO-next-session.md
+    # "Dual Qwen3-8B Endpoint Architecture" for the historical InferenceService-
+    # based version of this pattern.
+    if [ -z "$detected" ]; then
+        local llmisvc_output=""
+        if [ -n "$preferred_ns" ]; then
+            llmisvc_output=$(oc get llminferenceservice -n "$preferred_ns" --no-headers \
+                -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null \
+                | grep -v -i -E 'bge|e5-|embed|nomic-embed' | head -1)
+        fi
+        if [ -z "$llmisvc_output" ]; then
+            llmisvc_output=$(oc get llminferenceservice -A --no-headers \
+                -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null \
+                | grep -v -i -E 'bge|e5-|embed|nomic-embed' | head -1)
+        fi
+        if [ -n "$llmisvc_output" ]; then
+            detected_ns=$(echo "$llmisvc_output" | awk '{print $1}')
+            detected=$(echo "$llmisvc_output" | awk '{print $2}')
+
+            [ -z "$detected" ] && return 1
+
+            DIRECT_MODEL_NAME="$detected"
+            DIRECT_MODEL_NS="$detected_ns"
+
+            local llm_svc_name="${detected}-kserve-workload-svc"
+            local llm_svc_port
+            llm_svc_port=$(oc get svc "$llm_svc_name" -n "$detected_ns" \
+                -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "8000")
+            DIRECT_BASE_URL="https://${llm_svc_name}.${detected_ns}.svc:${llm_svc_port}/v1"
+
+            # No unauthenticated external route exists for LLMInferenceService
+            # models -- status.url is the MaaS gateway URL, which requires an
+            # sk-oai-* API key. Leave DIRECT_ROUTE_URL unset; consumers that
+            # need an external route (e.g. EvalHub adapters) must use the MaaS
+            # endpoint + API key instead for this model.
+            DIRECT_ROUTE_URL=""
+            return 0
+        fi
+    fi
+
     [ -z "$detected" ] && return 1
 
     DIRECT_MODEL_NAME="$detected"

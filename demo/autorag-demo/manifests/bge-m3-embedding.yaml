@@ -1,0 +1,84 @@
+# CPU-only BAAI/bge-m3 embedding model, deployed as a standard KServe
+# InferenceService (NOT LLMInferenceService/MaaS) so AutoRAG's OGX/LlamaStack
+# `remote::vllm` embedding provider can reach it directly over plain HTTP.
+# Runs on CPU deliberately -- a single-GPU cluster (e.g. one g6e.xlarge node)
+# may already have its only GPU consumed by the chat LLM (see
+# lib/manifests/maas/models/qwen3-8b/), and bge-m3 is small enough (~2GB) to
+# run acceptably on CPU for demo purposes.
+#
+# Usage: export NAMESPACE=autorag-demo && envsubst < bge-m3-embedding.yaml | oc apply -f -
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: bge-m3-runtime
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: 'true'
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/serving-runtime-scope: global
+    openshift.io/display-name: bge-m3-runtime
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - name: kserve-container
+      image: registry.redhat.io/rhaiis/vllm-cpu-rhel9:3.3.0
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+        - '--runner=pooling'
+        - '--convert=embed'
+        - '--trust-remote-code'
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+      name: shm
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: bge-m3
+  namespace: ${NAMESPACE}
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+    openshift.io/display-name: bge-m3
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: vLLM
+      runtime: bge-m3-runtime
+      storageUri: hf://BAAI/bge-m3
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          cpu: "2"
+          memory: 6Gi
