@@ -3023,17 +3023,32 @@ setup_model_registry() {
             export MYSQL_USER="$mysql_user"
             export MYSQL_PASSWORD="$mysql_password"
             export MYSQL_ROOT_PASSWORD="$mysql_root_password"
-            envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_PASSWORD} ${MYSQL_ROOT_PASSWORD}' \
-                < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-secret.yaml" | oc apply -f -
+            if ! envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_DB} ${MYSQL_USER} ${MYSQL_PASSWORD} ${MYSQL_ROOT_PASSWORD}' \
+                < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-secret.yaml" | oc apply -f -; then
+                unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
+                print_error "Failed to create MySQL credentials secret '${mysql_deploy_name}-credentials' -- aborting before creating the ModelRegistry CR (a CR referencing a missing secret would be permanently broken)"
+                return 1
+            fi
             unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD
             print_success "MySQL credentials secret created"
         fi
-        
+
+        # Hard gate: the secret must actually exist before we proceed, whether
+        # it was just created above or the "existing-secret" branch was taken.
+        if ! oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
+            print_error "MySQL credentials secret '${mysql_deploy_name}-credentials' still not found -- aborting before creating the ModelRegistry CR"
+            return 1
+        fi
+
         export MYSQL_DEPLOY_NAME="$mysql_deploy_name"
         export REGISTRY_NS="$registry_ns"
         export MYSQL_SVC_NAME="$mysql_svc_name"
-        envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME}' \
-            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-deploy.yaml" | oc apply -f -
+        if ! envsubst '${MYSQL_DEPLOY_NAME} ${REGISTRY_NS} ${MYSQL_SVC_NAME}' \
+            < "$_RHOAI_LIB_DIR/lib/manifests/model-registry/mysql-deploy.yaml" | oc apply -f -; then
+            unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_SVC_NAME
+            print_error "Failed to create MySQL Deployment/Service -- aborting before creating the ModelRegistry CR"
+            return 1
+        fi
         unset MYSQL_DEPLOY_NAME REGISTRY_NS MYSQL_SVC_NAME
         
         print_step "Waiting for MySQL to be ready..."
@@ -3049,7 +3064,24 @@ setup_model_registry() {
         done
         
         if [ $elapsed -ge 120 ]; then
-            print_warning "MySQL may not be fully ready yet (continuing)"
+            print_warning "MySQL did not report Ready within 120s"
+        fi
+
+        # Hard gate: never proceed to create the ModelRegistry CR unless the
+        # secret AND Deployment actually exist -- a CR created against a
+        # missing/failed MySQL setup reconciles into a permanently-broken
+        # CreateContainerConfigError state (secret not found) with no
+        # automatic recovery, since nothing re-triggers Step 6 once the CR
+        # exists (Step 5's "already exists" check only skips on Available=True,
+        # but a broken CR sitting there forever also blocks a clean re-run
+        # from ever getting back here to retry MySQL). Fail loudly instead.
+        if ! oc get secret "${mysql_deploy_name}-credentials" -n "$registry_ns" &>/dev/null; then
+            print_error "MySQL credentials secret missing after setup -- aborting before creating the ModelRegistry CR. Fix MySQL manually, then re-run this function."
+            return 1
+        fi
+        if ! oc get deployment "$mysql_deploy_name" -n "$registry_ns" &>/dev/null; then
+            print_error "MySQL Deployment '$mysql_deploy_name' missing after setup -- aborting before creating the ModelRegistry CR. Fix MySQL manually, then re-run this function."
+            return 1
         fi
     fi
     

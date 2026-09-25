@@ -1,11 +1,13 @@
 #!/bin/bash
 ################################################################################
-# Diagnose MaaS Post-Upgrade Issues (BU Guide's 10-Issue Triage Order)
+# Diagnose MaaS Post-Upgrade Issues (BU Guide's 10-Issue Triage Order + 1)
 ################################################################################
 # Checks a live cluster against the 10 known post-upgrade issues documented in
 # the RHOAI MaaS Guide (https://rh-aiservices-bu.github.io/rhoai-maas-guide),
 # "Post-Upgrade Troubleshooting (3.4 -> 3.5)" page, plus 3 fixes validated
-# against a live RHOAI 3.5 cluster on 2026-09-03.
+# against a live RHOAI 3.5 cluster on 2026-09-03, plus Issue 11 (stale WASM
+# shim auth-cache state -- same underlying Kuadrant/RHCL WASM caching
+# mechanism as Issues 6/7, see docs/TROUBLESHOOTING.md) added 2026-09-25.
 #
 # Usage:
 #   ./scripts/diagnose-maas.sh              # report only
@@ -16,6 +18,7 @@
 #   - Issue 5: payload-processing OOM        -> annotate managed=false, bump to 1Gi
 #   - Issue 7: WASM auth timeout             -> set AUTH_SERVICE_TIMEOUT=2s
 #   - Issue 3: gateway namespace label       -> label required namespaces
+#   - Issue 11: stale WASM shim auth-cache   -> restart the gateway pod
 # All other issues are reported only -- they require judgment calls (e.g.
 # removing MCP Lifecycle Operator disables MCP server support) or upstream
 # fixes that don't exist yet (Issue 8).
@@ -73,7 +76,7 @@ MAAS_API_NS=$(get_maas_infra_namespace 2>/dev/null || echo "redhat-ods-applicati
 ################################################################################
 # Issue 1: MCP Lifecycle Operator OOMKill (RHOAIENG-82694)
 ################################################################################
-print_step "[1/10] MCP Lifecycle Operator OOM..."
+print_step "[1/11] MCP Lifecycle Operator OOM..."
 if [ "$IS_35" = true ]; then
     mcp_pods=$(oc get pods -n redhat-ods-applications -o name 2>/dev/null | grep mcp-lifecycle || true)
     if [ -z "$mcp_pods" ]; then
@@ -102,7 +105,7 @@ fi
 ################################################################################
 # Issue 2: ExternalModel Migration - dotted secret names (RHOAIENG-89784)
 ################################################################################
-print_step "[2/10] ExternalModel migration (dotted secret names)..."
+print_step "[2/11] ExternalModel migration (dotted secret names)..."
 old_ext_models=$(oc get externalmodel.maas.opendatahub.io -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
 if [ "$old_ext_models" -eq 0 ] 2>/dev/null; then
     record "external-model-migration" "N/A" "-" "No externalmodel.maas.opendatahub.io resources found"
@@ -119,7 +122,7 @@ fi
 ################################################################################
 # Issue 3: Gateway Namespace Label (RHOAIENG-83207)
 ################################################################################
-print_step "[3/10] Gateway namespace label..."
+print_step "[3/11] Gateway namespace label..."
 gw_selector=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].allowedRoutes.namespaces.from}' 2>/dev/null)
 if [ -z "$gw_selector" ]; then
     record "gateway-namespace-label" "N/A" "-" "maas-default-gateway not found"
@@ -147,7 +150,7 @@ fi
 ################################################################################
 # Issue 4: Gateway Hostname Discovery (RHOAIENG-89775)
 ################################################################################
-print_step "[4/10] Gateway hostname discovery..."
+print_step "[4/11] Gateway hostname discovery..."
 gw_hostname=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
 gw_programmed=$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
 if [ -z "$gw_hostname" ]; then
@@ -161,7 +164,7 @@ fi
 ################################################################################
 # Issue 5: Payload-Processing OOMKill (RHOAIENG-88898)
 ################################################################################
-print_step "[5/10] Payload-processing OOM..."
+print_step "[5/11] Payload-processing OOM..."
 pp_limit=$(oc get deployment payload-processing -n openshift-ingress -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}' 2>/dev/null)
 if [ -z "$pp_limit" ]; then
     record "payload-processing-oom" "N/A" "-" "payload-processing deployment not found"
@@ -184,7 +187,7 @@ fi
 ################################################################################
 # Issue 6: RHCL 1.4.x Rate Limiting and Gateway OOM (RHOAIENG-76586)
 ################################################################################
-print_step "[6/10] RHCL 1.4.x rate limiting / gateway OOM..."
+print_step "[6/11] RHCL 1.4.x rate limiting / gateway OOM..."
 rhcl_csv=$(oc get csv -A --no-headers 2>/dev/null | grep rhcl-operator | head -1 | awk '{print $2}')
 gw_deploy=$(oc get deployments -n openshift-ingress -o name 2>/dev/null | grep maas-default-gateway | head -1)
 gw_mem=""
@@ -202,7 +205,7 @@ fi
 ################################################################################
 # Issue 7: WASM Auth Timeout Under Load (RHOAIENG-71638)
 ################################################################################
-print_step "[7/10] WASM auth timeout..."
+print_step "[7/11] WASM auth timeout..."
 timeout_val=$(oc get subscription rhcl-operator -n openshift-operators -o jsonpath='{.spec.config.env[?(@.name=="AUTH_SERVICE_TIMEOUT")].value}' 2>/dev/null)
 if [ -z "$timeout_val" ]; then
     record "wasm-auth-timeout" "FAIL" "Medium" "AUTH_SERVICE_TIMEOUT not set (using risky 200ms default) -- causes HTTP 500/503 under concurrent load"
@@ -220,7 +223,7 @@ fi
 ################################################################################
 # Issue 8: Envoy ext_proc Body Corruption (OSSM-15498) -- no workaround exists
 ################################################################################
-print_step "[8/10] Envoy ext_proc body corruption..."
+print_step "[8/11] Envoy ext_proc body corruption..."
 gw_pod=$(oc get pods -n openshift-ingress -l gateway.istio.io/managed=istio.io-gateway-controller -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [ -z "$gw_pod" ]; then
     record "envoy-extproc-corruption" "N/A" "-" "Gateway pod not found"
@@ -236,7 +239,7 @@ fi
 ################################################################################
 # Issue 9: Token Rate Limiting Default Too Low (RHOAIENG-89785)
 ################################################################################
-print_step "[9/10] Token rate limiting defaults..."
+print_step "[9/11] Token rate limiting defaults..."
 low_limit_subs=$(oc get maassubscription -A -o json 2>/dev/null | python3 -c "
 import sys, json
 try:
@@ -268,13 +271,60 @@ fi
 ################################################################################
 # Issue 10: Duplicate AI Playground Endpoints (RHOAIENG-89786)
 ################################################################################
-print_step "[10/10] Duplicate Playground endpoints (LlamaStackDistribution)..."
+print_step "[10/11] Duplicate Playground endpoints (LlamaStackDistribution)..."
 lsd_count=$(oc get llamastackdistribution -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
 ogx_state=$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.ogx.managementState}' 2>/dev/null)
 if [ "${lsd_count:-0}" -gt 0 ] 2>/dev/null && [ "$ogx_state" = "Managed" ]; then
     record "duplicate-playground-endpoints" "FAIL" "Low" "$lsd_count leftover LlamaStackDistribution(s) found with OGX Managed -- may cause duplicate/broken Playground endpoints. Fix: oc delete llamastackdistribution -n <model-ns> --all"
 else
     record "duplicate-playground-endpoints" "PASS" "-" "No leftover LlamaStackDistribution found (or OGX not Managed)"
+fi
+
+################################################################################
+# Issue 11: Stale WASM Shim Auth-Cache State (same mechanism as Issues 6/7)
+################################################################################
+# Kuadrant's WASM shim (kuadrant_wasm_shim) caches gRPC auth-evaluation
+# failures from early in the gateway pod's life (e.g. maas-api still
+# crash-looping on Postgres, or a brief dependency restart during a node
+# disruption). Once the dependency recovers, the shim keeps serving the
+# STALE cached failure (HTTP 500/503, gateway logs show "wasm_fail_stream"
+# or "gRPC status code is not OK") indefinitely -- there is no TTL or
+# self-healing. Only a gateway pod restart reloads the WASM VM and clears
+# it. See docs/TROUBLESHOOTING.md "Stale WASM shim state" for the full
+# writeup. install-rhoai-35.sh already restarts the gateway proactively at
+# install time to preempt this; this check catches it recurring later
+# (e.g. after maas-api restarts, node disruptions, or any dependency blip).
+print_step "[11/11] Stale WASM shim auth-cache state..."
+maas_health_code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    "https://maas.apps.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)/maas-api/v1/health" 2>/dev/null || echo "000")
+gw_pod_name=$(oc get pods -n openshift-ingress \
+    -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -z "$gw_pod_name" ]; then
+    record "wasm-shim-stale-auth-cache" "N/A" "-" "maas-default-gateway pod not found"
+else
+    wasm_errors=$(oc logs -n openshift-ingress "$gw_pod_name" --tail=200 2>/dev/null \
+        | grep -cE "wasm_fail_stream|gRPC status code is not OK" || true)
+    # 401 is the expected/healthy "auth required" response; 500/503 with WASM
+    # errors in the logs is the stale-cache signature. 000 means unreachable
+    # (a different problem -- not this issue).
+    if [ "${wasm_errors:-0}" -gt 0 ] && [[ "$maas_health_code" =~ ^(500|503)$ ]]; then
+        record "wasm-shim-stale-auth-cache" "FAIL" "Medium" "Gateway logs show $wasm_errors WASM auth-cache error(s) and /maas-api/v1/health returns HTTP $maas_health_code (stale cached failure, not a live outage). Fix: restart the gateway pod to reload the WASM VM."
+        if [ "$FIX" = true ]; then
+            oc delete pod -n openshift-ingress \
+                -l gateway.networking.k8s.io/gateway-name=maas-default-gateway &>/dev/null
+            print_step "  Waiting for gateway pod to restart..."
+            sleep 5
+            oc wait --for=condition=Ready pod \
+                -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+                -n openshift-ingress --timeout=60s &>/dev/null || true
+            print_fixed "Restarted maas-default-gateway pod to clear stale WASM shim state"
+        fi
+    elif [ "${wasm_errors:-0}" -gt 0 ]; then
+        record "wasm-shim-stale-auth-cache" "WARN" "Low" "Gateway logs show $wasm_errors WASM auth error(s) in the last 200 lines, but /maas-api/v1/health returned HTTP $maas_health_code -- may be transient, monitor"
+    else
+        record "wasm-shim-stale-auth-cache" "PASS" "-" "No WASM auth-cache errors in recent gateway logs (health check: HTTP $maas_health_code)"
+    fi
 fi
 
 ################################################################################
@@ -322,7 +372,7 @@ else
     echo -e "Failures: ${RED}${fail_count}${NC}  Warnings: ${YELLOW}${warn_count}${NC}  Total checks: ${#RESULTS[@]}"
     if [ "$FIX" = false ] && [ $fail_count -gt 0 ]; then
         echo ""
-        echo -e "${CYAN}Re-run with --fix to auto-apply safe fixes (payload-processing OOM, WASM timeout, gateway labels).${NC}"
+        echo -e "${CYAN}Re-run with --fix to auto-apply safe fixes (payload-processing OOM, WASM timeout, gateway labels, stale WASM shim cache).${NC}"
     fi
     echo ""
 fi
