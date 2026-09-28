@@ -105,19 +105,27 @@ stringData:
   AWS_S3_ENDPOINT: ${S3_EP}
 DCEOF
 
-# --- Upload training dataset to MinIO ---
+# --- Upload training dataset to S3 (backend-agnostic: SeaweedFS/Ceph RGW/MinIO) ---
+# NOTE: this previously checked a $MINIO_POD variable + `mc` commands that no
+# longer get set anywhere in this script after the SeaweedFS migration --
+# that made this entire block permanently dead code (silently skipped even
+# with a valid Kaggle token). Fixed to use a generic aws-cli one-shot pod via
+# get_storage_endpoint(), same pattern as automl-demo/autorag-demo.
 DATA_EXISTS=false
-if [ -n "$MINIO_POD" ]; then
-    if oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c \
-        'mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null && mc stat local/datasets/microloan-dataset/application_train.csv 2>/dev/null' &>/dev/null; then
-        DATA_EXISTS=true
-        print_info "Training dataset already in MinIO"
-    fi
+if oc run s3-check-dataset --rm -i --restart=Never -n "$NAMESPACE" \
+    --image=docker.io/amazon/aws-cli:latest \
+    --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+    --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+    --env="AWS_DEFAULT_REGION=us-east-1" \
+    -- s3 ls "s3://datasets/microloan-dataset/application_train.csv" --endpoint-url "$S3_EP" \
+    2>/dev/null | grep -q application_train.csv; then
+    DATA_EXISTS=true
+    print_info "Training dataset already in S3"
 fi
 
-if [ "$DATA_EXISTS" = false ] && [ -n "$MINIO_POD" ]; then
+if [ "$DATA_EXISTS" = false ]; then
     echo ""
-    print_step "Training dataset (Home Credit Default Risk) not found in MinIO."
+    print_step "Training dataset (Home Credit Default Risk) not found in S3."
     echo ""
     echo "  The notebook requires application_train.csv (~158 MB) from Kaggle."
     echo "  Before proceeding, you must:"
@@ -137,15 +145,16 @@ if [ "$DATA_EXISTS" = false ] && [ -n "$MINIO_POD" ]; then
                     unzip -o "$TMPDIR/application_train.csv.zip" -d "$TMPDIR" 2>/dev/null
                 fi
                 if [ -f "$TMPDIR/application_train.csv" ]; then
-                    print_step "Uploading to MinIO (this may take a minute)..."
-                    oc exec -i "$MINIO_POD" -n "$NAMESPACE" -- sh -c 'cat > /tmp/application_train.csv' \
-                        < "$TMPDIR/application_train.csv" 2>/dev/null
-                    oc exec "$MINIO_POD" -n "$NAMESPACE" -- sh -c '
-                        mc alias set local http://localhost:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} 2>/dev/null
-                        mc cp /tmp/application_train.csv local/datasets/microloan-dataset/application_train.csv 2>/dev/null
-                        rm /tmp/application_train.csv
-                    ' 2>/dev/null && print_success "Training dataset uploaded to MinIO" || \
-                        print_warning "Upload failed -- upload manually from the workbench"
+                    print_step "Uploading to S3 (this may take a minute)..."
+                    oc run s3-upload-dataset --rm -i --restart=Never -n "$NAMESPACE" \
+                        --image=docker.io/amazon/aws-cli:latest \
+                        --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+                        --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+                        --env="AWS_DEFAULT_REGION=us-east-1" \
+                        -- s3 cp - "s3://datasets/microloan-dataset/application_train.csv" --endpoint-url "$S3_EP" \
+                        < "$TMPDIR/application_train.csv" 2>/dev/null \
+                    && print_success "Training dataset uploaded to S3" \
+                    || print_warning "Upload failed -- upload manually from the workbench"
                 fi
             else
                 print_warning "Download failed -- make sure you accepted the competition rules"
