@@ -48,6 +48,19 @@ spec:
         - -s3.config=/etc/seaweedfs/s3.json
         - -master.port=9333
         - -volume.port=8080
+        # -volume.max: each S3 bucket/collection needs its own dedicated
+        # SeaweedFS volume (default 30GB each), and volumes are NOT shared
+        # across collections. `-volume.max=0` ("unlimited, calculated from
+        # free disk / default volume size") still only worked out to ~8 on a
+        # 200Gi PVC -- SeaweedFS also eagerly pre-allocates several empty,
+        # collection-less volumes at startup, so by the time a 2nd bucket in
+        # the same namespace needs a volume, all slots were already used and
+        # every PutObject failed with "no free volumes left" / "topo failed
+        # to pick 1 from 0 node candidates" (confirmed live on cluster-sclg6
+        # 2026-09-28: 'datasets' bucket got a volume fine, 'models' -- a 2nd,
+        # different bucket in the same namespace -- then failed every write).
+        # An explicit generous count avoids the ambiguous "0" auto-calc.
+        - -volume.max=50
         - -filer
         - -filer.port=8888
         securityContext:
