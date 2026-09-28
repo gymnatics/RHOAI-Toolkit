@@ -117,11 +117,17 @@ inject_notebook_env "$NAMESPACE" \
     "MAAS_ROUTING=${MAAS_ROUTING}"
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
 
+# --- Retry the repo clone in case the workbench wasn't Running yet when
+# ensure_workbench's wait_for_workbench call ran above -- cheap no-op
+# otherwise (already cloned, or still not Running).
+clone_if_missing "$NAMESPACE" "rate-limit-testing"
+
 echo ""
 echo "  Next steps:"
-echo "  1. Create a workbench in RHOAI dashboard for namespace: $NAMESPACE"
-echo "  2. In the workbench terminal, clone and navigate to the notebook:"
-echo "     git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
+echo "  1. The 'rate-limit-testing' workbench + RHOAI-Toolkit clone are created"
+echo "     automatically above. If it wasn't Running in time, run:"
+echo "       ./scripts/clone-toolkit-in-workbenches.sh -n $NAMESPACE"
+echo "  2. In the workbench terminal, navigate to the notebook:"
 echo "     cd RHOAI-Toolkit/demo/maas-ratelimit-demo"
 echo "     # Open maas-ratelimit-test.ipynb"
 echo ""

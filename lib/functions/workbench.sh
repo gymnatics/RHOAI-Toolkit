@@ -8,11 +8,20 @@
 #   clone_repo_in_workbench     — git clone into workbench via oc exec
 #   check_repo_freshness        — warn if cloned repo is behind remote
 #   ensure_workbench            — all-in-one: create + wait + clone + check
+#   clone_if_missing            — standalone: clone ONLY if pod is currently
+#                                 Running right now, no create/wait involved.
+#                                 Use this at the END of deploy.sh (after all
+#                                 other infra steps), so a GPU workbench that
+#                                 was still Pending when ensure_workbench ran
+#                                 gets a second, later chance to be cloned
+#                                 into without needing a full re-run.
 #
 # Usage in deploy.sh:
 #   source "$ROOT_DIR/lib/functions/workbench.sh"
 #   ensure_workbench "$NAMESPACE" "my-workbench"
 #   ensure_workbench "$NAMESPACE" "gpu-workbench" "pytorch:3.4" "2" "4" "12Gi" "12Gi" "1" "20Gi" "GPU Workbench"
+#   # ... rest of deploy.sh (models, pipeline server, etc.) ...
+#   clone_if_missing "$NAMESPACE" "gpu-workbench"   # retry near the end
 ################################################################################
 
 _WB_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -107,6 +116,12 @@ create_workbench() {
 # Wait for a workbench pod to reach Running state.
 # Args: $1=namespace $2=workbench_name $3=timeout_seconds(default 180)
 # Returns: 0 if Running, 1 on timeout
+#
+# NOTE on timeout sizing: 180s is fine for CPU workbenches, but GPU workbenches
+# on clusters that provision GPU nodes on-demand (e.g. MachineSet scale-up)
+# routinely take 10-15 minutes (EC2 launch + node join + GPU driver install)
+# --  ensure_workbench() below auto-selects 600s when gpu_count>0. Pass an
+# explicit $3 to override either default.
 wait_for_workbench() {
     local ns="$1"
     local wb_name="$2"
@@ -172,6 +187,32 @@ clone_repo_in_workbench() {
     fi
 }
 
+# Clone into a workbench ONLY if its pod is Running right now -- no create,
+# no wait/timeout. Intended to be called a second time, later in a deploy.sh
+# (after all other infra steps), as a low-cost retry for workbenches (usually
+# GPU ones) that were still Pending when ensure_workbench's fixed-timeout
+# wait_for_workbench call ran earlier in the same script. Safe to call even
+# if the workbench doesn't exist yet or is already cloned (no-ops cleanly).
+# Args: $1=namespace $2=workbench_name $3=repo_url(optional) $4=target_dir(optional)
+# Returns: 0 if cloned or already-cloned, 1 if pod isn't Running (not an error)
+clone_if_missing() {
+    local ns="$1"
+    local wb_name="$2"
+    local repo_url="${3:-$DEFAULT_REPO_URL}"
+    local target_dir="${4:-$DEFAULT_REPO_DIR}"
+    local pod_name="${wb_name}-0"
+
+    local phase
+    phase=$(oc get pod "$pod_name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [ "$phase" != "Running" ]; then
+        print_info "Workbench $wb_name not Running yet (phase=${phase:-NotFound}) -- skipping clone retry. Re-run this script's deploy, or once it's up run: oc exec ${pod_name} -c ${wb_name} -n ${ns} -- git clone ${repo_url} ${WORKBENCH_HOME}/${target_dir}" 2>/dev/null || true
+        return 1
+    fi
+
+    clone_repo_in_workbench "$ns" "$wb_name" "$repo_url" "$target_dir"
+    check_repo_freshness "$ns" "$wb_name" "$target_dir"
+}
+
 # Check if the cloned repo is behind the remote and print a warning.
 # Args: $1=namespace $2=workbench_name $3=target_dir(optional)
 check_repo_freshness() {
@@ -217,10 +258,21 @@ ensure_workbench() {
     create_workbench "$ns" "$wb_name" "$image" "$cpu_req" "$cpu_lim" \
         "$mem_req" "$mem_lim" "$gpu_count" "$pvc_size" "$display_name"
 
-    if ! wait_for_workbench "$ns" "$wb_name" 180; then
-        print_warning "Workbench $wb_name not ready — git clone will be skipped" 2>/dev/null || true
-        print_info "Once the workbench is running, clone the repo manually:" 2>/dev/null || true
-        print_info "  git clone $DEFAULT_REPO_URL" 2>/dev/null || true
+    # GPU workbenches routinely need 10-15 min for the node itself to be
+    # available (MachineSet scale-up -> EC2 launch -> node join -> GPU driver
+    # install) before the pod can even be scheduled -- 180s is only realistic
+    # for CPU workbenches landing on already-Ready nodes.
+    local wait_timeout=180
+    if [ "$gpu_count" -gt 0 ] 2>/dev/null; then
+        wait_timeout=600
+    fi
+
+    if ! wait_for_workbench "$ns" "$wb_name" "$wait_timeout"; then
+        print_warning "Workbench $wb_name not ready after ${wait_timeout}s — git clone will be skipped for now" 2>/dev/null || true
+        print_info "This is expected if a GPU node is still provisioning. Once the workbench is Running, either:" 2>/dev/null || true
+        print_info "  - Re-run this deploy.sh (clone_if_missing retries near the end), or" 2>/dev/null || true
+        print_info "  - Run: ./scripts/clone-toolkit-in-workbenches.sh -n $ns" 2>/dev/null || true
+        print_info "  - Or manually: git clone $DEFAULT_REPO_URL" 2>/dev/null || true
         return 0
     fi
 

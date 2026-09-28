@@ -340,6 +340,13 @@ inject_notebook_env "$NAMESPACE" \
 # by that name already exists" (confirmed 2026-09-21 on cluster-sclg6).
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
 
+# --- Retry the repo clone now that the rest of the demo has finished
+# deploying -- model-training is a GPU workbench, so ensure_workbench's
+# earlier wait_for_workbench call may have timed out waiting for a GPU node
+# to provision. By now (after web app + notebook-env steps), it's had extra
+# time and is often Running. Cheap no-op if already cloned or still Pending.
+clone_if_missing "$NAMESPACE" "model-training"
+
 echo ""
 echo "  Components:"
 echo "    Workbench namespace: $NAMESPACE (create workbench from RHOAI dashboard)"
@@ -351,8 +358,9 @@ echo "    SKLEARN: $SKLEARN_API_URL"
 echo "    LLM:     $LLM_URL"
 echo ""
 echo "  Notebooks (run in workbench):"
-echo "    1. Clone this repo in your workbench:"
-echo "         git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
+echo "    1. RHOAI-Toolkit is auto-cloned into the workbench. If the GPU node was"
+echo "       still provisioning during deploy, run once it's Running:"
+echo "         ./scripts/clone-toolkit-in-workbenches.sh -n $NAMESPACE"
 echo "    2. Open demo/financial-loan-demo/notebooks/"
 echo "         predictive-model-development.ipynb -- train scikit-learn classifier"
 echo "         llm-model-fine-tuning.ipynb -- fine-tune LLM (optional)"

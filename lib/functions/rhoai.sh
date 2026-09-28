@@ -1655,6 +1655,12 @@ deploy_banking_demo() {
         ensure_workbench "$namespace" "feature-store"
     fi
 
+    # Retry the repo clone in case the workbench wasn't Running yet when
+    # ensure_workbench's wait ran above -- cheap no-op otherwise.
+    if type clone_if_missing &>/dev/null; then
+        clone_if_missing "$namespace" "feature-store"
+    fi
+
     # Inject notebook environment
     local _nb_env_lib="$_RHOAI_LIB_DIR/lib/functions/notebook-env.sh"
     if [ -f "$_nb_env_lib" ]; then

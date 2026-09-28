@@ -198,13 +198,13 @@ echo "    Fix: use served name in the model field, check 'Add additional argumen
 echo "    and add: tokenizer=RedHatAI/Qwen3-8B-FP8-dynamic"
 echo ""
 echo "  Vendored notebooks (run in workbench):"
-echo "    1. Create a workbench in RHOAI dashboard for namespace $NAMESPACE"
-echo "    2. Clone this repo in the workbench terminal:"
-echo "       git clone https://github.com/gymnatics/RHOAI-Toolkit.git"
-echo "    3. Open demo/lmeval-demo/notebooks/"
+echo "    1. The 'model-benchmarking' workbench + RHOAI-Toolkit clone are"
+echo "       created automatically below. If it wasn't Running in time, run:"
+echo "         ./scripts/clone-toolkit-in-workbenches.sh -n $NAMESPACE"
+echo "    2. Open demo/lmeval-demo/notebooks/"
 echo "         guidellm-benchmark.ipynb  -- GuideLLM performance benchmark"
 echo "         korean-mcq-benchmark.ipynb -- Korean multiple-choice evaluation"
-echo "    4. Config is auto-detected. To override, copy the ConfigMap:"
+echo "    3. Config is auto-detected. To override, copy the ConfigMap:"
 echo "       oc get cm demo-config-env -n $NAMESPACE -o jsonpath='{.data.\.env}' > .env"
 echo ""
 echo "  English benchmarks (run from CLI):"
@@ -244,3 +244,8 @@ inject_notebook_env "$NAMESPACE" \
     "MLFLOW_TRACKING_URI=https://mlflow.redhat-ods-applications.svc:8443" \
     "LIMIT=5"
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
+
+# --- Retry the repo clone in case the workbench wasn't Running yet when
+# ensure_workbench's wait_for_workbench call ran above -- cheap no-op
+# otherwise (already cloned, or still not Running).
+clone_if_missing "$NAMESPACE" "model-benchmarking"
