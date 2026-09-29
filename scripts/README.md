@@ -149,6 +149,53 @@ cat scripts/CLEANUP-USAGE.md
 
 ---
 
+### manage-gpu-nodes.sh
+**Purpose**: Stop/start the AWS EC2 instances behind GPU MachineSets directly, instead of deleting/recreating them via `oc scale machineset --replicas=0/N`
+
+**Usage**:
+```bash
+./scripts/manage-gpu-nodes.sh status                    # show AWS power state + Node Ready for all GPU machines
+./scripts/manage-gpu-nodes.sh stop                       # AWS-stop all GPU instances (Machine objects untouched)
+./scripts/manage-gpu-nodes.sh start                      # AWS-start them, wait for Nodes to rejoin Ready
+./scripts/manage-gpu-nodes.sh start --machineset <name>  # target one MachineSet only
+./scripts/manage-gpu-nodes.sh stop --no-wait             # fire-and-forget
+```
+
+**What it does**:
+- Finds all Machines in MachineSets with `gpu` in the name (or `--machineset <name>`)
+- Resolves each Machine's underlying EC2 instance ID from `spec.providerID`
+- `stop`/`start` calls `aws ec2 stop-instances`/`start-instances` directly — the
+  Machine API object is never touched
+- `start` waits for AWS state `running`, then waits for the same Node to
+  rejoin as `Ready`
+
+**Why use this instead of scaling the MachineSet to 0**: scaling to 0 deletes
+the Machine and EC2 instance; scaling back up provisions a **brand-new**
+instance from scratch (full RHCOS boot, ignition, cluster join, GPU Operator
+driver/toolkit reinstall). For bare metal GPU nodes (e.g. `g4dn.metal`) this
+can take 15-30+ minutes and can trigger unrelated MachineConfigPool churn if
+the node belongs to a custom pool. AWS stop/start preserves the EBS root
+volume and node identity, so the same node just resumes in a couple of
+minutes with everything already installed.
+
+**Caveats**:
+- Local instance-store (ephemeral NVMe) data is wiped on stop — the EBS root
+  volume is unaffected
+- Some AWS bare metal instance types have historically not supported stop
+  (only reboot/terminate); the script surfaces the AWS API error verbatim if
+  a stop/start call is rejected
+- Requires `aws` CLI configured with credentials for the account hosting the
+  cluster (same convention as every other AWS-touching script here)
+
+**When to use**:
+- Pausing/resuming GPU nodes overnight or between demo sessions, especially
+  bare metal types where re-provisioning is slow
+- As a faster alternative/complement to
+  [`setup-node-scheduler.sh`](../docs/guides/NODE-SCHEDULING.md)'s
+  CronJob-based scale-to-0 approach
+
+---
+
 ### setup-maas.sh
 **Purpose**: Set up Model as a Service (MaaS) API infrastructure
 
