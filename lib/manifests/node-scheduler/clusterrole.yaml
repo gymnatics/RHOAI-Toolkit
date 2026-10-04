@@ -1,0 +1,11 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-scheduler-machineset-scaler
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: node-scheduler
+rules:
+  - apiGroups: ["machine.openshift.io"]
+    resources: ["machinesets", "machinesets/scale"]
+    verbs: ["get", "list", "patch", "update"]

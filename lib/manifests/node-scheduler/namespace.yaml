@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: node-scheduler
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: node-scheduler

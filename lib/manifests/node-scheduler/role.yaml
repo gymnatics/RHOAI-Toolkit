@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: node-scheduler-hold-manager
+  namespace: node-scheduler
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: node-scheduler
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]

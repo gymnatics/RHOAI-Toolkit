@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-scheduler-scripts
+  namespace: node-scheduler
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: node-scheduler
+data:
+  scale.sh: |
+    #!/bin/bash
+    # Scale MachineSets up or down based on the ACTION env var.
+    #
+    # Required env vars:
+    #   ACTION     — "up" or "down"
+    #   NAMESPACE  — MachineSet namespace (default: openshift-machine-api)
+    #
+    # Hold mechanism (scale-down only):
+    #   The ConfigMap "node-scheduler-hold" in the node-scheduler namespace may
+    #   contain a "holdUntil" key with a UTC timestamp (e.g. 2026-09-25T20:00:00Z).
+    #   If the current time is before holdUntil, scale-down is skipped. This lets
+    #   users extend their working session past the scheduled 6 PM cutoff.
+
+    set -euo pipefail
+    NAMESPACE="${NAMESPACE:-openshift-machine-api}"
+    HOLD_NS="${HOLD_NS:-node-scheduler}"
+
+    scale_ms() {
+      local name="$1" replicas="$2"
+      echo "[$(date -u +%H:%M:%S)] Scaling $name -> $replicas replicas"
+      oc scale machineset "$name" -n "$NAMESPACE" --replicas="$replicas"
+    }
+
+    check_hold() {
+      local hold_until
+      hold_until=$(oc get configmap node-scheduler-hold -n "$HOLD_NS" \
+        -o jsonpath='{.data.holdUntil}' 2>/dev/null || true)
+      if [ -z "$hold_until" ]; then
+        return 1  # no hold set
+      fi
+      local hold_epoch now_epoch
+      hold_epoch=$(date -u -d "$hold_until" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$hold_until" +%s 2>/dev/null || echo 0)
+      now_epoch=$(date -u +%s)
+      if [ "$now_epoch" -lt "$hold_epoch" ]; then
+        echo "=== HOLD ACTIVE ==="
+        echo "Scale-down is held until $hold_until ($(( (hold_epoch - now_epoch) / 60 )) min remaining)."
+        echo "Skipping scale-down. Workers stay up."
+        echo ""
+        echo "To cancel the hold early:  oc delete configmap node-scheduler-hold -n $HOLD_NS"
+        echo "To extend further:         ./scripts/setup-node-scheduler.sh --extend 1h"
+        return 0  # hold is active
+      else
+        echo "(Hold expired at $hold_until — proceeding with scale-down)"
+        oc delete configmap node-scheduler-hold -n "$HOLD_NS" 2>/dev/null || true
+        return 1  # hold expired
+      fi
+    }
+
+    do_up() {
+      echo "=== SCALE UP — business hours ==="
+      for ms in $(oc get machinesets -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
+        case "$ms" in
+          *gpu-worker*)  scale_ms "$ms" "${GPU_REPLICAS_UP:-1}" ;;
+          *worker*2a*)   scale_ms "$ms" "${WORKER_2A_UP:-2}" ;;
+          *worker*2b*)   scale_ms "$ms" "${WORKER_2B_UP:-1}" ;;
+          *worker*2c*)   scale_ms "$ms" "${WORKER_2C_UP:-0}" ;;
+          *)             echo "  (skipping unknown machineset: $ms)" ;;
+        esac
+      done
+    }
+
+    do_down() {
+      echo "=== SCALE DOWN — off hours ==="
+      for ms in $(oc get machinesets -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
+        case "$ms" in
+          *gpu-worker*)  scale_ms "$ms" "${GPU_REPLICAS_DOWN:-0}" ;;
+          *worker*2a*)   scale_ms "$ms" "${WORKER_2A_DOWN:-0}" ;;
+          *worker*2b*)   scale_ms "$ms" "${WORKER_2B_DOWN:-0}" ;;
+          *worker*2c*)   scale_ms "$ms" "${WORKER_2C_DOWN:-0}" ;;
+          *)             echo "  (skipping unknown machineset: $ms)" ;;
+        esac
+      done
+    }
+
+    case "${ACTION:-}" in
+      up)   do_up ;;
+      down)
+        if check_hold; then
+          echo "Done (held)."
+          exit 0
+        fi
+        do_down
+        ;;
+      *)    echo "ERROR: ACTION must be 'up' or 'down'"; exit 1 ;;
+    esac
+
+    echo ""
+    echo "=== Final MachineSet state ==="
+    oc get machinesets -n "$NAMESPACE" \
+      -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,CURRENT:.status.replicas,READY:.status.readyReplicas'
+    echo "Done."

@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worker-scaleup
+  namespace: node-scheduler
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: node-scheduler
+spec:
+  # 8:00 AM Mon-Fri, Asia/Singapore (UTC+8)
+  schedule: "0 8 * * 1-5"
+  timeZone: "Asia/Singapore"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          serviceAccountName: node-scheduler
+          restartPolicy: Never
+          containers:
+            - name: scale
+              image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+              command: ["bash", "/scripts/scale.sh"]
+              env:
+                - name: ACTION
+                  value: "up"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: node-scheduler-scripts
+                defaultMode: 0755
