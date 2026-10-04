@@ -1,0 +1,62 @@
+# Denies mutations to Machine API / autoscaling infrastructure resources
+# (i.e. changing worker/control-plane node counts) for any human identity
+# that is not in the exempt "infra-owners" group.
+#
+# Why a ValidatingAdmissionPolicy instead of RBAC:
+# RBAC is additive-only. cluster-admin is a single wildcard rule
+# (apiGroups: ["*"], resources: ["*"], verbs: ["*"]), so there is no way to
+# grant cluster-admin "minus" a few resource types with RBAC alone. A
+# ValidatingAdmissionPolicy runs at the admission layer, AFTER RBAC
+# authorization succeeds, and can unconditionally deny specific requests
+# regardless of what the caller's RBAC permissions allow.
+#
+# Exemptions (matchConditions — policy does not apply, request proceeds to
+# normal RBAC-governed handling):
+#   - system: service accounts (machine-api-operator, cluster-autoscaler,
+#     machine-config-controller, etc. must keep working)
+#   - members of the "infra-owners" group (the cluster owner's break-glass
+#     identity — see clusterrolebinding is NOT created here; add users with
+#     `oc adm groups add-users infra-owners <user>`)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: protect-machine-infrastructure
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: restricted-admin
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["machine.openshift.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources:
+          - "machines"
+          - "machinesets"
+          - "machinesets/scale"
+          - "controlplanemachinesets"
+          - "machinehealthchecks"
+      - apiGroups: ["autoscaling.openshift.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources:
+          - "machineautoscalers"
+          - "clusterautoscalers"
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources:
+          - "nodes"
+  matchConditions:
+    - name: exclude-system-service-accounts
+      expression: "!request.userInfo.username.startsWith('system:')"
+    - name: exclude-infra-owners-group
+      expression: "!('infra-owners' in request.userInfo.groups)"
+  validations:
+    - expression: "false"
+      message: >-
+        Denied: this account is not permitted to change worker/control-plane
+        node counts (MachineSet, Machine, ControlPlaneMachineSet,
+        MachineHealthCheck, MachineAutoscaler, ClusterAutoscaler) or delete
+        Node objects. Contact the cluster owner if capacity needs to change.

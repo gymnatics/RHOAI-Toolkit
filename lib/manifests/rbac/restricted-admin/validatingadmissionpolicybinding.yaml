@@ -1,0 +1,11 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: protect-machine-infrastructure-binding
+  labels:
+    app.kubernetes.io/part-of: openshift-ai-toolkit
+    app.kubernetes.io/component: restricted-admin
+spec:
+  policyName: protect-machine-infrastructure
+  validationActions:
+    - Deny
