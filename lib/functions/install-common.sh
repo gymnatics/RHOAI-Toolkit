@@ -611,17 +611,45 @@ create_gateway_tls_secret() {
         print_info "Found ClusterIssuer '$issuer' — creating Certificate CR..."
         export ISSUER_NAME="$issuer"
         envsubst '${CLUSTER_DOMAIN} ${ISSUER_NAME}' < "$ROOT_DIR/lib/manifests/rhcl/gateway-tls-certificate.yaml" | oc_apply_retry
-        print_step "Waiting for cert-manager to generate TLS secret..."
+
+        # Wait for cert-manager to fully ISSUE the cert, not just create the secret.
+        # ACME DNS-01 for a wildcard + apex SAN pair (2 challenges) can take several
+        # minutes to propagate -- 120s was too aggressive and raced cert-manager,
+        # causing the fallback below to clobber an in-flight secret with a
+        # different-issuer cert right before cert-manager would have finished.
+        print_step "Waiting for cert-manager to issue the TLS certificate (ACME DNS-01 can take several minutes)..."
         local wait=0
-        while [ $wait -lt 120 ]; do
-            if oc get secret default-gateway-tls -n openshift-ingress &>/dev/null; then
-                print_success "default-gateway-tls created by cert-manager"
+        local timeout=300
+        local secret_seen=false
+        while [ $wait -lt $timeout ]; do
+            local ready
+            ready=$(oc get certificate default-gateway-tls -n openshift-ingress \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            if [ "$ready" = "True" ]; then
+                print_success "default-gateway-tls issued by cert-manager (Certificate Ready)"
                 return 0
+            fi
+            if [ "$secret_seen" = false ] && oc get secret default-gateway-tls -n openshift-ingress &>/dev/null; then
+                secret_seen=true
+                print_info "Secret created by cert-manager; still waiting for issuance to complete (Ready=False so far)..."
             fi
             sleep 5
             wait=$((wait + 5))
         done
-        print_warning "cert-manager did not create secret within 120s"
+
+        if [ "$secret_seen" = true ]; then
+            # cert-manager owns this secret and is actively reconciling it. Overwriting
+            # it now with a different (possibly different-issuer) fallback cert would
+            # just get clobbered again the moment cert-manager finishes -- or worse,
+            # mask the fact that issuance is stuck. Leave it alone and surface the
+            # Certificate's own status instead of silently swapping certs.
+            print_warning "cert-manager created the secret but Certificate is not Ready after ${timeout}s"
+            print_warning "Gateway will use whatever cert is currently in the secret (may be a temporary/placeholder cert)"
+            print_info "Check status with: oc describe certificate default-gateway-tls -n openshift-ingress"
+            return 0
+        fi
+
+        print_warning "cert-manager did not create a secret at all within ${timeout}s — falling back to an existing wildcard cert"
     fi
 
     # Strategy 2: Copy from existing wildcard cert (e.g. Let's Encrypt or router default)
