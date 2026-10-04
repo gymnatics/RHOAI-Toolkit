@@ -71,6 +71,8 @@ This single command provides an interactive menu to:
 | **GenAI Playground** | Interactive model testing interface |
 | **20 Demo Apps** | Banking, Open WebUI, LlamaStack, Guardrails, NIM, Pipelines, and more |
 | **Cross-Platform** | Works on macOS and Linux |
+| **Node Scheduling** | CronJob-based worker/GPU MachineSet scale up/down on a schedule to cut AWS costs on sandbox/demo clusters |
+| **Restricted Client Admin** | Hand off real `cluster-admin` to a client while an admission-layer policy blocks Machine API/node-count changes |
 
 ---
 
@@ -289,6 +291,8 @@ oc logs -n kuadrant-system -l control-plane=controller-manager --tail=50
 - [GPU ResourceFlavor Configuration](docs/reference/GPU-RESOURCEFLAVOR-CONFIGURATION.md)
 - [Tool Calling](docs/guides/TOOL-CALLING-GUIDE.md)
 - [llm-d Setup](docs/guides/LLMD-SETUP-GUIDE.md)
+- [Node Scheduling (Cost Saving)](docs/guides/NODE-SCHEDULING.md)
+- [Restricted Client Admin Access](docs/guides/RESTRICTED-CLIENT-ADMIN-ACCESS.md)
 - [RHOAI 3.3 Installation](docs/guides/rhoai-3.3/RHOAI-33-INSTALLATION.md) (archived)
 
 ---
