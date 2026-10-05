@@ -19,6 +19,7 @@
 #   ./scripts/setup-maas.sh --diagnose           # run scripts/diagnose-maas.sh after setup
 #   ./scripts/setup-maas.sh --enable-redis       # + Redis for Limitador persistence
 #   ./scripts/setup-maas.sh --enable-observability  # + DSCI monitoring (metrics/tracing)
+#                                                     # + MaaS telemetry (3.5+ only)
 #
 # Phases (RHOAI 3.4+):
 #   1. RHCL operator + Kuadrant + Authorino TLS + User Workload Monitoring (required,
@@ -117,7 +118,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --diagnose              Run scripts/diagnose-maas.sh after setup"
             echo "  --enable-redis          Deploy Redis for Limitador rate-limit counter"
             echo "                          persistence (survives Limitador pod restarts)"
-            echo "  --enable-observability  Configure DSCI monitoring (metrics + tracing)."
+            echo "  --enable-observability  Configure DSCI monitoring (metrics + tracing) and,"
+            echo "                          on RHOAI 3.5+, enable MaaS usage-telemetry capture."
             echo "                          Requires Tempo/OpenTelemetry/COO operators --"
             echo "                          use scripts/install-rhoai-35.sh for the full"
             echo "                          observability stack (Perses dashboards, Grafana)."
@@ -445,6 +447,65 @@ configure_dsci_monitoring() {
     oc wait --for=jsonpath='{.status.phase}'=Ready dsci/default-dsci --timeout=120s 2>/dev/null || true
 }
 
+# MaaS usage-metrics capture on MaasTenantConfig (RHOAI 3.5+ only -- the
+# Tenant CRD on 3.4 has no spec.telemetry field). Optional (--enable-observability),
+# non-interactive -- for the interactive, prompting version used from the
+# toolkit menu after install, see configure_maas_telemetry_interactive() in
+# lib/functions/maas-verify.sh. Previously duplicated verbatim as
+# install-rhoai-35.sh's own configure_maas_telemetry() -- now single-sourced
+# here per manifests-source-of-truth.mdc.
+configure_maas_telemetry() {
+    if ! is_rhoai_35_or_higher; then
+        print_info "MaaS telemetry capture requires RHOAI 3.5+ -- skipping on $RHOAI_VERSION"
+        return 0
+    fi
+
+    print_step "Enabling MaaS telemetry metrics..."
+
+    # Wait for MaasTenantConfig to exist (created by maas-controller)
+    local elapsed=0
+    while [ $elapsed -lt 120 ]; do
+        if oc get maastenantconfig default-tenant -n models-as-a-service &>/dev/null; then
+            break
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    if ! oc get maastenantconfig default-tenant -n models-as-a-service &>/dev/null; then
+        print_warning "MaasTenantConfig not found -- skipping telemetry configuration"
+        return 0
+    fi
+
+    local telemetry_enabled
+    telemetry_enabled=$(oc get maastenantconfig default-tenant -n models-as-a-service \
+        -o jsonpath='{.spec.telemetry.enabled}' 2>/dev/null)
+    if [ "$telemetry_enabled" = "true" ]; then
+        print_success "MaaS telemetry already enabled"
+        return 0
+    fi
+
+    if oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge -p '{
+        "spec": {
+            "telemetry": {
+                "enabled": true,
+                "metrics": {
+                    "captureGroup": true,
+                    "captureModelUsage": true,
+                    "captureOrganization": true,
+                    "captureUser": true
+                }
+            }
+        }
+    }' 2>/dev/null; then
+        print_success "MaaS telemetry enabled (group, model usage, organization, user metrics)"
+    else
+        print_warning "Could not enable MaaS telemetry -- apply manually:"
+        echo "  oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge \\"
+        echo "    -p '{\"spec\":{\"telemetry\":{\"enabled\":true,\"metrics\":{\"captureGroup\":true,\"captureModelUsage\":true,\"captureOrganization\":true,\"captureUser\":true}}}}'"
+    fi
+}
+
 phase2_gateway() {
     print_header "Phase 2: Gateway + Namespace Labels"
 
@@ -708,7 +769,7 @@ phase5_verify() {
         if [ "$telemetry_enabled" = "true" ]; then
             print_success "MaaS telemetry is enabled"
         else
-            print_info "MaaS telemetry not enabled (optional -- see configure_maas_telemetry in the installers)"
+            print_info "MaaS telemetry not enabled (optional -- re-run with --enable-observability)"
         fi
     else
         # RHOAI 3.4: Tenant CRD (not MaasTenantConfig), fewer CRDs expected
@@ -885,6 +946,7 @@ setup_maas_34_plus() {
 
         if [ "$ENABLE_OBSERVABILITY" = true ]; then
             configure_dsci_monitoring
+            configure_maas_telemetry
         fi
 
         if [ "$ENABLE_USAGE_LOGGING" = true ]; then

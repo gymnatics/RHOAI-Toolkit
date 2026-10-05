@@ -313,57 +313,14 @@ select_rhoai_channel() {
 
 ################################################################################
 # MaaS Telemetry Configuration
-# Enable usage metrics capture on MaasTenantConfig (RHOAI 3.5+)
-# Captures: group, model usage, organization, and user metrics
+# configure_maas_telemetry() has been removed: it duplicated setup-maas.sh's
+# own patch logic for MaasTenantConfig.spec.telemetry and could drift
+# independently. setup-maas.sh's --enable-observability flag (already passed
+# through via maas_extra_flags below) now enables MaaS telemetry capture
+# itself on RHOAI 3.5+, right alongside configure_dsci_monitoring -- see
+# setup-maas.sh's configure_maas_telemetry() (single source of truth per
+# manifests-source-of-truth.mdc).
 ################################################################################
-
-configure_maas_telemetry() {
-    print_step "Enabling MaaS telemetry metrics..."
-
-    # Wait for MaasTenantConfig to exist (created by maas-controller)
-    local elapsed=0
-    while [ $elapsed -lt 120 ]; do
-        if oc get maastenantconfig default-tenant -n models-as-a-service &>/dev/null; then
-            break
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-
-    if ! oc get maastenantconfig default-tenant -n models-as-a-service &>/dev/null; then
-        print_warning "MaasTenantConfig not found — skipping telemetry configuration"
-        return 0
-    fi
-
-    # Check if telemetry is already enabled
-    local telemetry_enabled=$(oc get maastenantconfig default-tenant -n models-as-a-service \
-        -o jsonpath='{.spec.telemetry.enabled}' 2>/dev/null)
-    if [ "$telemetry_enabled" = "true" ]; then
-        print_success "MaaS telemetry already enabled"
-        return 0
-    fi
-
-    # Enable all telemetry capture flags
-    if oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge -p '{
-        "spec": {
-            "telemetry": {
-                "enabled": true,
-                "metrics": {
-                    "captureGroup": true,
-                    "captureModelUsage": true,
-                    "captureOrganization": true,
-                    "captureUser": true
-                }
-            }
-        }
-    }' 2>/dev/null; then
-        print_success "MaaS telemetry enabled (group, model usage, organization, user metrics)"
-    else
-        print_warning "Could not enable MaaS telemetry — apply manually:"
-        echo "  oc patch maastenantconfig default-tenant -n models-as-a-service --type=merge \\"
-        echo "    -p '{\"spec\":{\"telemetry\":{\"enabled\":true,\"metrics\":{\"captureGroup\":true,\"captureModelUsage\":true,\"captureOrganization\":true,\"captureUser\":true}}}}'"
-    fi
-}
 
 # configure_maas_rate_limiting() has been removed: Redis-for-Limitador setup
 # (lib/functions/redis-limitador.sh) is now always requested via the
@@ -1220,12 +1177,9 @@ main() {
             print_info "  -n $MAAS_INFRA_NS"
         fi
 
-        # Kept in the installer (not moved to setup-maas.sh) since it's gated on the
-        # full observability stack this installer sets up below, matching
-        # install-rhoai-34.sh's equivalent configure_gateway_telemetry gating.
-        if [ "$ENABLE_OBSERVABILITY" = true ]; then
-            configure_maas_telemetry
-        fi
+        # MaaS telemetry (if ENABLE_OBSERVABILITY) is now enabled by setup-maas.sh
+        # itself above, via the --enable-observability flag in maas_extra_flags --
+        # see setup-maas.sh's configure_maas_telemetry().
     fi
 
     # Observability stack — Tempo + OpenTelemetry + COO + UIPlugins + Perses
