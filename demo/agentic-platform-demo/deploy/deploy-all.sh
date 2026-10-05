@@ -38,7 +38,9 @@ should_run() {
   if [[ -n "$ONLY_STEP" ]]; then
     [[ "$step" == "$ONLY_STEP" ]]
   else
-    [[ "$step" >= "$FROM_STEP" ]]
+    # bash's [[ ]] only supports < and > for lexicographic string comparison,
+    # not >= directly -- compose it from > and ==.
+    [[ "$step" > "$FROM_STEP" || "$step" == "$FROM_STEP" ]]
   fi
 }
 
