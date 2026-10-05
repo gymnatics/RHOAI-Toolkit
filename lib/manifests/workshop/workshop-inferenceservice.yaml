@@ -6,8 +6,13 @@ metadata:
   annotations:
     serving.kserve.io/deploymentMode: RawDeployment
     serving.kserve.io/autoscalerClass: external
+    # Required (along with the genai-asset label below) for RHOAI's GenAI
+    # Playground / AI Asset endpoints to recognize this as a usable model --
+    # see scripts/add-model-to-playground.sh's list_available_models().
+    opendatahub.io/model-type: generative
   labels:
     opendatahub.io/dashboard: 'true'
+    opendatahub.io/genai-asset: 'true'
 spec:
   predictor:
     minReplicas: 1

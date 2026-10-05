@@ -565,21 +565,26 @@ main() {
     
     echo ""
     
-    # List available models
-    if ! list_available_models "$namespace"; then
-        echo "Deploy a model first using:"
-        echo "  ./scripts/quick-deploy-model.sh"
-        echo "Or:"
-        echo "  ./rhoai-toolkit.sh (select option 3: Deploy Model)"
-        exit 1
-    fi
-    
     # Get model name (from CLI arg or prompt)
     local model_name
     if [ -n "$MODEL_NAME" ]; then
+        # An explicit -m/--model was given: skip the genai-asset label scan
+        # entirely. The scan is only a discovery aid for interactive mode --
+        # existence and readiness are independently verified below regardless,
+        # so gating on the label here would wrongly reject a valid, ready
+        # InferenceService just because it predates the genai-asset label
+        # convention or doesn't need Playground auto-discovery.
         model_name="$MODEL_NAME"
         print_info "Using model: $model_name"
     else
+        # Interactive mode: list genai-asset-labeled models to choose from
+        if ! list_available_models "$namespace"; then
+            echo "Deploy a model first using:"
+            echo "  ./scripts/quick-deploy-model.sh"
+            echo "Or:"
+            echo "  ./rhoai-toolkit.sh (select option 3: Deploy Model)"
+            exit 1
+        fi
         echo -e -n "${BLUE}Enter model name to add to playground${NC}: "
         read model_name
     fi

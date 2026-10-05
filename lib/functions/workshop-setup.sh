@@ -19,6 +19,7 @@
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/lib/utils/colors.sh" 2>/dev/null || true
+source "$ROOT_DIR/lib/utils/common.sh" 2>/dev/null || true
 
 setup_workshop_users() {
     local user_count="${1:-150}"
@@ -62,7 +63,7 @@ setup_workshop_users() {
     print_step "Creating htpasswd secret..."
     oc create secret generic workshop-htpasswd-secret \
         --from-file=htpasswd="$htpasswd_file" \
-        -n openshift-config --dry-run=client -o yaml | oc apply -f -
+        -n openshift-config --dry-run=client -o yaml | oc_apply_retry
     print_success "HTPasswd secret created"
     
     print_step "Configuring OAuth (preserving existing providers)..."
@@ -91,7 +92,7 @@ setup_workshop_users() {
     local user_list
     user_list=$(for i in $(seq 1 $user_count); do echo "- user$i"; done)
     export user_list
-    envsubst '${user_list}' < "$ROOT_DIR/lib/manifests/workshop/workshop-users-group.yaml.tmpl" | oc apply -f -
+    envsubst '${user_list}' < "$ROOT_DIR/lib/manifests/workshop/workshop-users-group.yaml.tmpl" | oc_apply_retry
     unset user_list
     print_success "Workshop users group created"
     
@@ -100,30 +101,45 @@ setup_workshop_users() {
     print_success "admin-workshop namespace ready"
     
     print_step "Creating Prometheus token..."
-    oc apply -f "$ROOT_DIR/lib/manifests/workshop/prometheus-token-monitoring.yaml"
+    oc_apply_retry -f "$ROOT_DIR/lib/manifests/workshop/prometheus-token-monitoring.yaml"
     sleep 5
     
     local token
     token=$(oc get secret grafana-prometheus-token -n openshift-monitoring -o jsonpath='{.data.token}' 2>/dev/null || true)
     if [ -n "$token" ]; then
         export PROMETHEUS_TOKEN="$token"
-        envsubst '${PROMETHEUS_TOKEN}' < "$ROOT_DIR/lib/manifests/workshop/prometheus-token-workshop.yaml" | oc apply -f -
+        envsubst '${PROMETHEUS_TOKEN}' < "$ROOT_DIR/lib/manifests/workshop/prometheus-token-workshop.yaml" | oc_apply_retry
         unset PROMETHEUS_TOKEN
         print_success "Prometheus token created in admin-workshop"
     fi
     
     print_step "Creating RBAC for workshop users..."
-    oc apply -f "$ROOT_DIR/lib/manifests/workshop/secret-reader-role.yaml"
-    
+    oc_apply_retry -f "$ROOT_DIR/lib/manifests/workshop/secret-reader-role.yaml"
+
+    # Each binding gets bounded retries (via oc_apply_retry) for transient API
+    # errors (e.g. a momentary "Forbidden"/connection blip from the apiserver).
+    # Failures are collected instead of aborting the whole function (and, since
+    # this is sourced into rhoai-toolkit.sh which runs under `set -e`, instead
+    # of silently killing the entire workshop setup mid-script) -- a single
+    # bad user shouldn't block users 11-150 or skip Grafana/model deployment.
+    local rbac_failures=()
     for i in $(seq 1 $user_count); do
         export USER_NAME="user$i"
-        envsubst '${USER_NAME}' < "$ROOT_DIR/lib/manifests/workshop/secret-reader-rolebinding.yaml" | oc apply -f - 2>/dev/null
+        if ! envsubst '${USER_NAME}' < "$ROOT_DIR/lib/manifests/workshop/secret-reader-rolebinding.yaml" | oc_apply_retry; then
+            rbac_failures+=("user$i")
+        fi
         if [ $((i % 10)) -eq 0 ] && [ $i -lt $user_count ]; then
             echo "  Created RBAC for $i users..."
         fi
     done
     unset USER_NAME
-    print_success "RBAC created for $user_count users"
+
+    if [ ${#rbac_failures[@]} -gt 0 ]; then
+        print_warning "RBAC failed for ${#rbac_failures[@]} user(s) even after retries: ${rbac_failures[*]}"
+        print_warning "Re-run 'Workshop Demo Setup > Add Workshop Users Only' to retry -- oc apply is idempotent, so already-created bindings are left untouched"
+    else
+        print_success "RBAC created for $user_count users"
+    fi
     
     print_success "Workshop users setup complete!"
     echo ""
