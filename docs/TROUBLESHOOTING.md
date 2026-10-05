@@ -56,6 +56,18 @@ Quick reference for common issues and solutions across OpenShift installation, R
 
 ## RHOAI Components
 
+### RHOAI Subscription Shows Literal `${INSTALL_PLAN_APPROVAL}`
+
+**Symptom:** The RHOAI operator Subscription shows `${INSTALL_PLAN_APPROVAL}` as the Update Approval value instead of `Automatic` or `Manual`.
+
+**Cause:** The `install_rhoai_operator()` function in `install-common.sh` was only substituting `${RHOAI_CHANNEL}` via `envsubst`, leaving `${INSTALL_PLAN_APPROVAL}` unresolved in the manifest template.
+
+**Fix (already applied in toolkit):** The `envsubst` call now includes both variables. To fix an already-affected cluster:
+```bash
+oc patch subscription rhods-operator -n redhat-ods-operator \
+  --type merge -p '{"spec":{"installPlanApproval":"Automatic"}}'
+```
+
 ### Cluster Restart — "Could not load component state"
 
 After stopping and restarting your AWS environment, the RHOAI dashboard shows errors and operators show "Unknown" status.

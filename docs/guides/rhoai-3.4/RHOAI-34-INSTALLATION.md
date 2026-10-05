@@ -271,7 +271,9 @@ curl -sk https://maas.apps.CLUSTER_DOMAIN/health
 
 ```bash
 # Install RHOAI operator (channel: stable-3.4)
-oc apply -f lib/manifests/rhoai/rhoai-subscription.yaml
+export RHOAI_CHANNEL="stable-3.4"
+export INSTALL_PLAN_APPROVAL="Automatic"
+envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < lib/manifests/rhoai/rhoai-subscription.yaml | oc apply -f -
 
 # Wait for CSV
 oc get csv -n redhat-ods-operator -w

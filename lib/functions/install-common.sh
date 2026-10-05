@@ -544,7 +544,9 @@ install_rhoai_operator() {
 
     print_step "Creating RHOAI subscription with channel: $RHOAI_CHANNEL"
     export RHOAI_CHANNEL
-    envsubst '${RHOAI_CHANNEL}' < "$ROOT_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    export INSTALL_PLAN_APPROVAL="${INSTALL_PLAN_APPROVAL:-Automatic}"
+    envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < "$ROOT_DIR/lib/manifests/rhoai/rhoai-subscription.yaml" | oc apply -f -
+    unset INSTALL_PLAN_APPROVAL
 
     wait_for_operator "rhods" "redhat-ods-operator"
 

@@ -410,7 +410,8 @@ oc create namespace redhat-ods-operator 2>/dev/null || true
 oc apply -f lib/manifests/rhoai/rhoai-operatorgroup.yaml
 
 export RHOAI_CHANNEL
-envsubst '${RHOAI_CHANNEL}' < lib/manifests/rhoai/rhoai-subscription.yaml | oc apply -f -
+export INSTALL_PLAN_APPROVAL="${INSTALL_PLAN_APPROVAL:-Automatic}"
+envsubst '${RHOAI_CHANNEL} ${INSTALL_PLAN_APPROVAL}' < lib/manifests/rhoai/rhoai-subscription.yaml | oc apply -f -
 ```
 
 Wait for the operator:
@@ -2756,7 +2757,7 @@ All manifests are under `lib/manifests/`. Templates using `envsubst` are noted.
 | | `operators/servicemesh3-subscription.yaml` | — |
 | | `operators/jobset-subscription.yaml` | — |
 | **RHOAI** | `rhoai/rhoai-operatorgroup.yaml` | — |
-| | `rhoai/rhoai-subscription.yaml` | `${RHOAI_CHANNEL}` |
+| | `rhoai/rhoai-subscription.yaml` | `${RHOAI_CHANNEL}`, `${INSTALL_PLAN_APPROVAL}` |
 | | `rhoai/dscinitialization.yaml` | — |
 | | `rhoai/datasciencecluster-v3-35.yaml` | — |
 | | `rhoai/hardware-profile-gpu.yaml` | — |
