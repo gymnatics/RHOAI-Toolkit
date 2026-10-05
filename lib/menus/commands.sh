@@ -46,6 +46,12 @@ show_commands_help() {
     echo -e "${MAGENTA}User Management:${NC}"
     echo "  setup users                   Create users + assign ClusterRoles"
     echo "  setup users --roles-only      Add roles to existing users"
+    echo "  setup client-admin            Create restricted cluster-admin client access"
+    echo ""
+    echo -e "${MAGENTA}Day 2 / Cluster Ops:${NC}"
+    echo "  setup node-scheduler           Deploy worker/GPU node scale up/down CronJobs"
+    echo "  setup node-scheduler --status  Show node scheduler status / next runs"
+    echo "  clone workbenches              Retry git clone in demo workbenches"
     echo ""
     echo -e "${MAGENTA}GPU & Hardware:${NC}"
     echo "  create gpu-machineset         Create GPU MachineSet on AWS"
@@ -153,9 +159,27 @@ route_command() {
                         manage_users_interactive
                     fi
                     ;;
+                client-admin|restricted-admin)
+                    exec "$_COMMANDS_DIR/scripts/create-restricted-client-admin.sh" "$@"
+                    ;;
+                node-scheduler|node-schedule)
+                    exec "$_COMMANDS_DIR/scripts/setup-node-scheduler.sh" "$@"
+                    ;;
                 *)
                     print_error "Unknown setup target: $subcmd"
-                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast, users"
+                    echo "Available: maas, llamastack, model-registry, pipeline-server, feast, users, client-admin, node-scheduler"
+                    return 1
+                    ;;
+            esac
+            ;;
+        clone)
+            case "$subcmd" in
+                workbenches|workbench)
+                    exec "$_COMMANDS_DIR/scripts/clone-toolkit-in-workbenches.sh" "$@"
+                    ;;
+                *)
+                    print_error "Unknown clone target: $subcmd"
+                    echo "Available: workbenches"
                     return 1
                     ;;
             esac

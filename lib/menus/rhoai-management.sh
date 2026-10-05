@@ -222,6 +222,11 @@ show_help() {
     echo "  ./scripts/cleanup-all.sh [--local-only]"
     echo "  ./scripts/manage-kubeconfig.sh"
     echo ""
+    echo -e "${GREEN}Day 2 / Cluster Ops:${NC}"
+    echo "  ./scripts/setup-node-scheduler.sh [--status|--trigger up|down|--remove]"
+    echo "  ./scripts/create-restricted-client-admin.sh --client-user <name> --client-password <pw>"
+    echo "  ./scripts/clone-toolkit-in-workbenches.sh [-n ns1,ns2|--all-ns]"
+    echo ""
     
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${CYAN}Command-Line Flags${NC}"
