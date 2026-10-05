@@ -3322,16 +3322,18 @@ setup_pipeline_server() {
     echo -e "${BLUE}Pipeline server requires S3-compatible storage for artifacts.${NC}"
     echo ""
     
-    # Detect existing MinIO deployments (build arrays for a numbered picker below,
-    # so users select an entry instead of free-typing a namespace/name pair)
-    local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | grep -i minio | awk '{print $1 "\t" $2}')
+    # Detect existing S3-compatible storage deployments (SeaweedFS -- the
+    # toolkit default since the MinIO->SeaweedFS migration -- or legacy
+    # MinIO). Build arrays for a numbered picker below, so users select an
+    # entry instead of free-typing a namespace/name pair.
+    local minio_deployments=$(oc get deployment -A --no-headers 2>/dev/null | awk 'tolower($2) ~ /minio|seaweedfs/ {print $1 "\t" $2}')
     local -a detect_ns=() detect_dep=() detect_svc=() detect_port=()
 
     if [ -n "$minio_deployments" ]; then
-        echo -e "${CYAN}Existing MinIO deployments found:${NC}"
+        echo -e "${CYAN}Existing S3 storage deployments found:${NC}"
         while IFS=$'\t' read -r ns name; do
             [ -z "$ns" ] && continue
-            local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep minio | grep -v console | awk '{print $1}' | head -1)
+            local minio_svc=$(oc get svc -n "$ns" --no-headers 2>/dev/null | grep -iE "minio|seaweedfs" | grep -v console | awk '{print $1}' | head -1)
             minio_svc="${minio_svc:-minio}"
             local minio_port=$(oc get svc "$minio_svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)
             minio_port="${minio_port:-9000}"
@@ -3345,15 +3347,19 @@ setup_pipeline_server() {
     fi
     
     echo -e "${YELLOW}Storage options:${NC}"
-    echo "  1) Built-in MinIO + MariaDB (simplest, for dev/testing)"
-    echo "  2) Use existing external S3 storage"
-    echo "  3) Deploy standalone MinIO in this namespace"
+    echo "  1) SeaweedFS / external S3 (recommended -- toolkit default; auto-deployed in"
+    echo "     '$target_ns' via storage-backend.sh if not already present)"
+    echo "  2) Built-in MinIO + MariaDB (operator-managed; legacy quay.io/opendatahub/minio"
+    echo "     2019 image -- 41 known CVEs in base OS libs, single frozen tag, no updates"
+    echo "     since 2022. See docs/guides/S3-BACKEND-MIGRATION.md)"
+    echo "  3) Use a different existing external S3 (manual entry)"
+    echo "  4) Deploy standalone MinIO in this namespace (deprecated)"
     echo ""
     read -p "Select option [1]: " storage_choice
     storage_choice="${storage_choice:-1}"
     
     local s3_endpoint=""
-    local s3_bucket="pipelines"
+    local s3_bucket="mlpipeline"
     local s3_access_key=""
     local s3_secret_key=""
     local s3_scheme="http"
@@ -3363,12 +3369,13 @@ setup_pipeline_server() {
     local use_builtin_storage=false
     local dspa_name="pipelines-definition"
     
-    if [ "$storage_choice" = "1" ]; then
+    if [ "$storage_choice" = "2" ]; then
         # Built-in MinIO + MariaDB managed by the DSPA operator
         use_builtin_storage=true
         echo ""
         print_info "DSPA operator will deploy MinIO and MariaDB automatically"
-        print_info "This is recommended for development and testing"
+        print_warning "This uses the legacy quay.io/opendatahub/minio 2019 image (41 known CVEs)"
+        print_info "Recommended only for quick dev/testing where SeaweedFS isn't warranted"
         echo ""
         
         read -p "  MinIO PVC size [10Gi]: " minio_pvc_size
@@ -3377,7 +3384,7 @@ setup_pipeline_server() {
         read -p "  MariaDB PVC size [10Gi]: " mariadb_pvc_size
         mariadb_pvc_size="${mariadb_pvc_size:-10Gi}"
         
-    elif [ "$storage_choice" = "2" ]; then
+    elif [ "$storage_choice" = "3" ]; then
         # Reuse existing external S3 -- pick from the detected list above rather
         # than free-typing a host, which invites pasting the "ns / name" display
         # format verbatim as the hostname (an easy, hard-to-notice mistake: it
@@ -3387,7 +3394,7 @@ setup_pipeline_server() {
         local minio_ns="" minio_svc=""
 
         if [ "${#detect_ns[@]}" -gt 0 ]; then
-            echo -e "${CYAN}Select which MinIO/S3 to use:${NC}"
+            echo -e "${CYAN}Select which S3 storage to use:${NC}"
             local i=1
             while [ "$i" -le "${#detect_ns[@]}" ]; do
                 echo "  $i) ${detect_ns[$((i-1))]} / ${detect_dep[$((i-1))]}"
@@ -3484,7 +3491,7 @@ setup_pipeline_server() {
 
         print_success "Using external S3: $s3_host:$s3_port (bucket: $s3_bucket)"
 
-    else
+    elif [ "$storage_choice" = "4" ]; then
         # Deploy standalone MinIO
         echo ""
         print_step "Deploying standalone MinIO in '$target_ns'..."
@@ -3521,6 +3528,39 @@ setup_pipeline_server() {
         done
         
         print_info "MinIO credentials: $s3_access_key / $s3_secret_key"
+
+    else
+        # Default (storage_choice = 1, or unrecognized input): SeaweedFS /
+        # whatever S3_BACKEND is configured, auto-deployed in this namespace
+        # via storage-backend.sh if not already present. This matches the
+        # toolkit's default S3 backend (lib/functions/storage-backend.sh) and
+        # is the path verified end-to-end against a live DSPA + SeaweedFS
+        # (ObjectStoreAvailable=True, pipeline run succeeded, artifact
+        # round-tripped through S3) during the DSPA MinIO investigation --
+        # see docs/guides/S3-BACKEND-MIGRATION.md.
+        echo ""
+        if type detect_or_select_storage_backend &>/dev/null && type deploy_storage_backend &>/dev/null; then
+            detect_or_select_storage_backend "$target_ns"
+            print_step "Setting up S3 storage (${S3_BACKEND}) in '$target_ns'..."
+            deploy_storage_backend "$target_ns"
+            wait_for_storage "$target_ns"
+            create_storage_bucket "$target_ns" "$s3_bucket"
+
+            s3_access_key="${S3_ACCESS_KEY:-admin}"
+            s3_secret_key="${S3_SECRET_KEY:-admin123}"
+            local _ep _hostport
+            _ep="$(get_storage_endpoint "$target_ns")"
+            s3_scheme="${_ep%%://*}"
+            _hostport="${_ep#*://}"
+            s3_host="${_hostport%%:*}"
+            s3_port="${_hostport##*:}"
+            print_success "Using ${S3_BACKEND} at $s3_host:$s3_port (bucket: $s3_bucket)"
+        else
+            print_warning "storage-backend.sh not available -- falling back to built-in MinIO"
+            use_builtin_storage=true
+            minio_pvc_size="10Gi"
+            mariadb_pvc_size="10Gi"
+        fi
     fi
     
     ############################################################################
