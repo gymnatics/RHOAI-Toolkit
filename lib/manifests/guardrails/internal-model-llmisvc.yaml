@@ -1,0 +1,58 @@
+# Internal CPU-only model for the NeMo Guardrails self-check demo.
+#
+# Deliberately NOT wired to the MaaS gateway (no spec.router.gateway.refs) --
+# this model is only reachable via its own in-cluster predictor Service, so
+# NeMo Guardrails can wrap it directly without any MaaS involvement. Reuses
+# the same llm-d-inference-sim image/command as lib/manifests/maas/models/
+# simulator/llm/model.yaml (see that file for the detailed command/TLS/
+# tokenizer gotchas this depends on -- same image, same gotchas apply here).
+#
+# Usage:
+#   export NAMESPACE=nemo-guardrails-demo
+#   envsubst < internal-model-llmisvc.yaml | oc apply -f -
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: guardrails-internal-model
+  namespace: ${NAMESPACE}
+spec:
+  model:
+    name: facebook/opt-125m
+    uri: hf://sshleifer/tiny-gpt2
+  replicas: 1
+  router:
+    route: {}
+  template:
+    containers:
+      - name: main
+        image: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1
+        command:
+          - /app/llm-d-inference-sim
+        args:
+          - "--port=8000"
+          - "--model=facebook/opt-125m"
+          - "--mode=echo"
+          # Default is 1024 -- too small for NeMo Guardrails self-check calls,
+          # which embed a full system prompt (can be several hundred tokens)
+          # plus the user message and still request a full completion budget.
+          - "--max-model-len=8192"
+          - "--ssl-certfile=/var/run/kserve/tls/tls.crt"
+          - "--ssl-keyfile=/var/run/kserve/tls/tls.key"
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5

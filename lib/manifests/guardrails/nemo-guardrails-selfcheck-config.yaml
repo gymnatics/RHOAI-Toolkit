@@ -20,7 +20,14 @@ data:
       - type: main
         engine: openai
         parameters:
-          openai_api_base: "${MODEL_PREDICTOR_URL}"
+          # NOTE: NOT openai_api_base -- that's the deprecated 0.21-style
+          # LangChain key. The deployed NeMo Guardrails server (post-0.23.0
+          # framework) requires `base_url` instead, or it fails at runtime
+          # with "Could not load guardrails configuration" on every request
+          # (confirmed live on RHOAI 3.5.1, 2026-10-05). See the migration
+          # note in NeMo Guardrails' own error message if this ever
+          # resurfaces after an operator upgrade.
+          base_url: "${MODEL_PREDICTOR_URL}"
           model_name: "${MODEL_NAME}"
     rails:
       config:

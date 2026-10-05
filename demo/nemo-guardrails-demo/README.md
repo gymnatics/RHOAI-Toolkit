@@ -21,7 +21,19 @@ Deploy NeMo Guardrails via the TrustyAI operator CRD.
 ### Self-Check (`--selfcheck`)
 - Everything in basic mode
 - LLM-powered input/output validation
-- Requires a deployed model endpoint
+- Requires a deployed model endpoint (any existing `InferenceService` on the
+  cluster -- the script lists them and prompts for namespace/name, then
+  wraps it as the self-check judge model)
+- No GPU on hand to deploy a real model just to test this flow? Apply
+  `lib/manifests/guardrails/internal-model-llmisvc.yaml` (CPU-only,
+  ~30s to start, uses the same `llm-d-inference-sim` image as the MaaS
+  `simulator` model) into your namespace first, then pass its direct
+  predictor Service (`<name>-kserve-workload-svc.<ns>.svc.cluster.local:8000`)
+  as the model endpoint. Note: in `--mode=echo`, the simulator just echoes
+  the self-check prompt back rather than reasoning about it, so it will
+  verify the wiring (config loads, the LLM call succeeds, no errors) but
+  can't demonstrate correct allow/block *discrimination* -- for that, wrap
+  a real instruction-following model.
 
 ## What's Deployed
 
