@@ -605,8 +605,9 @@ show_feast_status() {
         echo -e "${YELLOW}Checking for potential issues:${NC}"
         echo "$featurestores" | jq -r '.items[] | select(.metadata.labels["feature-store-ui"] != "enabled") | "  ⚠ \(.metadata.namespace)/\(.metadata.name): Missing feature-store-ui label"' 2>/dev/null
         echo "$featurestores" | jq -r '.items[] | select(.spec.services.registry.local.server.restAPI != true) | "  ⚠ \(.metadata.namespace)/\(.metadata.name): restAPI not enabled"' 2>/dev/null
+        echo "$featurestores" | jq -r '.items[] | select(.spec.authz.noAuth != true) | "  ⚠ \(.metadata.namespace)/\(.metadata.name): authz.noAuth not set (dashboard cannot query Feast registry)"' 2>/dev/null
         
-        local issues_found=$(echo "$featurestores" | jq '[.items[] | select(.metadata.labels["feature-store-ui"] != "enabled" or .spec.services.registry.local.server.restAPI != true)] | length')
+        local issues_found=$(echo "$featurestores" | jq '[.items[] | select(.metadata.labels["feature-store-ui"] != "enabled" or .spec.services.registry.local.server.restAPI != true or .spec.authz.noAuth != true)] | length')
         if [ "$issues_found" = "0" ]; then
             echo -e "  ${GREEN}✓ No configuration issues detected${NC}"
         else

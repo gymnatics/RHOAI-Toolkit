@@ -16,6 +16,8 @@ metadata:
 ${EXTRA_LABELS}
   name: ${FEAST_PROJECT}
 spec:
+  authz:
+    noAuth: true
   feastProject: ${FEAST_PROJECT}
   feastProjectDir:
     git:
