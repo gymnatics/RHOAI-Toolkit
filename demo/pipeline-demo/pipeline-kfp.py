@@ -144,8 +144,8 @@ def register_model(
     s3_client = boto3.client(
         "s3",
         endpoint_url=s3_endpoint,
-        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "admin"),
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "admin123"),
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "minio"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "minio123"),
         verify=False,
     )
 
@@ -193,7 +193,7 @@ def loan_pipeline(
     model_name: str = "loan-approval-kfp",
     model_version: str = "v1",
     s3_bucket: str = "models",
-    s3_endpoint: str = "http://seaweedfs-s3.pipeline-demo.svc:8333",
+    s3_endpoint: str = "http://minio-pipelines-definition.pipeline-demo.svc:9000",
     registry_url: str = "http://model-registry.rhoai-model-registries.svc:8080",
 ):
     prep_task = data_prep(raw_data_path=raw_data_path)

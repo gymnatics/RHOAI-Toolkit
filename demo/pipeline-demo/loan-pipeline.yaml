@@ -7,7 +7,7 @@
 #    raw_data_path: str [Default: 'https://raw.githubusercontent.com/gymnatics/RHOAI-Toolkit/main/demo/pipeline-demo/data/sample-loans.csv']
 #    registry_url: str [Default: 'http://model-registry.rhoai-model-registries.svc:8080']
 #    s3_bucket: str [Default: 'models']
-#    s3_endpoint: str [Default: 'http://seaweedfs-s3.pipeline-demo.svc:8333']
+#    s3_endpoint: str [Default: 'http://minio-pipelines-definition.pipeline-demo.svc:9000']
 components:
   comp-data-prep:
     executorLabel: exec-data-prep
@@ -196,9 +196,9 @@ deploymentSpec:
           \ Model Registry.\"\"\"\n    import joblib\n    import boto3\n    import\
           \ requests\n    import os\n\n    s3_key = f\"models/{model_name}/{model_version}/model.joblib\"\
           \n    s3_client = boto3.client(\n        \"s3\",\n        endpoint_url=s3_endpoint,\n\
-          \        aws_access_key_id=os.environ.get(\"AWS_ACCESS_KEY_ID\", \"admin\"\
+          \        aws_access_key_id=os.environ.get(\"AWS_ACCESS_KEY_ID\", \"minio\"\
           ),\n        aws_secret_access_key=os.environ.get(\"AWS_SECRET_ACCESS_KEY\"\
-          , \"admin123\"),\n        verify=False,\n    )\n\n    try:\n        s3_client.head_bucket(Bucket=s3_bucket)\n\
+          , \"minio123\"),\n        verify=False,\n    )\n\n    try:\n        s3_client.head_bucket(Bucket=s3_bucket)\n\
           \    except Exception:\n        s3_client.create_bucket(Bucket=s3_bucket)\n\
           \n    s3_client.upload_file(trained_model.path, s3_bucket, s3_key)\n   \
           \ s3_uri = f\"s3://{s3_bucket}/{s3_key}\"\n    print(f\"Model uploaded to\
@@ -359,7 +359,7 @@ root:
         isOptional: true
         parameterType: STRING
       s3_endpoint:
-        defaultValue: http://seaweedfs-s3.pipeline-demo.svc:8333
+        defaultValue: http://minio-pipelines-definition.pipeline-demo.svc:9000
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
