@@ -1032,7 +1032,10 @@ check_prerequisites() {
     fi
 
     if ! command -v envsubst &> /dev/null; then
-        print_error "envsubst not found. Install it with: brew install gettext (macOS) or yum install gettext (RHEL)"
+        print_error "envsubst not found. Install it with:"
+        echo "  macOS:       brew install gettext"
+        echo "  RHEL/Fedora: sudo dnf install gettext"
+        echo "  Ubuntu:      sudo apt install gettext"
         exit 1
     fi
 
