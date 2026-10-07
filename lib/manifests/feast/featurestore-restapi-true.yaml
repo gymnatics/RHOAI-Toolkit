@@ -2,11 +2,12 @@
 # Used in setup_feature_store for new FeatureStore creation.
 #
 # Variables:
-#   ${NAMESPACE}     - Target namespace
-#   ${FEAST_PROJECT} - Feast project name
-#   ${GIT_REF}       - Git branch/tag
-#   ${GIT_URL}       - Git repository URL
-#   ${EXTRA_LABELS}  - Pre-formatted extra labels (RHOAI 3.3+ dashboard label)
+# Variables (do NOT use ${} syntax in comments — envsubst replaces them):
+#   NAMESPACE      - Target namespace
+#   FEAST_PROJECT  - Feast project name
+#   GIT_REF        - Git branch/tag
+#   GIT_URL        - Git repository URL
+#   EXTRA_LABELS   - Pre-formatted extra labels (RHOAI 3.3+ dashboard label)
 ---
 apiVersion: feast.dev/v1alpha1
 kind: FeatureStore

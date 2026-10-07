@@ -1031,6 +1031,11 @@ check_prerequisites() {
         exit 1
     fi
 
+    if ! command -v envsubst &> /dev/null; then
+        print_error "envsubst not found. Install it with: brew install gettext (macOS) or yum install gettext (RHEL)"
+        exit 1
+    fi
+
     if ! oc whoami &> /dev/null; then
         print_error "Not logged in to OpenShift cluster. Please run 'oc login' first."
         exit 1

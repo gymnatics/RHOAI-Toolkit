@@ -2,12 +2,12 @@
 # Used in the two-step approach: create with restAPI false, wait for pod,
 # then flip to true.
 #
-# Variables:
-#   ${NAMESPACE}     - Target namespace
-#   ${FEAST_PROJECT} - Feast project name
-#   ${GIT_REF}       - Git branch/tag
-#   ${GIT_URL}       - Git repository URL
-#   ${FEAST_LABELS}  - Pre-formatted label block (includes conditional RHOAI 3.3+ labels)
+# Variables (do NOT use ${} syntax in comments — envsubst replaces them):
+#   NAMESPACE      - Target namespace
+#   FEAST_PROJECT  - Feast project name
+#   GIT_REF        - Git branch/tag
+#   GIT_URL        - Git repository URL
+#   FEAST_LABELS   - Pre-formatted label block (includes conditional RHOAI 3.3+ labels)
 ---
 apiVersion: feast.dev/v1alpha1
 kind: FeatureStore
