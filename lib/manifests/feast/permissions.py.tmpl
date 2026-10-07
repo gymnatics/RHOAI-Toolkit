@@ -1,0 +1,51 @@
+# Feast Permissions — auto-deployed by the RHOAI Toolkit's deploy_banking_demo.
+#
+# These permissions work with spec.authz.kubernetes: {} (auth ENABLED) and
+# grant the minimum access needed for the RHOAI dashboard, notebooks, and
+# admin users to interact with the Feature Store:
+#
+#   1. authenticated_read: any logged-in user (system:authenticated) can
+#      browse/read features — required for the RHOAI dashboard Feature Store
+#      UI and for notebooks doing online/offline retrieval.
+#   2. namespace_read: pods running in the Feast namespace or the RHOAI
+#      dashboard namespace can read features (belt-and-suspenders for
+#      in-cluster service-to-service calls).
+#   3. admin_full_access: users with cluster-admin/admin/feast-writer roles
+#      have full CRUD (feast apply, materialize, etc.).
+#
+# The NAMESPACE placeholder below is patched by deploy_banking_demo to match
+# the actual OpenShift namespace at deploy time.
+
+from feast.feast_object import ALL_RESOURCE_TYPES
+from feast.permissions.permission import Permission
+from feast.permissions.action import READ, AuthzedAction, ALL_ACTIONS
+from feast.permissions.policy import RoleBasedPolicy, GroupBasedPolicy, NamespaceBasedPolicy
+
+# Namespaces permitted for read access:
+#   - ${FEAST_NAMESPACE}: the namespace where this FeatureStore is deployed
+#   - redhat-ods-applications: where the RHOAI dashboard runs
+permitted_namespaces = ["${FEAST_NAMESPACE}", "redhat-ods-applications"]
+
+# 1. Any authenticated user can read/browse features (dashboard, notebooks, etc.)
+authenticated_read = Permission(
+    name="authenticated_read",
+    types=ALL_RESOURCE_TYPES,
+    policy=GroupBasedPolicy(groups=["system:authenticated"]),
+    actions=[AuthzedAction.DESCRIBE] + READ,
+)
+
+# 2. Namespace-based read access (in-cluster service-to-service)
+namespace_read = Permission(
+    name="namespace_read",
+    types=ALL_RESOURCE_TYPES,
+    policy=NamespaceBasedPolicy(namespaces=permitted_namespaces),
+    actions=[AuthzedAction.DESCRIBE] + READ,
+)
+
+# 3. Admin full access (feast apply, materialize, write online store, etc.)
+admin_full_access = Permission(
+    name="admin_full_access",
+    types=ALL_RESOURCE_TYPES,
+    policy=RoleBasedPolicy(roles=["feast-writer", "cluster-admin", "admin"]),
+    actions=ALL_ACTIONS,
+)

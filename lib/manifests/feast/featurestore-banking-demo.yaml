@@ -43,9 +43,12 @@
 #   4. Namespace label: feature-store-ui=enabled
 #   5. Namespace label: opendatahub.io/feast=true
 #   6. Services: feast-<name>-registry AND feast-<name>-registry-rest must exist
-#   7. spec.authz.noAuth: true (without this, the dashboard can't query the
-#      Feast registry REST API and shows "No feature stores yet" even though
-#      the backend is fully functional — confirmed on RHOAI 3.5.1)
+#   7. spec.authz.kubernetes: {} (Kubernetes auth enabled — requires proper
+#      permissions.py with system:authenticated read access so the dashboard
+#      can query the Feast registry. The toolkit's deploy_banking_demo
+#      auto-deploys lib/manifests/feast/permissions.py.tmpl with the correct
+#      permissions. If deploying this manifest directly, copy permissions.py.tmpl
+#      into the feature_repo/ dir and run feast apply.)
 #
 # If FeatureStore disappears from dashboard after 3.2→3.3 upgrade:
 #   oc label featurestore banking -n <namespace> feature-store-ui=enabled --overwrite
@@ -62,7 +65,7 @@ metadata:
   name: banking
 spec:
   authz:
-    noAuth: true
+    kubernetes: {}
   feastProject: banking
   feastProjectDir:
     git:

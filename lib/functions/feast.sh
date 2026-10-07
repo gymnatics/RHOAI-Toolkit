@@ -231,16 +231,32 @@ deploy_banking_demo() {
     print_success "Registry REST API enabled"
     sleep 10
     
-    # Auto-patch permissions.py so NamespaceBasedPolicy matches the actual
-    # OpenShift namespace instead of the upstream repo's hardcoded "banking"
-    # project name. Must happen before feast apply so the fix is registered.
-    # (See check_featurestore_rbac_namespace/fix_featurestore_rbac_namespace
-    # in lib/utils/rhoai-version.sh - also used by the diagnose flow.)
-    if type check_featurestore_rbac_namespace &>/dev/null; then
-        if ! check_featurestore_rbac_namespace "$namespace" "$feast_project"; then
-            fix_featurestore_rbac_namespace "$namespace" "$feast_project"
-        else
-            print_success "RBAC permissions.py namespace matches (or not in use)"
+    # Auto-deploy the toolkit's permissions.py template, which grants:
+    #   - system:authenticated read access (dashboard + notebooks)
+    #   - namespace-based read for in-cluster service calls
+    #   - admin/cluster-admin full CRUD access
+    # This replaces the upstream repo's hardcoded permissions.py that only
+    # allows the "banking" namespace (see featurestore-banking-demo.yaml
+    # RBAC gotcha comment). The FEAST_NAMESPACE placeholder is substituted
+    # to match the actual deployment namespace.
+    local _perms_tmpl="$_FEAST_LIB_DIR/lib/manifests/feast/permissions.py.tmpl"
+    if [ -f "$_perms_tmpl" ]; then
+        print_step "Deploying toolkit permissions.py (auth-enabled, dashboard-compatible)..."
+        export FEAST_NAMESPACE="$namespace"
+        local _rendered
+        _rendered=$(envsubst '${FEAST_NAMESPACE}' < "$_perms_tmpl")
+        unset FEAST_NAMESPACE
+        echo "$_rendered" | oc exec -i -n "$namespace" "$feast_pod" -c registry -- \
+            bash -c "cat > /feast-data/banking/feature_repo/permissions.py"
+        print_success "permissions.py deployed (namespace=$namespace, auth=kubernetes)"
+    else
+        # Fallback: patch the upstream repo's permissions.py namespace only
+        if type check_featurestore_rbac_namespace &>/dev/null; then
+            if ! check_featurestore_rbac_namespace "$namespace" "$feast_project"; then
+                fix_featurestore_rbac_namespace "$namespace" "$feast_project"
+            else
+                print_success "RBAC permissions.py namespace matches (or not in use)"
+            fi
         fi
     fi
     
@@ -605,9 +621,9 @@ show_feast_status() {
         echo -e "${YELLOW}Checking for potential issues:${NC}"
         echo "$featurestores" | jq -r '.items[] | select(.metadata.labels["feature-store-ui"] != "enabled") | "  ⚠ \(.metadata.namespace)/\(.metadata.name): Missing feature-store-ui label"' 2>/dev/null
         echo "$featurestores" | jq -r '.items[] | select(.spec.services.registry.local.server.restAPI != true) | "  ⚠ \(.metadata.namespace)/\(.metadata.name): restAPI not enabled"' 2>/dev/null
-        echo "$featurestores" | jq -r '.items[] | select(.spec.authz.noAuth != true) | "  ⚠ \(.metadata.namespace)/\(.metadata.name): authz.noAuth not set (dashboard cannot query Feast registry)"' 2>/dev/null
+        echo "$featurestores" | jq -r '.items[] | select(.spec.authz.kubernetes == null and .spec.authz.noAuth != true) | "  ⚠ \(.metadata.namespace)/\(.metadata.name): authz not configured (set kubernetes: {} with proper permissions.py, or noAuth: true for testing)"' 2>/dev/null
         
-        local issues_found=$(echo "$featurestores" | jq '[.items[] | select(.metadata.labels["feature-store-ui"] != "enabled" or .spec.services.registry.local.server.restAPI != true or .spec.authz.noAuth != true)] | length')
+        local issues_found=$(echo "$featurestores" | jq '[.items[] | select(.metadata.labels["feature-store-ui"] != "enabled" or .spec.services.registry.local.server.restAPI != true)] | length')
         if [ "$issues_found" = "0" ]; then
             echo -e "  ${GREEN}✓ No configuration issues detected${NC}"
         else

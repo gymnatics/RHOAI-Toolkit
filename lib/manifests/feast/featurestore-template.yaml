@@ -17,7 +17,7 @@ metadata:
   namespace: ${NAMESPACE}
 spec:
   authz:
-    noAuth: true
+    kubernetes: {}
   feastProject: ${FEAST_PROJECT}
   feastProjectDir:
     git:
