@@ -1403,6 +1403,10 @@ enable_tp_features_interactive() {
 
     # Define TP features: key|label|category
     local tp_features=(
+        "agentsCatalog|Agent Catalog (browse/deploy agent templates)|Agents"
+        "agentOps|Agent Operations (agent lifecycle management)|Agents"
+        "agentConfigManagement|Agent Config Management (agent settings)|Agents"
+        "gpuaas|GPU-as-a-Service (GPU resource management)|Infrastructure"
         "automl|AutoML (automated model training)|ML Automation"
         "autorag|AutoRAG (automated RAG optimization)|ML Automation"
         "observabilityDashboard|MaaS Observability Dashboard|Observability"

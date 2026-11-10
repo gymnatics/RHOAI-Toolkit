@@ -26,7 +26,9 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
-NAMESPACE="${1:-automl-demo}"
+NAMESPACE="automl-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 DELETE_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -98,6 +100,8 @@ fi
 
 # --- Step 3: Create S3 data connection ---
 print_step "Creating S3 data connection for AutoML..."
+# Dashboard AutoRAG/AutoML UI requires an HTTPS S3 endpoint for connections
+S3_EXT_EP="$(get_storage_external_endpoint "$NAMESPACE")"
 oc apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -116,16 +120,27 @@ stringData:
   AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
   AWS_DEFAULT_REGION: us-east-1
   AWS_S3_BUCKET: automl-data
-  AWS_S3_ENDPOINT: ${S3_EP}
+  AWS_S3_ENDPOINT: ${S3_EXT_EP}
 EOF
 
 # --- Step 4: Pipeline Server (DSPA) ---
 print_step "Deploying Pipeline Server (DSPA)..."
-if oc get datasciencepipelinesapplication pipelines-definition -n "$NAMESPACE" &>/dev/null 2>&1; then
-    print_info "Pipeline server already exists in $NAMESPACE"
+# Object storage comes from the active backend (SeaweedFS by default), never a hard-coded MinIO host.
+_s3_ep="$(get_storage_endpoint "$NAMESPACE")"
+export NAMESPACE S3_SCHEME="${_s3_ep%%://*}"
+_s3_hostport="${_s3_ep#*://}"
+export S3_HOST="${_s3_hostport%%:*}" S3_PORT="${_s3_hostport##*:}"
+oc create secret generic pipelines-s3-credentials -n "$NAMESPACE" \
+    --from-literal=AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY:-admin}" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="${S3_SECRET_KEY:-admin123}" \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null
+_dspa_host=$(oc get datasciencepipelinesapplication pipelines-definition -n "$NAMESPACE" \
+    -o jsonpath='{.spec.objectStorage.externalStorage.host}' 2>/dev/null || true)
+if [ -n "$_dspa_host" ] && [ "$_dspa_host" = "$S3_HOST" ]; then
+    print_info "Pipeline server already exists in $NAMESPACE (storage: $S3_HOST:$S3_PORT)"
 else
-    export NAMESPACE
-    envsubst < "$SCRIPT_DIR/manifests/pipeline-server.yaml" | oc apply -f -
+    [ -n "$_dspa_host" ] && print_warning "Pipeline server points at '$_dspa_host'; re-pointing to $S3_HOST:$S3_PORT"
+    envsubst '${NAMESPACE} ${S3_HOST} ${S3_PORT} ${S3_SCHEME}' < "$SCRIPT_DIR/manifests/pipeline-server.yaml" | oc apply -f -
     print_info "Pipeline server deploying (takes 1-2 minutes)..."
 fi
 

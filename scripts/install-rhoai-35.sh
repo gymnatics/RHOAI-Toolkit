@@ -876,13 +876,28 @@ install_mcp_lifecycle_operator() {
     # This function now just verifies the DSC-managed rollout instead of installing it.
     print_step "Verifying MCP Lifecycle Operator (DSC-managed component, Technology Preview)..."
 
-    local mcp_state
+    local mcp_state ocp_minor
     mcp_state=$(oc get datasciencecluster default-dsc \
         -o jsonpath='{.spec.components.mcplifecycleoperator.managementState}' 2>/dev/null)
+    ocp_minor=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null | cut -d. -f1-2)
 
+    # Docs: "Red Hat OpenShift AI 3.5 is installed on an OpenShift 4.22 or later cluster"
+    # (Working with the MCP catalog 3.5, section 2.3). Enable it only there.
+    if [ -z "$ocp_minor" ] || [ "$(printf '%s\n%s\n' "4.22" "$ocp_minor" | sort -V | head -1)" != "4.22" ]; then
+        if [ "$mcp_state" = "Managed" ]; then
+            print_warning "mcplifecycleoperator is Managed on OpenShift ${ocp_minor:-unknown}; it requires 4.22+. Setting it to Removed."
+            oc patch datasciencecluster default-dsc --type=merge \
+                -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Removed"}}}}' >/dev/null
+        else
+            print_info "MCP Lifecycle Operator skipped: requires OpenShift 4.22+ (cluster is ${ocp_minor:-unknown})"
+        fi
+        return 0
+    fi
     if [ "$mcp_state" != "Managed" ]; then
-        print_warning "mcplifecycleoperator is not Managed in the DSC — MCP Catalog will not appear in AI Hub"
-        return 1
+        print_step "Enabling MCP Lifecycle Operator (OpenShift $ocp_minor >= 4.22)..."
+        oc patch datasciencecluster default-dsc --type=merge \
+            -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Managed"}}}}' >/dev/null || {
+            print_warning "Could not enable mcplifecycleoperator"; return 1; }
     fi
 
     local elapsed=0

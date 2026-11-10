@@ -28,24 +28,21 @@ spec:
     spec:
       containers:
         - name: minio
-          image: quay.io/minio/minio:latest
+          # quay.io/minio/minio is no longer anonymously pullable (2026-11); ODH-pinned 2019 build. Prefer SeaweedFS (toolkit default).
+          image: quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance
           args:
             - server
             - /data
-            - --console-address
-            - ":9001"
           ports:
             - containerPort: 9000
               name: api
-            - containerPort: 9001
-              name: console
           env:
-            - name: MINIO_ROOT_USER
+            - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: minio-secret
                   key: AWS_ACCESS_KEY_ID
-            - name: MINIO_ROOT_PASSWORD
+            - name: MINIO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: minio-secret

@@ -66,7 +66,7 @@ fi
 
 # Check MCP Lifecycle Operator is available
 if ! oc get crd mcpservers.mcp.x-k8s.io &>/dev/null; then
-    print_error "MCPServer CRD not found. Ensure mcplifecycleoperator is Managed in your DSC."
+    print_error "MCPServer CRD not found. Ensure mcplifecycleoperator is Managed in your DSC (requires OpenShift 4.22+, Technology Preview)."
     print_info "  oc patch dsc default-dsc --type=merge -p '{\"spec\":{\"components\":{\"mcplifecycleoperator\":{\"managementState\":\"Managed\"}}}}'"
     exit 1
 fi

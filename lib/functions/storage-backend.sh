@@ -98,7 +98,7 @@ detect_or_select_storage_backend() {
     esac
 
     if [ "$S3_BACKEND" = "minio" ]; then
-        echo -e "${YELLOW:-}⚠ MinIO backend is deprecated. Consider migrating to SeaweedFS (--backend=seaweedfs).${NC:-}" >&2
+        echo -e "${YELLOW:-}⚠ MinIO backend is deprecated: quay.io/minio images are no longer anonymously pullable, so the toolkit uses a pinned 2019 ODH build. Use SeaweedFS (S3_BACKEND=seaweedfs).${NC:-}" >&2
     fi
 
     export S3_BACKEND
@@ -152,6 +152,27 @@ get_storage_endpoint() {
 #
 # Returns the k8s Service name for the active backend's S3 endpoint.
 ################################################################################
+################################################################################
+# get_storage_external_endpoint <ns>
+#
+# HTTPS endpoint (edge-TLS Route) for the active backend, for dashboard-facing
+# data connections: the AutoRAG/AutoML UI rejects plain-HTTP S3 connections
+# ("S3 Connection must use HTTPS"). Falls back to the internal endpoint when
+# the backend has no Route (e.g. Ceph RGW). Pipelines/DSPA keep using
+# get_storage_endpoint (in-cluster HTTP).
+################################################################################
+get_storage_external_endpoint() {
+    local ns="${1:?namespace required}"
+    local svc host
+    svc="$(get_storage_service_name)"
+    host=$(oc get route "$svc" -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null || true)
+    if [ -n "$host" ]; then
+        echo "https://${host}"
+    else
+        get_storage_endpoint "$ns"
+    fi
+}
+
 get_storage_service_name() {
     case "${S3_BACKEND:-$_DEFAULT_BACKEND}" in
         seaweedfs) echo "$_SEAWEEDFS_SVC_NAME" ;;
@@ -286,15 +307,15 @@ create_storage_bucket() {
 
             echo -e "${YELLOW:-}▶ Creating bucket: ${bucket}${NC:-}"
 
-            # Delete previous job if exists
-            oc delete job/create-bucket -n "$ns" --ignore-not-found 2>/dev/null || true
+            # Delete previous job if exists and wait for it to be fully gone
+            oc delete job/create-bucket -n "$ns" --ignore-not-found --wait=true 2>/dev/null || true
 
             export S3_ACCESS_KEY="$access_key"
             export S3_SECRET_KEY="$secret_key"
             export BUCKET_NAME="$bucket"
             export S3_ENDPOINT="$endpoint"
             envsubst '${S3_ACCESS_KEY} ${S3_SECRET_KEY} ${BUCKET_NAME} ${S3_ENDPOINT}' \
-                < "$manifest_dir/create-bucket-job.yaml.tmpl" | oc apply -n "$ns" -f -
+                < "$manifest_dir/create-bucket-job.yaml.tmpl" | oc create -n "$ns" -f -
 
             if oc wait --for=condition=complete job/create-bucket -n "$ns" --timeout=120s 2>/dev/null; then
                 echo -e "${GREEN:-}✓ Bucket '${bucket}' ready${NC:-}"
@@ -396,6 +417,244 @@ stringData:
   AWS_DEFAULT_REGION: "us-east-1"
 EOF
 }
+
+################################################################################
+# list_storage_buckets NAMESPACE
+#
+# Lists all S3 buckets in the storage backend. Runs a one-shot aws-cli pod.
+# For ceph-rgw, lists ObjectBucketClaims.
+################################################################################
+list_storage_buckets() {
+    local ns="${1:?namespace required}"
+    local access_key="${S3_ACCESS_KEY:-$_DEFAULT_ACCESS_KEY}"
+    local secret_key="${S3_SECRET_KEY:-$_DEFAULT_SECRET_KEY}"
+
+    detect_or_select_storage_backend "$ns" 2>/dev/null || true
+
+    case "${S3_BACKEND:-$_DEFAULT_BACKEND}" in
+        ceph-rgw)
+            echo -e "${CYAN:-}ℹ Ceph RGW buckets (ObjectBucketClaims):${NC:-}"
+            oc get objectbucketclaim -n "$ns" --no-headers 2>/dev/null \
+                | awk '{printf "  %s (phase: %s)\n", $1, $NF}'
+            ;;
+        *)
+            local endpoint
+            endpoint="$(get_storage_endpoint "$ns")"
+            oc run s3-list-buckets --rm -i --restart=Never -n "$ns" \
+                --image=docker.io/amazon/aws-cli:latest \
+                --env="AWS_ACCESS_KEY_ID=$access_key" \
+                --env="AWS_SECRET_ACCESS_KEY=$secret_key" \
+                --env="AWS_DEFAULT_REGION=us-east-1" \
+                -- s3 ls --endpoint-url "$endpoint" 2>/dev/null \
+                | sed 's/^/  /'
+            ;;
+    esac
+}
+
+################################################################################
+# list_bucket_contents NAMESPACE BUCKET [PREFIX]
+#
+# Lists objects inside a bucket, optionally filtered by prefix.
+################################################################################
+list_bucket_contents() {
+    local ns="${1:?namespace required}"
+    local bucket="${2:?bucket name required}"
+    local prefix="${3:-}"
+    local access_key="${S3_ACCESS_KEY:-$_DEFAULT_ACCESS_KEY}"
+    local secret_key="${S3_SECRET_KEY:-$_DEFAULT_SECRET_KEY}"
+
+    detect_or_select_storage_backend "$ns" 2>/dev/null || true
+
+    local endpoint
+    endpoint="$(get_storage_endpoint "$ns")"
+    local path="s3://${bucket}/"
+    [ -n "$prefix" ] && path="s3://${bucket}/${prefix}"
+
+    oc run s3-list-objects --rm -i --restart=Never -n "$ns" \
+        --image=docker.io/amazon/aws-cli:latest \
+        --env="AWS_ACCESS_KEY_ID=$access_key" \
+        --env="AWS_SECRET_ACCESS_KEY=$secret_key" \
+        --env="AWS_DEFAULT_REGION=us-east-1" \
+        -- s3 ls "$path" --endpoint-url "$endpoint" --human-readable 2>/dev/null \
+        | sed 's/^/  /'
+}
+
+################################################################################
+# delete_storage_bucket NAMESPACE BUCKET_NAME
+#
+# Deletes an S3 bucket and all its contents. Runs a one-shot aws-cli pod.
+# For ceph-rgw, deletes the ObjectBucketClaim.
+################################################################################
+delete_storage_bucket() {
+    local ns="${1:?namespace required}"
+    local bucket="${2:?bucket name required}"
+    local access_key="${S3_ACCESS_KEY:-$_DEFAULT_ACCESS_KEY}"
+    local secret_key="${S3_SECRET_KEY:-$_DEFAULT_SECRET_KEY}"
+
+    detect_or_select_storage_backend "$ns" 2>/dev/null || true
+
+    case "${S3_BACKEND:-$_DEFAULT_BACKEND}" in
+        ceph-rgw)
+            echo -e "${YELLOW:-}▶ Deleting ObjectBucketClaim: ${bucket}${NC:-}"
+            oc delete objectbucketclaim "$bucket" -n "$ns" --ignore-not-found
+            ;;
+        *)
+            local endpoint
+            endpoint="$(get_storage_endpoint "$ns")"
+            echo -e "${YELLOW:-}▶ Deleting bucket: ${bucket} (and all contents)${NC:-}"
+
+            oc delete job/delete-bucket -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc run delete-bucket --rm -i --restart=Never -n "$ns" \
+                --image=docker.io/amazon/aws-cli:latest \
+                --env="AWS_ACCESS_KEY_ID=$access_key" \
+                --env="AWS_SECRET_ACCESS_KEY=$secret_key" \
+                --env="AWS_DEFAULT_REGION=us-east-1" \
+                -- s3 rb "s3://${bucket}" --force --endpoint-url "$endpoint" 2>/dev/null
+
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN:-}✓ Bucket '${bucket}' deleted${NC:-}"
+            else
+                echo -e "${RED:-}✗ Failed to delete bucket '${bucket}'${NC:-}" >&2
+                return 1
+            fi
+            ;;
+    esac
+}
+
+################################################################################
+# get_storage_info NAMESPACE
+#
+# Prints a summary of the storage backend: type, endpoint, credentials,
+# external URL, PVC usage.
+################################################################################
+get_storage_info() {
+    local ns="${1:?namespace required}"
+
+    detect_or_select_storage_backend "$ns" 2>/dev/null || return 1
+
+    local endpoint svc_name deploy_name
+    endpoint="$(get_storage_endpoint "$ns")"
+    svc_name="$(get_storage_service_name)"
+    deploy_name="$(get_storage_deploy_name)"
+
+    echo -e "${CYAN:-}Backend:${NC:-}       ${S3_BACKEND}"
+    echo -e "${CYAN:-}Namespace:${NC:-}     ${ns}"
+    echo -e "${CYAN:-}Internal URL:${NC:-}  ${endpoint}"
+    echo -e "${CYAN:-}Service:${NC:-}       ${svc_name}"
+
+    if [ "$S3_BACKEND" != "ceph-rgw" ]; then
+        local ext_route
+        ext_route=$(oc get route "$svc_name" -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<none>")
+        echo -e "${CYAN:-}External URL:${NC:-}  https://${ext_route}"
+        echo -e "${CYAN:-}Access Key:${NC:-}    ${S3_ACCESS_KEY:-$_DEFAULT_ACCESS_KEY}"
+        echo -e "${CYAN:-}Secret Key:${NC:-}    ${S3_SECRET_KEY:-$_DEFAULT_SECRET_KEY}"
+    fi
+
+    # PVC usage (if applicable)
+    if [ -n "$deploy_name" ]; then
+        local ready
+        ready=$(oc get deployment "$deploy_name" -n "$ns" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+        echo -e "${CYAN:-}Status:${NC:-}        ${ready:-0} replica(s) ready"
+
+        local pvc_name pvc_capacity
+        case "$S3_BACKEND" in
+            seaweedfs) pvc_name="seaweedfs-data" ;;
+            minio)     pvc_name="minio-data" ;;
+        esac
+        if [ -n "${pvc_name:-}" ]; then
+            pvc_capacity=$(oc get pvc "$pvc_name" -n "$ns" -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || echo "unknown")
+            echo -e "${CYAN:-}PVC Size:${NC:-}      ${pvc_capacity}"
+        fi
+    fi
+}
+
+################################################################################
+# find_all_storage_deployments
+#
+# Scans the cluster for any known S3 storage backends (SeaweedFS, MinIO,
+# Ceph RGW OBCs) and prints each namespace + backend type.
+################################################################################
+find_all_storage_deployments() {
+    local found=false
+
+    # SeaweedFS
+    local sw_ns
+    sw_ns=$(oc get deployment -l app.kubernetes.io/name=seaweedfs --all-namespaces --no-headers 2>/dev/null \
+            | awk '{print $1}')
+    for ns in $sw_ns; do
+        echo "  seaweedfs   $ns"
+        found=true
+    done
+
+    # MinIO
+    local minio_ns
+    minio_ns=$(oc get deployment -l app=minio --all-namespaces --no-headers 2>/dev/null \
+               | awk '{print $1}')
+    # Also check by deploy name (some old installs lack labels)
+    local minio_ns2
+    minio_ns2=$(oc get deployment minio --all-namespaces --no-headers 2>/dev/null \
+                | awk '{print $1}')
+    for ns in $(echo "$minio_ns $minio_ns2" | tr ' ' '\n' | sort -u); do
+        echo "  minio       $ns"
+        found=true
+    done
+
+    # Ceph RGW (ObjectBucketClaims)
+    local obc_ns
+    obc_ns=$(oc get objectbucketclaim --all-namespaces --no-headers 2>/dev/null \
+             | awk '{print $1}' | sort -u)
+    for ns in $obc_ns; do
+        echo "  ceph-rgw    $ns"
+        found=true
+    done
+
+    if [ "$found" = false ]; then
+        echo "  (none found)"
+    fi
+}
+
+################################################################################
+# delete_storage_backend NAMESPACE
+#
+# Removes the S3 storage backend from a namespace. Deletes deployments,
+# services, routes, PVCs, and secrets.
+################################################################################
+delete_storage_backend() {
+    local ns="${1:?namespace required}"
+
+    detect_or_select_storage_backend "$ns" 2>/dev/null || return 1
+
+    echo -e "${YELLOW:-}▶ Removing ${S3_BACKEND} storage from ${ns}${NC:-}"
+
+    case "$S3_BACKEND" in
+        seaweedfs)
+            oc delete route seaweedfs-s3 seaweedfs-admin -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete service seaweedfs-s3 -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete deployment seaweedfs -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete secret seaweedfs-s3-config -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete pvc seaweedfs-data -n "$ns" --ignore-not-found 2>/dev/null || true
+            ;;
+        minio)
+            oc delete route minio minio-ui -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete service minio -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete deployment minio -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete secret minio-secret -n "$ns" --ignore-not-found 2>/dev/null || true
+            oc delete pvc minio-data -n "$ns" --ignore-not-found 2>/dev/null || true
+            ;;
+        ceph-rgw)
+            oc delete objectbucketclaim --all -n "$ns" --ignore-not-found 2>/dev/null || true
+            ;;
+    esac
+
+    # Remove data connections
+    oc delete secret aws-connection-minio aws-connection-my-storage -n "$ns" --ignore-not-found 2>/dev/null || true
+
+    echo -e "${GREEN:-}✓ ${S3_BACKEND} removed from ${ns}${NC:-}"
+}
+
+################################################################################
+# Internal helpers — deployment backends
+################################################################################
 
 _deploy_seaweedfs() {
     local ns="$1" storage_size="$2" access_key="$3" secret_key="$4" manifest_dir="$5"

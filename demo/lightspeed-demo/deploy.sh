@@ -53,7 +53,7 @@ check_prerequisites() {
 detect_model() {
     echo_info "Detecting available model for Lightspeed..."
 
-    local isvc_name isvc_ns isvc_url model_id=""
+    local isvc_name isvc_ns isvc_url model_id="" models_json=""
 
     # Prefer classic InferenceService (has a simple .status.url we can query directly)
     isvc_name=$(oc get inferenceservice --all-namespaces -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -63,6 +63,7 @@ detect_model() {
         isvc_url=$(oc get inferenceservice "$isvc_name" -n "$isvc_ns" -o jsonpath='{.status.url}' 2>/dev/null)
         # .status.url is an external route reachable from this shell, so the
         # /v1/models lookup below works for this path.
+        models_json=$(curl -sk "${isvc_url}/v1/models" 2>/dev/null || true)
     elif declare -F detect_llm_endpoint &>/dev/null && detect_llm_endpoint; then
         # Fall back to LLMInferenceService (RHOAI 3.5+ / MaaS-deployed models) via
         # the in-cluster workload service -- see lib/functions/notebook-env.sh.
@@ -77,6 +78,15 @@ detect_model() {
         # from the LLMInferenceService spec instead.
         model_id=$(oc get llminferenceservice "$isvc_name" -n "$isvc_ns" \
             -o jsonpath='{.spec.model.name}' 2>/dev/null || true)
+        # Query /v1/models from inside the cluster (ubi-minimal has curl built in)
+        # since the *.svc.cluster.local URL isn't reachable from this shell.
+        # No --overrides here: a custom securityContext in the pod override
+        # replaces oc run's generated container spec wholesale and silently
+        # drops the `-- curl ...` command/args. PodSecurity "restricted" warns
+        # on stderr (suppressed below) but still runs the pod fine.
+        models_json=$(oc run lightspeed-model-probe-$$ --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
+            --rm -i --restart=Never -n "$isvc_ns" \
+            -- curl -sk "${isvc_url}/v1/models" 2>/dev/null || true)
     fi
 
     if [[ -z "$isvc_name" ]]; then
@@ -84,17 +94,39 @@ detect_model() {
         exit 1
     fi
 
+    # `oc run --rm` appends `pod "<name>" deleted` directly onto stdout with no
+    # separating newline, which corrupts a naive json.load() ("Extra data").
+    # raw_decode() parses just the first JSON value and ignores the rest.
+    local parse_models_json='
+import json, sys
+data = sys.stdin.read()
+try:
+    obj, _ = json.JSONDecoder().raw_decode(data)
+    print(obj["data"][0][sys.argv[1]])
+except Exception:
+    sys.exit(1)
+'
+
     # Query model name from vLLM /v1/models endpoint (skipped if already resolved above)
     if [[ -z "$model_id" ]]; then
-        model_id=$(curl -sk "${isvc_url}/v1/models" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null || echo "$isvc_name")
+        model_id=$(echo "$models_json" | python3 -c "$parse_models_json" id 2>/dev/null || echo "$isvc_name")
     fi
+
+    # vLLM's /v1/models response includes the real max_model_len -- OLSConfig's
+    # contextWindowSize defaults to something larger than most models actually
+    # support if left unset, which makes every request (prompt + MCP tool
+    # definitions + conversation history) silently exceed what vLLM will
+    # accept: "[LLM Backend] The request exceeds the model's token limit".
+    # Fall back to a conservative 4096 if detection fails for any reason.
+    OLS_CONTEXT_WINDOW_SIZE=$(echo "$models_json" | python3 -c "$parse_models_json" max_model_len 2>/dev/null || echo "4096")
+    export OLS_CONTEXT_WINDOW_SIZE
 
     export OLS_MODEL_NAME="$model_id"
     export OLS_MODEL_URL="${isvc_url}/v1"
     export OLS_PROVIDER_NAME="${isvc_name}"
     export OLS_CREDENTIALS_SECRET="ols-model-credentials"
 
-    echo_success "Using model: $OLS_MODEL_NAME ($OLS_MODEL_URL)"
+    echo_success "Using model: $OLS_MODEL_NAME ($OLS_MODEL_URL), context window: $OLS_CONTEXT_WINDOW_SIZE"
 }
 
 setup_namespace() {

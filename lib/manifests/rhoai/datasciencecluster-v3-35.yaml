@@ -118,10 +118,10 @@ spec:
       managementState: Managed
 
     # MCP Lifecycle Operator - runtime infrastructure for MCP servers (Technology Preview)
-    # New first-class DSC component in 3.5. Automatically deployed during standard
-    # install; enables the MCP Catalog to deploy/serve MCP servers end-to-end.
+    # Requires OpenShift 4.22+ (Working with the MCP catalog 3.5, section 2.3) and defaults to Removed.
+    # install-rhoai-35.sh (install_mcp_lifecycle_operator) switches it to Managed on OCP >= 4.22.
     mcplifecycleoperator:
-      managementState: Managed
+      managementState: Removed
 
     # MLflow Operator - Experiment tracking, model versioning
     mlflowoperator:

@@ -8,3 +8,11 @@ spec:
     disableLMEval: false
     disableKueue: false
     mcpCatalog: true
+    agentsCatalog: true
+    agentOps: true
+    agentConfigManagement: true
+    gpuaas: true
+  genAiStudioConfig:
+    aiAssetCustomEndpoints:
+      clusterDomains: []
+      externalProviders: true

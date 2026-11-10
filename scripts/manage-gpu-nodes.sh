@@ -39,6 +39,7 @@
 #   ./scripts/manage-gpu-nodes.sh start --machineset <name>      # only that MachineSet's machines
 #   ./scripts/manage-gpu-nodes.sh stop --no-wait                 # fire-and-forget, don't block
 #   ./scripts/manage-gpu-nodes.sh start --timeout 900             # cap the Ready-wait at 900s
+#   ./scripts/manage-gpu-nodes.sh cleanup                       # delete stale pods holding GPUs after a restart
 ################################################################################
 
 set -uo pipefail
@@ -78,7 +79,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$ACTION" != "status" && "$ACTION" != "stop" && "$ACTION" != "start" ]]; then
+if [[ "$ACTION" != "status" && "$ACTION" != "stop" && "$ACTION" != "start" && "$ACTION" != "cleanup" ]]; then
     usage
     exit 1
 fi
@@ -93,7 +94,7 @@ if ! oc whoami &>/dev/null; then
     print_error "Not logged in to OpenShift. Run 'oc login' first."
     exit 1
 fi
-if ! aws sts get-caller-identity &>/dev/null; then
+if [ "$ACTION" != "cleanup" ] && ! aws sts get-caller-identity &>/dev/null; then
     print_error "AWS CLI is not authenticated. Configure credentials for the account hosting this cluster."
     exit 1
 fi
@@ -226,6 +227,35 @@ do_stop() {
 }
 
 ################################################################################
+# cleanup: pods left behind by the stop (ContainerStatusUnknown / Unknown / Failed)
+# on GPU nodes keep their nvidia.com/gpu request, so the replacement pods stay
+# Pending with "Insufficient nvidia.com/gpu". Their controllers recreate them.
+################################################################################
+cleanup_stale_gpu_pods() {
+    local nodes
+    nodes=$(oc get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    [ -z "$nodes" ] && return 0
+    local stale
+    stale=$(oc get pods -A -o json 2>/dev/null | jq -r --arg nodes " $nodes " '
+        .items[] | select(.spec.nodeName != null) | .spec.nodeName as $n
+        | select($nodes | contains(" " + $n + " "))
+        | select(.status.phase == "Unknown" or .status.phase == "Failed"
+                 or any(.status.containerStatuses[]?, .status.initContainerStatuses[]?;
+                        .state.terminated.reason == "ContainerStatusUnknown"))
+        | select(.metadata.ownerReferences != null)
+        | "\(.metadata.namespace) \(.metadata.name)"')
+    if [ -z "$stale" ]; then
+        print_info "No stale pods on GPU nodes"
+        return 0
+    fi
+    print_step "Deleting stale pods on GPU nodes (they still hold GPU requests; controllers recreate them)..."
+    while read -r ns pod; do
+        [ -z "$pod" ] && continue
+        oc delete pod "$pod" -n "$ns" --wait=false 2>/dev/null && echo "    deleted $ns/$pod"
+    done <<< "$stale"
+}
+
+################################################################################
 # start
 ################################################################################
 do_start() {
@@ -294,7 +324,11 @@ do_start() {
                 ready=$(oc get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
                 [ "$ready" != "True" ] && all_ready=false
             done
-            [ "$all_ready" = true ] && { print_success "All targeted nodes are Ready"; return; }
+            if [ "$all_ready" = true ]; then
+                print_success "All targeted nodes are Ready"
+                cleanup_stale_gpu_pods
+                return
+            fi
             sleep 15
             elapsed=$((elapsed + 15))
             echo "   ...waited ${elapsed}s (Node Ready)"
@@ -307,4 +341,5 @@ case "$ACTION" in
     status) do_status ;;
     stop)   do_stop ;;
     start)  do_start ;;
+    cleanup) cleanup_stale_gpu_pods ;;
 esac

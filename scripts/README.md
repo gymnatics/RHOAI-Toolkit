@@ -1,357 +1,161 @@
-# Utility Scripts
+# Scripts Reference — Categorized Catalog
 
-This folder contains utility scripts that support the main installation workflows.
-
-## Scripts
+Every script in `scripts/`, categorized by function. For each: filename, one-line purpose, key CLI flags.
 
 ---
 
-### check-aws-prerequisites.sh
-**Purpose**: Validate AWS environment before OpenShift installation
+## 1. Installation
 
-**Usage**:
-```bash
-# Run standalone check
-./scripts/check-aws-prerequisites.sh
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `install-rhoai-35.sh` | Full RHOAI 3.5 install (OGX, MCP Lifecycle Op, RHCL 1.4.1+, aigateway.modelsAsAService) | `--skip-prerequisites`, `--skip-rhcl`, `--skip-maas`, `--skip-node-scaling`, `--skip-maas-db`, `--no-llmd`, `--channel <ch>`, `--enable-vllm-maas`, `--enable-observability`, `--enable-tp-features`, `--enable-usage-logging`, `--deploy-grafana`, `--postgres-connection <url>`, `--domain <domain>`, `--timeout <s>` |
+| `install-rhoai-34.sh` | Full RHOAI 3.4 install (MaaS core GA, NeMo Guardrails GA, MLflow) | `--skip-prerequisites`, `--skip-rhcl`, `--skip-maas`, `--skip-node-scaling`, `--skip-maas-db`, `--no-llmd`, `--channel <ch>`, `--enable-vllm-maas`, `--enable-observability`, `--deploy-grafana`, `--postgres-connection <url>`, `--domain <domain>`, `--setup-users`, `--num-users <N>`, `--setup-pipelines` |
+| `install-rhoai-33.sh` | **Legacy/deprecated.** Full RHOAI 3.3 install (MaaS TP, tier-based) | `--skip-prerequisites`, `--skip-rhcl`, `--skip-maas`, `--skip-node-scaling`, `--no-llmd`, `--channel <ch>`, `--domain <domain>` |
+| `install-rhoai-minimal.sh` | Minimal RHOAI install — choose operators interactively (no MaaS/llm-d) | `--minimal`, `--full`, `--with-kueue`, `--with-llmd` |
+| `openshift-installer-master.sh` | All-in-one OpenShift cluster installation on AWS (VPC, install-config, bootstrap) | *(interactive — prompts for cluster name, domain, region, instance types, VPC, SSH key, pull secret)* |
 
-# Or it runs automatically in rhoai-toolkit.sh
-```
+## 2. MaaS Infrastructure
 
-**What it checks**:
-- ✅ AWS CLI installation and credentials
-- ✅ Route53 hosted zones (public vs private)
-- ✅ AWS service quotas (VPC, Elastic IPs)
-- ✅ Existing OpenShift resources
-- ✅ SSH key configuration
-- ✅ OpenShift installer binary
-- ⚠️ Conflicting private hosted zones from failed installs
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `setup-maas.sh` | Phased MaaS platform setup: RHCL → Gateway → PostgreSQL → DSC (version-branched 3.4 vs 3.5) | `--from-phase <N>`, `--diagnose`, `--enable-redis`, `--enable-observability` |
+| `diagnose-maas.sh` | Check the BU guide's 11 post-upgrade issues; optionally auto-fix the safe ones | `--fix`, `--json` |
+| `verify-maas.sh` | 6-phase E2E verification (infra health → simulator deploy → API → auth → rate limit → cleanup) | `--no-cleanup`, `--cleanup-only` |
+| `cleanup-maas.sh` | Reverse-order MaaS teardown (models → external models → OIDC → platform → gateway → operators) | `--dry-run`, `--yes`, `--keep-operators`, `--from-phase <N>` |
+| `setup-maas-oidc.sh` | Deploy demo Keycloak + configure external OIDC on MaaS tenant (or BYO IdP) | `--configure-only`, `--client-id <id>`, `--issuer-url <url>`, `--ttl <s>`, `--cleanup`, `--test` |
+| `fix-kuadrant-istio.sh` | Fix Kuadrant "MissingDependency" for Istio (approve Service Mesh InstallPlans, create Istio/IstioCNI, restart) | *(no flags — fully automatic)* |
+| `setup-llmd.sh` | Set up llm-d prerequisites: GatewayClass, Gateway, LeaderWorkerSetOperator | *(no flags)* |
+| `enable-dashboard-features.sh` | Enable Model Registry, GenAI Studio, Model Catalog, MaaS, LMEval dashboard flags | *(no flags — applies a manifest)* |
 
-**When to use**:
-- Before first installation
-- After failed installation (diagnose issues)
-- After changing AWS environments
-- When troubleshooting DNS/bootstrap failures
+## 3. Model Deployment
 
-**Benefits**:
-- Catches issues BEFORE spending 30-45 minutes on installation
-- Clear error messages with actionable solutions
-- Prevents common mistakes (like domain with leading dot!)
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `deploy-maas-model.sh` | Deploy a model from `lib/manifests/maas/models/{model}/` via Kustomize with GPU auto-detection | `--model <name\|auto>`, `-n <namespace>`, `--delete`, `--disconnected-registry <host>` |
+| `deploy-external-model.sh` | Deploy OpenAI/Gemini/Bedrock external model through MaaS gateway | `--provider <openai\|gemini\|bedrock>`, `--api-key <key>`, `--delete`, `--force` |
+| `deploy-llmd-model.sh` | Interactive model deployment — auto-detects runtimes, catalogs models, configures resources | *(interactive — no CLI flags)* |
+| `serve-model.sh` | Deploy model from S3/PVC/OCI with vLLM or vLLM-Omni runtime | `<mode> <name> <model_path> [extra_vllm_args]`; env: `NAMESPACE`, `RUNTIME=vllm\|omni`, `MAAS_PUBLISH=true` |
+| `download-model.sh` | Download HuggingFace model(s) to S3 (MinIO/SeaweedFS) or PVC | `<s3\|pvc> <model1> [model2…]`; env: `HF_TOKEN`, `NAMESPACE`, `MINIO_NAMESPACE`, `BUCKET_NAME` |
+| `add-model-to-playground.sh` | Add a deployed model endpoint to the GenAI Playground (LlamaStack or OGX) | `-n <namespace>`, `-m <model>`, `-t <max-tokens>`, `--tls-verify`, `--api-token <token>`, `--skip-config` |
+| `add-serving-runtime.sh` | Add/manage custom serving runtimes (vLLM community, vLLM-Omni, Red Hat vLLM) | `--preset <omni\|vllm-community\|vllm-redhat>`, `--print`, `--list`, `--export-all <dir>`, `-n <ns>`, `--version <tag>` |
+| `deploy-qwen3-4b-with-tools.sh` | Deploy Qwen3-4B with tool calling enabled via YAML (hermes parser) | `<namespace>` (positional) |
+| `deploy-simulator-model.sh` | **Deprecated** wrapper → forwards to `deploy-maas-model.sh --model simulator` | `-n <namespace>`, `--delete` |
+| `deploy-nim.sh` | Full NVIDIA NIM platform setup + model deployment (NGC creds, dashboard, monitoring) | `-n <namespace>`, `--ngc-key <key>`, `--model <preset>`, `--gpu-count <N>`, `--skip-platform`, `--deploy-grafana`, `--delete` |
+| `deploy-nemo-guardrails.sh` | Thin wrapper → `demo/nemo-guardrails-demo/deploy.sh` | `[namespace]`, `--selfcheck`, `--delete` |
+| `deploy-guardrails.sh` | Deploy TrustyAI Guardrails Orchestrator (PII detection, safety filters) | `[namespace]` (positional, interactive) |
+| `deploy-university-safeguard-demo.sh` | Thin wrapper → `demo/university-safeguard-demo/deploy.sh` | `-n <namespace>`, `--delete` |
+| `manage-model-catalog.sh` | Add/remove/list/rename entries in the RHOAI Model Catalog | `list`, `add`, `remove`, `rename`, `add-from-registry`, `apply` (or interactive menu) |
 
-**See**: `docs/AWS-PREREQUISITES-CHECK.md` for detailed documentation
+## 4. GPU & Hardware
 
----
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `create-gpu-machineset.sh` | Create a GPU MachineSet on AWS (g6e, p5, spot instances) | `--instance-type <type>`, `--spot`, `--spot-max-price <price>`, `--az <zone>`, `--replicas <N>`, `--volume-size <GB>`, `--apply` |
+| `manage-gpu-nodes.sh` | AWS EC2 stop/start GPU instances directly (preserves node identity, EBS, drivers) | `status\|stop\|start`, `--machineset <name>`, `--no-wait`, `--timeout <s>` |
+| `create-hardware-profile.sh` | Create GPU HardwareProfile in a namespace (interactive — Kueue or Node scheduling) | `[namespace]` (positional, interactive) |
+| `create-hardware-profile-in-namespace.sh` | Create GPU hardware profile from template in a specified namespace | `[namespace]` (positional) |
+| `create-hardware-profile-quick.sh` | Quick pre-configured GPU profiles (small/medium/large) | `[namespace]`, `--all` |
+| `create-project-hardware-profiles.sh` | Create all 3 hardware profile sizes (gpu, small-gpu, large-gpu) in a project namespace | `[namespace]` (positional) |
+| `fix-hardware-profile.sh` | Fix hardware profile visibility in RHOAI dashboard (old API versions, missing labels) | *(interactive — no flags)* |
+| `fix-gpu-resourceflavor.sh` | Fix Kueue ResourceFlavor tolerations for tainted GPU nodes | *(no flags — auto-detects and patches)* |
+| `setup-gpu-scheduling.sh` | Auto-configure GPU scheduling: ResourceFlavor + ClusterQueue + HardwareProfile | `[namespace]` (positional) |
 
-### manage-kubeconfig.sh
-**Purpose**: Manage kubeconfig files and KUBECONFIG environment variable
+## 5. Diagnostics
 
-**Usage**:
-```bash
-# Interactive menu
-./scripts/manage-kubeconfig.sh
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `diagnose-maas.sh` | (Also in MaaS) 11-issue MaaS post-upgrade triage + auto-fix | `--fix`, `--json` |
+| `check-maas-security.sh` | Audit MaaSModelRefs for missing MaaSAuthPolicy/MaaSSubscription (ungoverned models) | *(no flags)* |
+| `check-pending-installplans.sh` | Find and optionally approve all pending OLM InstallPlans across namespaces | *(no flags — optionally offers approval)* |
+| `check-operator-install-status.sh` | Wait for an operator subscription to be fully installed (InstallPlan → CSV Succeeded) | `<subscription-name> <namespace> [timeout]` (positional) |
+| `check-aws-prerequisites.sh` | Validate AWS environment before OpenShift install (CLI, Route53, quotas, SSH) | *(no flags)* |
+| `diagnose-aws-credentials.sh` | Comprehensive AWS credentials diagnostic (env vars, config files, STS, profiles) | *(no flags)* |
+| `approve-csrs.sh` | Approve pending Certificate Signing Requests (new nodes, node reboots) | `--auto`, `--watch` |
 
-# Quick commands
-./scripts/manage-kubeconfig.sh --show      # Show current configuration
-./scripts/manage-kubeconfig.sh --clear     # Clear kubeconfig
-./scripts/manage-kubeconfig.sh --logout    # Logout from cluster
-./scripts/manage-kubeconfig.sh --set       # Set kubeconfig file
-```
+## 6. Cleanup
 
-**What it does**:
-- Shows current kubeconfig configuration and cluster connection
-- Clears KUBECONFIG environment variable
-- Removes kubeconfig files (with backup)
-- Logs out from current cluster
-- Sets kubeconfig to a specific file
-- Checks shell profiles for KUBECONFIG exports
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `cleanup-all.sh` | Destroy OpenShift cluster + clean up ALL AWS resources (VPCs, EIPs, NAT GWs, etc.) | `--local-only` / `-l`, or interactive menu |
+| `cleanup-maas.sh` | (Also in MaaS) Reverse-order MaaS teardown | `--dry-run`, `--yes`, `--keep-operators`, `--from-phase <N>` |
 
-**When to use**:
-- When switching between clusters
-- When kubeconfig is pointing to an old/deleted cluster
-- To clean up after cluster deletion
-- To troubleshoot connection issues
-- Before installing a new cluster
+## 7. Security / Access
 
-**Common scenarios**:
-```bash
-# Stuck with old cluster? Clear it
-./scripts/manage-kubeconfig.sh --clear
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `create-restricted-client-admin.sh` | cluster-admin for a client that can't mutate Machine API / delete Nodes (ValidatingAdmissionPolicy) | `--client-user <name>`, `--client-password <pw>`, `--owner-user <name>`, `--owner-group <name>`, `--idp-name <name>`, `--test`, `--remove` |
+| `check-maas-security.sh` | (Also in Diagnostics) Audit ungoverned MaaS models | *(no flags)* |
+| `scan-for-secrets.sh` | Scan repo for exposed AWS keys, passwords, private keys; check .gitignore | *(no flags)* |
+| `install-pre-commit-hook.sh` | Install git pre-commit hook that blocks commits containing sensitive data | *(interactive — install/uninstall/status)* |
+| `setup-letsencrypt-tls.sh` | Automated TLS certificate setup: Let's Encrypt (Route53 DNS-01) or self-signed | `letsencrypt`, `selfsigned`, `status`, `check-gateways`, `fix-gateways`, `--non-interactive`, `--email <email>` |
 
-# Want to see current setup?
-./scripts/manage-kubeconfig.sh --show
+## 8. Observability
 
-# Need to logout?
-./scripts/manage-kubeconfig.sh --logout
-```
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `deploy-dashboards.sh` | Deploy GPU (DCGM) and vLLM monitoring dashboards to Observe tab or Grafana | `--method native\|grafana`, `--dashboard all\|dcgm\|vllm\|vllm-advanced`, `--delete` |
 
----
+## 9. Storage
 
-### cleanup-all.sh
-**Purpose**: Comprehensive cleanup of AWS resources (now with quick local cleanup option!)
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `manage-storage.sh` | **General-purpose S3 storage CLI** — deploy, bucket CRUD, data connections, cluster-wide status | Subcommands: `deploy`, `status`, `info`, `bucket create\|list\|delete\|ls`, `connect`, `delete`. See `--help` for each. |
+| `setup-model-storage.sh` | Deploy S3-compatible storage (SeaweedFS/Ceph-RGW/MinIO) + RHOAI data connection (model-focused convenience wrapper) | `--backend seaweedfs\|ceph-rgw\|minio`, `-n <namespace>`, `-b <bucket>`, `--storage-size <size>`, `--access-key`, `--secret-key`, `--skip-data-connection`, `--data-connection-ns <ns>` |
 
-**Usage**:
-```bash
-# Interactive menu (recommended)
-./scripts/cleanup-all.sh
+## 10. Utility
 
-# Quick local cleanup only (no AWS changes)
-./scripts/cleanup-all.sh --local-only
-./scripts/cleanup-all.sh -l
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `manage-kubeconfig.sh` | Interactive kubeconfig management (show, clear, set, logout) | `--show`, `--clear`, `--set`, `--logout` |
+| `refresh-aws-credentials.sh` | Prompt-based AWS credentials refresh for demo platforms with temporary creds | *(interactive — prompts for key/secret/token)* |
+| `setup-users.sh` | Create demo users (htpasswd), organize into groups, optionally create MaaS subscriptions | `--num-users <N>`, `--admin-group <name>`, `--user-group <name>`, `--password <pw>`, `--create-subscription`, `--model-name <name>`, `--model-namespace <ns>` |
+| `clone-toolkit-in-workbenches.sh` | Retry the rhoai-toolkit git clone in workbench pods that weren't Running at deploy time | `-n <ns1,ns2>`, `--all-ns` |
+| `refresh-notebook-env.sh` | Re-detect model endpoints and update workbench notebook-env ConfigMaps | `<namespace>`, `--all`, `--list` |
+| `setup-mcp-servers.sh` | Configure MCP (Model Context Protocol) servers for GenAI Playground (GitHub, K8s, Brave, etc.) | *(interactive — prompts for server selection and API keys)* |
+| `manage-mcp-servers.sh` | Deploy/register/status/tools for MCP server pods (AI Asset + LlamaStack registration) | `deploy <name>`, `register <name>`, `status`, `tools` (or interactive menu) |
 
-# See detailed usage guide
-cat scripts/CLEANUP-USAGE.md
-```
+## 11. Orchestration
 
-**What it does**:
-
-**Option 1: Local Cleanup Only** (Quick - seconds)
-- Removes `openshift-cluster-install/` directory
-- Removes `cluster-info.txt`
-- Does NOT touch AWS resources
-- Perfect for retrying failed installations
-
-**Option 2: Complete Cleanup** (Thorough - 10-20 minutes)
-- Runs `openshift-install destroy` if cluster exists
-- Releases unassociated Elastic IPs
-- Deletes NAT Gateways and waits for deletion
-- Cleans up subnets, security groups, network interfaces
-- Removes route tables and internet gateways
-- Deletes VPCs
-- Handles orphaned resources
-
-**When to use**:
-- **Local cleanup**: Failed installation, quick retry, local files only
-- **Complete cleanup**: Decommissioning cluster, stopping AWS charges, full reset
-
----
-
-### create-gpu-machineset.sh
-**Purpose**: Create GPU worker nodes dynamically
-
-**Usage**:
-```bash
-./scripts/create-gpu-machineset.sh
-```
-
-**What it does**:
-- Detects cluster ID automatically
-- Extracts AMI ID and IAM profile from existing workers
-- Lists available subnets for selection
-- Prompts for GPU instance type (p5.48xlarge, g6e.*)
-- Configures storage (default or custom)
-- Generates MachineSet YAML
-- Applies to cluster
-
-**When to use**:
-- After cluster installation
-- When you need GPU workers
-- To add more GPU capacity
-- Works across different clusters
+| Script | Purpose | Key Flags |
+|--------|---------|-----------|
+| `integrated-workflow-v2.sh` | End-to-end orchestration: OpenShift cluster → GPU nodes → RHOAI → Playground + dashboard | `--skip-openshift`, `--skip-gpu`, `--skip-rhoai` |
+| `deploy-demo-environment.sh` | Deploy all demo components on an existing RHOAI 3.4+ cluster (17 components) | `--skip-core`, `--components <list>`, `--exclude <list>`, `--model <name>`, `--list`, `--status` |
+| `setup-node-scheduler.sh` | CronJob-based worker/GPU node scheduling (8 AM up, 6 PM down, Mon-Fri, Asia/Singapore) | `--trigger up\|down`, `--extend <duration>`, `--hold-status`, `--cancel-hold`, `--status`, `--remove` |
 
 ---
 
-### manage-gpu-nodes.sh
-**Purpose**: Stop/start the AWS EC2 instances behind GPU MachineSets directly, instead of deleting/recreating them via `oc scale machineset --replicas=0/N`
-
-**Usage**:
-```bash
-./scripts/manage-gpu-nodes.sh status                    # show AWS power state + Node Ready for all GPU machines
-./scripts/manage-gpu-nodes.sh stop                       # AWS-stop all GPU instances (Machine objects untouched)
-./scripts/manage-gpu-nodes.sh start                      # AWS-start them, wait for Nodes to rejoin Ready
-./scripts/manage-gpu-nodes.sh start --machineset <name>  # target one MachineSet only
-./scripts/manage-gpu-nodes.sh stop --no-wait             # fire-and-forget
-```
-
-**What it does**:
-- Finds all Machines in MachineSets with `gpu` in the name (or `--machineset <name>`)
-- Resolves each Machine's underlying EC2 instance ID from `spec.providerID`
-- `stop`/`start` calls `aws ec2 stop-instances`/`start-instances` directly — the
-  Machine API object is never touched
-- `start` waits for AWS state `running`, then waits for the same Node to
-  rejoin as `Ready`
-
-**Why use this instead of scaling the MachineSet to 0**: scaling to 0 deletes
-the Machine and EC2 instance; scaling back up provisions a **brand-new**
-instance from scratch (full RHCOS boot, ignition, cluster join, GPU Operator
-driver/toolkit reinstall). For bare metal GPU nodes (e.g. `g4dn.metal`) this
-can take 15-30+ minutes and can trigger unrelated MachineConfigPool churn if
-the node belongs to a custom pool. AWS stop/start preserves the EBS root
-volume and node identity, so the same node just resumes in a couple of
-minutes with everything already installed.
-
-**Caveats**:
-- Local instance-store (ephemeral NVMe) data is wiped on stop — the EBS root
-  volume is unaffected
-- Some AWS bare metal instance types have historically not supported stop
-  (only reboot/terminate); the script surfaces the AWS API error verbatim if
-  a stop/start call is rejected
-- Requires `aws` CLI configured with credentials for the account hosting the
-  cluster (same convention as every other AWS-touching script here)
-
-**When to use**:
-- Pausing/resuming GPU nodes overnight or between demo sessions, especially
-  bare metal types where re-provisioning is slow
-- As a faster alternative/complement to
-  [`setup-node-scheduler.sh`](../docs/guides/NODE-SCHEDULING.md)'s
-  CronJob-based scale-to-0 approach
-
----
-
-### setup-maas.sh
-**Purpose**: Set up Model as a Service (MaaS) API infrastructure
-
-**Usage**:
-```bash
-./scripts/setup-maas.sh
-```
-
-**What it does**:
-- Installs RHCL/Kuadrant operators (if not present)
-- Creates Kuadrant instance
-- Configures Authorino with TLS
-- Creates GatewayClass
-- Deploys MaaS API using kustomize
-- Configures audience policy
-- Restarts controllers
-
-**When to use**:
-- After enabling Dashboard features
-- When you want MaaS API endpoints
-- For production model serving with authentication
-- To enable billing/tracking for models
-
-**Prerequisites**:
-- RHOAI installed
-- GenAI and Dashboard features enabled
-- `jq` installed (`brew install jq`)
-
-**Note**: MaaS API pods may take 2-3 minutes to be ready after deployment.
-
----
-
----
-
-### install-rhoai-34.sh
-**Purpose**: Full RHOAI 3.4 installation — NFD, GPU, Kueue, cert-manager, RHCL, MaaS, llm-d, observability, dashboards
-
-**Usage**:
-```bash
-./scripts/install-rhoai-34.sh
-./scripts/install-rhoai-34.sh --channel stable-3.4
-./scripts/install-rhoai-34.sh --deploy-grafana --setup-users --num-users 10
-```
-
-**What it does**: Installs all prerequisites, RHOAI operator, MaaS with PostgreSQL, observability stack (COO + Perses + Observe tab dashboards), MLflow (auto-detects PostgreSQL), hardware profiles, and optional Grafana/users/pipelines.
-
----
-
-### setup-letsencrypt-tls.sh
-**Purpose**: Automated TLS certificate setup (Let's Encrypt via Route53 DNS-01 or self-signed)
-
-**Usage**:
-```bash
-./scripts/setup-letsencrypt-tls.sh              # Interactive menu
-./scripts/setup-letsencrypt-tls.sh letsencrypt  # Direct Let's Encrypt setup
-./scripts/setup-letsencrypt-tls.sh selfsigned   # Direct self-signed setup
-./scripts/setup-letsencrypt-tls.sh status       # Show TLS status
-```
-
----
-
-### deploy-dashboards.sh
-**Purpose**: Deploy GPU/vLLM monitoring dashboards to OpenShift Observe tab or standalone Grafana
-
-**Usage**:
-```bash
-./scripts/deploy-dashboards.sh                        # All dashboards to Observe tab
-./scripts/deploy-dashboards.sh --method grafana       # Deploy via Grafana Operator
-./scripts/deploy-dashboards.sh --dashboard vllm       # Only vLLM dashboard
-./scripts/deploy-dashboards.sh --delete               # Remove all dashboards
-```
-
----
-
-### deploy-demo-environment.sh
-**Purpose**: Deploy all 17 demo components on an existing RHOAI 3.4 cluster
-
-**Usage**:
-```bash
-./scripts/deploy-demo-environment.sh --skip-core
-./scripts/deploy-demo-environment.sh --components feast,pipeline,open-webui
-./scripts/deploy-demo-environment.sh --list
-```
-
----
-
-### setup-node-scheduler.sh
-**Purpose**: Deploy CronJob-based worker node scheduling — scale workers/GPU up at 8 AM and down at 6 PM (Mon-Fri, Asia/Singapore) to save AWS costs. Control-plane nodes keep the cluster alive 24/7.
-
-**Usage**:
-```bash
-./scripts/setup-node-scheduler.sh                   # deploy CronJobs
-./scripts/setup-node-scheduler.sh --trigger down     # manually scale down now
-./scripts/setup-node-scheduler.sh --trigger up       # manually scale up now
-./scripts/setup-node-scheduler.sh --status           # show CronJob state + MachineSets
-./scripts/setup-node-scheduler.sh --remove           # tear down
-```
-
-**See**: `docs/guides/NODE-SCHEDULING.md`
-
----
-
-### create-restricted-client-admin.sh
-**Purpose**: Give a client/customer a `cluster-admin` login that cannot change worker/control-plane node counts (MachineSet/Machine/ControlPlaneMachineSet/MachineHealthCheck/MachineAutoscaler/ClusterAutoscaler, or delete Nodes) — enforced via `ValidatingAdmissionPolicy`, not RBAC (RBAC can't subtract from `cluster-admin`'s wildcard rule)
-
-**Usage**:
-```bash
-./scripts/create-restricted-client-admin.sh --client-user client-admin --client-password '<pw>' --owner-user admin
-./scripts/create-restricted-client-admin.sh --test --client-user client-admin     # verify the deny policy works
-./scripts/create-restricted-client-admin.sh --remove --client-user client-admin   # revoke their cluster-admin binding
-```
-
-**See**: `docs/guides/RESTRICTED-CLIENT-ADMIN-ACCESS.md` for the full design/rationale
-
----
-
-## Typical Usage Flow
+## Typical Usage Flows
 
 ### Fresh Installation (Recommended)
 ```bash
-# 1. Install RHOAI 3.4 (includes GPU, MaaS, observability)
-./scripts/install-rhoai-34.sh
-
-# 2. Create GPU nodes (if not auto-scaled)
-./scripts/create-gpu-machineset.sh
-
-# 3. Deploy a model
-./scripts/serve-model.sh s3 my-model Qwen/Qwen3-8B-Instruct
+./scripts/install-rhoai-35.sh               # Full RHOAI 3.5 install
+./scripts/create-gpu-machineset.sh           # Add GPU nodes
+./scripts/deploy-maas-model.sh --model auto  # Deploy a model
 ```
 
-### Existing RHOAI Installation
+### Existing Cluster — Add MaaS
 ```bash
-# 1. Set up MaaS platform (RHCL, Gateway, PostgreSQL, DSC flags)
-./scripts/setup-maas.sh
+./scripts/setup-maas.sh                      # RHCL + Gateway + PostgreSQL + DSC
+./scripts/deploy-maas-model.sh --model simulator   # Verify with simulator
+./scripts/verify-maas.sh                     # E2E verification
+```
 
-# 2. Create GPU nodes if needed
-./scripts/create-gpu-machineset.sh
+### Demo Environment
+```bash
+./scripts/deploy-demo-environment.sh --skip-core --list   # See components
+./scripts/deploy-demo-environment.sh --skip-core           # Deploy all
 ```
 
 ### Cleanup
 ```bash
-# Clean up all AWS resources
-./scripts/cleanup-all.sh
+./scripts/cleanup-maas.sh --dry-run          # Preview MaaS teardown
+./scripts/cleanup-all.sh                     # Full cluster + AWS cleanup
 ```
 
 ## Notes
 
-- All scripts are designed to be idempotent (safe to run multiple times)
+- All scripts are idempotent (safe to run repeatedly)
 - Scripts check for existing resources before creating
-- Most scripts provide detailed output and error messages
-- Scripts are meant to be run from the repository root directory
-
-## See Also
-
-- **Main Scripts**: `rhoai-toolkit.sh` (root), `scripts/integrated-workflow-v2.sh`
-- **Diagnostics** (in diagnostics/): Tools for troubleshooting
-- **Tests** (in tests/): Test scripts for validation
-- **Documentation** (in docs/): Detailed guides and troubleshooting
-
+- Most scripts require `oc login` to an OpenShift cluster
+- Run from the repository root directory
+- See `docs/TROUBLESHOOTING.md` for common issues

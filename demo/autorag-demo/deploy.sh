@@ -39,6 +39,7 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/utils/rhoai-version.sh" 2>/dev/null || true
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
+source "$ROOT_DIR/lib/utils/os-compat.sh"
 source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
 # RHOAI 3.5+ renamed Llama Stack to OGX (llamastackoperator -> ogx,
@@ -48,7 +49,86 @@ if type is_rhoai_35_or_higher &>/dev/null && is_rhoai_35_or_higher 2>/dev/null; 
     USE_OGX=true
 fi
 
-NAMESPACE="${1:-autorag-demo}"
+################################################################################
+# Helper: Patch llama-stack-config vLLM base_url to internal service endpoint
+################################################################################
+# The copied config often has base_url pointing at the MaaS external gateway
+# (e.g. https://maas.apps.<cluster>/v1) which requires a real bearer token.
+# OGX can't provide one (VLLM_API_TOKEN_1 is a placeholder). Detect the
+# LLMInferenceService or InferenceService for the LLM and rewrite the
+# base_url to the internal k8s service (no auth needed).
+_patch_ogx_config_vllm_url() {
+    local ns="$1"
+    # Find the first LLMInferenceService workload service across all namespaces
+    local _llm_svc=""
+    _llm_svc=$(oc get llminferenceservice -A -o jsonpath='{range .items[?(@.status.conditions[?(@.type=="Ready")].status=="True")]}{.status.workloads.service.name}.{.metadata.namespace}.svc.cluster.local:{.status.workloads.primary.name}{"\n"}{end}' 2>/dev/null | head -1)
+    if [ -z "$_llm_svc" ]; then
+        # Fallback: try any LLMInferenceService (even non-Ready)
+        _llm_svc=$(oc get llminferenceservice -A -o jsonpath='{range .items[*]}{.status.workloads.service.name}.{.metadata.namespace}.svc.cluster.local{"\n"}{end}' 2>/dev/null | head -1)
+    fi
+    if [ -z "$_llm_svc" ]; then
+        print_warning "No LLMInferenceService found — vLLM base_url not patched"
+        return
+    fi
+    # Extract just the service FQDN (strip the deployment info after the colon)
+    local _svc_fqdn="${_llm_svc%%:*}"
+    local _internal_url="https://${_svc_fqdn}:8000/v1"
+
+    print_info "Patching OGX config vLLM base_url → ${_internal_url}"
+    local _config
+    _config=$(oc get configmap llama-stack-config -n "$ns" -o jsonpath='{.data.config\.yaml}')
+    # Replace any https://maas.* or https://*.apps.* vLLM base_url with internal
+    _config=$(echo "$_config" | sed "s|base_url: https://maas\.[^ ]*|base_url: ${_internal_url}|g")
+    oc create configmap llama-stack-config \
+        --from-literal=config.yaml="$_config" \
+        -n "$ns" --dry-run=client -o yaml | oc apply -f -
+}
+
+################################################################################
+# Helper: Remove embedding models that can't load in offline mode
+################################################################################
+# OGX runs with HF_HUB_OFFLINE=1 so models not pre-cached in the container
+# image can't be downloaded. The base config may register models like
+# nomic-embed-text-v1.5 that appear as options in AutoRAG but fail at runtime.
+# Only keep ibm-granite/granite-embedding-125m-english (pre-cached).
+_patch_ogx_config_remove_offline_models() {
+    local ns="$1"
+    local _config
+    _config=$(oc get configmap llama-stack-config -n "$ns" -o jsonpath='{.data.config\.yaml}')
+
+    # Check if nomic model is registered — only patch if needed
+    if echo "$_config" | grep -q "nomic-ai/nomic-embed-text"; then
+        print_info "Removing offline-unavailable models (nomic-embed-text) from OGX config"
+        # Use python for reliable YAML manipulation
+        _config=$(echo "$_config" | python3 -c "
+import sys, yaml
+
+config = yaml.safe_load(sys.stdin.read())
+
+# Filter registered_resources.models — keep only models whose provider_model_id
+# doesn't reference nomic-ai (offline-unavailable)
+if 'registered_resources' in config and 'models' in config['registered_resources']:
+    config['registered_resources']['models'] = [
+        m for m in config['registered_resources']['models']
+        if 'nomic-ai' not in m.get('provider_model_id', '') and 'nomic-ai' not in m.get('model_id', '')
+    ]
+
+yaml.dump(config, sys.stdout, default_flow_style=False, sort_keys=False)
+" 2>/dev/null)
+
+        if [ -n "$_config" ]; then
+            oc create configmap llama-stack-config \
+                --from-literal=config.yaml="$_config" \
+                -n "$ns" --dry-run=client -o yaml | oc apply -f -
+        else
+            print_warning "Could not filter offline models — skipping"
+        fi
+    fi
+}
+
+NAMESPACE="autorag-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 DELETE_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -186,6 +266,8 @@ fi
 # --- Step 2: S3 data connection ---
 print_step "Creating S3 data connection for AutoRAG documents..."
 S3_EP="$(get_storage_endpoint "$NAMESPACE")"
+# Dashboard AutoRAG/AutoML UI requires an HTTPS S3 endpoint for connections
+S3_EXT_EP="$(get_storage_external_endpoint "$NAMESPACE")"
 oc apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -204,7 +286,7 @@ stringData:
   AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
   AWS_DEFAULT_REGION: us-east-1
   AWS_S3_BUCKET: autorag-docs
-  AWS_S3_ENDPOINT: ${S3_EP}
+  AWS_S3_ENDPOINT: ${S3_EXT_EP}
 EOF
 
 # --- Step 3: Milvus vector database ---
@@ -223,11 +305,22 @@ MILVUS_ENDPOINT="milvus.${NAMESPACE}.svc.cluster.local:19530"
 
 # --- Step 4: Pipeline Server (DSPA) ---
 print_step "Deploying Pipeline Server (DSPA)..."
-if oc get datasciencepipelinesapplication pipelines-definition -n "$NAMESPACE" &>/dev/null 2>&1; then
-    print_info "Pipeline server already exists in $NAMESPACE"
+# Object storage comes from the active backend (SeaweedFS by default), never a hard-coded MinIO host.
+_s3_ep="$(get_storage_endpoint "$NAMESPACE")"
+export NAMESPACE S3_SCHEME="${_s3_ep%%://*}"
+_s3_hostport="${_s3_ep#*://}"
+export S3_HOST="${_s3_hostport%%:*}" S3_PORT="${_s3_hostport##*:}"
+oc create secret generic pipelines-s3-credentials -n "$NAMESPACE" \
+    --from-literal=AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY:-admin}" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="${S3_SECRET_KEY:-admin123}" \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null
+_dspa_host=$(oc get datasciencepipelinesapplication pipelines-definition -n "$NAMESPACE" \
+    -o jsonpath='{.spec.objectStorage.externalStorage.host}' 2>/dev/null || true)
+if [ -n "$_dspa_host" ] && [ "$_dspa_host" = "$S3_HOST" ]; then
+    print_info "Pipeline server already exists in $NAMESPACE (storage: $S3_HOST:$S3_PORT)"
 else
-    export NAMESPACE
-    envsubst < "$SCRIPT_DIR/manifests/pipeline-server.yaml" | oc apply -f -
+    [ -n "$_dspa_host" ] && print_warning "Pipeline server points at '$_dspa_host'; re-pointing to $S3_HOST:$S3_PORT"
+    envsubst '${NAMESPACE} ${S3_HOST} ${S3_PORT} ${S3_SCHEME}' < "$SCRIPT_DIR/manifests/pipeline-server.yaml" | oc apply -f -
     print_info "Pipeline server deploying (takes 1-2 minutes)..."
 fi
 
@@ -261,8 +354,23 @@ fi
 if [ "$USE_OGX" = true ]; then
     print_step "Deploying OGX (replaces Llama Stack on RHOAI 3.5+)..."
 
+    # An OGXServer from before the overrideConfig fix (rh + baseConfig + inline providers) crashes with
+    # "MilvusVectorIOConfig token/persistence: Field required" (docs/bugs/autorag-ogx-3.5-cascade.md).
+    # oc apply can't reliably drop those fields, so recreate it.
+    if oc get ogxserver autorag-ogx -n "$NAMESPACE" -o json 2>/dev/null \
+        | jq -e '[.. | objects | select(has("baseConfig"))] | length > 0' >/dev/null 2>&1; then
+        print_warning "Existing OGXServer autorag-ogx uses baseConfig (pre-fix); recreating with overrideConfig"
+        oc delete ogxserver autorag-ogx -n "$NAMESPACE" --wait=true --timeout=120s
+    fi
+
     # Deploy pgvector (required by OGX for vector_io + responses persistence)
     print_step "Deploying pgvector database for OGX..."
+    # Reuse the existing password: the database on the PVC was initialised with it, and a new random
+    # password on re-run would lock OGX out of pgvector.
+    if [ -z "${PGVECTOR_PASSWORD:-}" ]; then
+        _pg_b64=$(oc get secret genai-pgvector-credentials -n "$NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || true)
+        [ -n "$_pg_b64" ] && PGVECTOR_PASSWORD=$(base64_decode "$_pg_b64" 2>/dev/null || true)
+    fi
     export PGVECTOR_PASSWORD="${PGVECTOR_PASSWORD:-$(openssl rand -hex 16)}"
     envsubst < "$SCRIPT_DIR/manifests/ogxserver.yaml" | oc apply -f -
 
@@ -276,7 +384,7 @@ if [ "$USE_OGX" = true ]; then
     if ! oc get configmap llama-stack-config -n "$NAMESPACE" &>/dev/null; then
         print_step "Copying OGX base config (llama-stack-config)..."
         # Try to find a working config from another namespace
-        local _src_ns=""
+        _src_ns=""
         for _ns in ai-studio-demo redhat-ods-applications; do
             if oc get configmap llama-stack-config -n "$_ns" &>/dev/null; then
                 _src_ns="$_ns"
@@ -289,17 +397,32 @@ if [ "$USE_OGX" = true ]; then
                 | jq ".metadata.namespace = \"$NAMESPACE\" | del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)" \
                 | oc apply -f -
             print_success "Copied llama-stack-config from $_src_ns"
+
+            # --- Post-copy patches ---
+            # The copied config may reference the source namespace's MaaS gateway
+            # or external model endpoints. Patch the vLLM inference base_url to
+            # use the internal service endpoint (no auth required) instead of the
+            # MaaS external route (which requires a real bearer token that OGX
+            # can't provide via env-var substitution).
+            _patch_ogx_config_vllm_url "$NAMESPACE"
+
+            # Remove nomic-embed-text-v1.5 from registered models — it's
+            # registered in the base config but can't be downloaded because
+            # OGX runs with HF_HUB_OFFLINE=1. Leaving it registered causes
+            # AutoRAG to offer it as an embedding option, but the pipeline
+            # fails at search-space-preparation when it can't load the model.
+            _patch_ogx_config_remove_offline_models "$NAMESPACE"
         else
             # Fallback: extract from OCI image labels (RHOAIENG-96724 workaround)
             print_step "Extracting OGX base config from OCI image labels..."
-            local _ogx_digest
+            _ogx_digest
             _ogx_digest=$(oc get deployment -n redhat-ods-applications -l app.kubernetes.io/name=ogx-k8s-operator \
                 -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="RELATED_IMAGE_ODH_OGX_CORE_IMAGE")].value}' 2>/dev/null)
             if [ -n "$_ogx_digest" ]; then
-                local _pull_secret_file
+                _pull_secret_file
                 _pull_secret_file=$(mktemp)
                 oc get secret pull-secret -n openshift-config -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d > "$_pull_secret_file" 2>/dev/null
-                local _config_yaml
+                _config_yaml
                 _config_yaml=$(oc image info --filter-by-os linux/amd64 -a "$_pull_secret_file" "$_ogx_digest" -o json 2>/dev/null \
                     | jq -r '.config.config.Labels["com.ogx.config.config.yaml"]' 2>/dev/null)
                 rm -f "$_pull_secret_file"
@@ -314,8 +437,19 @@ if [ "$USE_OGX" = true ]; then
             fi
         fi
     else
-        print_info "llama-stack-config already exists [SKIP]"
+        # An existing config may have been copied from another namespace or cluster (its MaaS base_url then
+        # points elsewhere). Both patches are idempotent, so always apply them.
+        print_info "llama-stack-config already exists: re-applying endpoint patches"
+        _patch_ogx_config_vllm_url "$NAMESPACE"
+        _patch_ogx_config_remove_offline_models "$NAMESPACE"
     fi
+
+    # The OGX operator's namespace-scoped informer only sees ConfigMaps labelled ogx.io/watch=true;
+    # without it the OGXServer fails with "failed to find referenced ConfigMap .../llama-stack-config"
+    # (docs/bugs/autorag-ogx-3.5-cascade.md issue 2). The patch helpers re-apply the ConfigMap, which can
+    # drop labels, so label it after them.
+    oc label configmap llama-stack-config -n "$NAMESPACE" ogx.io/watch=true --overwrite >/dev/null 2>&1 || \
+        print_warning "Could not label llama-stack-config with ogx.io/watch=true"
 
     # Apply OGXServer CR (uses overrideConfig, not baseConfig)
     # The manifest references llama-stack-config via overrideConfig which
@@ -330,6 +464,34 @@ if [ "$USE_OGX" = true ]; then
         print_warning "OGX not ready yet -- check: oc get pods -l app.kubernetes.io/instance=autorag-ogx -n $NAMESPACE"
 
     LLAMASTACK_URL="http://autorag-ogx-service.${NAMESPACE}.svc.cluster.local:8321"
+
+    # --- Step 6b: Create OGX connection secret for AutoRAG ---
+    # AutoRAG's pipeline reads OGX_CLIENT_BASE_URL and OGX_CLIENT_API_KEY from
+    # the secret specified as ogx_secret_name. Create it automatically so the
+    # user can skip the manual "Add connection" step in the dashboard.
+    if ! oc get secret autorag-ogx-connection -n "$NAMESPACE" &>/dev/null; then
+        print_step "Creating OGX connection secret..."
+        oc apply -n "$NAMESPACE" -f - <<CONN_EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: autorag-ogx-connection
+  namespace: $NAMESPACE
+  labels:
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/managed: "true"
+  annotations:
+    opendatahub.io/connection-type: ogx-stack
+    openshift.io/display-name: "AutoRAG OGX Stack"
+type: Opaque
+stringData:
+  OGX_CLIENT_BASE_URL: "${LLAMASTACK_URL}"
+  OGX_CLIENT_API_KEY: "unused"
+CONN_EOF
+        print_success "OGX connection 'autorag-ogx-connection' created"
+    else
+        print_info "OGX connection secret already exists [SKIP]"
+    fi
 else
     envsubst < "$SCRIPT_DIR/manifests/llamastack.yaml" | oc apply -f -
     print_info "LlamaStack deploying (takes 1-2 minutes)..."

@@ -15,11 +15,13 @@ spec:
   objectStorage:
     externalStorage:
       bucket: pipeline-artifacts
-      host: minio.${NAMESPACE}.svc.cluster.local
-      port: "9000"
+      # Rendered from the active storage backend by deploy.sh (get_storage_endpoint):
+      # SeaweedFS -> seaweedfs-s3.<ns>.svc:8333, MinIO -> minio.<ns>.svc:9000, Ceph RGW -> OBC host.
+      host: ${S3_HOST}
+      port: "${S3_PORT}"
       region: us-east-1
       s3CredentialsSecret:
         accessKey: AWS_ACCESS_KEY_ID
         secretKey: AWS_SECRET_ACCESS_KEY
-        secretName: minio-secret
-      scheme: http
+        secretName: pipelines-s3-credentials
+      scheme: ${S3_SCHEME}

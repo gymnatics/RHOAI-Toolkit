@@ -376,8 +376,10 @@ setup_pipeline_server() {
         # External storage approach: create credentials secret first
         print_step "Step 5: Creating S3 credentials secret..."
         
-        if oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
-            print_success "Credentials secret already exists [SKIP]"
+        # Always (re)apply when credentials are known: a secret left from a previous backend (e.g. MinIO
+        # minio/minio123) makes the DSPA fail against SeaweedFS with "access key ID does not exist".
+        if [ -z "$s3_access_key" ] && oc get secret "$credentials_secret_name" -n "$target_ns" &>/dev/null; then
+            print_success "Credentials secret already exists (no new credentials to apply) [SKIP]"
         else
             export CREDENTIALS_SECRET_NAME="$credentials_secret_name"
             export S3_ACCESS_KEY="$s3_access_key"
@@ -385,7 +387,7 @@ setup_pipeline_server() {
             envsubst '${CREDENTIALS_SECRET_NAME} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}' \
                 < "$_PIPELINE_SERVER_LIB_DIR/lib/manifests/pipeline/dspa-credentials-secret.yaml" | oc apply -f - -n "$target_ns"
             unset CREDENTIALS_SECRET_NAME S3_ACCESS_KEY S3_SECRET_KEY
-            print_success "Credentials secret created"
+            print_success "Credentials secret applied"
         fi
         
         print_step "Step 6: Creating DataSciencePipelinesApplication..."

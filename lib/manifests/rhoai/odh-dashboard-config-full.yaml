@@ -13,6 +13,14 @@ spec:
     modelAsService: true             # ✓ Enable Model as a Service (MaaS)
     disableLMEval: false             # ✓ Enable LM Eval
     mcpCatalog: true                 # ✓ Enable MCP Catalog (AI Hub > MCP Servers)
+    agentsCatalog: true              # ✓ Enable Agent Catalog (RHOAI 3.5+)
+    agentOps: true                   # ✓ Enable Agent Operations (RHOAI 3.5+)
+    agentConfigManagement: true      # ✓ Enable Agent Config Management (RHOAI 3.5+)
+    gpuaas: true                     # ✓ Enable GPU-as-a-Service (RHOAI 3.5+)
+  genAiStudioConfig:
+    aiAssetCustomEndpoints:
+      clusterDomains: []
+      externalProviders: true
   hardwareProfileOrder: []
   notebookController:
     enabled: true

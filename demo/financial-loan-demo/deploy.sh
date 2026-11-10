@@ -29,7 +29,9 @@ source "$ROOT_DIR/lib/functions/external-repos.sh"
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 source "$ROOT_DIR/lib/functions/storage-backend.sh"
 
-NAMESPACE="${1:-financial-loan-demo}"
+NAMESPACE="financial-loan-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 LLM_URL=""
 DELETE_MODE=false
 SKIP_WEBAPP=false

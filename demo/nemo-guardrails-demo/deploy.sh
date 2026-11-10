@@ -21,7 +21,9 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/functions/nemo-guardrails.sh"
 
-NAMESPACE="${1:-nemo-guardrails-demo}"
+NAMESPACE="nemo-guardrails-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 GUARDRAILS_NAME="nemo-quickstart"
 MODE="basic"
 DELETE_MODE=false

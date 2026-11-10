@@ -56,23 +56,27 @@ spec:
     spec:
       containers:
       - name: minio
-        image: quay.io/minio/minio:latest
+        # quay.io/minio/minio is no longer anonymously pullable (2026-11); ODH-pinned 2019 build. Prefer SeaweedFS (toolkit default).
+        image: quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance
         imagePullPolicy: IfNotPresent
-        command:
-        - /usr/bin/docker-entrypoint.sh
-        - server
-        - /data
-        - "--console-address"
-        - ":9001"
+        args: ["server", "/data"]
         envFrom:
         - secretRef:
             name: minio-usage-logs
+        env:
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-usage-logs
+              key: MINIO_ROOT_USER
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-usage-logs
+              key: MINIO_ROOT_PASSWORD
         ports:
         - name: api
           containerPort: 9000
-          protocol: TCP
-        - name: console
-          containerPort: 9001
           protocol: TCP
         resources:
           requests:

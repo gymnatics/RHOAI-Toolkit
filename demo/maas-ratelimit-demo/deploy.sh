@@ -20,7 +20,9 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/demo/lib/rhoai-detect.sh"
 
-NAMESPACE="${1:-maas-ratelimit-demo}"
+NAMESPACE="maas-ratelimit-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 DELETE_MODE=false
 
 while [[ $# -gt 0 ]]; do

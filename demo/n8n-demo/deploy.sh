@@ -17,8 +17,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/utils/os-compat.sh"
 
-NAMESPACE="${1:-n8n}"
+NAMESPACE="n8n"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 DELETE_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -55,7 +58,16 @@ oc adm policy add-scc-to-user anyuid -z default -n "$NAMESPACE" 2>/dev/null || t
 
 export NAMESPACE
 export N8N_ENCRYPTION_KEY
-N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
+# Reuse the key from an existing deployment: n8n stores it in /home/node/.n8n/config on the PVC,
+# and a new key on redeploy makes the pod crash with "Mismatching encryption keys".
+_n8n_key_b64=$(oc get secret n8n-secret -n "$NAMESPACE" -o jsonpath='{.data.N8N_ENCRYPTION_KEY}' 2>/dev/null || true)
+N8N_ENCRYPTION_KEY=""
+[ -n "$_n8n_key_b64" ] && N8N_ENCRYPTION_KEY=$(base64_decode "$_n8n_key_b64" 2>/dev/null || true)
+if [ -n "$N8N_ENCRYPTION_KEY" ]; then
+    print_info "Reusing existing N8N_ENCRYPTION_KEY from secret n8n-secret"
+else
+    N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
+fi
 
 print_step "Deploying n8n..."
 envsubst < "$SCRIPT_DIR/manifests/n8n.yaml" | oc apply -f -

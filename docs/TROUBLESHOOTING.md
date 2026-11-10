@@ -225,6 +225,26 @@ env:
 
 ---
 
+## MinIO / Pipeline Server Storage
+
+### MinIO Pod ImagePullBackOff — "unauthorized" Pulling `quay.io/minio/minio`
+
+**Error:** MinIO pod shows `ImagePullBackOff` with `reading manifest latest in quay.io/minio/minio: unauthorized`.
+
+**Cause:** MinIO images are no longer anonymously pullable.
+
+**Fix:** Use SeaweedFS (`S3_BACKEND=seaweedfs`, the default) and re-run the demo deploy with `-n`; toolkit MinIO manifests now pin `quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance`.
+
+### DSPA Not Ready — ObjectStoreAvailable False (MinIO/SeaweedFS Mismatch)
+
+**Error:** DSPA not `Ready`, `ObjectStoreAvailable` `False` with `dial tcp: lookup minio.<ns>.svc.cluster.local: no such host` or `access key ID you provided does not exist`.
+
+**Cause:** DSPA points at MinIO while the namespace runs SeaweedFS, or a credentials secret was left over from MinIO.
+
+**Fix:** Re-run `demo/automl-demo` or `demo/autorag-demo` `deploy.sh -n <ns>` (re-points to `seaweedfs-s3.<ns>.svc:8333` with `pipelines-s3-credentials`); for `pipeline-demo` run `setup_pipeline_server` with storage option 1.
+
+---
+
 ## MaaS / Rate Limiting (RHOAI 3.3 Tech Preview)
 
 ### Models Not Visible in "Models as a service" Tab
@@ -982,6 +1002,116 @@ oc run -it --rm debug --image=registry.access.redhat.com/ubi9/ubi-minimal --rest
 **Cause:** Omitting `api_key` from `config.yaml`'s `models[main].parameters` and relying solely on the `OPENAI_API_KEY` container env var (sourced from a Secret) did not authenticate correctly against an external LiteLLM/LiteMaaS endpoint on this NeMo Guardrails version.
 
 **Fix:** Set `api_key` explicitly in `config.yaml`, templated via `envsubst` from the same value stored in a Secret at deploy time (see `demo/university-safeguard-demo/manifests/nemo-guardrails-config.yaml`). Known trade-off: the raw key ends up visible via `oc get configmap <name>-config -o yaml` in-cluster (not committed to git).
+
+---
+
+## AutoRAG / OGX (RHOAI 3.5+)
+
+Full write-up: [`docs/bugs/autorag-ogx-3.5-cascade.md`](bugs/autorag-ogx-3.5-cascade.md). OCI 401 deep dive: [`docs/reference/BUG-REPORT-OGX-REGISTRY-AUTH-401.md`](reference/BUG-REPORT-OGX-REGISTRY-AUTH-401.md) ([RHOAIENG-96724](https://redhat.atlassian.net/browse/RHOAIENG-96724)).
+
+### OGXServer Phase Failed — HTTP 401 OCI labels
+
+**Symptom:** `oc get ogxserver` shows `Phase: Failed`; condition `ConfigGenerationFailed` with HTTP 401 fetching `registry.redhat.io/rhoai/odh-ogx-core-rhel9@sha256:...` labels.
+
+**Cause:** Operator in-process OCI-label client is anonymous; kubelet pull of the same digest works.
+
+**Fix:** Do not rely on `spec.baseConfig` alone for AutoRAG. Re-run `demo/autorag-demo/deploy.sh` on 3.5+ so it applies the full cascade (`overrideConfig` + `rh-dev`). See cascade doc Issue 1.
+
+### Secret not found / need `ogx.io/watch`
+
+**Symptom:** Operator reports "Secret not found" (or ConfigMap not found) for objects that exist and RBAC allows.
+
+**Cause:** Namespace-scoped informer only watches resources labeled `ogx.io/watch=true`.
+
+**Fix:** `oc label secret <name> ogx.io/watch=true -n <ns>` (same for referenced ConfigMaps). Commit `392a059`; cascade Issue 2.
+
+### OGX CrashLoopBackOff — empty API token or stripped Milvus config
+
+**Symptom:** OGX pod CrashLoopBackOff with EnvVarError on empty `VLLM_*_API_TOKEN`, or pydantic errors missing Milvus `token` / `persistence.backend`.
+
+**Cause:** Empty string env vars fail validation; CRD providers/`baseConfig` merge path strips runtime-required fields.
+
+**Fix:** Use the toolkit `overrideConfig` + `rh-dev` path (no CRD providers; tokens set to literal `unused`). Re-run `demo/autorag-demo/deploy.sh`. Cascade Issues 3–4; commits `0ac7211`, `df8b5b4`.
+
+### AutoRAG run fails at search-space-preparation — nomic offline
+
+**Symptom:** Optimization run fails during search-space-preparation.
+
+**Cause:** Base config registers nomic embedding models; OGX runs with `HF_HUB_OFFLINE=1` so they cannot download.
+
+**Fix:** `deploy.sh` `_patch_ogx_config_remove_offline_models` strips nomic; use remote CPU `bge-m3` InferenceService. Also keep vLLM `base_url` on the internal service URL (not MaaS). Cascade Issue 5.
+
+### AutoRAG/AutoML "S3 Connection must use HTTPS" when selecting files
+
+**Symptom:** In Gen AI studio > AutoRAG (or AutoML), the "Select file or folder" dialog shows *"S3 Connection must use HTTPS. The connection aws-connection-autorag-docs is configured using HTTP."*
+
+**Cause:** The dashboard UI rejects S3 connections with an `http://` endpoint. Older `demo/autorag-demo/deploy.sh` and `demo/automl-demo/deploy.sh` wrote the in-cluster endpoint (`http://seaweedfs-s3.<ns>.svc:8333`) into the connection secret.
+
+**Fix:** Re-run `demo/autorag-demo/deploy.sh -n autorag-demo` (or the automl one). The connection now uses the backend's edge-TLS Route via `get_storage_external_endpoint` (`https://seaweedfs-s3-<ns>.apps.<cluster-domain>`); the DSPA keeps the in-cluster HTTP endpoint. Verified 2026-11-10 on RHOAI 3.5.1 and 3.4.6.
+
+### OGXServer Phase Failed — ConfigMap Reference Not Found Despite Existing
+
+**Symptom:** `OGXServer` phase `Failed` with `failed to find referenced ConfigMap <ns>/llama-stack-config` although the ConfigMap exists.
+
+**Cause:** The operator informer only sees ConfigMaps labelled `ogx.io/watch=true`.
+
+**Fix:** `oc label configmap llama-stack-config -n <ns> ogx.io/watch=true --overwrite` (`demo/autorag-demo/deploy.sh` now does this).
+
+### autorag-ogx CrashLoop — MilvusVectorIOConfig Validation Error
+
+**Symptom:** CrashLoop with `ValidationError: 2 validation errors for MilvusVectorIOConfig token / persistence Field required`.
+
+**Cause:** `OGXServer` was created before the `overrideConfig` fix (distribution `rh` + `baseConfig` + inline providers).
+
+**Fix:** Re-run `demo/autorag-demo/deploy.sh -n autorag-demo` (recreates it with `rh-dev` + `overrideConfig`); see `docs/bugs/autorag-ogx-3.5-cascade.md`.
+
+### OGXServer landed in `default` namespace
+
+**Symptom:** On idempotent re-run, OGXServer is applied to `default` instead of the demo namespace.
+
+**Cause:** `NAMESPACE` was not exported when earlier resources already existed.
+
+**Fix:** Unconditional `export NAMESPACE` at top of deploy path (`d31ca81`). Re-run `deploy.sh` with the intended `-n` / default namespace. Cascade Issue 6.
+
+---
+
+## GPU Nodes
+
+### Model Pods Stay Pending After Starting Stopped GPU Nodes
+
+**Symptom:** After starting stopped GPU nodes, model pods stay `Pending` with `Insufficient nvidia.com/gpu` while old pods show `ContainerStatusUnknown`.
+
+**Cause:** Stale pods still hold the GPU requests.
+
+**Fix:** `scripts/manage-gpu-nodes.sh cleanup` (also runs automatically at the end of `start`). Also check whether another workload (e.g. a GPU workbench) holds the GPU: `.claude/skills/toolkit-ops/checks/check-infra.sh` reports `gpu-contention` with the holders.
+
+### `manage-gpu-nodes.sh start` Fails with InsufficientInstanceCapacity
+
+**Symptom:** `scripts/manage-gpu-nodes.sh start` fails with `InsufficientInstanceCapacity`.
+
+**Cause:** AWS has no capacity for that instance type in the AZ right now.
+
+**Fix:** Retry later (capacity often frees within minutes), or scale a MachineSet of another type/AZ.
+
+### vLLM "FA2 is only supported on devices with compute capability >= 8" (FP8 Model on T4 GPU)
+
+**Symptom:** vLLM logs `FA2 is only supported on devices with compute capability >= 8` then `Engine core initialization failed` for an FP8 model.
+
+**Cause:** Pod scheduled on a T4 (g4dn) GPU.
+
+**Fix:** Add `nodeAffinity` `nvidia.com/gpu.compute.major` `Gt 7` to the model's template (`spec.template.affinity` for `LLMInferenceService`).
+
+---
+
+## n8n Demo
+
+### n8n CrashLoop — "Mismatching encryption keys"
+
+**Symptom:** n8n CrashLoop with `Mismatching encryption keys`.
+
+**Cause:** Older `n8n-demo/deploy.sh` generated a new key per run.
+
+**Fix:** Put the key from `/home/node/.n8n/config` on the PVC (read via `oc debug deploy/n8n -n n8n -- cat /home/node/.n8n/config`) into secret `n8n-secret` key `N8N_ENCRYPTION_KEY` and restart; current `deploy.sh` reuses the existing key.
 
 ---
 

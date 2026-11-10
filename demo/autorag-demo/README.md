@@ -7,7 +7,8 @@ Automated RAG pipeline optimization -- finds the best retrieval-augmented genera
 > detects your RHOAI version automatically and deploys `manifests/ogxserver.yaml` (3.5+)
 > or `manifests/llamastack.yaml` (3.4 and earlier) accordingly. See
 > [docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md](../../docs/guides/rhoai-3.5/RHOAI-35-WHATS-NEW.md)
-> for the full list of changes.
+> for the full list of changes. On 3.5+, OGX bring-up needs a multi-step workaround cascade —
+> see [Known issues (RHOAI 3.5)](#known-issues-rhoai-35) below.
 
 ## What AutoRAG Does
 
@@ -26,10 +27,21 @@ Provide documents and test questions, and AutoRAG automatically:
 ```
 
 This deploys:
-- MinIO (document storage + pipeline artifacts)
+- SeaweedFS / pluggable S3 (document storage + pipeline artifacts)
 - Milvus vector database (required by AutoRAG -- inline Milvus not supported)
 - Pipeline Server (DSPA for Kubeflow Pipelines)
 - S3 data connection with sample documents
+- bge-m3 embedding `InferenceService` (remote CPU)
+
+On RHOAI 3.5+ (`USE_OGX=true`), `deploy.sh` also automates OGX bring-up:
+- Copies/extracts `llama-stack-config`, strips nomic, patches vLLM to the internal InferenceService URL
+- Deploys pgvector
+- Applies `OGXServer` via `overrideConfig` + `rh-dev` (`manifests/ogxserver.yaml`)
+- Creates the `autorag-ogx-connection` secret
+
+Much of the old "Post-Deploy Manual Setup" for creating a Llama Stack / OGX instance is therefore automated on 3.5+. Dashboard steps below still apply for creating the AutoRAG run.
+
+**Verify OGX:** `oc get ogxserver autorag-ogx -n autorag-demo` → Phase Ready, then dashboard Develop and train > AutoRAG.
 
 ## Prerequisites
 
@@ -38,20 +50,32 @@ AutoRAG has the heaviest infrastructure requirements of any RHOAI feature:
 | Requirement | RHOAI 3.4 and earlier | RHOAI 3.5+ |
 |------------|------------------------|------------|
 | Operator | `llamastackoperator: Managed` in DSC (auto-enabled by deploy script) | `ogx: Managed` in DSC (auto-enabled by deploy script) |
-| Instance | Llama Stack instance with foundation + embedding models | OGXServer instance with foundation + embedding models |
-| Embedding Model | Deploy BAAI/bge-m3 (recommended) via Llama Stack | Deploy BAAI/bge-m3 (recommended) via OGX |
-| Foundation Model | Any vLLM-served LLM registered with Llama Stack | Any vLLM-served LLM registered with OGX |
+| Instance | Llama Stack instance with foundation + embedding models | OGXServer via `overrideConfig` (automated by deploy script) |
+| Embedding Model | Deploy BAAI/bge-m3 (recommended) via Llama Stack | Remote CPU `bge-m3` InferenceService (deployed by this script) |
+| Foundation Model | Any vLLM-served LLM registered with Llama Stack | vLLM InferenceService (internal URL — not MaaS gateway) |
 | Remote Milvus | Deployed by this script | Deployed by this script |
 | AI Pipelines | `aipipelines: Managed` in DSC | `aipipelines: Managed` in DSC |
 | Gen AI Studio | `genAiStudio: true` in dashboard config | `genAiStudio: true` in dashboard config |
 
+**Inference provider URL:** Point OGX at the InferenceService/internal cluster URL. Do not use the MaaS gateway URL — MaaS needs a bearer token that OGX cannot supply via env-var substitution.
+
+## Known issues (RHOAI 3.5)
+
+Full write-up: [docs/bugs/autorag-ogx-3.5-cascade.md](../../docs/bugs/autorag-ogx-3.5-cascade.md). OCI 401 deep dive: [docs/reference/BUG-REPORT-OGX-REGISTRY-AUTH-401.md](../../docs/reference/BUG-REPORT-OGX-REGISTRY-AUTH-401.md) (RHOAIENG-96724).
+
+- **OCI label fetch HTTP 401** — operator anonymous OCI client; `baseConfig` alone is not enough
+- **Secret/ConfigMap "not found"** — label referenced resources with `ogx.io/watch=true`
+- **Empty `VLLM_*_API_TOKEN`** — set literal `unused` for internal endpoints
+- **CRD providers/baseConfig strip runtime fields** — use `overrideConfig` + `rh-dev` (toolkit path); do not use `rh` + CRD providers
+- **search-space-preparation fails (nomic offline)** — deploy.sh strips nomic; use remote bge-m3
+
+Without OGX Ready, Milvus / bge-m3 / S3 / DSPA still work for narrated fallback demos.
+
 ## Post-Deploy Manual Setup
 
-After running `deploy.sh`, complete these steps in the RHOAI dashboard. The steps below
-reference "Llama Stack" (RHOAI 3.4 and earlier); on RHOAI 3.5+ the equivalent dashboard
-entries may be labeled "OGX" instead -- the underlying workflow is unchanged.
+After running `deploy.sh`, complete these steps in the RHOAI dashboard. On RHOAI 3.4 and earlier, create/register the Llama Stack instance and connection as below. On RHOAI 3.5+, the OGXServer and `autorag-ogx-connection` secret are created by `deploy.sh` — skip to creating the AutoRAG run (and confirm the connection appears in the project).
 
-### 1. Set Up Llama Stack Instance
+### 1. Set Up Llama Stack Instance (RHOAI 3.4 and earlier)
 
 1. Dashboard > Applications > Enabled
 2. Find **Llama Stack** and create an instance
@@ -59,18 +83,18 @@ entries may be labeled "OGX" instead -- the underlying workflow is unchanged.
    - Foundation model: your vLLM-served model
    - Embedding model: `BAAI/bge-m3` (recommended, ~1.1 GB fp16)
 
-### 2. Register Milvus with Llama Stack
+### 2. Register Milvus with Llama Stack (RHOAI 3.4 and earlier)
 
 1. In Llama Stack settings, add a vector database
 2. Type: **Milvus (remote)**
 3. Endpoint: `milvus.autorag-demo.svc.cluster.local:19530`
 
-### 3. Create Llama Stack Connection
+### 3. Create Llama Stack / OGX Connection
 
 1. Dashboard > autorag-demo project > Connections
-2. Add connection: **Llama Stack**
-   - Base URL: your Llama Stack instance URL
-   - API Key: your Llama Stack API key
+2. Add connection: **Llama Stack** / OGX (or confirm `autorag-ogx-connection` from deploy.sh on 3.5+)
+   - Base URL: your Llama Stack / OGX instance URL
+   - API Key: your API key (as required)
 
 ### 4. Create AutoRAG Optimization Run
 
@@ -78,7 +102,7 @@ entries may be labeled "OGX" instead -- the underlying workflow is unchanged.
 2. Click **Create run**
 3. Configure:
    - S3 Connection: `AutoRAG Documents`
-   - Llama Stack Connection: (from step 3)
+   - Llama Stack / OGX Connection: (from step 3)
    - Optimization metric: e.g. **Answer correctness**
    - Upload test data: `sample-data/test-data.json`
 4. Optional: Limit models (max 3 foundation + 2 embedding to avoid failures)

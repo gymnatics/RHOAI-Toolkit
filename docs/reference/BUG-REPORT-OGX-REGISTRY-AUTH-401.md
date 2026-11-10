@@ -8,6 +8,8 @@
 
 **Severity**: High — blocks all OGX-based RAG/agent workflows (AutoRAG demo, any RHOAI 3.5+ Llama Stack replacement use case) on affected clusters.
 
+**See also:** [docs/bugs/autorag-ogx-3.5-cascade.md](../bugs/autorag-ogx-3.5-cascade.md) for the full AutoRAG bring-up cascade (401 is Issue 1 of six).
+
 ---
 
 ## Summary
@@ -42,7 +44,7 @@ reuse the node's pull secret.
    inference provider and Postgres-backed storage, e.g.:
 
    ```yaml
-   apiVersion: ogx.io/v1alpha1  # exact group/version per installed CRD
+   apiVersion: ogx.io/v1beta1  # toolkit CRD; do not use v1alpha1
    kind: OGXServer
    metadata:
      name: autorag-ogx
@@ -169,9 +171,15 @@ everything already attempted at the cluster/manifest level.
 
 ## Workaround / Current State
 
+**See also:** [docs/bugs/autorag-ogx-3.5-cascade.md](../bugs/autorag-ogx-3.5-cascade.md) — full AutoRAG bring-up cascade (Issues 1–6).
+
+### Early workaround: `spec.baseConfig` (insufficient alone)
+
 **Workaround found (RHOAIENG-96724, Oct 2026):** Supply the base OGX configuration
 via a ConfigMap (`spec.baseConfig`) to bypass the failing anonymous OCI-label fetch.
-Two steps are needed:
+This gets past `ConfigGenerationFailed` / HTTP 401 but is **not** sufficient for a
+working AutoRAG OGX — it leads into Issues 2–5 (watch label, empty tokens, CRD
+config strip, nomic offline). Do not stop here for AutoRAG.
 
 1. **Extract the base config from the pinned image digest** using a working
    `registry.redhat.io` credential (the cluster's pull-secret works):
@@ -202,12 +210,27 @@ Two steps are needed:
    This is a separate bug from the OCI 401 — the operator only watches resources
    with the `ogx.io/watch` label across namespaces.
 
-**Result:** OGXServer moves from `Phase: Failed (ConfigGenerationFailed: HTTP 401)` to
-`Phase: Initializing (ConfigGenerated: succeeded, 13 providers)`. The deployment then
-depends on GPU node availability for the workload pod to schedule.
+**Result of baseConfig alone:** OGXServer moves from
+`Phase: Failed (ConfigGenerationFailed: HTTP 401)` to
+`Phase: Initializing (ConfigGenerated: succeeded, 13 providers)`. Further
+CrashLoop / AutoRAG failures are documented in the cascade doc (Issues 3–5).
 
-`demo/autorag-demo/deploy.sh` now applies this workaround automatically when
-`USE_OGX=true` (RHOAI 3.5+).
+### Current toolkit solution: `overrideConfig` + `rh-dev`
+
+Do **not** use `rh` + `baseConfig` + CRD providers — that re-enters the broken
+merge path. The toolkit path is:
+
+- `spec.overrideConfig` → `llama-stack-config` ConfigMap
+- `distribution.name: rh-dev`
+- No providers in the CRD spec; inject `PGVECTOR_*` / `VLLM_*` via `workload.overrides.env`
+- Deploy pgvector; strip nomic; patch vLLM to internal InferenceService URL
+
+Manifest: `demo/autorag-demo/manifests/ogxserver.yaml`. Details and remaining
+issues: [autorag-ogx-3.5-cascade.md](../bugs/autorag-ogx-3.5-cascade.md).
+
+`demo/autorag-demo/deploy.sh` now applies the **full** cascade workaround
+(`overrideConfig` path) automatically when `USE_OGX=true` (RHOAI 3.5+), not only
+`baseConfig`.
 
 `redhat-registry-pull-secret` and the `$HOME/.docker/config.json` volume
 mounts added to both OGX operator Deployments during the original investigation (see
@@ -215,7 +238,9 @@ ruled-out item #4) were left in place — they are harmless.
 
 ## References
 
+- Full AutoRAG / OGX cascade (Issues 1–6): [`docs/bugs/autorag-ogx-3.5-cascade.md`](../bugs/autorag-ogx-3.5-cascade.md)
 - Session notes with full investigation timeline: `docs/TODO-next-session.md`
   (local, gitignored session tracker — search for "OGXServer registry-auth 401")
 - Toolkit demo exercising this: `demo/autorag-demo/`
 - Version-gating rule for OGX vs Llama Stack: `.cursor/rules/openshift-ai-toolkit.mdc`
+- Tracker: [`docs/COMPATIBILITY-TRACKER.md`](../COMPATIBILITY-TRACKER.md) TRK-004

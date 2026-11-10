@@ -26,7 +26,9 @@ source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
 source "$ROOT_DIR/lib/functions/external-repos.sh"
 
-NAMESPACE="${1:-lmeval-demo}"
+NAMESPACE="lmeval-demo"
+# Positional namespace still works (./deploy.sh my-ns); a leading flag (e.g. --delete) is not a namespace
+[[ -n "${1:-}" && "${1:-}" != -* ]] && NAMESPACE="$1"
 DELETE_MODE=false
 
 while [[ $# -gt 0 ]]; do

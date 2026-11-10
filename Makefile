@@ -203,6 +203,10 @@ setup-storage:
 		echo -e "$(YELLOW)⚠ Storage setup failed -- run ./scripts/setup-model-storage.sh manually$(NC)"
 	@echo -e "$(GREEN)✓ S3 storage ready$(NC)"
 
+.PHONY: manage-storage
+manage-storage:
+	@$(BASE)/scripts/manage-storage.sh $(ARGS)
+
 .PHONY: setup-minio
 setup-minio: setup-storage
 	@echo -e "$(YELLOW)⚠ setup-minio is deprecated. Use 'make setup-storage' instead.$(NC)"
