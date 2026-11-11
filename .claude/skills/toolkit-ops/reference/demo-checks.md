@@ -14,6 +14,11 @@ Paths are repo-relative. "Soft" = the script continues on failure (`|| true`).
   so on a first deploy notebooks only see `NAMESPACE` (env-drift FAIL). Fix: restart the workbench
   (with user approval). `scripts/refresh-notebook-env.sh <ns>` restarts it, but drops demo-specific
   keys (MODEL_ID, MAAS_ROUTING, LIMIT, MLFLOW_TRACKING_URI, MODEL_SERVED_NAME, S3 bucket names).
+- New check type `servedmodel` (added 2026-11-11, `checks/check-demos.sh`): target `configmap/NAME`,
+  5th field = key (default `LLM_MODEL_NAME`). PASS only if the ConfigMap value is a model id actually
+  served by some `LLMInferenceService` (`spec.model.name`) or `InferenceService` (name or
+  `--served-model-name`), not just a resource name. Read-only. See `checks/demo-specs.conf`'s header
+  for the full list of check types and their condition syntax.
 
 ## Demos
 
@@ -25,7 +30,7 @@ Paths are repo-relative. "Soft" = the script continues on failure (`|| true`).
 | lemonade-stand-demo | `deploy.sh` (env vars; no `--delete`) | nemo-guardrails-demo | nemo-guardrails-demo route | Deploy/Route `lemonade-stand` `/health` | rollout 120s |
 | university-safeguard-demo | `deploy.sh -n --model-url --model-name --model-api-key` | acme-university-demo | API key for external model (defaults to a workshop MaaS URL) | NemoGuardrails `university-safeguard`, ISVC `hap-detector` | `test_university_safeguard`, prompt-gated |
 | lemonade-trustyai-demo | `deploy.sh -n ...` (helm) | lemonade-trustyai-demo | helm, 1 GPU, TrustyAI | ISVCs `llama-32`, `guardrails-detector-ibm-hap`, `prompt-injection-detector` | soft rollouts. FMS Orchestrator deprecated in 3.5 |
-| financial-loan-demo | `deploy.sh -n --llm-url --skip-webapp` | financial-loan-demo | S3, Kaggle dataset, GPU for workbench | Notebook `model-training` (1 GPU), Deploy/Route `microloan-webapp` | none |
+| financial-loan-demo | `deploy.sh -n --llm-url --skip-webapp --deploy-model` | financial-loan-demo | S3, Kaggle dataset, GPU for workbench | Notebook `model-training` (1 GPU), Deploy/Route `microloan-webapp`, ISVC `microloan-sklearn`, servedmodel check on `configmap/webapp-config` `LLM_MODEL_NAME` | none |
 | pipeline-demo | `deploy.sh -n` | pipeline-demo | S3, DSPA | DSPA `pipelines-definition` Ready, Notebook `ai-pipelines` | none |
 | lmeval-demo | `deploy.sh -n` | lmeval-demo (+ `llm`, `redhat-ods-applications`) | EvalHub, GPU, namespace `llm` | Notebook `model-benchmarking`, EvalHub `evalhub` Ready, ISVC `qwen3-8b-eval` | `run-benchmark.sh --status` |
 | automl-demo (TP) | `deploy.sh -n` | automl-demo | DSPA | DSPA, Secret `aws-connection-automl-data`, ServingRuntime `kserve-autogluonserver` | none |
@@ -56,12 +61,12 @@ edits never reach the workbench.
 | feast-demo `feast-online-retrieval`, `feast-banking-complex` | **yes** (class safe) | none; `feast` is in the image |
 | maas-ratelimit `maas-ratelimit-test` | **yes** | keys minted by deploy.sh into secret `maas-api-keys` (fixed 2026-11-11) |
 | maas-ratelimit `maas-traffic-generator` | with `--force` (long) | fixed 2026-11-11: models discovered, `MAAS_BASE_URL` injected |
-| financial-loan `predictive-model-development` | with `--force` if the dataset is in S3 | Kaggle dataset; defaults still minio/minio123 |
+| financial-loan `predictive-model-development` | with `--force` if the dataset is in S3 (ran headless PASS 2026-11-11 on c35) | Kaggle dataset; defaults still minio/minio123; uploads `model.joblib` to `s3://models/microloan/`, which `deploy.sh --deploy-model` then deploys as ISVC `microloan-sklearn` |
 | financial-loan `llm-model-fine-tuning` | no (GPU, HF downloads) | — |
 | pipeline-demo `01..04` (Elyra) | **yes** (verified 2026-11-11) | fixed: sample data uploaded, one artifacts bucket, `REGISTERED_MODEL_NAME`, `REGISTRY_URL`. Still no `.pipeline` file |
 | lmeval `english-benchmark` | with `--force` (10-40 min) | needs internet for pip |
 | lmeval `guidellm-benchmark`, `korean-mcq-benchmark` | with `--force` (long) | pip cell added 2026-11-11 |
-| lmeval `evalhub-sdk-demo` | with `--force` (long) | `input()` replaced by a clear error 2026-11-11 |
+| lmeval `evalhub-sdk-demo` | with `--force` (long) | `input()` replaced by a clear error 2026-11-11; `client.health()` dict handling + `arc_easy` benchmark (not `mmlu`, which doesn't exist on this provider) + `tokenizer` arg fixed 2026-11-11 (ran headless PASS on c35). Fix only effective in pods after it is pushed and the workbench repo is pulled |
 
 ## Defects found (candidates for fixes / compat tracker)
 
@@ -81,3 +86,6 @@ edits never reach the workbench.
 14. ~~n8n key regenerated on every deploy~~ **fixed 2026-11-10**.
 15. Open: OGX `spec.distribution.name: rh-dev` now warns "deprecated, use rh"; the working autorag config depends on it.
 16. ~~Model templates have no GPU-architecture affinity~~ **fixed 2026-11-11** for the FP8 models (qwen3-8b, gemma, granite-tiny-gpu)
+17. ~~financial-loan: no predictive model ever deployed, `/api/predict` silently used the mock/local fallback~~ **fixed 2026-11-11** (`deploy.sh --deploy-model`, `ensure_predictive_runtime`/`deploy_predictive_model`, ISVC `microloan-sklearn`)
+18. ~~financial-loan: `webapp-config` `LLM_MODEL_NAME` held the LLMInferenceService resource name instead of the served model id, `/api/explain` got HTTP 404~~ **fixed 2026-11-11** (`resolve_served_model_id()` in `lib/functions/notebook-env.sh`)
+19. ~~lmeval `evalhub-sdk-demo.ipynb`: `client.health()` dict `AttributeError`; benchmark id `mmlu` does not exist in the RHOAI 3.5.1 provider~~ **fixed 2026-11-11** (reads the dict directly; uses `arc_easy` after checking it exists; passes `tokenizer`)

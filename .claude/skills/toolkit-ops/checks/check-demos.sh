@@ -90,6 +90,18 @@ run_check() {
             k get "$target" "${nsarg[@]}" >/dev/null || { echo "ABSENT|$target missing|"; return; }
             local got; got="$(k get "$target" "${nsarg[@]}" -o "jsonpath={$path}")"
             [ "$got" = "$want" ] && echo "PASS|$target $path=$got|" || echo "FAIL|$target $path=${got:-<empty>} (want $want)|oc describe $target -n $ns" ;;
+        servedmodel)
+            # cond = ConfigMap key holding an OpenAI "model" id; it must be an id some model serves
+            # (LLMInferenceService spec.model.name, InferenceService --served-model-name or name)
+            local key="${cond:-LLM_MODEL_NAME}"
+            k get "$target" "${nsarg[@]}" >/dev/null || { echo "ABSENT|$target missing|"; return; }
+            local want; want="$(k get "$target" "${nsarg[@]}" -o json | jq -r --arg k "$key" '.data[$k] // ""')"
+            [ -z "$want" ] && { echo "WARN|$target has no $key|"; return; }
+            local served; served="$( { k get llminferenceservice -A -o json | jq -r '.items[] | .spec.model.name // .metadata.name';
+                k get inferenceservice -A -o json | jq -r '.items[] | .metadata.name,
+                    ([.spec.predictor.model.args[]?, .spec.predictor.containers[]?.args[]?] | .[] | select(startswith("--served-model-name=")) | sub("^--served-model-name="; ""))'; } | sort -u)"
+            if echo "$served" | grep -qxF "$want"; then echo "PASS|$key=$want is a served model id|"
+            else echo "FAIL|$key=$want is not served by any model (served: $(echo "$served" | grep -v '^$' | head -6 | paste -sd, -))|Use the served id (LLMInferenceService spec.model.name), not the resource name; redeploy the demo or patch $target"; fi ;;
         *) echo "SKIP|unknown check type $type|" ;;
     esac
 }

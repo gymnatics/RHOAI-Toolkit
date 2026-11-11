@@ -58,6 +58,7 @@ what is broken or mislabelled now, and what will break on a known future date or
 
 ---
 | TRK-016 | High | Open | EvalHub / MLflow | RHOAIENG-67534 hit on 3.5.1 although the MLflow CR predates EvalHub: every job submission fails with MLflow "Workspace context is required"; pod restart doesn't help; workaround is recreating the EvalHub CR. Toolkit now creates MLflow before EvalHub; existing clusters need the recreate. Docs (Evaluating AI systems 3.5 §2.3/§2.28, lastModified 2026-11-06) also advise a dedicated EvalHub namespace instead of `redhat-ods-applications` (toolkit uses the latter). | `demo/lmeval-demo/deploy.sh`, `demo/lmeval-demo/manifests/evalhub.yaml` |
+| TRK-017 | Medium | Monitoring | EvalHub | The EvalHub `lm_evaluation_harness` provider on RHOAI 3.5.1 lists 188 benchmarks but has no plain `mmlu` id; job submission returns HTTP 400 `resource_does_not_exist` for it. Use a benchmark id that is actually listed (e.g. `arc_easy`). Separately, eval-hub-sdk 0.4's `client.health()` returns a plain dict (`{"status": "healthy", ...}`), not an object with a `.status` attribute. Status: toolkit adapted (`evalhub-sdk-demo.ipynb` now lists benchmarks and checks one exists before submitting, and reads the health dict directly). | `demo/lmeval-demo/evalhub-sdk-demo.ipynb` | [live] cluster c35, 2026-11-11 | 2026-11-11 |
 
 ## 3. Future Breakage (dated / release-triggered)
 

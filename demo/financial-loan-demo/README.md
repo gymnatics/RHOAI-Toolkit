@@ -15,6 +15,7 @@ Based on [cbtham/micro-financial-loan](https://github.com/cbtham/micro-financial
 ```bash
 ./deploy.sh                         # Deploy to 'financial-loan-demo' namespace
 ./deploy.sh --llm-url URL           # Specify LLM endpoint manually
+./deploy.sh -n <ns> --deploy-model  # (Re)deploy only the predictive model and repoint the web app, then exit
 ./deploy.sh --delete                # Remove
 ```
 
@@ -24,6 +25,21 @@ The deploy script:
 - Sets up MinIO for model storage
 - Auto-detects the MaaS gateway or InferenceService endpoint for LLM inference
 - Configures the web app with both model endpoints
+- If a trained model already exists in S3, also deploys the predictive model (same as `--deploy-model`, non-fatal if it fails)
+
+### Deploying the predictive model (end-to-end)
+
+The predictive model isn't deployed on a first `deploy.sh` run; it needs a trained artifact first:
+
+1. `./deploy.sh -n financial-loan-demo` — deploys the workbench, storage and web app (web app falls back to mock predictions until a model is deployed).
+2. In the `model-training` workbench, run `notebooks/predictive-model-development.ipynb`. It trains the scikit-learn classifier and uploads `model.joblib` to `s3://models/microloan/model.joblib` via data connection `aws-connection-minio`.
+3. `./deploy.sh -n financial-loan-demo --deploy-model` — creates `ServingRuntime` `mlserver-runtime` (from template `mlserver-runtime-template` in `redhat-ods-applications`) and `InferenceService` `microloan-sklearn`, waits up to 300s for it to be Ready, sets `SKLEARN_API_URL` in `ConfigMap` `webapp-config`, and restarts `deployment/microloan-webapp`.
+
+Confirm it worked from the web app logs:
+- `✓ Using API endpoint for prediction` — the real model is being used.
+- `Using mock prediction` — no predictive model deployed yet (fallback).
+
+`/api/explain` reads the last prediction from the Flask session cookie, so call `/api/predict` first in the same session — otherwise it returns "No prediction data available. Please run a prediction first." (expected, not a bug).
 
 ## Architecture
 

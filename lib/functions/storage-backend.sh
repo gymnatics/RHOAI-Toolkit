@@ -369,9 +369,16 @@ create_data_connection() {
             ;;
     esac
 
+    # Optional overrides (env): DATA_CONNECTION_NAME (default aws-connection-minio),
+    # DATA_CONNECTION_ENDPOINT (e.g. the HTTPS Route from get_storage_external_endpoint -- the dashboard
+    # AutoRAG/AutoML UI rejects http:// connections), DATA_CONNECTION_COMPAT=false to skip the
+    # aws-connection-my-storage alias.
+    [ -n "${DATA_CONNECTION_ENDPOINT:-}" ] && endpoint="$DATA_CONNECTION_ENDPOINT"
+
     local manifest_dir
     manifest_dir="$(get_storage_manifest_dir)"
 
+    export CONNECTION_NAME="${DATA_CONNECTION_NAME:-aws-connection-minio}"
     export S3_ACCESS_KEY="$access_key"
     export S3_SECRET_KEY="$secret_key"
     export S3_ENDPOINT="$endpoint"
@@ -380,11 +387,15 @@ create_data_connection() {
     export NAMESPACE="$storage_ns"
 
     # Primary data connection
-    envsubst '${S3_ACCESS_KEY} ${S3_SECRET_KEY} ${S3_ENDPOINT} ${BUCKET_NAME} ${DISPLAY_NAME} ${NAMESPACE}' \
+    envsubst '${CONNECTION_NAME} ${S3_ACCESS_KEY} ${S3_SECRET_KEY} ${S3_ENDPOINT} ${BUCKET_NAME} ${DISPLAY_NAME} ${NAMESPACE}' \
         < "$manifest_dir/data-connection.yaml.tmpl" | oc apply -n "$target_ns" -f -
 
-    # Compatibility alias (aws-connection-my-storage) used by InferenceService templates
-    _create_compat_data_connection "$target_ns" "$endpoint" "$access_key" "$secret_key" "$bucket" "$display_name"
+    # Compatibility alias (aws-connection-my-storage) used by InferenceService templates -- same template
+    if [ "${DATA_CONNECTION_COMPAT:-true}" = "true" ]; then
+        CONNECTION_NAME="aws-connection-my-storage" DISPLAY_NAME="${display_name} (compat)" \
+            envsubst '${CONNECTION_NAME} ${S3_ACCESS_KEY} ${S3_SECRET_KEY} ${S3_ENDPOINT} ${BUCKET_NAME} ${DISPLAY_NAME} ${NAMESPACE}' \
+            < "$manifest_dir/data-connection.yaml.tmpl" | oc apply -n "$target_ns" -f -
+    fi
 
     echo -e "${GREEN:-}✓ Data connections created in ${target_ns}${NC:-}"
 }
@@ -393,30 +404,6 @@ create_data_connection() {
 # Internal helpers
 ################################################################################
 
-_create_compat_data_connection() {
-    local ns="$1" endpoint="$2" access_key="$3" secret_key="$4" bucket="$5" display_name="$6"
-
-    cat <<EOF | oc apply -n "$ns" -f -
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-my-storage
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "${display_name} (compat)"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: "${access_key}"
-  AWS_SECRET_ACCESS_KEY: "${secret_key}"
-  AWS_S3_ENDPOINT: "${endpoint}"
-  AWS_S3_BUCKET: "${bucket}"
-  AWS_DEFAULT_REGION: "us-east-1"
-EOF
-}
 
 ################################################################################
 # list_storage_buckets NAMESPACE

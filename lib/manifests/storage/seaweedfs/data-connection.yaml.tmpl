@@ -1,8 +1,10 @@
 ---
+# Rendered by create_data_connection (lib/functions/storage-backend.sh): CONNECTION_NAME, DISPLAY_NAME,
+# S3_ACCESS_KEY, S3_SECRET_KEY, S3_ENDPOINT, BUCKET_NAME.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: aws-connection-minio
+  name: ${CONNECTION_NAME}
   labels:
     opendatahub.io/dashboard: "true"
     opendatahub.io/managed: "true"

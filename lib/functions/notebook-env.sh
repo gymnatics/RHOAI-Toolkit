@@ -6,6 +6,7 @@
 #   detect_llm_endpoint          — sets LLM_MODEL_NAME, LLM_MODEL_NS, LLM_BASE_URL
 #   detect_direct_llm_endpoint   — sets DIRECT_MODEL_NAME, DIRECT_MODEL_NS, DIRECT_BASE_URL, DIRECT_ROUTE_URL
 #   detect_predictive_endpoint   — sets SKLEARN_MODEL_NAME, SKLEARN_API_URL
+#   resolve_served_model_id      — prints the id vLLM serves (the OpenAI "model" field) for a model resource
 #   inject_notebook_env          — creates notebook-env ConfigMap + patches Notebook CRs
 #
 # Usage in deploy.sh:
@@ -93,6 +94,23 @@ detect_llm_endpoint() {
     svc_name="${svc_name:-${detected}-kserve-workload-svc}"
     svc_port="${svc_port:-8000}"
     LLM_BASE_URL="https://${svc_name}.${detected_ns}.svc:${svc_port}/v1"
+}
+
+# The OpenAI-compatible "model" field must be the id vLLM serves, not the k8s resource name.
+# LLMInferenceService serves spec.model.name (e.g. RedHatAI/Qwen3-8B-FP8-dynamic for resource
+# qwen3-8b); an InferenceService serves --served-model-name if set, else the resource name.
+# Args: $1 = resource name, $2 = namespace. Prints the served id (falls back to $1).
+resolve_served_model_id() {
+    local name="$1" ns="$2" id=""
+    [ -z "$name" ] && return 1
+    id=$(oc get llminferenceservice "$name" -n "$ns" -o jsonpath='{.spec.model.name}' 2>/dev/null || true)
+    if [ -z "$id" ]; then
+        id=$(oc get inferenceservice "$name" -n "$ns" -o json 2>/dev/null | jq -r '
+            [.spec.predictor.model.args[]?, .spec.predictor.containers[]?.args[]?]
+            | map(select(startswith("--served-model-name=")) | sub("^--served-model-name="; ""))
+            | .[0] // empty' 2>/dev/null || true)
+    fi
+    echo "${id:-$name}"
 }
 
 # Detect a standard vLLM InferenceService for direct access (non-MaaS, non-embedding).

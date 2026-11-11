@@ -268,26 +268,8 @@ print_step "Creating S3 data connection for AutoRAG documents..."
 S3_EP="$(get_storage_endpoint "$NAMESPACE")"
 # Dashboard AutoRAG/AutoML UI requires an HTTPS S3 endpoint for connections
 S3_EXT_EP="$(get_storage_external_endpoint "$NAMESPACE")"
-oc apply -n "$NAMESPACE" -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-autorag-docs
-  namespace: $NAMESPACE
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "AutoRAG Documents"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
-  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
-  AWS_DEFAULT_REGION: us-east-1
-  AWS_S3_BUCKET: autorag-docs
-  AWS_S3_ENDPOINT: ${S3_EXT_EP}
-EOF
+DATA_CONNECTION_NAME=aws-connection-autorag-docs DATA_CONNECTION_ENDPOINT="$S3_EXT_EP" DATA_CONNECTION_COMPAT=false \
+    create_data_connection "$NAMESPACE" autorag-docs "$NAMESPACE" "AutoRAG Documents" >/dev/null
 
 # --- Step 3: Milvus vector database ---
 print_step "Deploying Milvus vector database..."
@@ -471,23 +453,8 @@ if [ "$USE_OGX" = true ]; then
     # user can skip the manual "Add connection" step in the dashboard.
     if ! oc get secret autorag-ogx-connection -n "$NAMESPACE" &>/dev/null; then
         print_step "Creating OGX connection secret..."
-        oc apply -n "$NAMESPACE" -f - <<CONN_EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: autorag-ogx-connection
-  namespace: $NAMESPACE
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: ogx-stack
-    openshift.io/display-name: "AutoRAG OGX Stack"
-type: Opaque
-stringData:
-  OGX_CLIENT_BASE_URL: "${LLAMASTACK_URL}"
-  OGX_CLIENT_API_KEY: "unused"
-CONN_EOF
+        export NAMESPACE LLAMASTACK_URL
+        envsubst '${NAMESPACE} ${LLAMASTACK_URL}' < "$SCRIPT_DIR/manifests/ogx-connection-secret.yaml.tmpl" | oc apply -f -
         print_success "OGX connection 'autorag-ogx-connection' created"
     else
         print_info "OGX connection secret already exists [SKIP]"

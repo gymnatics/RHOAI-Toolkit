@@ -1,0 +1,44 @@
+# Predictive loan-default model served with RHOAI's MLServer runtime (mlserver-runtime, created from the
+# redhat-ods-applications template mlserver-runtime-template by deploy.sh).
+#
+# The model is the scikit-learn pipeline that notebooks/predictive-model-development.ipynb uploads to
+# s3://models/microloan/model.joblib through the aws-connection-minio data connection.
+# The web app calls https://<name>-<namespace>.<apps-domain>/v2/models/<name>/infer (v2 protocol,
+# output predict_proba), so the service is exposed with an OpenShift Route.
+#
+# Rendered by deploy.sh with: NAMESPACE, SKLEARN_MODEL_NAME, S3_CONNECTION
+# MLServer env per "Deploying models by using the MLServer runtime" (RHOAI Deploying models guide).
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ${SKLEARN_MODEL_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    opendatahub.io/dashboard: "true"
+    networking.kserve.io/visibility: exposed
+    modelClass: mlserver_sklearn.SKLearnModel
+  annotations:
+    openshift.io/display-name: Microloan default-risk model
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: sklearn
+        version: "1"
+      runtime: mlserver-runtime
+      storage:
+        key: ${S3_CONNECTION}
+        path: microloan/
+      env:
+        - name: MLSERVER_MODEL_IMPLEMENTATION
+          value: mlserver_sklearn.SKLearnModel
+        - name: MLSERVER_MODEL_URI
+          value: /mnt/models/model.joblib
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 2Gi

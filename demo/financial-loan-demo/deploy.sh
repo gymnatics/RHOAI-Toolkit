@@ -35,15 +35,19 @@ NAMESPACE="financial-loan-demo"
 LLM_URL=""
 DELETE_MODE=false
 SKIP_WEBAPP=false
+DEPLOY_MODEL_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -n|--namespace) NAMESPACE="$2"; shift 2 ;;
         --llm-url) LLM_URL="$2"; shift 2 ;;
         --skip-webapp) SKIP_WEBAPP=true; shift ;;
+        --deploy-model) DEPLOY_MODEL_ONLY=true; shift ;;
         --delete) DELETE_MODE=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [-n namespace] [--llm-url URL] [--skip-webapp] [--delete]"
+            echo "Usage: $0 [-n namespace] [--llm-url URL] [--skip-webapp] [--deploy-model] [--delete]"
+            echo "  --deploy-model  only (re)deploy the predictive model microloan-sklearn (run after the"
+            echo "                  predictive-model-development notebook has uploaded s3://models/microloan/model.joblib)"
             exit 0
             ;;
         *) shift ;;
@@ -72,6 +76,65 @@ fi
 clone_or_update_repo "micro-financial-loan"
 REPO_PATH=$(get_repo_path "micro-financial-loan")
 
+# --- Predictive model: MLServer runtime + microloan-sklearn InferenceService ---
+# The notebook saves a scikit-learn pipeline (model.joblib); RHOAI's MLServer runtime serves it with the v2
+# protocol the web app uses (output predict_proba). Without this the web app silently falls back to a
+# local/mock prediction.
+ensure_predictive_runtime() {
+    if oc get servingruntime mlserver-runtime -n "$NAMESPACE" &>/dev/null; then
+        return 0
+    fi
+    if oc get template mlserver-runtime-template -n redhat-ods-applications &>/dev/null; then
+        print_step "Installing RHOAI MLServer ServingRuntime (sklearn/xgboost/lightgbm, CPU)..."
+        oc process mlserver-runtime-template -n redhat-ods-applications | oc apply -n "$NAMESPACE" -f - >/dev/null && \
+            print_success "MLServer ServingRuntime installed (mlserver-runtime)"
+    elif [ -f "$REPO_PATH/serving-runtimes/mlserver-kserve.yaml" ]; then
+        print_step "RHOAI MLServer template not found -- installing upstream MLServer runtime..."
+        oc apply -n "$NAMESPACE" -f "$REPO_PATH/serving-runtimes/mlserver-kserve.yaml" >/dev/null
+    else
+        print_warning "No MLServer runtime available: add one from the dashboard (Settings > Serving runtimes)"
+        return 1
+    fi
+}
+
+deploy_predictive_model() {
+    local name="${SKLEARN_MODEL_NAME:-microloan-sklearn}" s3_ep
+    ensure_predictive_runtime || return 1
+    s3_ep="$(get_storage_endpoint "$NAMESPACE")"
+    if ! oc run s3-check-model --rm -i --restart=Never --quiet \
+            --image=docker.io/amazon/aws-cli:latest -n "$NAMESPACE" \
+            --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+            --env="AWS_DEFAULT_REGION=us-east-1" \
+            -- s3 ls "s3://models/microloan/model.joblib" --endpoint-url "$s3_ep" 2>/dev/null | grep -q model.joblib; then
+        print_info "Predictive model not trained yet: run notebooks/predictive-model-development.ipynb in the"
+        print_info "model-training workbench, then: $0 -n $NAMESPACE --deploy-model"
+        return 0
+    fi
+    print_step "Deploying predictive model $name (MLServer, s3://models/microloan/model.joblib)..."
+    export NAMESPACE SKLEARN_MODEL_NAME="$name" S3_CONNECTION="aws-connection-minio"
+    envsubst '${NAMESPACE} ${SKLEARN_MODEL_NAME} ${S3_CONNECTION}' \
+        < "$SCRIPT_DIR/manifests/predictive-inferenceservice.yaml.tmpl" | oc apply -f -
+    if oc wait --for=condition=Ready "inferenceservice/$name" -n "$NAMESPACE" --timeout=300s >/dev/null 2>&1; then
+        local url
+        url=$(oc get inferenceservice "$name" -n "$NAMESPACE" -o jsonpath='{.status.url}')
+        print_success "Predictive model Ready: $url"
+        if oc get configmap webapp-config -n "$NAMESPACE" &>/dev/null && [ -n "$url" ]; then
+            oc patch configmap webapp-config -n "$NAMESPACE" --type=merge \
+                -p "{\"data\":{\"SKLEARN_API_URL\":\"${url}/v2/models/${name}/infer\"}}" >/dev/null
+            oc rollout restart deployment/microloan-webapp -n "$NAMESPACE" >/dev/null 2>&1 && \
+                print_success "Web app pointed at ${url}/v2/models/${name}/infer and restarted"
+        fi
+    else
+        print_warning "Predictive model not Ready after 300s: oc describe isvc $name -n $NAMESPACE"
+    fi
+}
+
+if [ "$DEPLOY_MODEL_ONLY" = true ]; then
+    deploy_predictive_model
+    exit $?
+fi
+
+
 # --- Workbench namespace + MinIO ---
 ensure_namespace "$NAMESPACE"
 oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev/null || true
@@ -87,25 +150,8 @@ create_storage_bucket "$NAMESPACE" "datasets"
 
 # Data connection for RHOAI dashboard
 S3_EP="$(get_storage_endpoint "$NAMESPACE")"
-oc apply -n "$NAMESPACE" -f - <<DCEOF 2>/dev/null || true
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-minio
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "S3 - Models & Datasets"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
-  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
-  AWS_DEFAULT_REGION: us-east-1
-  AWS_S3_BUCKET: models
-  AWS_S3_ENDPOINT: ${S3_EP}
-DCEOF
+DATA_CONNECTION_NAME=aws-connection-minio DATA_CONNECTION_COMPAT=false \
+    create_data_connection "$NAMESPACE" models "$NAMESPACE" "S3 - Models & Datasets" >/dev/null 2>&1 || true
 
 # --- Upload training dataset to S3 (backend-agnostic: SeaweedFS/Ceph RGW/MinIO) ---
 # NOTE: this previously checked a $MINIO_POD variable + `mc` commands that no
@@ -171,20 +217,8 @@ if [ "$DATA_EXISTS" = false ]; then
     fi
 fi
 
-# --- Check for predictive ServingRuntime (CPU) ---
-PREDICTIVE_RUNTIME_EXISTS=$(oc get servingruntime -A -o jsonpath='{range .items[*]}{.spec.supportedModelFormats[*].name}{" "}{end}' 2>/dev/null)
-if echo "$PREDICTIVE_RUNTIME_EXISTS" | grep -qi -E 'sklearn|xgboost|lightgbm'; then
-    print_info "Predictive ServingRuntime available (supports sklearn/xgboost)"
-else
-    print_step "No predictive ServingRuntime found -- installing XGBServer..."
-    if [ -f "$REPO_PATH/serving-runtimes/xgbserver-kserve.yaml" ]; then
-        oc apply -n "$NAMESPACE" -f "$REPO_PATH/serving-runtimes/xgbserver-kserve.yaml" 2>/dev/null && \
-            print_success "XGBoost ServingRuntime installed (CPU, no GPU required)" || \
-            print_warning "Failed to install -- import ServingRuntime manually from dashboard"
-    else
-        print_warning "Install MLServer or XGBServer from the RHOAI dashboard (Settings > Serving runtimes)"
-    fi
-fi
+# --- Predictive ServingRuntime (CPU): RHOAI MLServer ---
+ensure_predictive_runtime || true
 
 # --- Detect model endpoints ---
 CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
@@ -217,6 +251,11 @@ if [ -z "$LLM_URL" ]; then
             fi
         fi
     fi
+fi
+
+# OpenAI "model" field = served id (LLMInferenceService spec.model.name), not the resource name
+if [ -n "${LLM_ISVC:-}" ] && [ -n "${LLM_MODEL_NS:-${DIRECT_MODEL_NS:-}}" ]; then
+    LLM_MODEL_NAME=$(resolve_served_model_id "$LLM_ISVC" "${LLM_MODEL_NS:-$DIRECT_MODEL_NS}")
 fi
 
 # --- Detect predictive model endpoint ---
@@ -286,27 +325,20 @@ if [ "$SKIP_WEBAPP" = false ] && [ -d "$WEBAPP_DIR" ]; then
             LLM_MODEL_NAME=$(oc get llmisvc -A --no-headers 2>/dev/null | awk '{print $2}' | head -1)
             [ -z "$LLM_MODEL_NAME" ] && LLM_MODEL_NAME="qwen3-4b"
         fi
-        print_info "LLM model name for web app: $LLM_MODEL_NAME"
     fi
+    # The chat API needs the served id (LLMInferenceService spec.model.name), not the resource name
+    if [ -n "${LLM_MODEL_NS:-${DIRECT_MODEL_NS:-}}" ]; then
+        LLM_MODEL_NAME=$(resolve_served_model_id "$LLM_MODEL_NAME" "${LLM_MODEL_NS:-$DIRECT_MODEL_NS}")
+    fi
+    print_info "LLM model name for web app: $LLM_MODEL_NAME"
 
     # Patch the deployment.yaml namespace and apply
     sed "s/microloan-web-app/$NAMESPACE/g" "$WEBAPP_DIR/deployment.yaml" | oc apply -n "$NAMESPACE" -f -
 
     # ConfigMap with auto-detected endpoints + model name
-    oc apply -n "$NAMESPACE" -f - <<PATCH
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: webapp-config
-  namespace: ${NAMESPACE}
-data:
-  SKLEARN_API_URL: "${SKLEARN_API_URL}"
-  LLM_API_URL: "${LLM_URL}"
-  LLM_MODEL_NAME: "${LLM_MODEL_NAME}"
-  FLASK_ENV: "production"
-  HOST: "0.0.0.0"
-  PORT: "8080"
-PATCH
+    export NAMESPACE SKLEARN_API_URL LLM_URL LLM_MODEL_NAME
+    envsubst '${NAMESPACE} ${SKLEARN_API_URL} ${LLM_URL} ${LLM_MODEL_NAME}' \
+        < "$SCRIPT_DIR/manifests/webapp-config.yaml.tmpl" | oc apply -n "$NAMESPACE" -f -
 
     # Build the container image from vendored source
     print_step "Building web app container image (this takes 1-2 minutes)..."
@@ -328,6 +360,9 @@ fi
 
 echo ""
 print_success "Financial Loan Demo deployed"
+
+# --- Predictive model (only if the notebook already uploaded it; otherwise prints how to) ---
+deploy_predictive_model || true
 
 # --- Create workbench + clone repo (GPU workbench with PyTorch image) ---
 source "$ROOT_DIR/lib/functions/workbench.sh"

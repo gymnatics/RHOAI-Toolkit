@@ -1,0 +1,20 @@
+# Runtime config for the microloan web app (web-application/deployment.yaml reads it via envFrom).
+#   SKLEARN_API_URL  v2 infer URL of the predictive model (deploy.sh --deploy-model repoints it)
+#   LLM_API_URL      OpenAI-compatible chat completions URL used by /api/explain
+#   LLM_MODEL_NAME   the id vLLM serves (resolve_served_model_id), not the k8s resource name;
+#                    a wrong id returns 404 "model does not exist" and /api/explain silently
+#                    falls back to a template sentence.
+#
+# Rendered by deploy.sh with: NAMESPACE, SKLEARN_API_URL, LLM_URL, LLM_MODEL_NAME
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-config
+  namespace: ${NAMESPACE}
+data:
+  SKLEARN_API_URL: "${SKLEARN_API_URL}"
+  LLM_API_URL: "${LLM_URL}"
+  LLM_MODEL_NAME: "${LLM_MODEL_NAME}"
+  FLASK_ENV: "production"
+  HOST: "0.0.0.0"
+  PORT: "8080"

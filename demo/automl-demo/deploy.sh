@@ -102,26 +102,8 @@ fi
 print_step "Creating S3 data connection for AutoML..."
 # Dashboard AutoRAG/AutoML UI requires an HTTPS S3 endpoint for connections
 S3_EXT_EP="$(get_storage_external_endpoint "$NAMESPACE")"
-oc apply -n "$NAMESPACE" -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-connection-automl-data
-  namespace: $NAMESPACE
-  labels:
-    opendatahub.io/dashboard: "true"
-    opendatahub.io/managed: "true"
-  annotations:
-    opendatahub.io/connection-type: s3
-    openshift.io/display-name: "AutoML Training Data"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-admin}
-  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
-  AWS_DEFAULT_REGION: us-east-1
-  AWS_S3_BUCKET: automl-data
-  AWS_S3_ENDPOINT: ${S3_EXT_EP}
-EOF
+DATA_CONNECTION_NAME=aws-connection-automl-data DATA_CONNECTION_ENDPOINT="$S3_EXT_EP" DATA_CONNECTION_COMPAT=false \
+    create_data_connection "$NAMESPACE" automl-data "$NAMESPACE" "AutoML Training Data" >/dev/null
 
 # --- Step 4: Pipeline Server (DSPA) ---
 print_step "Deploying Pipeline Server (DSPA)..."

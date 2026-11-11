@@ -1075,6 +1075,36 @@ Full write-up: [`docs/bugs/autorag-ogx-3.5-cascade.md`](bugs/autorag-ogx-3.5-cas
 
 ---
 
+## Financial Loan Demo
+
+### Web App Uses Mock Predictions Instead of the Real Model
+
+**Symptom:** The financial-loan web app's `/api/predict` always works, but never seems to call a real model. Web app logs show `Using mock prediction` instead of `✓ Using API endpoint for prediction`.
+
+**Cause:** `deploy.sh` does not deploy the scikit-learn predictive model (`InferenceService` `microloan-sklearn`) until a trained model artifact exists in S3; until then the app falls back to its mock/local prediction.
+
+**Fix:**
+1. In the `model-training` workbench, run `demo/financial-loan-demo/notebooks/predictive-model-development.ipynb`. It uploads `model.joblib` to `s3://models/microloan/model.joblib` via data connection `aws-connection-minio`.
+2. Deploy the model: `./demo/financial-loan-demo/deploy.sh -n financial-loan-demo --deploy-model`. This creates `ServingRuntime` `mlserver-runtime` (from template `mlserver-runtime-template` in `redhat-ods-applications`), the `InferenceService` `microloan-sklearn`, sets `SKLEARN_API_URL` in `ConfigMap` `webapp-config`, and restarts `deployment/microloan-webapp`. A normal (non-`--deploy-model`) run also does this automatically, non-fatally, once the model exists in S3.
+3. Confirm from the web app logs: `✓ Using API endpoint for prediction` means the real model is in use; `Using mock prediction` means it is still not deployed.
+
+### `/api/explain` Returns Template Text Instead of an LLM Explanation
+
+**Symptom:** `/api/explain` returns a short canned sentence (e.g. "Loan approved with 71.7% approval probability. DTI ratio ...") instead of an LLM-generated explanation. Web app log shows `LLM Response status: 404` and `LLM Error: {"error":{"message":"The model \`qwen3-8b\` does not exist." ...}}`.
+
+**Cause:** `deploy.sh` put the `LLMInferenceService` resource name (e.g. `qwen3-8b`) into `webapp-config`'s `LLM_MODEL_NAME`, but vLLM serves the model under `LLMInferenceService.spec.model.name` (e.g. `RedHatAI/Qwen3-8B-FP8-dynamic`), not the resource name.
+
+**Fix (already applied in toolkit):** `resolve_served_model_id <name> <namespace>` in `lib/functions/notebook-env.sh` resolves the actual served id (LLMInferenceService `spec.model.name`, else InferenceService `--served-model-name`, else the resource name); `demo/financial-loan-demo/deploy.sh` uses it for both `webapp-config` and the `demo-config-env` notebook config. To fix an already-affected cluster:
+```bash
+oc get llminferenceservice <name> -n <ns> -o jsonpath='{.spec.model.name}'
+oc patch configmap webapp-config -n <ns> --type merge -p '{"data":{"LLM_MODEL_NAME":"<served-id>"}}'
+oc rollout restart deployment/microloan-webapp -n <ns>
+```
+
+**Note:** `/api/explain` reads the last prediction from the Flask session cookie. Calling it without first calling `/api/predict` in the same session returns "No prediction data available. Please run a prediction first." — this is expected, not a bug.
+
+---
+
 ## EvalHub (lmeval-demo)
 
 ### Every EvalHub job fails: `400 ... mlflow_request_failed ... Workspace context is required for this request`
@@ -1102,6 +1132,14 @@ oc apply -f evalhub-backup.yaml     # strip status/uid/resourceVersion first
 **Cause:** the Korean MCQ provider was never registered: its `provider.yaml` lived only in the upstream repo and its adapter image was never built.
 
 **Fix:** re-run `demo/lmeval-demo/deploy.sh -n lmeval-demo` (builds `korean-mcq-adapter` in-cluster) and update the workbench clone (`provider.yaml` is now vendored in `demo/lmeval-demo/adapters/korean-mcq/`).
+
+### EvalHub SDK: `'dict' object has no attribute 'status'`; job submit 400 `resource_does_not_exist` for benchmark `mmlu`
+
+**Symptom:** `health.status` raises `AttributeError: 'dict' object has no attribute 'status'`. Separately, `client.jobs.submit(...)` for benchmark id `mmlu` returns HTTP 400: `{"message_code":"resource_does_not_exist","message":"The benchmark with id 'mmlu' does not exist."}`.
+
+**Cause:** In eval-hub-sdk 0.4, `client.health()` returns a plain dict (`{"status": "healthy", "timestamp": ...}`), not an object. Separately, the EvalHub `lm_evaluation_harness` provider on RHOAI 3.5.1 lists 188 benchmarks but no plain `mmlu`.
+
+**Fix:** Read the health dict directly (`health["status"]`) instead of `.status`. List benchmarks first and use an id that exists (`evalhub-sdk-demo.ipynb` now checks `arc_easy` exists, uses it, and passes `tokenizer` (`TOKENIZER_HF_ID`) since the served name, e.g. `qwen3-8b-eval`, is not a Hugging Face id).
 
 ## GPU Nodes
 
