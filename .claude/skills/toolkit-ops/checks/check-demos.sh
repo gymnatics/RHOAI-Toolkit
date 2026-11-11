@@ -102,6 +102,40 @@ run_check() {
                     ([.spec.predictor.model.args[]?, .spec.predictor.containers[]?.args[]?] | .[] | select(startswith("--served-model-name=")) | sub("^--served-model-name="; ""))'; } | sort -u)"
             if echo "$served" | grep -qxF "$want"; then echo "PASS|$key=$want is a served model id|"
             else echo "FAIL|$key=$want is not served by any model (served: $(echo "$served" | grep -v '^$' | head -6 | paste -sd, -))|Use the served id (LLMInferenceService spec.model.name), not the resource name; redeploy the demo or patch $target"; fi ;;
+        probe)
+            # Functional probe through the app's Route (HTTP only; no cluster changes). cond = probe kind
+            local host; host="$(k get route "$target" "${nsarg[@]}" -o jsonpath='{.spec.host}')"
+            [ -z "$host" ] && { echo "ABSENT|route $target missing|"; return; }
+            local u="https://$host"
+            case "$cond" in
+                openwebui)  # WEBUI_AUTH=False: signin with empty credentials returns a session token
+                    local tok models
+                    tok="$(curl -sk -m 20 -X POST "$u/api/v1/auths/signin" -H 'Content-Type: application/json' -d '{"email":"","password":""}' | jq -r '.token // empty' 2>/dev/null)"
+                    models="$(curl -sk -m 30 "$u/api/models" -H "Authorization: Bearer $tok" | jq -r '[.data[]?.id | select(. != "arena-model")] | join(",")' 2>/dev/null)"
+                    [ -n "$models" ] && echo "PASS|Open WebUI lists models: $models|" \
+                        || echo "FAIL|Open WebUI lists no models (model URL empty, unrendered or unreachable)|oc get cm openwebui-config -n $ns -o jsonpath='{.data.OPENAI_API_BASE_URLS}'; rerun demo/open-webui-demo/deploy.sh -n $ns" ;;
+                nemo)  # PII prompt must be blocked; in selfcheck mode "model" must be the served id
+                    local model r st
+                    model="$(k get configmap "$target-config" "${nsarg[@]}" -o jsonpath='{.data.config\.yaml}' | awk '/model_name:/ {gsub(/"/,"",$2); print $2; exit}')"
+                    r="$(curl -sk -m 120 -X POST "$u/v1/guardrail/checks" -H 'Content-Type: application/json' -H "Authorization: Bearer $(k whoami -t)" \
+                        -d "{\"model\":\"${model:-test}\",\"messages\":[{\"role\":\"user\",\"content\":\"Contact me at alice@example.com\"}]}")"
+                    st="$(echo "$r" | jq -r '.status // empty' 2>/dev/null)"
+                    case "$st" in
+                        blocked) if [ -n "$model" ]; then echo "PASS|PII prompt blocked (selfcheck mode, model $model)|"; else echo "PASS|PII prompt blocked (basic mode)|"; fi ;;
+                        "") echo "FAIL|guardrail check returned no status: $(echo "$r" | tr -d '\n' | cut -c1-120)|oc logs deploy/$target -n $ns" ;;
+                        *) echo "FAIL|PII prompt not blocked (status $st): $(echo "$r" | jq -r '.guardrails_data.details // ""' 2>/dev/null | cut -c1-140)|oc logs deploy/$target -n $ns; model_name must be the served id" ;;
+                    esac ;;
+                lemonade-chat)  # one on-topic chat through the app -> NeMo -> LLM
+                    local out err txt
+                    out="$(curl -sk -m 240 -X POST "$u/api/chat" -H 'Content-Type: application/json' -d '{"message":"Give me a one-sentence lemonade tip."}')"
+                    err="$(echo "$out" | sed -n 's/^data: //p' | jq -r 'select(.type=="error") | .message' 2>/dev/null | head -1)"
+                    txt="$(echo "$out" | sed -n 's/^data: //p' | jq -rj 'select(.type=="chunk") | .content' 2>/dev/null)"
+                    if [ -n "$err" ]; then echo "FAIL|chat error: $err|401 = expired NeMo token: rerun demo/nemo-guardrails-demo/deploy.sh then demo/lemonade-stand-demo/deploy.sh; oc logs deploy/$target -n $ns"
+                    elif [ -z "$txt" ]; then echo "FAIL|chat returned no text|oc logs deploy/$target -n $ns"
+                    elif [[ "$txt" == *"<think>"* ]]; then echo "WARN|chat answered but shows model reasoning (<think>)|DISABLE_THINKING=true in the app (default)"
+                    else echo "PASS|chat answered: $(echo "$txt" | tr -d '\n' | cut -c1-80)|"; fi ;;
+                *) echo "SKIP|unknown probe $cond|" ;;
+            esac ;;
         *) echo "SKIP|unknown check type $type|" ;;
     esac
 }

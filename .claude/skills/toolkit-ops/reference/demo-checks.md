@@ -19,15 +19,21 @@ Paths are repo-relative. "Soft" = the script continues on failure (`|| true`).
   served by some `LLMInferenceService` (`spec.model.name`) or `InferenceService` (name or
   `--served-model-name`), not just a resource name. Read-only. See `checks/demo-specs.conf`'s header
   for the full list of check types and their condition syntax.
+- New check type `probe` (added 2026-11-11, `checks/check-demos.sh`): target = Route name, 5th field =
+  probe kind. HTTP only through the app's Route, no cluster changes. Kinds: `openwebui` (signs in with
+  empty credentials, `WEBUI_AUTH=False`, and requires `/api/models` to list at least one model other than
+  `arena-model`); `nemo` (POST `/v1/guardrail/checks` with a PII prompt using `oc whoami -t`; PASS only if
+  `blocked`; uses the configured `model_name` in selfcheck mode); `lemonade-chat` (POST `/api/chat`; FAIL
+  on an error event such as "Backend error (401)" or no text; WARN if the reply contains `<think>`).
 
 ## Demos
 
 | Demo | Deploy | Namespace | Needs | Success signals (see demo-specs.conf) | Built-in test |
 |---|---|---|---|---|---|
 | maas-ratelimit-demo | `deploy.sh -n` | maas-ratelimit-demo | RHOAI 3.4+, MaaS, an LLMISVC | Notebook `rate-limit-testing` | none |
-| open-webui-demo | `deploy.sh -n --model-url` | open-webui | a model URL | Deploy/Route `open-webui` | none (probes the 3.3-only `inference-gateway` host first) |
-| nemo-guardrails-demo | `deploy.sh -n --name --selfcheck` | nemo-guardrails-demo | TrustyAI (NemoGuardrails CRD) | NemoGuardrails `nemo-quickstart` phase Ready, Route | `test_nemo_guardrails` (`lib/functions/nemo-guardrails.sh:118`), prompt-gated, warns only |
-| lemonade-stand-demo | `deploy.sh` (env vars; no `--delete`) | nemo-guardrails-demo | nemo-guardrails-demo route | Deploy/Route `lemonade-stand` `/health` | rollout 120s |
+| open-webui-demo | `deploy.sh -n --model-url --delete` | open-webui | a chat model (auto-detected if `--model-url` omitted) | Deploy/Route `open-webui`, probe `openwebui` (lists a non-`arena-model` model) | none (probes the 3.3-only `inference-gateway` host first) |
+| nemo-guardrails-demo | `deploy.sh -n --name --selfcheck --model-url --model-name --delete` | nemo-guardrails-demo | TrustyAI (NemoGuardrails CRD); selfcheck auto-detects a chat model if `--model-url`/`--model-name` omitted | NemoGuardrails `nemo-quickstart` phase Ready, Route, Secret `api-token-secret`, probe `nemo` (PII prompt blocked) | `test_nemo_guardrails` (`lib/functions/nemo-guardrails.sh:136`), runs by default when stdin is not a TTY, warns only |
+| lemonade-stand-demo | `deploy.sh` (env vars) / `deploy.sh --delete` | nemo-guardrails-demo | nemo-guardrails-demo route, deployed with `--selfcheck` (an LLM configured) | Deploy/Route `lemonade-stand` `/health`, probe `lemonade-chat` (chat answers, no `<think>`) | rollout 120s |
 | university-safeguard-demo | `deploy.sh -n --model-url --model-name --model-api-key` | acme-university-demo | API key for external model (defaults to a workshop MaaS URL) | NemoGuardrails `university-safeguard`, ISVC `hap-detector` | `test_university_safeguard`, prompt-gated |
 | lemonade-trustyai-demo | `deploy.sh -n ...` (helm) | lemonade-trustyai-demo | helm, 1 GPU, TrustyAI | ISVCs `llama-32`, `guardrails-detector-ibm-hap`, `prompt-injection-detector` | soft rollouts. FMS Orchestrator deprecated in 3.5 |
 | financial-loan-demo | `deploy.sh -n --llm-url --skip-webapp --deploy-model` | financial-loan-demo | S3, Kaggle dataset, GPU for workbench | Notebook `model-training` (1 GPU), Deploy/Route `microloan-webapp`, ISVC `microloan-sklearn`, servedmodel check on `configmap/webapp-config` `LLM_MODEL_NAME` | none |
@@ -89,3 +95,7 @@ edits never reach the workbench.
 17. ~~financial-loan: no predictive model ever deployed, `/api/predict` silently used the mock/local fallback~~ **fixed 2026-11-11** (`deploy.sh --deploy-model`, `ensure_predictive_runtime`/`deploy_predictive_model`, ISVC `microloan-sklearn`)
 18. ~~financial-loan: `webapp-config` `LLM_MODEL_NAME` held the LLMInferenceService resource name instead of the served model id, `/api/explain` got HTTP 404~~ **fixed 2026-11-11** (`resolve_served_model_id()` in `lib/functions/notebook-env.sh`)
 19. ~~lmeval `evalhub-sdk-demo.ipynb`: `client.health()` dict `AttributeError`; benchmark id `mmlu` does not exist in the RHOAI 3.5.1 provider~~ **fixed 2026-11-11** (reads the dict directly; uses `arc_easy` after checking it exists; passes `tokenizer`)
+20. ~~Open WebUI: `manifests/open-webui.yaml` used `${MODEL_URL:-}`, which `envsubst` leaves as literal text (ConfigMap held `OPENAI_API_BASE_URLS=${MODEL_URL:-}`); detection took the first `InferenceService` in the cluster (could be an embedding/sklearn model) and never considered `LLMInferenceService`~~ **fixed 2026-11-11** (manifest uses `${MODEL_URL}` rendered with an explicit `envsubst` var list; detection uses `detect_direct_llm_endpoint`; new `MODEL_TLS_VERIFY`/`AIOHTTP_CLIENT_SESSION_SSL` for in-cluster https endpoints; `deploy.sh` restarts the deployment)
+21. ~~NeMo Guardrails: `setup_nemo_guardrails_auth` minted a 336h (14-day) token into `api-token-secret` once and never refreshed it, so it expired (2026-10-05 on c35) and lemonade-stand (which copies the token) got 401~~ **fixed 2026-11-11** (token re-minted on every deploy, default 8760h/1 year; also affects university-safeguard-demo, which shares the function)
+22. ~~NeMo Guardrails `--selfcheck` prompted interactively for a namespace/name and guessed `https://<name>-predictor.<ns>.svc:8080/v1` with the resource name as model id; built-in tests and sample curl commands sent `"model": "test"`, which vLLM 404s on~~ **fixed 2026-11-11** (auto-detects the chat model via `detect_direct_llm_endpoint`/`resolve_served_model_id`, new `--model-url --model-name` flags; tests/samples read `model_name` from the `<name>-config` ConfigMap via `_nemo_request_model`)
+23. ~~lemonade-stand: replies showed Qwen3's `<think>...` reasoning and were cut off at `max_tokens=300` (NeMo's streaming path doesn't apply `chat_template_kwargs.enable_thinking: false`, and doesn't pass the client system message through, so `/no_think` in the system prompt had no effect)~~ **fixed 2026-11-11** (`app.py` appends `/no_think` to the user message instead, env `DISABLE_THINKING` default `true`; strips a leading `<think>...</think>` block from streamed and non-streamed replies)

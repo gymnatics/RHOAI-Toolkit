@@ -47,6 +47,12 @@ else:
 if os.getenv("GUARDRAILS_URL"):
     API_URL = os.getenv("GUARDRAILS_URL")
 
+# Qwen3 thinks by default; through NeMo's streaming path the config's chat_template_kwargs
+# (enable_thinking: false) is not applied, so replies came back as <think>... and were cut off at
+# max_tokens. Qwen3's "/no_think" switch works when it is in the USER message (NeMo does not pass the
+# client's system message through); the model then emits an empty <think></think>, stripped below.
+NO_THINK_SUFFIX = " /no_think" if os.getenv("DISABLE_THINKING", "true").lower() == "true" else ""
+THINK_BLOCK = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", """You are a helpful assistant specialized in lemons.
 
 CRITICAL RULE: You must ONLY discuss lemons. Never mention any other fruit by name - not even for comparisons.
@@ -237,7 +243,7 @@ async def process_chat(message: str) -> AsyncGenerator[dict, None]:
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": message},
+            {"role": "user", "content": message + NO_THINK_SUFFIX},
         ],
         "stream": True,
         "max_tokens": 300,
@@ -261,6 +267,7 @@ async def process_chat(message: str) -> AsyncGenerator[dict, None]:
             # Handle streaming response
             if "text/event-stream" in content_type:
                 full_response = ""
+                head, in_head = "", True  # hold back a leading <think>...</think> block
                 async for line_bytes in response.content:
                     line = line_bytes.decode("utf-8", errors="ignore").strip()
                     if not line or not line.startswith("data: "):
@@ -275,9 +282,28 @@ async def process_chat(message: str) -> AsyncGenerator[dict, None]:
                             content = delta.get("content", "")
                             if content:
                                 full_response += content
+                                if in_head:
+                                    head += content
+                                    stripped = head.lstrip()
+                                    if stripped.startswith("<think>"):
+                                        if "</think>" not in stripped:
+                                            continue
+                                        content = THINK_BLOCK.sub("", stripped)
+                                    elif "<think>".startswith(stripped):
+                                        continue  # could still be the start of <think>
+                                    else:
+                                        content = head
+                                    in_head = False
+                                    if not content:
+                                        continue
                                 yield {"type": "chunk", "content": content}
                     except json.JSONDecodeError:
                         continue
+
+                if in_head and head.strip():  # stream ended while still holding back text
+                    rest = THINK_BLOCK.sub("", head.lstrip())
+                    if rest and not rest.startswith("<think>"):
+                        yield {"type": "chunk", "content": rest}
 
                 # Check if NeMo blocked the response
                 if any(p in full_response.lower() for p in REFUSAL_PATTERNS):
@@ -292,7 +318,7 @@ async def process_chat(message: str) -> AsyncGenerator[dict, None]:
                 body = await response.json()
                 choices = body.get("choices", [])
                 if choices:
-                    content = choices[0].get("message", {}).get("content", "")
+                    content = THINK_BLOCK.sub("", choices[0].get("message", {}).get("content", ""))
                     if any(p in content.lower() for p in REFUSAL_PATTERNS):
                         await metrics.inc_guardrail_block()
                         yield {

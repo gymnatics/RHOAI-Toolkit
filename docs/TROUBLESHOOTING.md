@@ -989,11 +989,48 @@ oc run -it --rm debug --image=registry.access.redhat.com/ubi9/ubi-minimal --rest
 
 **Fix:** Always call `envsubst` with an explicit, quoted list of only the placeholders you want replaced, e.g. `envsubst '${NAMESPACE} ${GUARDRAILS_NAME} ${MAIN_MODEL_URL}' < file.yaml`. See `deploy_university_guardrails_config()` in `lib/functions/university-safeguard.sh` for the pattern used in this demo.
 
+### Open WebUI Shows No Models — Literal `${MODEL_URL:-}` in ConfigMap
+
+**Symptom:** Open WebUI loads but lists no models. `oc get cm openwebui-config -n <namespace> -o jsonpath='{.data.OPENAI_API_BASE_URLS}'` prints the literal text `${MODEL_URL:-}` instead of a URL.
+
+**Cause:** `demo/open-webui-demo/manifests/open-webui.yaml` used `${MODEL_URL:-}`; `envsubst` does not support the `${VAR:-default}` shell syntax and leaves it as literal text. Separately, model detection used to take the first `InferenceService` in the cluster (which could be an embedding model like `bge-m3` or a predictive sklearn model) and guess `https://<name>-predictor.<ns>.svc:8080/v1`, and never considered `LLMInferenceService`.
+
+**Fix (already applied in toolkit):** The manifest now uses `${MODEL_URL}` (no default), rendered with an explicit var list (`envsubst '${NAMESPACE} ${MODEL_URL} ${MODEL_TLS_VERIFY}'`). Detection now uses the shared `detect_direct_llm_endpoint` (`lib/functions/notebook-env.sh`), which skips sklearn/onnx/embedding/guardrails-detector models, prefers a vLLM `InferenceService`, and falls back to an `LLMInferenceService` workload Service. `deploy.sh` also restarts the deployment after applying, since the config is only read at startup (`ENABLE_PERSISTENT_CONFIG=False`). Re-run `./demo/open-webui-demo/deploy.sh -n <namespace>` to pick up the fix on an already-affected cluster.
+
 ### NeMo Guardrails Config: `openai_api_base` vs `base_url`
 
 **Symptom:** `{"error":"Could not load guardrails configuration.","details":"Your config uses 0.21-style LangChain conventions ... rename \`openai_api_base\` to \`base_url\`..."}`
 
 **Cause:** The RHOAI 3.5 NeMo Guardrails version (0.23.0+) removed the older LangChain-style `openai_api_base` key. Use `base_url` in `models[*].parameters` instead. (The base `demo/nemo-guardrails-demo/manifests/*-selfcheck-config.yaml` templates still use `openai_api_base` and may need the same fix if used on RHOAI 3.5.)
+
+### NeMo Guardrails `--selfcheck` Tests Fail With 404 `The model \`test\` does not exist`
+
+**Symptom:** `demo/nemo-guardrails-demo/deploy.sh --selfcheck`'s built-in tests (or the printed sample `curl` commands) fail; vLLM returns HTTP 404 `{"error":...,"message":"The model \`test\` does not exist."}`.
+
+**Cause:** In selfcheck mode, NeMo passes the request's `model` field straight through to the LLM. The tests and sample commands hard-coded `"model": "test"`, which is not a model vLLM serves.
+
+**Fix (already applied in toolkit):** `_nemo_request_model` (`lib/functions/nemo-guardrails.sh`) reads `model_name` from the `<name>-config` ConfigMap and uses it in tests and sample commands, falling back to `test` only in basic mode (which has no LLM and accepts any value). Also fixed: `--selfcheck` used to prompt interactively for a namespace/name and guess `https://<name>-predictor.<ns>.svc:8080/v1` with the resource name as model id; it now auto-detects the chat model (`detect_direct_llm_endpoint`, prefers a plain-http vLLM `InferenceService` because NeMo does not trust the service CA of `LLMInferenceService` https endpoints) and uses the served id (`resolve_served_model_id`). Pass `--model-url URL --model-name SERVED_ID` for an explicit model.
+
+### Lemonade Stand — "Backend error (401)" / `NeMo returned 401: Unauthorized`
+
+**Symptom:** Every chat in the lemonade-stand demo returns "Backend error (401)"; `oc logs deploy/lemonade-stand -n nemo-guardrails-demo` shows `NeMo returned 401: Unauthorized`.
+
+**Cause:** `setup_nemo_guardrails_auth` used to mint a 336h (14-day) ServiceAccount token into Secret `api-token-secret` once and skip it if the Secret already existed, so it was never refreshed. lemonade-stand copies that token into its own Secret `lemonade-stand-secret` at deploy time, so once the NeMo token expired, every chat failed.
+
+**Fix:** The token is now re-minted on every `demo/nemo-guardrails-demo/deploy.sh` run (default duration 8760h / 1 year). On an already-affected cluster, re-run NeMo's deploy to re-mint the token, then re-run lemonade-stand's deploy to pick up the new token:
+```bash
+./demo/nemo-guardrails-demo/deploy.sh -n <namespace> --selfcheck
+./demo/lemonade-stand-demo/deploy.sh
+```
+`demo/lemonade-stand-demo/deploy.sh` now also warns if `api-token-secret` is missing, and fails with a clear message (instead of silently falling back to a legacy default model name) if NeMo has no LLM configured (basic mode). This also affects `university-safeguard-demo`, which uses the same `setup_nemo_guardrails_auth` function.
+
+### Lemonade Stand — Replies Show `<think>...</think>` or Are Cut Off
+
+**Symptom:** Chat replies in the lemonade-stand demo include visible Qwen3 reasoning (`<think>...`) and/or are cut off before finishing.
+
+**Cause:** Through NeMo's streaming path, the config's `chat_template_kwargs: {enable_thinking: false}` is not applied (non-streaming calls do honor it), and NeMo does not pass the client's system message through, so a `/no_think` instruction in the system prompt has no effect. Replies then include the model's reasoning and get truncated at `max_tokens`.
+
+**Fix (already applied in toolkit):** `demo/lemonade-stand-demo/app/app.py` appends Qwen3's `/no_think` switch to the user message instead (env `DISABLE_THINKING`, default `true`), and strips a leading `<think>...</think>` block from both streamed and non-streamed replies.
 
 ### External (Non-Cluster) Main Model: `OPENAI_API_KEY` Env Var Alone Doesn't Authenticate
 

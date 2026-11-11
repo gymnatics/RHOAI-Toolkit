@@ -24,19 +24,13 @@ Open WebUI provides:
 ### Option 2: Deploy via Script
 
 ```bash
-# Set variables
-export NAMESPACE=demo
-export MODEL_URL="http://my-model-predictor.demo.svc.cluster.local:8080/v1"
-
-# Apply manifest
-envsubst < lib/manifests/demo/open-webui.yaml | oc apply -n $NAMESPACE -f -
-
-# Wait for deployment
-oc rollout status deployment/open-webui -n $NAMESPACE
-
-# Get URL
-oc get route open-webui -n $NAMESPACE -o jsonpath='https://{.spec.host}{"\n"}'
+./demo/open-webui-demo/deploy.sh                       # Auto-detect model endpoint
+./demo/open-webui-demo/deploy.sh -n open-webui          # Custom namespace
+./demo/open-webui-demo/deploy.sh --model-url URL        # Specify model endpoint explicitly
+./demo/open-webui-demo/deploy.sh --delete               # Remove deployment
 ```
+
+When `--model-url` is not given, `deploy.sh` auto-detects a chat model endpoint with `detect_direct_llm_endpoint` (`lib/functions/notebook-env.sh`): it skips sklearn/onnx/embedding/guardrails-detector models, prefers a vLLM `InferenceService`, and falls back to an `LLMInferenceService` workload Service. If the detected (or supplied) URL is an in-cluster `https://*.svc` endpoint, the deployment sets `AIOHTTP_CLIENT_SESSION_SSL=False` (ConfigMap key `MODEL_TLS_VERIFY`) since the image does not trust the OpenShift service-CA certificate; it is `True` otherwise. `deploy.sh` restarts the deployment after applying, because the ConfigMap is only read at startup (`ENABLE_PERSISTENT_CONFIG=False`).
 
 ---
 

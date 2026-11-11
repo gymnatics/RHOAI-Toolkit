@@ -1,11 +1,12 @@
 # Open WebUI Deployment (v0.9.0)
 # A user-friendly web interface for interacting with LLMs
 #
-# Usage: 
-#   export NAMESPACE=demo MODEL_URL=http://model-predictor.ns.svc:8080/v1
-#   sed "s/\${NAMESPACE}/$NAMESPACE/g; s|\${MODEL_URL}|$MODEL_URL|g" open-webui.yaml | oc apply -f -
-#
-# Or apply directly and configure via environment variables
+# Rendered by deploy.sh:
+#   export NAMESPACE=demo MODEL_URL=http://model-predictor.ns.svc/v1 MODEL_TLS_VERIFY=True
+#   envsubst '${NAMESPACE} ${MODEL_URL} ${MODEL_TLS_VERIFY}' < open-webui.yaml | oc apply -f -
+# Use plain ${VAR} only: envsubst does not understand ${VAR:-default} and leaves it as literal text.
+# MODEL_TLS_VERIFY=False (AIOHTTP_CLIENT_SESSION_SSL) is set only for https in-cluster *.svc endpoints,
+# whose certificates are signed by the OpenShift service CA that the Open WebUI image does not trust.
 #
 ---
 apiVersion: v1
@@ -15,7 +16,8 @@ metadata:
   namespace: ${NAMESPACE}
 data:
   ENABLE_OLLAMA_API: "False"
-  OPENAI_API_BASE_URLS: "${MODEL_URL:-}"
+  OPENAI_API_BASE_URLS: "${MODEL_URL}"
+  AIOHTTP_CLIENT_SESSION_SSL: "${MODEL_TLS_VERIFY}"
   OPENAI_API_KEYS: ""
   WEBUI_AUTH: "False"
   WEBUI_SECRET_KEY: "rhoai-workshop-secret-key"

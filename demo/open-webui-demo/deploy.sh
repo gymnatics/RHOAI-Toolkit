@@ -3,7 +3,8 @@
 # Deploy Open WebUI
 ################################################################################
 # Deploys Open WebUI chat interface connected to RHOAI model endpoints.
-# Auto-detects MaaS gateway or InferenceService endpoints.
+# Auto-detects a chat model endpoint (vLLM InferenceService, else LLMInferenceService;
+# embedding/predictive models are skipped).
 #
 # Usage:
 #   ./deploy.sh                         # Auto-detect model endpoint
@@ -19,6 +20,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$ROOT_DIR/lib/utils/colors.sh"
 source "$ROOT_DIR/lib/utils/common.sh"
+source "$ROOT_DIR/lib/functions/notebook-env.sh"
 
 NAMESPACE="open-webui"
 MODEL_URL=""
@@ -41,8 +43,8 @@ print_header "Open WebUI Deployment"
 
 if [ "$DELETE_MODE" = true ]; then
     print_step "Removing Open WebUI from $NAMESPACE..."
-    export NAMESPACE MODEL_URL="placeholder"
-    envsubst < "$SCRIPT_DIR/manifests/open-webui.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
+    export NAMESPACE MODEL_URL="placeholder" MODEL_TLS_VERIFY=True
+    envsubst '${NAMESPACE} ${MODEL_URL} ${MODEL_TLS_VERIFY}' < "$SCRIPT_DIR/manifests/open-webui.yaml" | oc delete -f - --ignore-not-found 2>/dev/null
     print_success "Open WebUI removed"
     exit 0
 fi
@@ -63,23 +65,30 @@ if [ -z "$MODEL_URL" ]; then
         MODEL_URL="${MAAS_GATEWAY}/v1"
         print_success "Detected MaaS gateway: $MODEL_URL"
     else
-        FIRST_ISVC=$(oc get inferenceservice -A --no-headers 2>/dev/null | head -1)
-        if [ -n "$FIRST_ISVC" ]; then
-            local_ns=$(echo "$FIRST_ISVC" | awk '{print $1}')
-            local_name=$(echo "$FIRST_ISVC" | awk '{print $2}')
-            MODEL_URL="https://${local_name}-predictor.${local_ns}.svc:8080/v1"
-            print_success "Detected InferenceService: $local_name in $local_ns"
+        # Chat model only: detect_direct_llm_endpoint skips sklearn/onnx/embedding/guardrails models
+        # and falls back to an LLMInferenceService's workload Service (no MaaS auth needed)
+        if detect_direct_llm_endpoint "$NAMESPACE" && [ -n "$DIRECT_BASE_URL" ]; then
+            MODEL_URL="$DIRECT_BASE_URL"
+            print_success "Detected chat model: $DIRECT_MODEL_NAME in $DIRECT_MODEL_NS ($MODEL_URL)"
         else
             MODEL_URL="http://localhost:8080/v1"
-            print_warning "No model endpoint detected. Set --model-url or configure after deployment."
+            print_warning "No chat model detected. Set --model-url or configure after deployment."
         fi
     fi
 fi
 
+MODEL_TLS_VERIFY=True
+if [[ "$MODEL_URL" == https://*.svc[:/]* ]]; then
+    MODEL_TLS_VERIFY=False
+    print_info "In-cluster https endpoint (service-CA certificate): TLS verification off for model calls"
+fi
+
 ensure_namespace "$NAMESPACE"
 
-export NAMESPACE MODEL_URL
-envsubst < "$SCRIPT_DIR/manifests/open-webui.yaml" | oc apply -f -
+export NAMESPACE MODEL_URL MODEL_TLS_VERIFY
+envsubst '${NAMESPACE} ${MODEL_URL} ${MODEL_TLS_VERIFY}' < "$SCRIPT_DIR/manifests/open-webui.yaml" | oc apply -f -
+# ConfigMap changes are read only at startup (ENABLE_PERSISTENT_CONFIG=False)
+oc rollout restart deployment/open-webui -n "$NAMESPACE" >/dev/null 2>&1 || true
 
 print_step "Waiting for Open WebUI deployment..."
 oc rollout status deployment/open-webui -n "$NAMESPACE" --timeout=120s 2>/dev/null || true

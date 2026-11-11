@@ -17,7 +17,9 @@ NEMO_MANIFESTS_DIR="${NEMO_MANIFESTS_DIR:-$_NEMO_LIB_DIR/demo/nemo-guardrails-de
 
 setup_nemo_guardrails_auth() {
     local namespace="$1"
-    local token_duration="${2:-336h}"
+    # 1 year; the token is re-minted on every deploy. It used to be 336h and was never refreshed once the
+    # Secret existed, so clients (lemonade-stand) got 401 Unauthorized two weeks after the first deploy.
+    local token_duration="${2:-8760h}"
 
     print_step "Setting up NeMo Guardrails authentication in $namespace..."
 
@@ -25,14 +27,13 @@ setup_nemo_guardrails_auth() {
     envsubst < "$NEMO_MANIFESTS_DIR/nemo-guardrails-sa.yaml" | oc apply -f -
     envsubst < "$NEMO_MANIFESTS_DIR/nemo-guardrails-rbac.yaml" | oc apply -f -
 
-    if oc get secret api-token-secret -n "$namespace" &>/dev/null; then
-        print_info "API token secret already exists, skipping"
-    else
-        print_step "Creating API token secret (duration: $token_duration)..."
-        oc create secret generic api-token-secret \
-            --from-literal=token="$(oc create token nemo-guardrails-service-account -n "$namespace" --duration="$token_duration")" \
-            -n "$namespace"
-    fi
+    print_step "Refreshing API token secret api-token-secret (duration: $token_duration)..."
+    local token
+    token="$(oc create token nemo-guardrails-service-account -n "$namespace" --duration="$token_duration")" || {
+        print_error "Could not mint a token for nemo-guardrails-service-account"; return 1; }
+    oc create secret generic api-token-secret --from-literal=token="$token" \
+        -n "$namespace" --dry-run=client -o yaml | oc apply -f - >/dev/null
+    unset token
 
     print_success "NeMo Guardrails auth configured in $namespace"
 }
@@ -57,7 +58,13 @@ deploy_nemo_guardrails() {
         envsubst < "$NEMO_MANIFESTS_DIR/nemo-guardrails-config.yaml" | oc apply -f -
     fi
 
+    local existed=false
+    oc get nemoguardrails "$name" -n "$namespace" &>/dev/null && existed=true
     envsubst < "$NEMO_MANIFESTS_DIR/nemo-guardrails-cr.yaml" | oc apply -f -
+    # The server reads its ConfigMap at startup: restart an existing deployment so a mode/model change applies
+    if [ "$existed" = true ]; then
+        oc rollout restart deployment/"$name" -n "$namespace" >/dev/null 2>&1 || true
+    fi
 
     print_success "NeMo Guardrails '$name' deployed"
 }
@@ -86,6 +93,15 @@ wait_for_nemo_guardrails() {
     return 1
 }
 
+# Model id to send in NeMo requests. In selfcheck mode NeMo passes the request "model" to the LLM, so it
+# must be the served id from the config; the basic (checks-only) config has no LLM and accepts any value.
+_nemo_request_model() {
+    local m
+    m=$(oc get configmap "${2}-config" -n "$1" -o jsonpath='{.data.config\.yaml}' 2>/dev/null \
+        | awk '/model_name:/ {gsub(/"/,"",$2); print $2; exit}')
+    echo "${m:-test}"
+}
+
 verify_nemo_guardrails() {
     local namespace="$1"
     local name="${2:-nemo-quickstart}"
@@ -99,19 +115,21 @@ verify_nemo_guardrails() {
     fi
 
     print_info "NeMo Guardrails route: $route"
+    local model
+    model=$(_nemo_request_model "$namespace" "$name")
     echo ""
     echo "  Test commands:"
     echo "    # Safe content (should pass)"
     echo "    curl -k -X POST $route/v1/guardrail/checks \\"
     echo "      -H 'Content-Type: application/json' \\"
     echo "      -H 'Authorization: Bearer \$(oc whoami -t)' \\"
-    echo "      -d '{\"model\": \"test\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the capital of France?\"}]}'"
+    echo "      -d '{\"model\": \"$model\", \"messages\": [{\"role\": \"user\", \"content\": \"How do I make fresh lemonade?\"}]}'"
     echo ""
     echo "    # PII detection (should block)"
     echo "    curl -k -X POST $route/v1/guardrail/checks \\"
     echo "      -H 'Content-Type: application/json' \\"
     echo "      -H 'Authorization: Bearer \$(oc whoami -t)' \\"
-    echo "      -d '{\"model\": \"test\", \"messages\": [{\"role\": \"user\", \"content\": \"Contact me at alice@example.com\"}]}'"
+    echo "      -d '{\"model\": \"$model\", \"messages\": [{\"role\": \"user\", \"content\": \"Contact me at alice@example.com\"}]}'"
     echo ""
 }
 
@@ -121,6 +139,8 @@ test_nemo_guardrails() {
 
     local route
     route="https://$(oc get routes/"$name" -n "$namespace" -o jsonpath='{.status.ingress[0].host}' 2>/dev/null)"
+    local model
+    model=$(_nemo_request_model "$namespace" "$name")
 
     if [ "$route" = "https://" ]; then
         print_error "No route found for NeMo Guardrails '$name'"
@@ -136,7 +156,7 @@ test_nemo_guardrails() {
         local health_code
         health_code=$(curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 5 "$route/v1/guardrail/checks" \
             -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $token" \
-            -d '{"model": "test", "messages": [{"role": "user", "content": "ping"}]}' 2>/dev/null)
+            -d '{"model": "'"$model"'", "messages": [{"role": "user", "content": "ping"}]}' 2>/dev/null)
         if [ "$health_code" != "000" ] && [ "$health_code" != "503" ] && ! echo "$health_code" | grep -q "^5"; then
             print_success "Route is live (HTTP $health_code)"
             break
@@ -154,7 +174,7 @@ test_nemo_guardrails() {
     result=$(curl -sk -X POST "$route/v1/guardrail/checks" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $token" \
-        -d '{"model": "test", "messages": [{"role": "user", "content": "What is the capital of France?"}]}')
+        -d '{"model": "'"$model"'", "messages": [{"role": "user", "content": "How do I make fresh lemonade?"}]}')
     local status
     status=$(echo "$result" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ "$status" = "success" ]; then
@@ -168,7 +188,7 @@ test_nemo_guardrails() {
     result=$(curl -sk -X POST "$route/v1/guardrail/checks" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $token" \
-        -d '{"model": "test", "messages": [{"role": "user", "content": "Please contact me at alice@example.com"}]}')
+        -d '{"model": "'"$model"'", "messages": [{"role": "user", "content": "Please contact me at alice@example.com"}]}')
     status=$(echo "$result" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ "$status" = "blocked" ]; then
         print_success "PII detection test passed (status: blocked)"
@@ -181,7 +201,7 @@ test_nemo_guardrails() {
     result=$(curl -sk -X POST "$route/v1/guardrail/checks" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $token" \
-        -d '{"model": "test", "messages": [{"role": "user", "content": "Here is my password for the system"}]}')
+        -d '{"model": "'"$model"'", "messages": [{"role": "user", "content": "Here is my password for the system"}]}')
     status=$(echo "$result" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ "$status" = "blocked" ]; then
         print_success "Regex detection test passed (status: blocked)"

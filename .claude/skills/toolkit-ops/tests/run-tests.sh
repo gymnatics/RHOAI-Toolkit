@@ -15,6 +15,14 @@ printf '#!/bin/bash\nexec python3 -I "%s" "$@"\n' "$T/mock-oc.py" > "$WORK/bin/o
 cat > "$WORK/bin/curl" <<'EOF'
 #!/bin/bash
 url="${@: -1}"
+for a in "$@"; do case "$a" in http://*|https://*) url="$a" ;; esac; done
+# functional probes (check-demos.sh "probe" rows) read response bodies
+case "$url" in
+  *open-webui.ok.test/api/v1/auths/signin) echo '{"token":"t"}'; exit 0 ;;
+  *open-webui.ok.test/api/models) echo '{"data":[{"id":"qwen3-8b"},{"id":"arena-model"}]}'; exit 0 ;;
+  *nemo.ok.test/v1/guardrail/checks) echo '{"status":"blocked"}'; exit 0 ;;
+  *lemonade.ok.test/api/chat) printf 'data: {"type": "error", "message": "Backend error (401)"}\n\n'; exit 0 ;;
+esac
 case "$url" in
   *.ok.test*|*rh-ai.*) echo -n 200 ;;
   *maas.*) echo -n 401 ;;
@@ -108,6 +116,10 @@ expect "$WORK/serving.tsv" serving "isvc:maas-models/bge-m3" INFO
 run demos check-demos.sh
 expect "$WORK/demos.tsv" demo:open-webui-demo deploy:open-webui PASS
 expect "$WORK/demos.tsv" demo:open-webui-demo route:open-webui PASS
+expect "$WORK/demos.tsv" demo:open-webui-demo probe:open-webui PASS
+expect "$WORK/demos.tsv" demo:nemo-guardrails-demo probe:nemo-quickstart PASS
+expect "$WORK/demos.tsv" demo:lemonade-stand-demo probe:lemonade-stand FAIL
+grep -q 'chat error: Backend error (401)' "$WORK/demos.tsv" && pass=$((pass+1)) || { fail=$((fail+1)); echo "  FAIL: lemonade 401 not reported"; }
 expect "$WORK/demos.tsv" demo:n8n-demo deployed SKIP
 grep -q 'pipelines-definition .status.conditions\[?(@.type=="Ready")\].status=False (want True)' "$WORK/demos.tsv" && pass=$((pass+1)) || { fail=$((fail+1)); echo "  FAIL: DSPA jsonpath condition not parsed"; }
 expect "$WORK/demos.tsv" demo:maas-ratelimit-demo notebook:rate-limit-testing PASS

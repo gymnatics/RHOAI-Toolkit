@@ -110,6 +110,15 @@ R.append({"kind": "HardwareProfile", "metadata": meta("bad-gpu", "redhat-ods-app
           "spec": {"identifiers": gpu_ident, "scheduling": {"node": {"tolerations": [{"key": "nvidia.com/gpu", "operator": "Equal", "value": "true"}]}}}})
 R += [deploy("seaweedfs", "seaweedfs"), deploy("maas-api", "redhat-ai-gateway-infra"), deploy("open-webui", "open-webui")]
 R.append({"kind": "Route", "metadata": meta("open-webui", "open-webui"), "spec": {"host": "open-webui.ok.test"}})
+# NeMo Guardrails (selfcheck) + lemonade-stand whose chat fails with 401 (expired token)
+R.append(ns("nemo-guardrails-demo"))
+R.append({"kind": "NemoGuardrails", "metadata": meta("nemo-quickstart", "nemo-guardrails-demo"), "status": {"phase": "Ready"}})
+R.append({"kind": "Secret", "metadata": meta("api-token-secret", "nemo-guardrails-demo"), "data": {"token": "dA=="}})
+R.append({"kind": "ConfigMap", "metadata": meta("nemo-quickstart-config", "nemo-guardrails-demo"),
+          "data": {"config.yaml": "models:\n  - type: main\n    parameters:\n      model_name: \"qwen3-8b\"\n"}})
+R.append({"kind": "Route", "metadata": meta("nemo-quickstart", "nemo-guardrails-demo"), "spec": {"host": "nemo.ok.test"}})
+R.append(deploy("lemonade-stand", "nemo-guardrails-demo"))
+R.append({"kind": "Route", "metadata": meta("lemonade-stand", "nemo-guardrails-demo"), "spec": {"host": "lemonade.ok.test"}})
 R.append({"kind": "Secret", "metadata": meta("maas-db-config", "redhat-ai-gateway-infra"), "data": {"DB_CONNECTION_URL": "cG9zdGdyZXM="}})
 R.append({"kind": "MaasTenantConfig", "metadata": meta("default-tenant", "models-as-a-service"), "status": {"conditions": [cond("Ready")]}})
 R.append({"kind": "Kuadrant", "metadata": meta("kuadrant", "kuadrant-system"), "status": {"conditions": [cond("Ready")]}})

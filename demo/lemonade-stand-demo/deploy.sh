@@ -51,13 +51,19 @@ print_success "NeMo Guardrails URL: $GUARDRAILS_URL"
 # --- Detect model name ---
 MODEL_NAME=$(oc get configmap "${GUARDRAILS_NAME}-config" -n "$GUARDRAILS_NAMESPACE" -o jsonpath='{.data.config\.yaml}' 2>/dev/null | grep 'model_name:' | awk '{print $2}' | tr -d '"' || echo "")
 if [[ -z "$MODEL_NAME" ]]; then
-    MODEL_NAME="qwen3-8b-fp8-dynamic-no-maas"
+    # The app chats through NeMo /v1/chat/completions, which needs an LLM: the basic (checks-only)
+    # NeMo config has none, so every chat would fail
+    print_error "NeMo Guardrails '$GUARDRAILS_NAME' has no LLM configured (basic mode)."
+    print_error "Redeploy it with an LLM first: ./demo/nemo-guardrails-demo/deploy.sh -n $GUARDRAILS_NAMESPACE --selfcheck"
+    exit 1
 fi
 export MODEL_NAME
 print_info "Model: $MODEL_NAME"
 
 # --- Get API key from guardrails namespace ---
+# Copied at deploy time: rerun this script after nemo-guardrails-demo/deploy.sh re-mints the token
 GUARDRAILS_API_KEY=$(oc get secret api-token-secret -n "$GUARDRAILS_NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
+[ -z "$GUARDRAILS_API_KEY" ] && print_warning "No api-token-secret in $GUARDRAILS_NAMESPACE: NeMo will answer 401"
 export GUARDRAILS_API_KEY
 
 # --- Create namespace and build image ---
@@ -78,6 +84,8 @@ print_success "Image built: $APP_IMAGE"
 # --- Deploy ---
 print_step "Deploying Lemonade Stand..."
 envsubst < "$SCRIPT_DIR/manifests/lemonade-stand.yaml" | oc apply -f -
+# Env from the ConfigMap/Secret is read at startup: restart so a new token or model applies
+oc rollout restart deployment/lemonade-stand -n "$NAMESPACE" >/dev/null 2>&1 || true
 
 # Wait for rollout
 oc rollout status deployment/lemonade-stand -n "$NAMESPACE" --timeout=120s
