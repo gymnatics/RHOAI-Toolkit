@@ -83,6 +83,23 @@ expect "$WORK/maas.tsv" maas tenant PASS
 expect "$WORK/maas.tsv" maas gateway PASS
 expect "$WORK/maas.tsv" maas models PASS
 
+# Variant: the MaaS model is stopped on purpose -> its not-Ready MaaSModelRef is WARN, not FAIL
+python3 -I - "$WORK/fixture.json" "$WORK/fixture-stopped.json" <<'PY'
+import json, sys
+f = json.load(open(sys.argv[1]))
+for r in f["resources"]:
+    if r["metadata"].get("name") == "simulator" and r["kind"] in ("MaaSModelRef", "LLMInferenceService"):
+        r["status"]["conditions"] = [{"type": "Ready", "status": "False", "reason": "Stopped"}]
+        r.setdefault("spec", {})
+        if r["kind"] == "MaaSModelRef":
+            r["spec"]["modelRef"] = {"kind": "LLMInferenceService", "name": "simulator"}
+        else:
+            r["metadata"].setdefault("annotations", {})["serving.kserve.io/stop"] = "true"
+json.dump(f, open(sys.argv[2], "w"))
+PY
+MOCK_OC_FIXTURE="$WORK/fixture-stopped.json" run maas-stopped check-maas.sh --no-diagnose
+expect "$WORK/maas-stopped.tsv" maas models WARN
+
 run serving check-serving.sh --probe
 expect "$WORK/serving.tsv" serving "llmisvc:maas-models/simulator" PASS
 expect "$WORK/serving.tsv" serving "llmisvc:maas-models/simulator-probe" PASS

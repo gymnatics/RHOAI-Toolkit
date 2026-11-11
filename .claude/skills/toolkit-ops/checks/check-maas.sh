@@ -85,7 +85,16 @@ if [ "${n:-0}" -eq 0 ]; then
     record maas models WARN "No MaaSModelRefs (nothing published)" "scripts/deploy-maas-model.sh --model simulator"
 else
     notready="$(echo "$refs" | jq -r '[.items[] | select(([.status.conditions[]? | select(.type=="Ready" and .status=="True")] | length)==0) | "\(.metadata.namespace)/\(.metadata.name)"] | join(",")')"
-    [ -z "$notready" ] && record maas models PASS "$n MaaSModelRef(s) Ready" || record maas models FAIL "MaaSModelRefs not Ready: $notready" "Check the backing LLMInferenceService (check-serving.sh)"
+    # Refs whose backing model is stopped on purpose (serving.kserve.io/stop=true) are WARN, not FAIL
+    stopped="$(k get llminferenceservice -A -o json | jq -r '[.items[] | select(.metadata.annotations["serving.kserve.io/stop"]=="true") | "\(.metadata.namespace)/\(.metadata.name)"] | join(",")')"
+    stoppedrefs="" broken=""
+    for r in ${notready//,/ }; do
+        target="${r%%/*}/$(echo "$refs" | jq -r --arg ns "${r%%/*}" --arg n "${r#*/}" '.items[] | select(.metadata.namespace==$ns and .metadata.name==$n) | .spec.modelRef.name // .metadata.name')"
+        if [[ ",$stopped," == *",$target,"* ]]; then stoppedrefs="${stoppedrefs:+$stoppedrefs,}$r"; else broken="${broken:+$broken,}$r"; fi
+    done
+    if [ -n "$broken" ]; then record maas models FAIL "MaaSModelRefs not Ready: $broken" "Check the backing LLMInferenceService (check-serving.sh)"
+    elif [ -n "$stoppedrefs" ]; then record maas models WARN "MaaSModelRefs not Ready because the model is stopped on purpose (serving.kserve.io/stop=true): $stoppedrefs" "Start the model before using it through MaaS (user approval)"
+    else record maas models PASS "$n MaaSModelRef(s) Ready"; fi
 fi
 ungoverned="$(k get llminferenceservice -A -o json | jq -r '[.items[] | select(.metadata.labels["maas.opendatahub.io/model"]==null and .metadata.annotations["alpha.maas.opendatahub.io/tiers"]==null) | .metadata.name] | length')"
 [ "${ungoverned:-0}" -gt 0 ] && record maas governance INFO "$ungoverned LLMInferenceService(s) without MaaS labels" "scripts/check-maas-security.sh"
