@@ -473,10 +473,12 @@ EOROLE
 # _restart_notebooks_on_env_change <ns>
 #
 # envFrom is only read at pod start, so a workbench created before the
-# ConfigMap was filled sees stale env. Stamp a hash of notebook-env (and any
-# attached secrets' resourceVersions) on each Notebook's pod template; when it
-# changes the Notebook controller rolls the pod. Stopped workbenches pick it up
-# on next start. NOTEBOOK_ENV_NO_RESTART=1 skips this.
+# ConfigMap was filled sees stale env. Keep a hash of notebook-env (and any
+# attached secrets' resourceVersions) in a Notebook *metadata* annotation (the
+# Notebook CRD prunes spec.template.metadata, so a pod-template annotation is
+# silently dropped); when it changes, delete the running <name>-0 pod and the
+# StatefulSet recreates it with the new env. Stopped workbenches pick it up on
+# next start. NOTEBOOK_ENV_NO_RESTART=1 skips this.
 ################################################################################
 _restart_notebooks_on_env_change() {
     local ns="$1"
@@ -489,11 +491,12 @@ _restart_notebooks_on_env_change() {
     local nb current
     for nb in $(oc get notebooks.kubeflow.org -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
         current=$(oc get notebook "$nb" -n "$ns" \
-            -o jsonpath='{.spec.template.metadata.annotations.toolkit\.rhoai/notebook-env-hash}' 2>/dev/null || true)
+            -o jsonpath='{.metadata.annotations.toolkit\.rhoai/notebook-env-hash}' 2>/dev/null || true)
         [ "$current" = "$hash" ] && continue
-        if oc patch notebook "$nb" -n "$ns" --type=merge \
-            -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"toolkit.rhoai/notebook-env-hash\":\"$hash\"}}}}}" >/dev/null 2>&1; then
-            echo -e "${CYAN:-}ℹ Workbench $nb: environment changed, restarting to apply it${NC:-}"
+        oc annotate notebook "$nb" -n "$ns" "toolkit.rhoai/notebook-env-hash=$hash" --overwrite >/dev/null 2>&1 || continue
+        if oc get pod "${nb}-0" -n "$ns" &>/dev/null; then
+            oc delete pod "${nb}-0" -n "$ns" --wait=false >/dev/null 2>&1 && \
+                echo -e "${CYAN:-}ℹ Workbench $nb: environment changed, restarting to apply it${NC:-}"
         fi
     done
 }

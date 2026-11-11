@@ -145,6 +145,14 @@ if [ -f "$SCRIPT_DIR/data/sample-loans.csv" ]; then
     || print_warning "Could not upload sample data (notebook 01 needs s3://datasets/sample-loans.csv)"
 fi
 
+# Model Registry REST endpoint for 04-register (port 8080 = REST API without auth); same
+# resolution as financial-loan-demo. Empty if no registry is deployed (04 then reports it).
+REGISTRY_URL=""
+_reg_name=$(oc get modelregistries.modelregistry.opendatahub.io -n rhoai-model-registries \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+[ -z "$_reg_name" ] && oc get svc model-registry -n rhoai-model-registries &>/dev/null && _reg_name="model-registry"
+[ -n "$_reg_name" ] && REGISTRY_URL="http://${_reg_name}.rhoai-model-registries.svc:8080"
+
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 inject_notebook_env "$NAMESPACE" \
@@ -153,7 +161,8 @@ inject_notebook_env "$NAMESPACE" \
     "AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
     "S3_BUCKET=models" \
     "DATA_BUCKET=datasets" \
-    "ARTIFACTS_BUCKET=artifacts"
+    "ARTIFACTS_BUCKET=artifacts" \
+    "REGISTRY_URL=${REGISTRY_URL}"
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
 
 # --- Retry the repo clone in case the workbench wasn't Running yet when
