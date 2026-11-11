@@ -25,6 +25,16 @@ export NAMESPACE
 
 print_header "Lemonade Stand Chat (NeMo Guardrails Edition)"
 
+# --- --delete: remove only this app's objects (the namespace is shared with nemo-guardrails-demo) ---
+if [ "${1:-}" = "--delete" ]; then
+    print_step "Removing Lemonade Stand from $NAMESPACE (NeMo Guardrails left in place)..."
+    oc delete deployment,service,route,buildconfig,imagestream lemonade-stand -n "$NAMESPACE" --ignore-not-found
+    oc delete configmap lemonade-stand-config -n "$NAMESPACE" --ignore-not-found
+    oc delete secret lemonade-stand-secret -n "$NAMESPACE" --ignore-not-found
+    print_success "Lemonade Stand removed"
+    exit 0
+fi
+
 # --- Detect NeMo Guardrails endpoint ---
 print_step "Detecting NeMo Guardrails endpoint..."
 

@@ -44,7 +44,9 @@ print_header "AI Pipeline Demo"
 if [ "$DELETE_MODE" = true ]; then
     print_step "Removing pipeline demo from $NAMESPACE..."
     oc delete datasciencepipelineapplication pipelines-definition -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-    print_success "Pipeline demo removed"
+    oc delete notebooks.kubeflow.org ai-pipelines -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    oc delete configmap notebook-env -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    print_success "Pipeline demo removed (DSPA, workbench, notebook-env). Storage and PVCs kept: delete the namespace to remove everything."
     exit 0
 fi
 
@@ -127,9 +129,24 @@ oc adm policy add-role-to-user edit \
     "system:serviceaccount:${NAMESPACE}:ai-pipelines" \
     -n "$NAMESPACE" 2>/dev/null || true
 
+# --- Buckets + sample data for the Elyra notebooks (01 reads s3://datasets/sample-loans.csv) ---
+S3_EP="$(get_storage_endpoint "$NAMESPACE")"
+for _b in datasets artifacts models; do create_storage_bucket "$NAMESPACE" "$_b" >/dev/null 2>&1 || true; done
+if [ -f "$SCRIPT_DIR/data/sample-loans.csv" ]; then
+    oc run s3-upload-loans --rm -i --restart=Never \
+        --image=docker.io/amazon/aws-cli:latest \
+        -n "$NAMESPACE" \
+        --env="AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \
+        --env="AWS_SECRET_ACCESS_KEY=${S3_SECRET_KEY:-admin123}" \
+        --env="AWS_DEFAULT_REGION=us-east-1" \
+        -- s3 cp - "s3://datasets/sample-loans.csv" --endpoint-url "$S3_EP" \
+        < "$SCRIPT_DIR/data/sample-loans.csv" >/dev/null 2>&1 \
+    && print_success "Sample data uploaded to s3://datasets/sample-loans.csv" \
+    || print_warning "Could not upload sample data (notebook 01 needs s3://datasets/sample-loans.csv)"
+fi
+
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
-S3_EP="$(get_storage_endpoint "$NAMESPACE")"
 inject_notebook_env "$NAMESPACE" \
     "S3_ENDPOINT=${S3_EP}" \
     "AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY:-admin}" \

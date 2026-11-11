@@ -115,9 +115,42 @@ ensure_workbench "$NAMESPACE" "rate-limit-testing"
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
 inject_notebook_env "$NAMESPACE" \
     "MAAS_ENDPOINT=${MAAS_ENDPOINT_URL}" \
+    "MAAS_BASE_URL=${MAAS_ENDPOINT_URL}" \
     "MODEL_ID=${MODEL_ID}" \
     "MAAS_ROUTING=${MAAS_ROUTING}"
 print_success "notebook-env ConfigMap created (auto-injected into workbenches)"
+
+# --- MaaS API keys for the notebooks (kept in a Secret, not the plaintext ConfigMap) ---
+# Key A comes from the lowest-limit Active subscription for the model (so the rate-limit test
+# actually hits the limit), key B from the highest (for the two-key comparison).
+# Override with MAAS_SUBSCRIPTION / MAAS_SUBSCRIPTION_B; key lifetime MAAS_KEY_EXPIRES (default 168h).
+if [ -n "$FIRST_MODEL_NAME" ] && is_rhoai_34_or_higher; then
+    _subs=$(oc get maassubscriptions.maas.opendatahub.io -n models-as-a-service -o json 2>/dev/null | jq -r \
+        --arg n "$FIRST_MODEL_NAME" --arg ns "$FIRST_MODEL_NS" '[.items[] | select(.status.phase=="Active")
+          | select(any(.spec.modelRefs[]?; .name==$n and .namespace==$ns))
+          | {n: .metadata.name, l: ([.spec.modelRefs[] | select(.name==$n) | .tokenRateLimits[0].limit // 0][0])}]
+          | sort_by(.l) | map(.n) | join(" ")' 2>/dev/null)
+    _sub_a="${MAAS_SUBSCRIPTION:-$(echo "$_subs" | awk '{print $1}')}"
+    _sub_b="${MAAS_SUBSCRIPTION_B:-$(echo "$_subs" | awk '{print $NF}')}"
+    if [ -z "$_sub_a" ]; then
+        print_warning "No Active MaaS subscription for ${FIRST_MODEL_NS}/${FIRST_MODEL_NAME}: notebooks need MAAS_API_KEY set by hand"
+    else
+        _key_a=$(get_maas_api_key "$_sub_a" "${MAAS_KEY_EXPIRES:-168h}" 2>/dev/null || true)
+        _key_b=""
+        [ "$_sub_b" != "$_sub_a" ] && _key_b=$(get_maas_api_key "$_sub_b" "${MAAS_KEY_EXPIRES:-168h}" 2>/dev/null || true)
+        if [ -n "$_key_a" ]; then
+            oc create secret generic maas-api-keys -n "$NAMESPACE" \
+                --from-literal=MAAS_API_KEY="$_key_a" \
+                ${_key_b:+--from-literal=MAAS_API_KEY_B="$_key_b"} \
+                --dry-run=client -o yaml | oc apply -f - >/dev/null
+            oc label secret maas-api-keys -n "$NAMESPACE" toolkit.rhoai/notebook-env=true --overwrite >/dev/null
+            attach_secret_to_notebooks "$NAMESPACE" maas-api-keys
+            print_success "MaaS API keys created (A: ${_sub_a}${_key_b:+, B: ${_sub_b}}, expire in ${MAAS_KEY_EXPIRES:-168h}) -> secret maas-api-keys"
+        else
+            print_warning "Could not mint a MaaS API key for subscription ${_sub_a}; set MAAS_API_KEY by hand"
+        fi
+    fi
+fi
 
 # --- Retry the repo clone in case the workbench wasn't Running yet when
 # ensure_workbench's wait_for_workbench call ran above -- cheap no-op

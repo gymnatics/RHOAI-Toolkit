@@ -40,6 +40,12 @@
 #   ./scripts/manage-gpu-nodes.sh stop --no-wait                 # fire-and-forget, don't block
 #   ./scripts/manage-gpu-nodes.sh start --timeout 900             # cap the Ready-wait at 900s
 #   ./scripts/manage-gpu-nodes.sh cleanup                       # delete stale pods holding GPUs after a restart
+#   ./scripts/manage-gpu-nodes.sh start --profile rhoai-35       # use the AWS profile for THIS cluster's account
+#
+# AWS credentials must belong to the account that hosts the cluster (sandbox/RHDP
+# clusters each have their own). Keep one named profile per cluster
+# (`aws configure --profile <name>`) and pass --profile (or set AWS_PROFILE).
+# The cluster's Machine API credentials cannot be used: they lack ec2:StartInstances.
 ################################################################################
 
 set -uo pipefail
@@ -74,6 +80,7 @@ while [[ $# -gt 0 ]]; do
         --machineset)  MACHINESET_FILTER="$2"; shift 2 ;;
         --no-wait)     WAIT=false; shift ;;
         --timeout)     TIMEOUT="$2"; shift 2 ;;
+        --profile)     export AWS_PROFILE="$2"; shift 2 ;;
         -h|--help)     usage; exit 0 ;;
         *) print_error "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -95,7 +102,7 @@ if ! oc whoami &>/dev/null; then
     exit 1
 fi
 if [ "$ACTION" != "cleanup" ] && ! aws sts get-caller-identity &>/dev/null; then
-    print_error "AWS CLI is not authenticated. Configure credentials for the account hosting this cluster."
+    print_error "AWS CLI is not authenticated${AWS_PROFILE:+ (profile $AWS_PROFILE)}. Configure credentials for the account hosting this cluster: aws configure --profile <name>, then --profile <name>."
     exit 1
 fi
 
@@ -336,6 +343,20 @@ do_start() {
         print_warning "Timeout waiting for Nodes to become Ready (check 'status'; this can take longer for bare metal on first boot after a long stop)"
     fi
 }
+
+# The AWS credentials must belong to the cluster's account, or every instance looks missing.
+verify_aws_account() {
+    local first id region
+    first=$(get_target_machines | head -1)
+    [ -z "$first" ] && return 0
+    id=$(echo "$first" | cut -f3); region=$(echo "$first" | cut -f5); region="${region:-$(get_region)}"
+    if ! aws ec2 describe-instances --region "$region" --instance-ids "$id" &>/dev/null; then
+        print_error "AWS credentials${AWS_PROFILE:+ (profile $AWS_PROFILE)} for account $(aws sts get-caller-identity --query Account --output text 2>/dev/null) cannot see instance $id of this cluster."
+        print_error "Use credentials for the cluster's own AWS account: aws configure --profile <name>; then rerun with --profile <name>."
+        exit 1
+    fi
+}
+[ "$ACTION" != "cleanup" ] && verify_aws_account
 
 case "$ACTION" in
     status) do_status ;;

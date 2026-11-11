@@ -1403,9 +1403,9 @@ enable_tp_features_interactive() {
 
     # Define TP features: key|label|category
     local tp_features=(
-        "agentsCatalog|Agent Catalog (browse/deploy agent templates)|Agents"
+        "agentsCatalog|Agent Catalog (browse/deploy agent templates)|Agents - DEVELOPER PREVIEW (unsupported)"
         "agentOps|Agent Operations (agent lifecycle management)|Agents"
-        "agentConfigManagement|Agent Config Management (agent settings)|Agents"
+        "agentConfigManagement|Agent Config Management (agent settings)|Agents - DEVELOPER PREVIEW (unsupported)"
         "gpuaas|GPU-as-a-Service (GPU resource management)|Infrastructure"
         "automl|AutoML (automated model training)|ML Automation"
         "autorag|AutoRAG (automated RAG optimization)|ML Automation"
@@ -1459,7 +1459,7 @@ enable_tp_features_interactive() {
     echo ""
 
     echo -e "${BLUE}Options:${NC}"
-    echo -e "  ${YELLOW}a)${NC} Enable ALL Technology Preview features"
+    echo -e "  ${YELLOW}a)${NC} Enable ALL listed features (Technology Preview + the Developer Preview ones marked above)"
     echo -e "  ${YELLOW}s)${NC} Select specific features to enable"
     echo -e "  ${YELLOW}0)${NC} Cancel"
     echo ""

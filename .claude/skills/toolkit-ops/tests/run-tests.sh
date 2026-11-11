@@ -105,7 +105,7 @@ expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo wb:rate-limit-testing-env-dr
 expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo maas-ratelimit-test-env FAIL
 expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo url:MAAS_ENDPOINT PASS
 expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo maas-ratelimit-test-exec INFO
-expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo maas-traffic-generator-exec WARN
+expect "$WORK/notebooks.tsv" nb:maas-ratelimit-demo maas-traffic-generator-exec INFO
 
 run notebooks-exec check-notebooks.sh --demo feast-demo,maas-ratelimit-demo --execute
 expect "$WORK/notebooks-exec.tsv" nb:feast-demo feast-online-retrieval-exec PASS

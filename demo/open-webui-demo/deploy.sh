@@ -57,8 +57,9 @@ if [ -z "$MODEL_URL" ]; then
 
     CLUSTER_DOMAIN=$(oc get ingress.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
+    # inference-gateway.<domain> is the RHOAI 3.3 (Tech Preview) MaaS gateway; 3.4+ MaaS needs an API key
     MAAS_GATEWAY="https://inference-gateway.${CLUSTER_DOMAIN}"
-    if curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" &>/dev/null; then
+    if [[ "$(oc get csv -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.displayName=="Red Hat OpenShift AI")].spec.version}' 2>/dev/null)" == 3.3* ]] && curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" &>/dev/null; then
         MODEL_URL="${MAAS_GATEWAY}/v1"
         print_success "Detected MaaS gateway: $MODEL_URL"
     else

@@ -34,10 +34,23 @@ WORKBENCH_HOME="/opt/app-root/src"
 # Create a workbench (Notebook CR + PVC) if it doesn't already exist.
 # Args: $1=namespace $2=name $3=image $4=cpu_req $5=cpu_lim $6=mem_req $7=mem_lim
 #       $8=gpu_count $9=pvc_size $10=display_name
+# workbench_image <imagestream>: "<imagestream>:<tag>" for the installed RHOAI version.
+# Prefers the RHOAI major.minor tag (3.5 images on 3.5), then the newest dated tag (e.g. 2025.2),
+# then 3.4 -- whatever exists in the redhat-ods-applications ImageStream.
+workbench_image() {
+    local is="${1:-s2i-generic-data-science-notebook}" mm tags t
+    mm=$(oc get csv -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.displayName=="Red Hat OpenShift AI")].spec.version}' 2>/dev/null | head -1 | cut -d. -f1-2)
+    tags=" $(oc get imagestream "$is" -n redhat-ods-applications -o jsonpath='{.spec.tags[*].name}' 2>/dev/null) "
+    for t in "$mm" $(echo "$tags" | tr ' ' '\n' | grep -E '^[0-9]{4}\.[0-9]+$' | sort -r) 3.4; do
+        [ -n "$t" ] && [[ "$tags" == *" $t "* ]] && { echo "${is}:${t}"; return 0; }
+    done
+    echo "${is}:3.4"
+}
+
 create_workbench() {
     local ns="$1"
     local wb_name="$2"
-    local image="${3:-s2i-generic-data-science-notebook:3.4}"
+    local image="${3:-$(workbench_image s2i-generic-data-science-notebook)}"
     local cpu_req="${4:-2}"
     local cpu_lim="${5:-2}"
     local mem_req="${6:-4Gi}"
@@ -139,9 +152,9 @@ wait_for_workbench() {
 
     while [ $elapsed -lt $timeout ]; do
         local phase
-        phase=$(oc get pod "$pod_name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null)
-        if [ "$phase" = "Running" ]; then
-            print_success "Workbench $wb_name is running" 2>/dev/null || true
+        phase=$(oc get pod "$pod_name" -n "$ns" -o jsonpath='{.status.phase}/{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$phase" = "Running/True" ]; then
+            print_success "Workbench $wb_name is running and Ready" 2>/dev/null || true
             return 0
         fi
         sleep $interval
@@ -177,9 +190,9 @@ clone_repo_in_workbench() {
 
     print_step "Cloning $repo_url into workbench $wb_name..." 2>/dev/null || true
     oc exec "$pod_name" -c "$wb_name" -n "$ns" -- \
-        bash -c "cd '${WORKBENCH_HOME}' && git clone '${repo_url}' '${target_dir}'" 2>/dev/null
+        bash -c "cd '${WORKBENCH_HOME}' && git clone -q '${repo_url}' '${target_dir}'" 2>&1 | tail -3 | sed 's/^/    /'
 
-    if [ $? -eq 0 ]; then
+    if [ "${PIPESTATUS[0]}" -eq 0 ]; then
         print_success "Repo cloned into $wb_name:${WORKBENCH_HOME}/${target_dir}" 2>/dev/null || true
     else
         print_warning "Git clone failed — clone manually in the workbench terminal" 2>/dev/null || true
@@ -241,7 +254,7 @@ check_repo_freshness() {
 ensure_workbench() {
     local ns="$1"
     local wb_name="$2"
-    local image="${3:-s2i-generic-data-science-notebook:3.4}"
+    local image="${3:-$(workbench_image s2i-generic-data-science-notebook)}"
     local cpu_req="${4:-2}"
     local cpu_lim="${5:-2}"
     local mem_req="${6:-4Gi}"

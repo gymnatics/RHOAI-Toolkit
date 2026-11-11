@@ -39,6 +39,16 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+    # FP8 weights need an Ampere-or-newer GPU (compute capability >= 8). Without this the pod can land on
+    # a T4 (g4dn, 7.5) and vLLM crashes: "FA2 is only supported on devices with compute capability >= 8".
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: nvidia.com/gpu.compute.major
+                  operator: Gt
+                  values: ["7"]
     containers:
       - name: main
         image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.3.0

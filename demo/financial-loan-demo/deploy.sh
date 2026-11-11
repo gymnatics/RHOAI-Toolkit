@@ -199,9 +199,9 @@ if [ -z "$LLM_URL" ]; then
         LLM_ISVC="$DIRECT_MODEL_NAME"
         print_success "Detected direct vLLM: $DIRECT_MODEL_NAME (ns: $DIRECT_MODEL_NS)"
     else
-        # Fallback: try MaaS gateway
+        # Fallback: the RHOAI 3.3 (Tech Preview) MaaS gateway -- not present on 3.4+
         MAAS_GATEWAY="https://inference-gateway.${CLUSTER_DOMAIN}"
-        if curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" -H "Authorization: Bearer $(oc create token default -n "$NAMESPACE" --duration=1m 2>/dev/null)" 2>/dev/null | grep -q "data"; then
+        if [[ "$(oc get csv -n redhat-ods-operator -o jsonpath='{.items[?(@.spec.displayName=="Red Hat OpenShift AI")].spec.version}' 2>/dev/null)" == 3.3* ]] && curl -sk --connect-timeout 3 "$MAAS_GATEWAY/v1/models" -H "Authorization: Bearer $(oc create token default -n "$NAMESPACE" --duration=1m 2>/dev/null)" 2>/dev/null | grep -q "data"; then
             LLM_URL="${MAAS_GATEWAY}/v1/chat/completions"
             print_success "Detected MaaS gateway"
         else
@@ -331,7 +331,7 @@ print_success "Financial Loan Demo deployed"
 
 # --- Create workbench + clone repo (GPU workbench with PyTorch image) ---
 source "$ROOT_DIR/lib/functions/workbench.sh"
-ensure_workbench "$NAMESPACE" "model-training" "pytorch:3.4" "2" "4" "12Gi" "12Gi" "1" "20Gi" "Model Training"
+ensure_workbench "$NAMESPACE" "model-training" "$(workbench_image pytorch)" "2" "4" "12Gi" "12Gi" "1" "20Gi" "Model Training"
 
 # --- Inject notebook environment variables into workbench ---
 source "$ROOT_DIR/lib/functions/notebook-env.sh"

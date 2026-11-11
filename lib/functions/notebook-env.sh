@@ -416,6 +416,20 @@ EOROLE
         fi
     done
 
+    # Merge: keep keys already in notebook-env that this run does not set (demo-specific keys such as
+    # MODEL_ID, MAAS_ROUTING, LIMIT, bucket names were dropped by scripts/refresh-notebook-env.sh).
+    # NOTEBOOK_ENV_REPLACE=1 restores replace semantics.
+    if [ "${NOTEBOOK_ENV_REPLACE:-0}" != "1" ]; then
+        local _set_keys=" " _a _k _v
+        for _a in "${cm_args[@]}"; do _a="${_a#--from-literal=}"; _set_keys="${_set_keys}${_a%%=*} "; done
+        while IFS=$'\t' read -r _k _v; do
+            [ -z "$_k" ] && continue
+            [[ "$_set_keys" == *" $_k "* ]] && continue
+            cm_args+=("--from-literal=${_k}=${_v}")
+        done < <(oc get configmap notebook-env -n "$ns" -o json 2>/dev/null \
+                 | jq -r '.data // {} | to_entries[] | [.key, .value] | @tsv' 2>/dev/null)
+    fi
+
     # Create/update the ConfigMap
     oc create configmap notebook-env "${cm_args[@]}" \
         -n "$ns" --dry-run=client -o yaml | oc apply -f - 2>/dev/null
@@ -451,4 +465,55 @@ EOROLE
                 2>/dev/null || true
         fi
     done
+
+    _restart_notebooks_on_env_change "$ns"
+}
+
+################################################################################
+# _restart_notebooks_on_env_change <ns>
+#
+# envFrom is only read at pod start, so a workbench created before the
+# ConfigMap was filled sees stale env. Stamp a hash of notebook-env (and any
+# attached secrets' resourceVersions) on each Notebook's pod template; when it
+# changes the Notebook controller rolls the pod. Stopped workbenches pick it up
+# on next start. NOTEBOOK_ENV_NO_RESTART=1 skips this.
+################################################################################
+_restart_notebooks_on_env_change() {
+    local ns="$1"
+    [ "${NOTEBOOK_ENV_NO_RESTART:-0}" = "1" ] && return 0
+    local hash
+    hash=$( { oc get configmap notebook-env -n "$ns" -o jsonpath='{.data}' 2>/dev/null
+              oc get secret -n "$ns" -l toolkit.rhoai/notebook-env=true \
+                  -o jsonpath='{range .items[*]}{.metadata.name}{.metadata.resourceVersion}{end}' 2>/dev/null
+            } | cksum | cut -d" " -f1)
+    local nb current
+    for nb in $(oc get notebooks.kubeflow.org -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        current=$(oc get notebook "$nb" -n "$ns" \
+            -o jsonpath='{.spec.template.metadata.annotations.toolkit\.rhoai/notebook-env-hash}' 2>/dev/null || true)
+        [ "$current" = "$hash" ] && continue
+        if oc patch notebook "$nb" -n "$ns" --type=merge \
+            -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"toolkit.rhoai/notebook-env-hash\":\"$hash\"}}}}}" >/dev/null 2>&1; then
+            echo -e "${CYAN:-}ℹ Workbench $nb: environment changed, restarting to apply it${NC:-}"
+        fi
+    done
+}
+
+################################################################################
+# attach_secret_to_notebooks <ns> <secret>
+#
+# Adds envFrom.secretRef to every Notebook in <ns> (for values that must not
+# live in the plaintext notebook-env ConfigMap, e.g. MaaS API keys). Label the
+# secret toolkit.rhoai/notebook-env=true so key rotation restarts workbenches.
+################################################################################
+attach_secret_to_notebooks() {
+    local ns="$1" secret="$2" nb existing
+    for nb in $(oc get notebooks.kubeflow.org -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        existing=$(oc get notebook "$nb" -n "$ns" \
+            -o jsonpath='{.spec.template.spec.containers[0].envFrom[*].secretRef.name}' 2>/dev/null || true)
+        echo "$existing" | grep -qw "$secret" && continue
+        oc patch notebook "$nb" -n "$ns" --type=json \
+            -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/envFrom/-\",\"value\":{\"secretRef\":{\"name\":\"$secret\"}}}]" \
+            >/dev/null 2>&1 || true
+    done
+    _restart_notebooks_on_env_change "$ns"
 }

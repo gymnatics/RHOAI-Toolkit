@@ -149,8 +149,9 @@ select_rhoai_channel() {
 
     if [ -z "$channels_raw" ]; then
         print_warning "Unable to fetch RHOAI channels from cluster"
-        print_info "Using default channel: fast-3.x"
-        RHOAI_CHANNEL="fast-3.x"
+        # fast-3.x is frozen at RHOAI 3.3.1; fall back to this script's own version
+        print_info "Using default channel: stable-3.4"
+        RHOAI_CHANNEL="stable-3.4"
         return 0
     fi
 
@@ -163,8 +164,8 @@ select_rhoai_channel() {
     done < <(echo "$channels_raw" | tr ' ' '\n' | sort -V)
 
     if [ ${#channels[@]} -eq 0 ]; then
-        print_warning "No channels found, using default: fast-3.x"
-        RHOAI_CHANNEL="fast-3.x"
+        print_warning "No channels found, using default: stable-3.4"
+        RHOAI_CHANNEL="stable-3.4"
         return 0
     fi
 

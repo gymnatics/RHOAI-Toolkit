@@ -338,7 +338,8 @@ else
 fi
 
 inject_notebook_env "$NAMESPACE" \
-    "MLFLOW_TRACKING_URI=https://mlflow.${EVALHUB_NAMESPACE}.svc:8443" \
+    "MLFLOW_TRACKING_URI=https://mlflow.${EVALHUB_NAMESPACE}.svc:8443/mlflow" \
+    "TOKENIZER_HF_ID=${HF_MODEL_ID:-Qwen/Qwen3-8B}" \
     "LIMIT=5" \
     "MODEL_SERVED_NAME=${MODEL_SERVED_NAME}" \
     "HF_MODEL_ID=${HF_MODEL_ID}" \

@@ -228,7 +228,7 @@ is_deployed() {
                          oc get sa lmeval-sa -n lmeval-demo &>/dev/null 2>&1 ;;
         maas-ratelimit)  oc get namespace maas-ratelimit-demo &>/dev/null 2>&1 ;;
         automl)          oc get namespace automl-demo &>/dev/null 2>&1 && \
-                         oc get deployment minio -n automl-demo &>/dev/null 2>&1 ;;
+                         oc get datasciencepipelinesapplication pipelines-definition -n automl-demo &>/dev/null 2>&1 ;;
         autorag)         oc get namespace autorag-demo &>/dev/null 2>&1 && \
                          oc get deployment milvus-standalone -n autorag-demo &>/dev/null 2>&1 ;;
         marketing)       oc get namespace marketing-assistant &>/dev/null 2>&1 ;;
