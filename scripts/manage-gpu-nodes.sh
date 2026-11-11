@@ -41,6 +41,7 @@
 #   ./scripts/manage-gpu-nodes.sh start --timeout 900             # cap the Ready-wait at 900s
 #   ./scripts/manage-gpu-nodes.sh cleanup                       # delete stale pods holding GPUs after a restart
 #   ./scripts/manage-gpu-nodes.sh start --profile rhoai-35       # use the AWS profile for THIS cluster's account
+#   ./scripts/manage-gpu-nodes.sh start --retry-minutes 30       # keep retrying InsufficientInstanceCapacity
 #
 # AWS credentials must belong to the account that hosts the cluster (sandbox/RHDP
 # clusters each have their own). Keep one named profile per cluster
@@ -74,6 +75,7 @@ shift || true
 MACHINESET_FILTER=""
 WAIT=true
 TIMEOUT=1800
+RETRY_MINUTES=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -81,6 +83,7 @@ while [[ $# -gt 0 ]]; do
         --no-wait)     WAIT=false; shift ;;
         --timeout)     TIMEOUT="$2"; shift 2 ;;
         --profile)     export AWS_PROFILE="$2"; shift 2 ;;
+        --retry-minutes) RETRY_MINUTES="$2"; shift 2 ;;
         -h|--help)     usage; exit 0 ;;
         *) print_error "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -269,6 +272,7 @@ do_start() {
     print_header "Starting GPU EC2 instances (same Machine/Node identity as before stop)"
     local any=false
     declare -a started_ids=()
+    declare -a failed_ids=()
     while IFS=$'\t' read -r ms machine instance_id az mregion; do
         [ -z "$machine" ] && continue
         any=true
@@ -289,8 +293,33 @@ do_start() {
             started_ids+=("$instance_id:$r")
         else
             print_error "Failed to start $instance_id -- see AWS error above"
+            failed_ids+=("$instance_id:$r:$machine")
         fi
     done < <(get_target_machines)
+
+    # AWS often has no capacity for an instance type in one AZ for a while; retry if asked
+    if [ ${#failed_ids[@]} -gt 0 ] && [ "${RETRY_MINUTES:-0}" -gt 0 ]; then
+        local deadline=$(( $(date +%s) + RETRY_MINUTES * 60 )) entry
+        print_step "Retrying ${#failed_ids[@]} instance(s) every 60s for up to ${RETRY_MINUTES} min..."
+        while [ ${#failed_ids[@]} -gt 0 ] && [ "$(date +%s)" -lt "$deadline" ]; do
+            sleep 60
+            local still=()
+            for entry in "${failed_ids[@]}"; do
+                local fid="${entry%%:*}" rest="${entry#*:}"; local fr="${rest%%:*}"
+                if aws ec2 start-instances --region "$fr" --instance-ids "$fid" >/dev/null 2>&1; then
+                    print_success "Start requested for $fid (retry)"; started_ids+=("$fid:$fr")
+                else
+                    still+=("$entry")
+                fi
+            done
+            failed_ids=("${still[@]+"${still[@]}"}")
+        done
+    fi
+    if [ ${#failed_ids[@]} -gt 0 ]; then
+        print_warning "${#failed_ids[@]} instance(s) could NOT be started (usually InsufficientInstanceCapacity in that AZ):"
+        for entry in "${failed_ids[@]}"; do echo "    ${entry##*:} (${entry%%:*})"; done
+        print_info "Retry later, or rerun with --retry-minutes 30"
+    fi
 
     if [ "$any" = false ]; then
         print_warning "No matching GPU machines found."
@@ -332,7 +361,7 @@ do_start() {
                 [ "$ready" != "True" ] && all_ready=false
             done
             if [ "$all_ready" = true ]; then
-                print_success "All targeted nodes are Ready"
+                print_success "All started nodes are Ready"
                 cleanup_stale_gpu_pods
                 return
             fi

@@ -1075,6 +1075,34 @@ Full write-up: [`docs/bugs/autorag-ogx-3.5-cascade.md`](bugs/autorag-ogx-3.5-cas
 
 ---
 
+## EvalHub (lmeval-demo)
+
+### Every EvalHub job fails: `400 ... mlflow_request_failed ... Workspace context is required for this request`
+
+**Symptom:** `client.jobs.submit(...)` (SDK) or a new evaluation run in the dashboard fails with HTTP 400; the body says the MLflow request failed with `INVALID_PARAMETER_VALUE: Workspace context is required for this request`. EvalHub `/api/v1/health` is healthy and no job is ever created.
+
+**Cause:** RHOAIENG-67534 (RHOAI 3.5 known issue): EvalHub runs with MLflow workspaces disabled, so it calls MLflow without a workspace. Documented trigger: the MLflow CR was created after the EvalHub CR. Seen 2026-11-11 on 3.5.1 even though MLflow existed first. Restarting the EvalHub pod does not help. MLflow itself accepts the tenant namespace as a workspace (`X-MLFLOW-WORKSPACE: lmeval-demo` returns 200).
+
+**Fix:** With the MLflow CR present, recreate the EvalHub CR (back it up first; job history is lost):
+```bash
+oc get evalhub evalhub -n redhat-ods-applications -o yaml > evalhub-backup.yaml
+oc delete evalhub evalhub -n redhat-ods-applications
+oc apply -f evalhub-backup.yaml     # strip status/uid/resourceVersion first
+```
+`demo/lmeval-demo/deploy.sh` now creates the MLflow instance before EvalHub when none exists.
+
+### EvalHub SDK errors: `'coroutine' object is not subscriptable`, `'AsyncEvalHubClient' object has no attribute 'list_providers'`
+
+**Cause:** eval-hub-sdk 0.4 (`pip install "eval-hub-sdk[client]"`, unpinned per the docs): `EvalHubClient` is the async client and the API moved to resource sub-clients.
+
+**Fix:** use `SyncEvalHubClient(base_url=..., auth_token=..., tenant=...)` and `client.providers.list()`, `client.benchmarks.list(provider_id=...)`, `client.jobs.submit(JobSubmissionRequest(...))`, `client.jobs.wait_for_completion(job_id)`. `evalhub-sdk-demo.ipynb` was rewritten accordingly.
+
+### korean-mcq-benchmark: `ValidationError ... provider_id Input should be a valid string (input_value=None)`
+
+**Cause:** the Korean MCQ provider was never registered: its `provider.yaml` lived only in the upstream repo and its adapter image was never built.
+
+**Fix:** re-run `demo/lmeval-demo/deploy.sh -n lmeval-demo` (builds `korean-mcq-adapter` in-cluster) and update the workbench clone (`provider.yaml` is now vendored in `demo/lmeval-demo/adapters/korean-mcq/`).
+
 ## GPU Nodes
 
 ### Model Pods Stay Pending After Starting Stopped GPU Nodes
@@ -1084,6 +1112,19 @@ Full write-up: [`docs/bugs/autorag-ogx-3.5-cascade.md`](bugs/autorag-ogx-3.5-cas
 **Cause:** Stale pods still hold the GPU requests.
 
 **Fix:** `scripts/manage-gpu-nodes.sh cleanup` (also runs automatically at the end of `start`). Also check whether another workload (e.g. a GPU workbench) holds the GPU: `.claude/skills/toolkit-ops/checks/check-infra.sh` reports `gpu-contention` with the holders.
+
+### GPU nodes stopped by an auto-stop policy / `manage-gpu-nodes.sh` "cannot see instance"
+
+**Symptom:** GPU nodes are NotReady every morning (machines show `machine.openshift.io/instance-state: stopped`), and `scripts/manage-gpu-nodes.sh start` fails with *"AWS credentials for account X cannot see instance i-... of this cluster"*.
+
+**Cause:** An external policy (e.g. company or sandbox auto-stop) stops the EC2 instances; nothing in the cluster restarts them. The script needs AWS credentials for the account that hosts *this* cluster. The cluster's Machine API credentials cannot be used: they lack `ec2:StartInstances` (UnauthorizedOperation).
+
+**Fix:** Keep one AWS profile per cluster and pass it:
+```bash
+aws configure --profile rhoai-35          # keys for this cluster's AWS account, region us-east-2
+./scripts/manage-gpu-nodes.sh start --profile rhoai-35
+```
+`start` waits for the nodes and then runs `cleanup` (deletes stale pods still holding GPU requests). Avoid deleting Machines to "replace" stopped nodes: it works but loses the instances and the policy stops the new ones too.
 
 ### `manage-gpu-nodes.sh start` Fails with InsufficientInstanceCapacity
 

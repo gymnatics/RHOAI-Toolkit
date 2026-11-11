@@ -57,6 +57,7 @@ what is broken or mislabelled now, and what will break on a known future date or
 | TRK-015 | High | Open | Model serving / GPU | `LLMInferenceService`/`InferenceService` templates have no GPU-architecture node affinity: on a cluster with both T4 (g4dn, compute 7.5) and L40S (g6e, 8.9) nodes, an FP8 Qwen3-8B (`modelcar-qwen3-8b-fp8-dynamic`) landed on a T4 and crash-looped ("FA2 is only supported on devices with compute capability >= 8"; EngineCore failed). Proposed: `nodeAffinity` `nvidia.com/gpu.compute.major` `Gt 7` for FP8 models. | `lib/manifests/maas/models/qwen3-8b/llm/model.yaml`, `lib/manifests/model-deployment/llminferenceservice.yaml.tmpl`, `lib/manifests/templates/llminferenceservice.yaml.tmpl` | [live] 2026-11-10 | 2026-11-10 |
 
 ---
+| TRK-016 | High | Open | EvalHub / MLflow | RHOAIENG-67534 hit on 3.5.1 although the MLflow CR predates EvalHub: every job submission fails with MLflow "Workspace context is required"; pod restart doesn't help; workaround is recreating the EvalHub CR. Toolkit now creates MLflow before EvalHub; existing clusters need the recreate. Docs (Evaluating AI systems 3.5 §2.3/§2.28, lastModified 2026-11-06) also advise a dedicated EvalHub namespace instead of `redhat-ods-applications` (toolkit uses the latter). | `demo/lmeval-demo/deploy.sh`, `demo/lmeval-demo/manifests/evalhub.yaml` |
 
 ## 3. Future Breakage (dated / release-triggered)
 

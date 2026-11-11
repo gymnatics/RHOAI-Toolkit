@@ -29,6 +29,16 @@ spec:
         effect: NoSchedule
     nodeSelector:
       nvidia.com/gpu.present: "true"
+    # Full-precision Qwen3-8B needs ~16 GiB for weights: a T4 (15 GiB, compute 7.5) OOMs.
+    # Require an Ampere-or-newer GPU (L40S/A100/H100).
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: nvidia.com/gpu.compute.major
+                  operator: Gt
+                  values: ["7"]
     model:
       modelFormat:
         name: vLLM

@@ -12,7 +12,7 @@ The notebooks in this directory are adapted from:
 - EvalHub URL defaults updated to match this toolkit's deployment
 - Added auto-detection of model endpoints via `oc` CLI
 - Execution outputs stripped (contained prior cluster-specific data)
-- Korean adapter and report generator files remain in the upstream repo
+- Korean adapter `provider.yaml` vendored in `demo/lmeval-demo/adapters/korean-mcq/` (MIT); the adapter image is built in-cluster from the upstream repo by `deploy.sh`; the report generator remains upstream
 
 ## Original Notebooks
 

@@ -81,6 +81,19 @@ oc label namespace "$NAMESPACE" opendatahub.io/dashboard=true --overwrite 2>/dev
 # The generated-namespace label passes the default-deny NetworkPolicy in
 # redhat-ods-applications so job sidecars can callback to EvalHub on :8443.
 oc label namespace "$NAMESPACE" evalhub.trustyai.opendatahub.io/tenant= --overwrite 2>/dev/null || true
+
+# --- Korean MCQ adapter image (used by notebooks/korean-mcq-benchmark.ipynb via adapters/korean-mcq/provider.yaml) ---
+# Built in-cluster from the upstream lmeval-builder-lab repo into the internal registry; skipped if present.
+if [ -d "$REPO_PATH/adapters/korean-mcq" ] && ! oc get istag korean-mcq-adapter:latest -n "$NAMESPACE" &>/dev/null; then
+    print_step "Building Korean MCQ adapter image (korean-mcq-adapter, a few minutes)..."
+    oc get bc korean-mcq-adapter -n "$NAMESPACE" &>/dev/null || \
+        oc new-build --name=korean-mcq-adapter --binary --strategy=docker -n "$NAMESPACE" >/dev/null
+    if oc start-build korean-mcq-adapter --from-dir="$REPO_PATH/adapters/korean-mcq" -n "$NAMESPACE" --follow --wait >/dev/null 2>&1; then
+        print_success "Korean MCQ adapter image built: $NAMESPACE/korean-mcq-adapter:latest"
+    else
+        print_warning "Korean MCQ adapter build failed (korean-mcq-benchmark will not run): oc logs bc/korean-mcq-adapter -n $NAMESPACE"
+    fi
+fi
 oc label namespace "$NAMESPACE" opendatahub.io/generated-namespace=true --overwrite 2>/dev/null || true
 
 # Enable observability dashboard for EvalHub metrics
@@ -99,8 +112,23 @@ EVALHUB_NAMESPACE="redhat-ods-applications"
 export MLFLOW_TRACKING_URI="https://mlflow.${EVALHUB_NAMESPACE}.svc:8443/mlflow"
 
 if [ "$EVALHUB_CRD_AVAILABLE" = true ]; then
+    # RHOAIENG-67534 (3.5 release notes, known issues): if the MLflow CR is created after EvalHub,
+    # EvalHub runs with workspaces disabled and every job submission fails with MLflow
+    # "Workspace context is required for this request". Make sure MLflow exists first.
+    if ! oc get mlflows.mlflow.opendatahub.io -A -o name 2>/dev/null | grep -q .; then
+        if [ "$(oc get datasciencecluster default-dsc -o jsonpath='{.spec.components.mlflowoperator.managementState}' 2>/dev/null)" = "Managed" ]; then
+            print_step "Creating the MLflow instance before EvalHub (RHOAIENG-67534)..."
+            oc apply -f "$ROOT_DIR/lib/manifests/rhoai/mlflow-cr.yaml"
+            oc wait --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+                mlflows.mlflow.opendatahub.io/mlflow --timeout=180s 2>/dev/null || \
+                print_warning "MLflow not Ready yet; EvalHub results may not reach MLflow"
+        else
+            print_warning "No MLflow instance and mlflowoperator is not Managed: EvalHub jobs that log to MLflow will fail"
+        fi
+    fi
     if oc get evalhub evalhub -n "$EVALHUB_NAMESPACE" &>/dev/null; then
         print_info "EvalHub CR already exists in $EVALHUB_NAMESPACE"
+        print_info "If job submission fails with 'Workspace context is required', recreate the EvalHub CR (RHOAIENG-67534; see docs/TROUBLESHOOTING.md)"
     else
         print_info "Deploying EvalHub CR in $EVALHUB_NAMESPACE (required for dashboard UI)"
         NAMESPACE="$EVALHUB_NAMESPACE" envsubst < "$SCRIPT_DIR/manifests/evalhub.yaml" | oc apply -f -

@@ -481,7 +481,7 @@ EOROLE
 # next start. NOTEBOOK_ENV_NO_RESTART=1 skips this.
 ################################################################################
 _restart_notebooks_on_env_change() {
-    local ns="$1"
+    local ns="$1" mode="${2:-restart}"   # mode=annotate-only: record the hash, don't delete the pod
     [ "${NOTEBOOK_ENV_NO_RESTART:-0}" = "1" ] && return 0
     local hash
     hash=$( { oc get configmap notebook-env -n "$ns" -o jsonpath='{.data}' 2>/dev/null
@@ -494,7 +494,7 @@ _restart_notebooks_on_env_change() {
             -o jsonpath='{.metadata.annotations.toolkit\.rhoai/notebook-env-hash}' 2>/dev/null || true)
         [ "$current" = "$hash" ] && continue
         oc annotate notebook "$nb" -n "$ns" "toolkit.rhoai/notebook-env-hash=$hash" --overwrite >/dev/null 2>&1 || continue
-        if oc get pod "${nb}-0" -n "$ns" &>/dev/null; then
+        if [ "$mode" != "annotate-only" ] && oc get pod "${nb}-0" -n "$ns" &>/dev/null; then
             oc delete pod "${nb}-0" -n "$ns" --wait=false >/dev/null 2>&1 && \
                 echo -e "${CYAN:-}ℹ Workbench $nb: environment changed, restarting to apply it${NC:-}"
         fi
@@ -509,14 +509,20 @@ _restart_notebooks_on_env_change() {
 # secret toolkit.rhoai/notebook-env=true so key rotation restarts workbenches.
 ################################################################################
 attach_secret_to_notebooks() {
-    local ns="$1" secret="$2" nb existing
+    local ns="$1" secret="$2" nb existing patched=0
     for nb in $(oc get notebooks.kubeflow.org -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
         existing=$(oc get notebook "$nb" -n "$ns" \
             -o jsonpath='{.spec.template.spec.containers[0].envFrom[*].secretRef.name}' 2>/dev/null || true)
         echo "$existing" | grep -qw "$secret" && continue
         oc patch notebook "$nb" -n "$ns" --type=json \
             -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/envFrom/-\",\"value\":{\"secretRef\":{\"name\":\"$secret\"}}}]" \
-            >/dev/null 2>&1 || true
+            >/dev/null 2>&1 && patched=1
     done
-    _restart_notebooks_on_env_change "$ns"
+    # A spec change already rolls the pod; only record the hash then (avoids a second restart)
+    if [ "$patched" = 1 ]; then
+        echo -e "${CYAN:-}ℹ Secret $secret attached to workbenches (pods restart to load it)${NC:-}"
+        _restart_notebooks_on_env_change "$ns" annotate-only
+    else
+        _restart_notebooks_on_env_change "$ns"
+    fi
 }

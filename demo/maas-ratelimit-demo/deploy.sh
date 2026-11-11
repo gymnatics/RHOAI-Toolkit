@@ -113,7 +113,8 @@ ensure_workbench "$NAMESPACE" "rate-limit-testing"
 # itself -- do NOT pass those as extra args here or `oc create configmap` fails
 # with "another key by that name already exists".
 source "$ROOT_DIR/lib/functions/notebook-env.sh"
-inject_notebook_env "$NAMESPACE" \
+# Restart is deferred to the API-key step below so the workbench restarts once, not twice
+NOTEBOOK_ENV_NO_RESTART=1 inject_notebook_env "$NAMESPACE" \
     "MAAS_ENDPOINT=${MAAS_ENDPOINT_URL}" \
     "MAAS_BASE_URL=${MAAS_ENDPOINT_URL}" \
     "MODEL_ID=${MODEL_ID}" \
@@ -151,6 +152,7 @@ if [ -n "$FIRST_MODEL_NAME" ] && is_rhoai_34_or_higher; then
         fi
     fi
 fi
+_restart_notebooks_on_env_change "$NAMESPACE"   # no-op if the key step already applied the new env
 
 # --- Retry the repo clone in case the workbench wasn't Running yet when
 # ensure_workbench's wait_for_workbench call ran above -- cheap no-op

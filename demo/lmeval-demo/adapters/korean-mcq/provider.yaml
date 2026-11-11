@@ -1,0 +1,115 @@
+# Korean MCQ Evaluation — Custom Adapter Provider
+#
+# Uses the korean-mcq adapter (custom FrameworkAdapter) that directly calls
+# vLLM API and evaluates per-question accuracy with detailed category breakdown.
+#
+# This replaces the lm-evaluation-harness runtime for Korean benchmarks,
+# providing per-question CSV results, markdown reports, and category-level
+# accuracy metrics in MLflow.
+
+id: korean_mcq
+name: Korean MCQ Evaluation
+description: >
+  Korean multiple-choice evaluation adapter. Evaluates LLMs on CLIcK, HAE-RAE,
+  KMMLU, and KMMLU-HARD benchmarks with per-question result tracking,
+  category-level accuracy, and detailed markdown reports.
+
+runtime:
+  k8s:
+    image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/korean-mcq-adapter:latest
+    entrypoint:
+      - python
+      - main.py
+    cpu_request: 200m
+    memory_request: 512Mi
+    cpu_limit: "1"
+    memory_limit: 4Gi
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: DISABLE_THINKING
+        value: "true"
+      # MLflow Tracing: connect directly to MLflow server (bypasses EvalHub proxy)
+      # Each LLM call is logged as a trace span in MLflow's Traces tab
+      - name: MLFLOW_DIRECT_URI
+        value: "https://mlflow.redhat-ods-applications.svc:8443"
+      - name: MLFLOW_TRACKING_INSECURE_TLS
+        value: "true"
+
+benchmarks:
+  - id: click
+    name: CLIcK
+    description: >
+      Cultural and Linguistic Intelligence in Korean — 1,995 MCQ questions
+      sourced from official Korean exams and textbooks. Reports per-category
+      (Culture/Language) accuracy.
+    category: knowledge
+    metrics: [overall_accuracy, category_accuracy, supercategory_accuracy]
+    num_few_shot: 0
+    tags: [korean, knowledge, culture, mcq]
+    primary_score:
+      metric: overall_accuracy
+      lower_is_better: false
+    pass_criteria:
+      threshold: 25.0
+
+  - id: haerae
+    name: HAE-RAE Bench 2.0
+    description: >
+      Korean language understanding benchmark — vocabulary, reading
+      comprehension, and cultural knowledge with 5-choice MCQ format.
+    category: knowledge
+    metrics: [overall_accuracy, category_accuracy]
+    num_few_shot: 0
+    tags: [korean, knowledge, language, mcq]
+    primary_score:
+      metric: overall_accuracy
+      lower_is_better: false
+    pass_criteria:
+      threshold: 20.0
+
+  - id: kmmlu
+    name: Korean MMLU
+    description: >
+      Korean Massive Multitask Language Understanding — 45 subjects
+      covering STEM, humanities, social sciences. 4-choice MCQ with
+      per-subject and per-supercategory accuracy.
+    category: knowledge
+    metrics: [overall_accuracy, category_accuracy, supercategory_accuracy]
+    num_few_shot: 0
+    tags: [korean, knowledge, multitask, mcq]
+    primary_score:
+      metric: overall_accuracy
+      lower_is_better: false
+    pass_criteria:
+      threshold: 25.0
+
+  - id: kmmlu_hard
+    name: Korean MMLU-HARD
+    description: >
+      Hard subset of Korean MMLU — questions that most models get wrong.
+      4-choice MCQ with per-subject and per-supercategory accuracy.
+    category: knowledge
+    metrics: [overall_accuracy, category_accuracy, supercategory_accuracy]
+    num_few_shot: 0
+    tags: [korean, knowledge, multitask, hard, mcq]
+    primary_score:
+      metric: overall_accuracy
+      lower_is_better: false
+    pass_criteria:
+      threshold: 25.0
+
+  - id: kobest_boolq
+    name: KoBEST BoolQ
+    description: >
+      Korean Boolean Question Answering — 1,404 test questions.
+      Given a paragraph and a yes/no question, determine if the answer is True or False.
+    category: reasoning
+    metrics: [overall_accuracy]
+    num_few_shot: 0
+    tags: [korean, reasoning, boolq, mcq]
+    primary_score:
+      metric: overall_accuracy
+      lower_is_better: false
+    pass_criteria:
+      threshold: 50.0

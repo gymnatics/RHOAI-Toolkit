@@ -54,30 +54,30 @@ edits never reach the workbench.
 | Notebook | Runs headless? | Blocker |
 |---|---|---|
 | feast-demo `feast-online-retrieval`, `feast-banking-complex` | **yes** (class safe) | none; `feast` is in the image |
-| maas-ratelimit `maas-ratelimit-test` | with `MAAS_API_KEY` in pod env | key never injected; mint with `get_maas_api_key` (`demo/lib/rhoai-detect.sh:273`) |
-| maas-ratelimit `maas-traffic-generator` | no | reads `MAAS_BASE_URL` (never injected), hard-coded models in `a-rh-department` |
+| maas-ratelimit `maas-ratelimit-test` | **yes** | keys minted by deploy.sh into secret `maas-api-keys` (fixed 2026-11-11) |
+| maas-ratelimit `maas-traffic-generator` | with `--force` (long) | fixed 2026-11-11: models discovered, `MAAS_BASE_URL` injected |
 | financial-loan `predictive-model-development` | with `--force` if the dataset is in S3 | Kaggle dataset; defaults still minio/minio123 |
 | financial-loan `llm-model-fine-tuning` | no (GPU, HF downloads) | — |
-| pipeline-demo `01..04` (Elyra) | no | `sample-loans.csv` never uploaded; 01 writes `artifacts`, 02/03 read `models`; 04 `MODEL_NAME` overwritten by the LLM name; no `.pipeline` file in the repo |
+| pipeline-demo `01..04` (Elyra) | **yes** (verified 2026-11-11) | fixed: sample data uploaded, one artifacts bucket, `REGISTERED_MODEL_NAME`, `REGISTRY_URL`. Still no `.pipeline` file |
 | lmeval `english-benchmark` | with `--force` (10-40 min) | needs internet for pip |
-| lmeval `guidellm-benchmark`, `korean-mcq-benchmark` | no | import `evalhub` without a pip cell |
-| lmeval `evalhub-sdk-demo` | no | `input()` when MODEL_NAME/MODEL_URL unresolved |
+| lmeval `guidellm-benchmark`, `korean-mcq-benchmark` | with `--force` (long) | pip cell added 2026-11-11 |
+| lmeval `evalhub-sdk-demo` | with `--force` (long) | `input()` replaced by a clear error 2026-11-11 |
 
 ## Defects found (candidates for fixes / compat tracker)
 
-1. Workbench env not applied on first deploy (`lib/functions/notebook-env.sh:424-453`: patches Notebook only when `envFrom` is missing; template already has it, so no restart).
+1. ~~Workbench env not applied on first deploy~~ **fixed 2026-11-11** (`inject_notebook_env` merges keys and restarts the workbench pod when the env hash changes; hash kept in a Notebook metadata annotation because the CRD prunes `spec.template.metadata`).
 2. ~~`NAMESPACE="${1:-...}"` flag-parsing bug in 8 demo scripts~~ **fixed 2026-11-10** (non-flag first arg only).
 3. ~~autorag top-level `local`~~ **fixed 2026-11-10**, together with: re-patching an existing `llama-stack-config`, recreating a pre-fix (baseConfig) OGXServer, the missing `ogx.io/watch=true` label (regression from df8b5b4), and pgvector password reuse.
-4. Workbench images default to `:3.4` tags on a 3.5 toolkit (`lib/functions/workbench.sh:40`, `:244`; `demo/financial-loan-demo/deploy.sh:332`); `create_workbench` never updates an existing Notebook.
-5. `wait_for_workbench` checks pod phase Running, not Ready; clone errors are hidden (`2>/dev/null`).
-6. lmeval injects `MLFLOW_TRACKING_URI` without the `/mlflow` suffix its own comment requires (`demo/lmeval-demo/deploy.sh:339` vs `:97`); `TOKENIZER_HF_ID` never injected; `demo-config-env` ConfigMaps never mounted.
-7. 3.3-only `inference-gateway.<domain>` probes in open-webui (`deploy.sh:58`) and financial-loan (`:201`).
-8. `scripts/deploy-demo-environment.sh is_deployed automl` checks `deployment minio` (SeaweedFS is the default).
-9. No delete path for lemonade-stand; pipeline-demo `--delete` only removes the DSPA.
+4. ~~Workbench images default to `:3.4` tags~~ **fixed 2026-11-11** for new workbenches (`workbench_image`); existing workbenches keep their image.
+5. ~~`wait_for_workbench` checks Running, not Ready~~ **fixed 2026-11-11**
+6. ~~lmeval `MLFLOW_TRACKING_URI` without `/mlflow`; `TOKENIZER_HF_ID` never injected~~ **fixed 2026-11-11** (`demo-config-env` ConfigMaps still unused)
+7. ~~3.3-only `inference-gateway` probes~~ **fixed 2026-11-11** (only on 3.3)
+8. ~~`deploy-demo-environment.sh is_deployed automl` checks MinIO~~ **fixed 2026-11-11** (checks the DSPA)
+9. ~~No delete for lemonade-stand; pipeline-demo `--delete` only DSPA~~ **fixed 2026-11-11**
 10. `scripts/test-demos.sh` (planned in `rhoai-version-bump/demo-test-matrix.md:56`) does not exist. `checks/run-all.sh` covers it.
 11. ~~automl/autorag DSPA hard-coded MinIO host + `minio-secret`~~ **fixed 2026-11-10** (rendered from the storage backend, `pipelines-s3-credentials`).
 12. ~~`quay.io/minio/minio` no longer anonymously pullable~~ **fixed 2026-11-10** (7 manifests pinned to `quay.io/opendatahub/minio:RELEASE.2019-08-14T20-37-41Z-license-compliance`; SeaweedFS recommended).
 13. ~~`setup_pipeline_server` kept stale credentials secret~~ **fixed 2026-11-10**.
 14. ~~n8n key regenerated on every deploy~~ **fixed 2026-11-10**.
 15. Open: OGX `spec.distribution.name: rh-dev` now warns "deprecated, use rh"; the working autorag config depends on it.
-16. Open: model templates have no GPU-architecture affinity; FP8 models can land on T4 (g4dn) nodes and crash.
+16. ~~Model templates have no GPU-architecture affinity~~ **fixed 2026-11-11** for the FP8 models (qwen3-8b, gemma, granite-tiny-gpu)
