@@ -1,6 +1,6 @@
 # AI Governance Demo (launcher)
 
-The demo itself lives in its own repo, [rhoai-ai-governance-demo](https://github.com/gymnatics/rhoai-ai-governance-demo) (private; ask for access). This folder only clones it and runs its scripts with the toolkit available (for example, the workbench helper and the toolkit-ops checks).
+The demo itself lives in its own repo, [rhoai-ai-governance-demo](https://github.com/gymnatics/rhoai-ai-governance-demo). This folder only clones it and runs its scripts with the toolkit available (for example, the workbench helper and the toolkit-ops checks).
 
 What the demo shows on RHOAI 3.5, with a fictional "Acme Bank" and four app teams:
 - **Access:** catalog deploy, MaaS self-service API keys, per-app access control, live quota changes.

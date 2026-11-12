@@ -15,7 +15,7 @@
 #   ./deploy.sh --verify                         # run the demo health check only
 #   ./deploy.sh --delete                         # teardown (restores cluster-wide settings)
 #
-# Repo: --repo or AIGOV_DEMO_REPO (default github.com/gymnatics/rhoai-ai-governance-demo, private).
+# Repo: --repo or AIGOV_DEMO_REPO (default github.com/gymnatics/rhoai-ai-governance-demo).
 ################################################################################
 
 set -e
