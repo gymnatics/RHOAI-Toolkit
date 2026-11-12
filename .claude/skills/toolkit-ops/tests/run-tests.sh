@@ -66,7 +66,7 @@ grep -q 'cloud instances are STOPPED: gpu-1' "$WORK/infra.tsv" && pass=$((pass+1
 
 run platform check-platform.sh
 expect "$WORK/platform.tsv" operators rhods-operator PASS
-expect "$WORK/platform.tsv" operators rhcl-version WARN
+expect "$WORK/platform.tsv" operators rhcl-version PASS
 expect "$WORK/platform.tsv" operators jobset-operator SKIP
 expect "$WORK/platform.tsv" platform dsc-phase PASS
 expect "$WORK/platform.tsv" dsc ogx FAIL

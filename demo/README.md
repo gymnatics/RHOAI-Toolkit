@@ -32,6 +32,7 @@ This folder contains demo scripts and applications for RHOAI.
 | `llamastack-demo/` | **LlamaStack/OGX + MCP Demo UI** - Streamlit chatbot frontend (version-aware: OGX on RHOAI 3.5+) |
 | `maas-demo/` | **MaaS Demo** - Interactive CLI and web demo for Model as a Service |
 | `open-webui-demo/` | **Open WebUI Demo** - Chat interface for multiple models |
+| `ai-governance-demo/` | **AI Governance Demo** (launcher) - clones the separate rhoai-ai-governance-demo repo and runs its setup: MaaS per-app access, quotas, chargeback, budget alerts, NeMo Guardrails PII/injection, MLflow audit trail |
 | `agentic-platform-demo/` | **Managed Agentic AI Platform** - Enterprise AI agent platform with Loan Processing Agent, KAgenti, MCP Gateway, OPA policies, Keycloak OIDC, Grafana dashboards, Dify, Tekton pipelines, Istio mesh |
 | `lib/` | Shared utilities (version detection) |
 | `setup-demo-model.sh` | Deploy a sample model with MaaS |

@@ -61,8 +61,15 @@ while IFS='|' read -r pkg purpose need; do
         v="$(echo "$installed" | sed -E 's/.*\.v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
         if [[ "$v" =~ ^1\.4\.0$ ]]; then
             record operators rhcl-version FAIL "RHCL $v is deprecated (auth failures, gateway instability)" "Upgrade to RHCL 1.4.1+ (TOOLKIT-CONTEXT Critical Gotchas)"
+        elif [[ "$v" =~ ^1\.4\.1$ ]]; then
+            # RN 3.5 known issue RHOAIENG-76586: "RHCL 1.4.0 or 1.4.1 with batch gateway deployments"
+            record operators rhcl-version WARN "RHCL $v: RHOAIENG-76586 (rate limiting silently stops / gateway OOM on batch gateways) applies" "scripts/diagnose-maas.sh Issue 6"
         elif [[ "$v" =~ ^1\.4\. ]]; then
-            record operators rhcl-version WARN "RHCL $v: RHOAIENG-76586 (1.4.x rate limiting / gateway OOM) applies" "scripts/diagnose-maas.sh Issue 6"
+            if k get gateway -A -o name 2>/dev/null | grep -q -i batch; then
+                record operators rhcl-version WARN "RHCL $v with a batch gateway: RN names only 1.4.0/1.4.1 for RHOAIENG-76586; verify batch rate limiting" "scripts/diagnose-maas.sh Issue 6"
+            else
+                record operators rhcl-version PASS "RHCL $v (RHOAIENG-76586 is scoped to 1.4.0/1.4.1 + batch gateways); still prove a 429 live before relying on limits"
+            fi
         fi
     fi
     if [ "$pkg" = "kueue-operator" ] && [ "$channel" != "stable-v1.3" ]; then
